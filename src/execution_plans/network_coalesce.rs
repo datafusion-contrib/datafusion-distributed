@@ -11,6 +11,7 @@ use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr_common::metrics::MetricsSet;
 use datafusion::physical_plan::limit::LocalLimitExec;
+use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, EmptyRecordBatchStream, ExecutionPlan, PlanProperties,
@@ -145,14 +146,7 @@ impl NetworkCoalesceExec {
             return Ok(Arc::new(self.clone()));
         };
 
-        let input_with_fetch = if local.plan.fetch().is_some_and(|existing| existing <= fetch) {
-            Arc::clone(&local.plan)
-        } else {
-            local
-                .plan
-                .with_fetch(Some(fetch))
-                .unwrap_or_else(|| Arc::new(LocalLimitExec::new(Arc::clone(&local.plan), fetch)))
-        };
+        let input_with_fetch = apply_fetch_through_projection(Arc::clone(&local.plan), fetch)?;
 
         let mut self_clone = self.clone();
         self_clone.input_stage = Stage::Local(LocalStage {
@@ -164,6 +158,34 @@ impl NetworkCoalesceExec {
         });
         Ok(Arc::new(self_clone))
     }
+}
+
+/// Applies `fetch` to `plan`, looking through [ProjectionExec] nodes that preserve row count.
+///
+/// If a child already carries a sufficient fetch, the plan is left unchanged instead of wrapping a
+/// redundant [LocalLimitExec].
+fn apply_fetch_through_projection(
+    plan: Arc<dyn ExecutionPlan>,
+    fetch: usize,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    if let Some(input) = plan
+        .downcast_ref::<ProjectionExec>()
+        .map(|projection| Arc::clone(projection.input()))
+    {
+        let new_input = apply_fetch_through_projection(Arc::clone(&input), fetch)?;
+        if Arc::ptr_eq(&input, &new_input) {
+            return Ok(plan);
+        }
+        return plan.with_new_children(vec![new_input]);
+    }
+
+    if plan.fetch().is_some_and(|existing| existing <= fetch) {
+        return Ok(plan);
+    }
+
+    Ok(plan
+        .with_fetch(Some(fetch))
+        .unwrap_or_else(|| Arc::new(LocalLimitExec::new(plan, fetch))))
 }
 
 impl NetworkBoundary for NetworkCoalesceExec {

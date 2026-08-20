@@ -230,11 +230,10 @@ mod tests {
         │   [Stage 4] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
           ┌───── Stage 4 ── tasks=2, partitions=3
-          │ LocalLimitExec: fetch=100
-          │   ProjectionExec: expr=[d_year@0 as d_year, i_brand_id@2 as brand_id, i_brand@1 as brand, sum(store_sales.ss_ext_sales_price)@3 as sum_agg]
-          │     SortExec: TopK(fetch=100), expr=[d_year@0 ASC NULLS LAST, sum(store_sales.ss_ext_sales_price)@3 DESC, i_brand_id@2 ASC NULLS LAST], preserve_partitioning=[true]
-          │       AggregateExec: mode=FinalPartitioned, gby=[d_year@0 as d_year, i_brand@1 as i_brand, i_brand_id@2 as i_brand_id], aggr=[sum(store_sales.ss_ext_sales_price)]
-          │         [Stage 3] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          │ ProjectionExec: expr=[d_year@0 as d_year, i_brand_id@2 as brand_id, i_brand@1 as brand, sum(store_sales.ss_ext_sales_price)@3 as sum_agg]
+          │   SortExec: TopK(fetch=100), expr=[d_year@0 ASC NULLS LAST, sum(store_sales.ss_ext_sales_price)@3 DESC, i_brand_id@2 ASC NULLS LAST], preserve_partitioning=[true]
+          │     AggregateExec: mode=FinalPartitioned, gby=[d_year@0 as d_year, i_brand@1 as i_brand, i_brand_id@2 as i_brand_id], aggr=[sum(store_sales.ss_ext_sales_price)]
+          │       [Stage 3] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 3 ── tasks=4, partitions=6
             │ RepartitionExec: partitioning=Hash([d_year@0, i_brand@1, i_brand_id@2], 6), input_partitions=3
@@ -688,12 +687,11 @@ mod tests {
         │   [Stage 10] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
           ┌───── Stage 10 ── tasks=2, partitions=3
-          │ LocalLimitExec: fetch=100
-          │   ProjectionExec: expr=[ca_state@0 as state, count(Int64(1))@1 as cnt]
-          │     SortExec: TopK(fetch=100), expr=[count(Int64(1))@1 ASC, ca_state@0 ASC], preserve_partitioning=[true]
-          │       FilterExec: count(Int64(1))@1 >= 10
-          │         AggregateExec: mode=FinalPartitioned, gby=[ca_state@0 as ca_state], aggr=[count(Int64(1))]
-          │           [Stage 9] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          │ ProjectionExec: expr=[ca_state@0 as state, count(Int64(1))@1 as cnt]
+          │   SortExec: TopK(fetch=100), expr=[count(Int64(1))@1 ASC, ca_state@0 ASC], preserve_partitioning=[true]
+          │     FilterExec: count(Int64(1))@1 >= 10
+          │       AggregateExec: mode=FinalPartitioned, gby=[ca_state@0 as ca_state], aggr=[count(Int64(1))]
+          │         [Stage 9] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 9 ── tasks=4, partitions=6
             │ RepartitionExec: partitioning=Hash([ca_state@0], 6), input_partitions=3
@@ -796,11 +794,10 @@ mod tests {
         │   [Stage 7] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
           ┌───── Stage 7 ── tasks=2, partitions=3
-          │ LocalLimitExec: fetch=100
-          │   ProjectionExec: expr=[i_item_id@0 as i_item_id, avg(store_sales.ss_quantity)@1 as agg1, avg(store_sales.ss_list_price)@2 as agg2, avg(store_sales.ss_coupon_amt)@3 as agg3, avg(store_sales.ss_sales_price)@4 as agg4]
-          │     SortExec: TopK(fetch=100), expr=[i_item_id@0 ASC NULLS LAST], preserve_partitioning=[true]
-          │       AggregateExec: mode=FinalPartitioned, gby=[i_item_id@0 as i_item_id], aggr=[avg(store_sales.ss_quantity), avg(store_sales.ss_list_price), avg(store_sales.ss_coupon_amt), avg(store_sales.ss_sales_price)]
-          │         [Stage 6] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          │ ProjectionExec: expr=[i_item_id@0 as i_item_id, avg(store_sales.ss_quantity)@1 as agg1, avg(store_sales.ss_list_price)@2 as agg2, avg(store_sales.ss_coupon_amt)@3 as agg3, avg(store_sales.ss_sales_price)@4 as agg4]
+          │   SortExec: TopK(fetch=100), expr=[i_item_id@0 ASC NULLS LAST], preserve_partitioning=[true]
+          │     AggregateExec: mode=FinalPartitioned, gby=[i_item_id@0 as i_item_id], aggr=[avg(store_sales.ss_quantity), avg(store_sales.ss_list_price), avg(store_sales.ss_coupon_amt), avg(store_sales.ss_sales_price)]
+          │       [Stage 6] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 6 ── tasks=4, partitions=6
             │ RepartitionExec: partitioning=Hash([i_item_id@0], 6), input_partitions=3
@@ -2677,11 +2674,10 @@ mod tests {
         │   [Stage 7] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
           ┌───── Stage 7 ── tasks=2, partitions=3
-          │ LocalLimitExec: fetch=100
-          │   ProjectionExec: expr=[i_brand_id@1 as brand_id, i_brand@0 as brand, i_manufact_id@2 as i_manufact_id, i_manufact@3 as i_manufact, sum(store_sales.ss_ext_sales_price)@4 as ext_price]
-          │     SortExec: TopK(fetch=100), expr=[sum(store_sales.ss_ext_sales_price)@4 DESC, i_brand@0 ASC NULLS LAST, i_brand_id@1 ASC NULLS LAST, i_manufact_id@2 ASC NULLS LAST, i_manufact@3 ASC NULLS LAST], preserve_partitioning=[true]
-          │       AggregateExec: mode=FinalPartitioned, gby=[i_brand@0 as i_brand, i_brand_id@1 as i_brand_id, i_manufact_id@2 as i_manufact_id, i_manufact@3 as i_manufact], aggr=[sum(store_sales.ss_ext_sales_price)]
-          │         [Stage 6] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          │ ProjectionExec: expr=[i_brand_id@1 as brand_id, i_brand@0 as brand, i_manufact_id@2 as i_manufact_id, i_manufact@3 as i_manufact, sum(store_sales.ss_ext_sales_price)@4 as ext_price]
+          │   SortExec: TopK(fetch=100), expr=[sum(store_sales.ss_ext_sales_price)@4 DESC, i_brand@0 ASC NULLS LAST, i_brand_id@1 ASC NULLS LAST, i_manufact_id@2 ASC NULLS LAST, i_manufact@3 ASC NULLS LAST], preserve_partitioning=[true]
+          │     AggregateExec: mode=FinalPartitioned, gby=[i_brand@0 as i_brand, i_brand_id@1 as i_brand_id, i_manufact_id@2 as i_manufact_id, i_manufact@3 as i_manufact], aggr=[sum(store_sales.ss_ext_sales_price)]
+          │       [Stage 6] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 6 ── tasks=4, partitions=6
             │ RepartitionExec: partitioning=Hash([i_brand@0, i_brand_id@1, i_manufact_id@2, i_manufact@3], 6), input_partitions=3
@@ -3433,11 +3429,10 @@ mod tests {
         │   [Stage 11] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
           ┌───── Stage 11 ── tasks=2, partitions=3
-          │ LocalLimitExec: fetch=100
-          │   ProjectionExec: expr=[i_item_id@0 as i_item_id, i_item_desc@1 as i_item_desc, s_store_id@2 as s_store_id, s_store_name@3 as s_store_name, sum(store_sales.ss_net_profit)@4 as store_sales_profit, sum(store_returns.sr_net_loss)@5 as store_returns_loss, sum(catalog_sales.cs_net_profit)@6 as catalog_sales_profit]
-          │     SortExec: TopK(fetch=100), expr=[i_item_id@0 ASC NULLS LAST, i_item_desc@1 ASC NULLS LAST, s_store_id@2 ASC NULLS LAST, s_store_name@3 ASC NULLS LAST], preserve_partitioning=[true]
-          │       AggregateExec: mode=FinalPartitioned, gby=[i_item_id@0 as i_item_id, i_item_desc@1 as i_item_desc, s_store_id@2 as s_store_id, s_store_name@3 as s_store_name], aggr=[sum(store_sales.ss_net_profit), sum(store_returns.sr_net_loss), sum(catalog_sales.cs_net_profit)]
-          │         [Stage 10] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          │ ProjectionExec: expr=[i_item_id@0 as i_item_id, i_item_desc@1 as i_item_desc, s_store_id@2 as s_store_id, s_store_name@3 as s_store_name, sum(store_sales.ss_net_profit)@4 as store_sales_profit, sum(store_returns.sr_net_loss)@5 as store_returns_loss, sum(catalog_sales.cs_net_profit)@6 as catalog_sales_profit]
+          │   SortExec: TopK(fetch=100), expr=[i_item_id@0 ASC NULLS LAST, i_item_desc@1 ASC NULLS LAST, s_store_id@2 ASC NULLS LAST, s_store_name@3 ASC NULLS LAST], preserve_partitioning=[true]
+          │     AggregateExec: mode=FinalPartitioned, gby=[i_item_id@0 as i_item_id, i_item_desc@1 as i_item_desc, s_store_id@2 as s_store_id, s_store_name@3 as s_store_name], aggr=[sum(store_sales.ss_net_profit), sum(store_returns.sr_net_loss), sum(catalog_sales.cs_net_profit)]
+          │       [Stage 10] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 10 ── tasks=4, partitions=6
             │ RepartitionExec: partitioning=Hash([i_item_id@0, i_item_desc@1, s_store_id@2, s_store_name@3], 6), input_partitions=3
@@ -3546,11 +3541,10 @@ mod tests {
         │   [Stage 7] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
           ┌───── Stage 7 ── tasks=2, partitions=3
-          │ LocalLimitExec: fetch=100
-          │   ProjectionExec: expr=[i_item_id@0 as i_item_id, avg(catalog_sales.cs_quantity)@1 as agg1, avg(catalog_sales.cs_list_price)@2 as agg2, avg(catalog_sales.cs_coupon_amt)@3 as agg3, avg(catalog_sales.cs_sales_price)@4 as agg4]
-          │     SortExec: TopK(fetch=100), expr=[i_item_id@0 ASC NULLS LAST], preserve_partitioning=[true]
-          │       AggregateExec: mode=FinalPartitioned, gby=[i_item_id@0 as i_item_id], aggr=[avg(catalog_sales.cs_quantity), avg(catalog_sales.cs_list_price), avg(catalog_sales.cs_coupon_amt), avg(catalog_sales.cs_sales_price)]
-          │         [Stage 6] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          │ ProjectionExec: expr=[i_item_id@0 as i_item_id, avg(catalog_sales.cs_quantity)@1 as agg1, avg(catalog_sales.cs_list_price)@2 as agg2, avg(catalog_sales.cs_coupon_amt)@3 as agg3, avg(catalog_sales.cs_sales_price)@4 as agg4]
+          │   SortExec: TopK(fetch=100), expr=[i_item_id@0 ASC NULLS LAST], preserve_partitioning=[true]
+          │     AggregateExec: mode=FinalPartitioned, gby=[i_item_id@0 as i_item_id], aggr=[avg(catalog_sales.cs_quantity), avg(catalog_sales.cs_list_price), avg(catalog_sales.cs_coupon_amt), avg(catalog_sales.cs_sales_price)]
+          │       [Stage 6] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 6 ── tasks=4, partitions=6
             │ RepartitionExec: partitioning=Hash([i_item_id@0], 6), input_partitions=3
@@ -3948,11 +3942,10 @@ mod tests {
         │   [Stage 11] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
           ┌───── Stage 11 ── tasks=2, partitions=3
-          │ LocalLimitExec: fetch=100
-          │   ProjectionExec: expr=[i_item_id@0 as i_item_id, i_item_desc@1 as i_item_desc, s_store_id@2 as s_store_id, s_store_name@3 as s_store_name, sum(store_sales.ss_quantity)@4 as store_sales_quantity, sum(store_returns.sr_return_quantity)@5 as store_returns_quantity, sum(catalog_sales.cs_quantity)@6 as catalog_sales_quantity]
-          │     SortExec: TopK(fetch=100), expr=[i_item_id@0 ASC NULLS LAST, i_item_desc@1 ASC NULLS LAST, s_store_id@2 ASC NULLS LAST, s_store_name@3 ASC NULLS LAST], preserve_partitioning=[true]
-          │       AggregateExec: mode=FinalPartitioned, gby=[i_item_id@0 as i_item_id, i_item_desc@1 as i_item_desc, s_store_id@2 as s_store_id, s_store_name@3 as s_store_name], aggr=[sum(store_sales.ss_quantity), sum(store_returns.sr_return_quantity), sum(catalog_sales.cs_quantity)]
-          │         [Stage 10] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          │ ProjectionExec: expr=[i_item_id@0 as i_item_id, i_item_desc@1 as i_item_desc, s_store_id@2 as s_store_id, s_store_name@3 as s_store_name, sum(store_sales.ss_quantity)@4 as store_sales_quantity, sum(store_returns.sr_return_quantity)@5 as store_returns_quantity, sum(catalog_sales.cs_quantity)@6 as catalog_sales_quantity]
+          │   SortExec: TopK(fetch=100), expr=[i_item_id@0 ASC NULLS LAST, i_item_desc@1 ASC NULLS LAST, s_store_id@2 ASC NULLS LAST, s_store_name@3 ASC NULLS LAST], preserve_partitioning=[true]
+          │     AggregateExec: mode=FinalPartitioned, gby=[i_item_id@0 as i_item_id, i_item_desc@1 as i_item_desc, s_store_id@2 as s_store_id, s_store_name@3 as s_store_name], aggr=[sum(store_sales.ss_quantity), sum(store_returns.sr_return_quantity), sum(catalog_sales.cs_quantity)]
+          │       [Stage 10] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 10 ── tasks=4, partitions=6
             │ RepartitionExec: partitioning=Hash([i_item_id@0, i_item_desc@1, s_store_id@2, s_store_name@3], 6), input_partitions=3
@@ -4500,20 +4493,19 @@ mod tests {
         │   [Stage 16] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
           ┌───── Stage 16 ── tasks=2, partitions=3
-          │ LocalLimitExec: fetch=100
-          │   ProjectionExec: expr=[i_manufact_id@0 as i_manufact_id, sum(tmp1.total_sales)@1 as total_sales]
-          │     SortExec: TopK(fetch=100), expr=[sum(tmp1.total_sales)@1 ASC NULLS LAST], preserve_partitioning=[true]
-          │       AggregateExec: mode=SinglePartitioned, gby=[i_manufact_id@0 as i_manufact_id], aggr=[sum(tmp1.total_sales)]
-          │         InterleaveExec
-          │           ProjectionExec: expr=[i_manufact_id@0 as i_manufact_id, sum(store_sales.ss_ext_sales_price)@1 as total_sales]
-          │             AggregateExec: mode=FinalPartitioned, gby=[i_manufact_id@0 as i_manufact_id], aggr=[sum(store_sales.ss_ext_sales_price)]
-          │               [Stage 5] => NetworkShuffleExec: output_partitions=3, input_tasks=4
-          │           ProjectionExec: expr=[i_manufact_id@0 as i_manufact_id, sum(catalog_sales.cs_ext_sales_price)@1 as total_sales]
-          │             AggregateExec: mode=FinalPartitioned, gby=[i_manufact_id@0 as i_manufact_id], aggr=[sum(catalog_sales.cs_ext_sales_price)]
-          │               [Stage 10] => NetworkShuffleExec: output_partitions=3, input_tasks=4
-          │           ProjectionExec: expr=[i_manufact_id@0 as i_manufact_id, sum(web_sales.ws_ext_sales_price)@1 as total_sales]
-          │             AggregateExec: mode=FinalPartitioned, gby=[i_manufact_id@0 as i_manufact_id], aggr=[sum(web_sales.ws_ext_sales_price)]
-          │               [Stage 15] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          │ ProjectionExec: expr=[i_manufact_id@0 as i_manufact_id, sum(tmp1.total_sales)@1 as total_sales]
+          │   SortExec: TopK(fetch=100), expr=[sum(tmp1.total_sales)@1 ASC NULLS LAST], preserve_partitioning=[true]
+          │     AggregateExec: mode=SinglePartitioned, gby=[i_manufact_id@0 as i_manufact_id], aggr=[sum(tmp1.total_sales)]
+          │       InterleaveExec
+          │         ProjectionExec: expr=[i_manufact_id@0 as i_manufact_id, sum(store_sales.ss_ext_sales_price)@1 as total_sales]
+          │           AggregateExec: mode=FinalPartitioned, gby=[i_manufact_id@0 as i_manufact_id], aggr=[sum(store_sales.ss_ext_sales_price)]
+          │             [Stage 5] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          │         ProjectionExec: expr=[i_manufact_id@0 as i_manufact_id, sum(catalog_sales.cs_ext_sales_price)@1 as total_sales]
+          │           AggregateExec: mode=FinalPartitioned, gby=[i_manufact_id@0 as i_manufact_id], aggr=[sum(catalog_sales.cs_ext_sales_price)]
+          │             [Stage 10] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          │         ProjectionExec: expr=[i_manufact_id@0 as i_manufact_id, sum(web_sales.ws_ext_sales_price)@1 as total_sales]
+          │           AggregateExec: mode=FinalPartitioned, gby=[i_manufact_id@0 as i_manufact_id], aggr=[sum(web_sales.ws_ext_sales_price)]
+          │             [Stage 15] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 5 ── tasks=4, partitions=6
             │ RepartitionExec: partitioning=Hash([i_manufact_id@0], 6), input_partitions=3
@@ -5385,11 +5377,10 @@ mod tests {
         │   [Stage 7] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
           ┌───── Stage 7 ── tasks=2, partitions=3
-          │ LocalLimitExec: fetch=100
-          │   ProjectionExec: expr=[w_state@0 as w_state, i_item_id@1 as i_item_id, sum(CASE WHEN date_dim.d_date < Utf8("2000-03-11") THEN catalog_sales.cs_sales_price - coalesce(catalog_returns.cr_refunded_cash,Int64(0)) ELSE Int64(0) END)@2 as sales_before, sum(CASE WHEN date_dim.d_date >= Utf8("2000-03-11") THEN catalog_sales.cs_sales_price - coalesce(catalog_returns.cr_refunded_cash,Int64(0)) ELSE Int64(0) END)@3 as sales_after]
-          │     SortExec: TopK(fetch=100), expr=[w_state@0 ASC NULLS LAST, i_item_id@1 ASC NULLS LAST], preserve_partitioning=[true]
-          │       AggregateExec: mode=FinalPartitioned, gby=[w_state@0 as w_state, i_item_id@1 as i_item_id], aggr=[sum(CASE WHEN date_dim.d_date < 2000-03-11 THEN catalog_sales.cs_sales_price - CASE WHEN catalog_returns.cr_refunded_cash IS NOT NULL THEN catalog_returns.cr_refunded_cash ELSE 0.00 END ELSE 0.00 END) as sum(CASE WHEN date_dim.d_date < Utf8("2000-03-11") THEN catalog_sales.cs_sales_price - coalesce(catalog_returns.cr_refunded_cash,Int64(0)) ELSE Int64(0) END), sum(CASE WHEN date_dim.d_date >= 2000-03-11 THEN catalog_sales.cs_sales_price - CASE WHEN catalog_returns.cr_refunded_cash IS NOT NULL THEN catalog_returns.cr_refunded_cash ELSE 0.00 END ELSE 0.00 END) as sum(CASE WHEN date_dim.d_date >= Utf8("2000-03-11") THEN catalog_sales.cs_sales_price - coalesce(catalog_returns.cr_refunded_cash,Int64(0)) ELSE Int64(0) END)]
-          │         [Stage 6] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          │ ProjectionExec: expr=[w_state@0 as w_state, i_item_id@1 as i_item_id, sum(CASE WHEN date_dim.d_date < Utf8("2000-03-11") THEN catalog_sales.cs_sales_price - coalesce(catalog_returns.cr_refunded_cash,Int64(0)) ELSE Int64(0) END)@2 as sales_before, sum(CASE WHEN date_dim.d_date >= Utf8("2000-03-11") THEN catalog_sales.cs_sales_price - coalesce(catalog_returns.cr_refunded_cash,Int64(0)) ELSE Int64(0) END)@3 as sales_after]
+          │   SortExec: TopK(fetch=100), expr=[w_state@0 ASC NULLS LAST, i_item_id@1 ASC NULLS LAST], preserve_partitioning=[true]
+          │     AggregateExec: mode=FinalPartitioned, gby=[w_state@0 as w_state, i_item_id@1 as i_item_id], aggr=[sum(CASE WHEN date_dim.d_date < 2000-03-11 THEN catalog_sales.cs_sales_price - CASE WHEN catalog_returns.cr_refunded_cash IS NOT NULL THEN catalog_returns.cr_refunded_cash ELSE 0.00 END ELSE 0.00 END) as sum(CASE WHEN date_dim.d_date < Utf8("2000-03-11") THEN catalog_sales.cs_sales_price - coalesce(catalog_returns.cr_refunded_cash,Int64(0)) ELSE Int64(0) END), sum(CASE WHEN date_dim.d_date >= 2000-03-11 THEN catalog_sales.cs_sales_price - CASE WHEN catalog_returns.cr_refunded_cash IS NOT NULL THEN catalog_returns.cr_refunded_cash ELSE 0.00 END ELSE 0.00 END) as sum(CASE WHEN date_dim.d_date >= Utf8("2000-03-11") THEN catalog_sales.cs_sales_price - coalesce(catalog_returns.cr_refunded_cash,Int64(0)) ELSE Int64(0) END)]
+          │       [Stage 6] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 6 ── tasks=4, partitions=6
             │ RepartitionExec: partitioning=Hash([w_state@0, i_item_id@1], 6), input_partitions=3
@@ -5553,11 +5544,10 @@ mod tests {
         │   [Stage 4] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
           ┌───── Stage 4 ── tasks=2, partitions=3
-          │ LocalLimitExec: fetch=100
-          │   ProjectionExec: expr=[s_store_name@0 as s_store_name, s_store_id@1 as s_store_id, sum(CASE WHEN date_dim.d_day_name = Utf8("Sunday") THEN store_sales.ss_sales_price ELSE NULL END)@2 as sun_sales, sum(CASE WHEN date_dim.d_day_name = Utf8("Monday") THEN store_sales.ss_sales_price ELSE NULL END)@3 as mon_sales, sum(CASE WHEN date_dim.d_day_name = Utf8("Tuesday") THEN store_sales.ss_sales_price ELSE NULL END)@4 as tue_sales, sum(CASE WHEN date_dim.d_day_name = Utf8("Wednesday") THEN store_sales.ss_sales_price ELSE NULL END)@5 as wed_sales, sum(CASE WHEN date_dim.d_day_name = Utf8("Thursday") THEN store_sales.ss_sales_price ELSE NULL END)@6 as thu_sales, sum(CASE WHEN date_dim.d_day_name = Utf8("Friday") THEN store_sales.ss_sales_price ELSE NULL END)@7 as fri_sales, sum(CASE WHEN date_dim.d_day_name = Utf8("Saturday") THEN store_sales.ss_sales_price ELSE NULL END)@8 as sat_sales]
-          │     SortExec: TopK(fetch=100), expr=[s_store_name@0 ASC NULLS LAST, s_store_id@1 ASC NULLS LAST], preserve_partitioning=[true]
-          │       AggregateExec: mode=FinalPartitioned, gby=[s_store_name@0 as s_store_name, s_store_id@1 as s_store_id], aggr=[sum(CASE WHEN date_dim.d_day_name = Sunday THEN store_sales.ss_sales_price ELSE NULL END) as sum(CASE WHEN date_dim.d_day_name = Utf8("Sunday") THEN store_sales.ss_sales_price ELSE NULL END), sum(CASE WHEN date_dim.d_day_name = Monday THEN store_sales.ss_sales_price ELSE NULL END) as sum(CASE WHEN date_dim.d_day_name = Utf8("Monday") THEN store_sales.ss_sales_price ELSE NULL END), sum(CASE WHEN date_dim.d_day_name = Tuesday THEN store_sales.ss_sales_price ELSE NULL END) as sum(CASE WHEN date_dim.d_day_name = Utf8("Tuesday") THEN store_sales.ss_sales_price ELSE NULL END), sum(CASE WHEN date_dim.d_day_name = Wednesday THEN store_sales.ss_sales_price ELSE NULL END) as sum(CASE WHEN date_dim.d_day_name = Utf8("Wednesday") THEN store_sales.ss_sales_price ELSE NULL END), sum(CASE WHEN date_dim.d_day_name = Thursday THEN store_sales.ss_sales_price ELSE NULL END) as sum(CASE WHEN date_dim.d_day_name = Utf8("Thursday") THEN store_sales.ss_sales_price ELSE NULL END), sum(CASE WHEN date_dim.d_day_name = Friday THEN store_sales.ss_sales_price ELSE NULL END) as sum(CASE WHEN date_dim.d_day_name = Utf8("Friday") THEN store_sales.ss_sales_price ELSE NULL END), sum(CASE WHEN date_dim.d_day_name = Saturday THEN store_sales.ss_sales_price ELSE NULL END) as sum(CASE WHEN date_dim.d_day_name = Utf8("Saturday") THEN store_sales.ss_sales_price ELSE NULL END)]
-          │         [Stage 3] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          │ ProjectionExec: expr=[s_store_name@0 as s_store_name, s_store_id@1 as s_store_id, sum(CASE WHEN date_dim.d_day_name = Utf8("Sunday") THEN store_sales.ss_sales_price ELSE NULL END)@2 as sun_sales, sum(CASE WHEN date_dim.d_day_name = Utf8("Monday") THEN store_sales.ss_sales_price ELSE NULL END)@3 as mon_sales, sum(CASE WHEN date_dim.d_day_name = Utf8("Tuesday") THEN store_sales.ss_sales_price ELSE NULL END)@4 as tue_sales, sum(CASE WHEN date_dim.d_day_name = Utf8("Wednesday") THEN store_sales.ss_sales_price ELSE NULL END)@5 as wed_sales, sum(CASE WHEN date_dim.d_day_name = Utf8("Thursday") THEN store_sales.ss_sales_price ELSE NULL END)@6 as thu_sales, sum(CASE WHEN date_dim.d_day_name = Utf8("Friday") THEN store_sales.ss_sales_price ELSE NULL END)@7 as fri_sales, sum(CASE WHEN date_dim.d_day_name = Utf8("Saturday") THEN store_sales.ss_sales_price ELSE NULL END)@8 as sat_sales]
+          │   SortExec: TopK(fetch=100), expr=[s_store_name@0 ASC NULLS LAST, s_store_id@1 ASC NULLS LAST], preserve_partitioning=[true]
+          │     AggregateExec: mode=FinalPartitioned, gby=[s_store_name@0 as s_store_name, s_store_id@1 as s_store_id], aggr=[sum(CASE WHEN date_dim.d_day_name = Sunday THEN store_sales.ss_sales_price ELSE NULL END) as sum(CASE WHEN date_dim.d_day_name = Utf8("Sunday") THEN store_sales.ss_sales_price ELSE NULL END), sum(CASE WHEN date_dim.d_day_name = Monday THEN store_sales.ss_sales_price ELSE NULL END) as sum(CASE WHEN date_dim.d_day_name = Utf8("Monday") THEN store_sales.ss_sales_price ELSE NULL END), sum(CASE WHEN date_dim.d_day_name = Tuesday THEN store_sales.ss_sales_price ELSE NULL END) as sum(CASE WHEN date_dim.d_day_name = Utf8("Tuesday") THEN store_sales.ss_sales_price ELSE NULL END), sum(CASE WHEN date_dim.d_day_name = Wednesday THEN store_sales.ss_sales_price ELSE NULL END) as sum(CASE WHEN date_dim.d_day_name = Utf8("Wednesday") THEN store_sales.ss_sales_price ELSE NULL END), sum(CASE WHEN date_dim.d_day_name = Thursday THEN store_sales.ss_sales_price ELSE NULL END) as sum(CASE WHEN date_dim.d_day_name = Utf8("Thursday") THEN store_sales.ss_sales_price ELSE NULL END), sum(CASE WHEN date_dim.d_day_name = Friday THEN store_sales.ss_sales_price ELSE NULL END) as sum(CASE WHEN date_dim.d_day_name = Utf8("Friday") THEN store_sales.ss_sales_price ELSE NULL END), sum(CASE WHEN date_dim.d_day_name = Saturday THEN store_sales.ss_sales_price ELSE NULL END) as sum(CASE WHEN date_dim.d_day_name = Utf8("Saturday") THEN store_sales.ss_sales_price ELSE NULL END)]
+          │       [Stage 3] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 3 ── tasks=4, partitions=6
             │ RepartitionExec: partitioning=Hash([s_store_name@0, s_store_id@1], 6), input_partitions=3
@@ -6325,11 +6315,10 @@ mod tests {
         │   [Stage 7] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
           ┌───── Stage 7 ── tasks=2, partitions=3
-          │ LocalLimitExec: fetch=100
-          │   ProjectionExec: expr=[s_store_name@0 as s_store_name, s_company_id@1 as s_company_id, s_street_number@2 as s_street_number, s_street_name@3 as s_street_name, s_street_type@4 as s_street_type, s_suite_number@5 as s_suite_number, s_city@6 as s_city, s_county@7 as s_county, s_state@8 as s_state, s_zip@9 as s_zip, sum(CASE WHEN store_returns.sr_returned_date_sk - store_sales.ss_sold_date_sk <= Int64(30) THEN Int64(1) ELSE Int64(0) END)@10 as 30 days, sum(CASE WHEN store_returns.sr_returned_date_sk - store_sales.ss_sold_date_sk > Int64(30) AND store_returns.sr_returned_date_sk - store_sales.ss_sold_date_sk <= Int64(60) THEN Int64(1) ELSE Int64(0) END)@11 as 31-60 days, sum(CASE WHEN store_returns.sr_returned_date_sk - store_sales.ss_sold_date_sk > Int64(60) AND store_returns.sr_returned_date_sk - store_sales.ss_sold_date_sk <= Int64(90) THEN Int64(1) ELSE Int64(0) END)@12 as 61-90 days, sum(CASE WHEN store_returns.sr_returned_date_sk - store_sales.ss_sold_date_sk > Int64(90) AND store_returns.sr_returned_date_sk - store_sales.ss_sold_date_sk <= Int64(120) THEN Int64(1) ELSE Int64(0) END)@13 as 91-120 days, sum(CASE WHEN store_returns.sr_returned_date_sk - store_sales.ss_sold_date_sk > Int64(120) THEN Int64(1) ELSE Int64(0) END)@14 as >120 days]
-          │     SortExec: TopK(fetch=100), expr=[s_store_name@0 ASC NULLS LAST, s_company_id@1 ASC NULLS LAST, s_street_number@2 ASC NULLS LAST, s_street_name@3 ASC NULLS LAST, s_street_type@4 ASC NULLS LAST, s_suite_number@5 ASC NULLS LAST, s_city@6 ASC NULLS LAST, s_county@7 ASC NULLS LAST, s_state@8 ASC NULLS LAST, s_zip@9 ASC NULLS LAST], preserve_partitioning=[true]
-          │       AggregateExec: mode=FinalPartitioned, gby=[s_store_name@0 as s_store_name, s_company_id@1 as s_company_id, s_street_number@2 as s_street_number, s_street_name@3 as s_street_name, s_street_type@4 as s_street_type, s_suite_number@5 as s_suite_number, s_city@6 as s_city, s_county@7 as s_county, s_state@8 as s_state, s_zip@9 as s_zip], aggr=[sum(CASE WHEN __common_expr_1 <= 30 THEN 1 ELSE 0 END) as sum(CASE WHEN store_returns.sr_returned_date_sk - store_sales.ss_sold_date_sk <= Int64(30) THEN Int64(1) ELSE Int64(0) END), sum(CASE WHEN __common_expr_1 > 30 AND __common_expr_1 <= 60 THEN 1 ELSE 0 END) as sum(CASE WHEN store_returns.sr_returned_date_sk - store_sales.ss_sold_date_sk > Int64(30) AND store_returns.sr_returned_date_sk - store_sales.ss_sold_date_sk <= Int64(60) THEN Int64(1) ELSE Int64(0) END), sum(CASE WHEN __common_expr_1 > 60 AND __common_expr_1 <= 90 THEN 1 ELSE 0 END) as sum(CASE WHEN store_returns.sr_returned_date_sk - store_sales.ss_sold_date_sk > Int64(60) AND store_returns.sr_returned_date_sk - store_sales.ss_sold_date_sk <= Int64(90) THEN Int64(1) ELSE Int64(0) END), sum(CASE WHEN __common_expr_1 > 90 AND __common_expr_1 <= 120 THEN 1 ELSE 0 END) as sum(CASE WHEN store_returns.sr_returned_date_sk - store_sales.ss_sold_date_sk > Int64(90) AND store_returns.sr_returned_date_sk - store_sales.ss_sold_date_sk <= Int64(120) THEN Int64(1) ELSE Int64(0) END), sum(CASE WHEN __common_expr_1 > 120 THEN 1 ELSE 0 END) as sum(CASE WHEN store_returns.sr_returned_date_sk - store_sales.ss_sold_date_sk > Int64(120) THEN Int64(1) ELSE Int64(0) END)]
-          │         [Stage 6] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          │ ProjectionExec: expr=[s_store_name@0 as s_store_name, s_company_id@1 as s_company_id, s_street_number@2 as s_street_number, s_street_name@3 as s_street_name, s_street_type@4 as s_street_type, s_suite_number@5 as s_suite_number, s_city@6 as s_city, s_county@7 as s_county, s_state@8 as s_state, s_zip@9 as s_zip, sum(CASE WHEN store_returns.sr_returned_date_sk - store_sales.ss_sold_date_sk <= Int64(30) THEN Int64(1) ELSE Int64(0) END)@10 as 30 days, sum(CASE WHEN store_returns.sr_returned_date_sk - store_sales.ss_sold_date_sk > Int64(30) AND store_returns.sr_returned_date_sk - store_sales.ss_sold_date_sk <= Int64(60) THEN Int64(1) ELSE Int64(0) END)@11 as 31-60 days, sum(CASE WHEN store_returns.sr_returned_date_sk - store_sales.ss_sold_date_sk > Int64(60) AND store_returns.sr_returned_date_sk - store_sales.ss_sold_date_sk <= Int64(90) THEN Int64(1) ELSE Int64(0) END)@12 as 61-90 days, sum(CASE WHEN store_returns.sr_returned_date_sk - store_sales.ss_sold_date_sk > Int64(90) AND store_returns.sr_returned_date_sk - store_sales.ss_sold_date_sk <= Int64(120) THEN Int64(1) ELSE Int64(0) END)@13 as 91-120 days, sum(CASE WHEN store_returns.sr_returned_date_sk - store_sales.ss_sold_date_sk > Int64(120) THEN Int64(1) ELSE Int64(0) END)@14 as >120 days]
+          │   SortExec: TopK(fetch=100), expr=[s_store_name@0 ASC NULLS LAST, s_company_id@1 ASC NULLS LAST, s_street_number@2 ASC NULLS LAST, s_street_name@3 ASC NULLS LAST, s_street_type@4 ASC NULLS LAST, s_suite_number@5 ASC NULLS LAST, s_city@6 ASC NULLS LAST, s_county@7 ASC NULLS LAST, s_state@8 ASC NULLS LAST, s_zip@9 ASC NULLS LAST], preserve_partitioning=[true]
+          │     AggregateExec: mode=FinalPartitioned, gby=[s_store_name@0 as s_store_name, s_company_id@1 as s_company_id, s_street_number@2 as s_street_number, s_street_name@3 as s_street_name, s_street_type@4 as s_street_type, s_suite_number@5 as s_suite_number, s_city@6 as s_city, s_county@7 as s_county, s_state@8 as s_state, s_zip@9 as s_zip], aggr=[sum(CASE WHEN __common_expr_1 <= 30 THEN 1 ELSE 0 END) as sum(CASE WHEN store_returns.sr_returned_date_sk - store_sales.ss_sold_date_sk <= Int64(30) THEN Int64(1) ELSE Int64(0) END), sum(CASE WHEN __common_expr_1 > 30 AND __common_expr_1 <= 60 THEN 1 ELSE 0 END) as sum(CASE WHEN store_returns.sr_returned_date_sk - store_sales.ss_sold_date_sk > Int64(30) AND store_returns.sr_returned_date_sk - store_sales.ss_sold_date_sk <= Int64(60) THEN Int64(1) ELSE Int64(0) END), sum(CASE WHEN __common_expr_1 > 60 AND __common_expr_1 <= 90 THEN 1 ELSE 0 END) as sum(CASE WHEN store_returns.sr_returned_date_sk - store_sales.ss_sold_date_sk > Int64(60) AND store_returns.sr_returned_date_sk - store_sales.ss_sold_date_sk <= Int64(90) THEN Int64(1) ELSE Int64(0) END), sum(CASE WHEN __common_expr_1 > 90 AND __common_expr_1 <= 120 THEN 1 ELSE 0 END) as sum(CASE WHEN store_returns.sr_returned_date_sk - store_sales.ss_sold_date_sk > Int64(90) AND store_returns.sr_returned_date_sk - store_sales.ss_sold_date_sk <= Int64(120) THEN Int64(1) ELSE Int64(0) END), sum(CASE WHEN __common_expr_1 > 120 THEN 1 ELSE 0 END) as sum(CASE WHEN store_returns.sr_returned_date_sk - store_sales.ss_sold_date_sk > Int64(120) THEN Int64(1) ELSE Int64(0) END)]
+          │       [Stage 6] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 6 ── tasks=4, partitions=6
             │ RepartitionExec: partitioning=Hash([s_store_name@0, s_company_id@1, s_street_number@2, s_street_name@3, s_street_type@4, s_suite_number@5, s_city@6, s_county@7, s_state@8, s_zip@9], 6), input_partitions=3
@@ -6483,11 +6472,10 @@ mod tests {
         │   [Stage 4] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
           ┌───── Stage 4 ── tasks=2, partitions=3
-          │ LocalLimitExec: fetch=100
-          │   ProjectionExec: expr=[d_year@0 as d_year, i_brand_id@2 as brand_id, i_brand@1 as brand, sum(store_sales.ss_ext_sales_price)@3 as ext_price]
-          │     SortExec: TopK(fetch=100), expr=[sum(store_sales.ss_ext_sales_price)@3 DESC, i_brand_id@2 ASC NULLS LAST], preserve_partitioning=[true]
-          │       AggregateExec: mode=FinalPartitioned, gby=[d_year@0 as d_year, i_brand@1 as i_brand, i_brand_id@2 as i_brand_id], aggr=[sum(store_sales.ss_ext_sales_price)], ordering_mode=PartiallySorted([0])
-          │         [Stage 3] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          │ ProjectionExec: expr=[d_year@0 as d_year, i_brand_id@2 as brand_id, i_brand@1 as brand, sum(store_sales.ss_ext_sales_price)@3 as ext_price]
+          │   SortExec: TopK(fetch=100), expr=[sum(store_sales.ss_ext_sales_price)@3 DESC, i_brand_id@2 ASC NULLS LAST], preserve_partitioning=[true]
+          │     AggregateExec: mode=FinalPartitioned, gby=[d_year@0 as d_year, i_brand@1 as i_brand, i_brand_id@2 as i_brand_id], aggr=[sum(store_sales.ss_ext_sales_price)], ordering_mode=PartiallySorted([0])
+          │       [Stage 3] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 3 ── tasks=4, partitions=6
             │ RepartitionExec: partitioning=Hash([d_year@0, i_brand@1, i_brand_id@2], 6), input_partitions=3
@@ -6754,11 +6742,10 @@ mod tests {
         │   [Stage 4] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
           ┌───── Stage 4 ── tasks=2, partitions=3
-          │ LocalLimitExec: fetch=100
-          │   ProjectionExec: expr=[i_brand_id@1 as brand_id, i_brand@0 as brand, sum(store_sales.ss_ext_sales_price)@2 as ext_price]
-          │     SortExec: TopK(fetch=100), expr=[sum(store_sales.ss_ext_sales_price)@2 DESC, i_brand_id@1 ASC NULLS LAST], preserve_partitioning=[true]
-          │       AggregateExec: mode=FinalPartitioned, gby=[i_brand@0 as i_brand, i_brand_id@1 as i_brand_id], aggr=[sum(store_sales.ss_ext_sales_price)]
-          │         [Stage 3] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          │ ProjectionExec: expr=[i_brand_id@1 as brand_id, i_brand@0 as brand, sum(store_sales.ss_ext_sales_price)@2 as ext_price]
+          │   SortExec: TopK(fetch=100), expr=[sum(store_sales.ss_ext_sales_price)@2 DESC, i_brand_id@1 ASC NULLS LAST], preserve_partitioning=[true]
+          │     AggregateExec: mode=FinalPartitioned, gby=[i_brand@0 as i_brand, i_brand_id@1 as i_brand_id], aggr=[sum(store_sales.ss_ext_sales_price)]
+          │       [Stage 3] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 3 ── tasks=4, partitions=6
             │ RepartitionExec: partitioning=Hash([i_brand@0, i_brand_id@1], 6), input_partitions=3
@@ -6805,20 +6792,19 @@ mod tests {
         │   [Stage 16] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
           ┌───── Stage 16 ── tasks=2, partitions=3
-          │ LocalLimitExec: fetch=100
-          │   ProjectionExec: expr=[i_item_id@0 as i_item_id, sum(tmp1.total_sales)@1 as total_sales]
-          │     SortExec: TopK(fetch=100), expr=[sum(tmp1.total_sales)@1 ASC, i_item_id@0 ASC], preserve_partitioning=[true]
-          │       AggregateExec: mode=SinglePartitioned, gby=[i_item_id@0 as i_item_id], aggr=[sum(tmp1.total_sales)]
-          │         InterleaveExec
-          │           ProjectionExec: expr=[i_item_id@0 as i_item_id, sum(store_sales.ss_ext_sales_price)@1 as total_sales]
-          │             AggregateExec: mode=FinalPartitioned, gby=[i_item_id@0 as i_item_id], aggr=[sum(store_sales.ss_ext_sales_price)]
-          │               [Stage 5] => NetworkShuffleExec: output_partitions=3, input_tasks=4
-          │           ProjectionExec: expr=[i_item_id@0 as i_item_id, sum(catalog_sales.cs_ext_sales_price)@1 as total_sales]
-          │             AggregateExec: mode=FinalPartitioned, gby=[i_item_id@0 as i_item_id], aggr=[sum(catalog_sales.cs_ext_sales_price)]
-          │               [Stage 10] => NetworkShuffleExec: output_partitions=3, input_tasks=4
-          │           ProjectionExec: expr=[i_item_id@0 as i_item_id, sum(web_sales.ws_ext_sales_price)@1 as total_sales]
-          │             AggregateExec: mode=FinalPartitioned, gby=[i_item_id@0 as i_item_id], aggr=[sum(web_sales.ws_ext_sales_price)]
-          │               [Stage 15] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          │ ProjectionExec: expr=[i_item_id@0 as i_item_id, sum(tmp1.total_sales)@1 as total_sales]
+          │   SortExec: TopK(fetch=100), expr=[sum(tmp1.total_sales)@1 ASC, i_item_id@0 ASC], preserve_partitioning=[true]
+          │     AggregateExec: mode=SinglePartitioned, gby=[i_item_id@0 as i_item_id], aggr=[sum(tmp1.total_sales)]
+          │       InterleaveExec
+          │         ProjectionExec: expr=[i_item_id@0 as i_item_id, sum(store_sales.ss_ext_sales_price)@1 as total_sales]
+          │           AggregateExec: mode=FinalPartitioned, gby=[i_item_id@0 as i_item_id], aggr=[sum(store_sales.ss_ext_sales_price)]
+          │             [Stage 5] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          │         ProjectionExec: expr=[i_item_id@0 as i_item_id, sum(catalog_sales.cs_ext_sales_price)@1 as total_sales]
+          │           AggregateExec: mode=FinalPartitioned, gby=[i_item_id@0 as i_item_id], aggr=[sum(catalog_sales.cs_ext_sales_price)]
+          │             [Stage 10] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          │         ProjectionExec: expr=[i_item_id@0 as i_item_id, sum(web_sales.ws_ext_sales_price)@1 as total_sales]
+          │           AggregateExec: mode=FinalPartitioned, gby=[i_item_id@0 as i_item_id], aggr=[sum(web_sales.ws_ext_sales_price)]
+          │             [Stage 15] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 5 ── tasks=4, partitions=6
             │ RepartitionExec: partitioning=Hash([i_item_id@0], 6), input_partitions=3
@@ -7494,20 +7480,19 @@ mod tests {
         │   [Stage 16] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
           ┌───── Stage 16 ── tasks=2, partitions=3
-          │ LocalLimitExec: fetch=100
-          │   ProjectionExec: expr=[i_item_id@0 as i_item_id, sum(tmp1.total_sales)@1 as total_sales]
-          │     SortExec: TopK(fetch=100), expr=[i_item_id@0 ASC NULLS LAST], preserve_partitioning=[true]
-          │       AggregateExec: mode=SinglePartitioned, gby=[i_item_id@0 as i_item_id], aggr=[sum(tmp1.total_sales)]
-          │         InterleaveExec
-          │           ProjectionExec: expr=[i_item_id@0 as i_item_id, sum(store_sales.ss_ext_sales_price)@1 as total_sales]
-          │             AggregateExec: mode=FinalPartitioned, gby=[i_item_id@0 as i_item_id], aggr=[sum(store_sales.ss_ext_sales_price)]
-          │               [Stage 5] => NetworkShuffleExec: output_partitions=3, input_tasks=4
-          │           ProjectionExec: expr=[i_item_id@0 as i_item_id, sum(catalog_sales.cs_ext_sales_price)@1 as total_sales]
-          │             AggregateExec: mode=FinalPartitioned, gby=[i_item_id@0 as i_item_id], aggr=[sum(catalog_sales.cs_ext_sales_price)]
-          │               [Stage 10] => NetworkShuffleExec: output_partitions=3, input_tasks=4
-          │           ProjectionExec: expr=[i_item_id@0 as i_item_id, sum(web_sales.ws_ext_sales_price)@1 as total_sales]
-          │             AggregateExec: mode=FinalPartitioned, gby=[i_item_id@0 as i_item_id], aggr=[sum(web_sales.ws_ext_sales_price)]
-          │               [Stage 15] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          │ ProjectionExec: expr=[i_item_id@0 as i_item_id, sum(tmp1.total_sales)@1 as total_sales]
+          │   SortExec: TopK(fetch=100), expr=[i_item_id@0 ASC NULLS LAST], preserve_partitioning=[true]
+          │     AggregateExec: mode=SinglePartitioned, gby=[i_item_id@0 as i_item_id], aggr=[sum(tmp1.total_sales)]
+          │       InterleaveExec
+          │         ProjectionExec: expr=[i_item_id@0 as i_item_id, sum(store_sales.ss_ext_sales_price)@1 as total_sales]
+          │           AggregateExec: mode=FinalPartitioned, gby=[i_item_id@0 as i_item_id], aggr=[sum(store_sales.ss_ext_sales_price)]
+          │             [Stage 5] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          │         ProjectionExec: expr=[i_item_id@0 as i_item_id, sum(catalog_sales.cs_ext_sales_price)@1 as total_sales]
+          │           AggregateExec: mode=FinalPartitioned, gby=[i_item_id@0 as i_item_id], aggr=[sum(catalog_sales.cs_ext_sales_price)]
+          │             [Stage 10] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          │         ProjectionExec: expr=[i_item_id@0 as i_item_id, sum(web_sales.ws_ext_sales_price)@1 as total_sales]
+          │           AggregateExec: mode=FinalPartitioned, gby=[i_item_id@0 as i_item_id], aggr=[sum(web_sales.ws_ext_sales_price)]
+          │             [Stage 15] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 5 ── tasks=4, partitions=6
             │ RepartitionExec: partitioning=Hash([i_item_id@0], 6), input_partitions=3
@@ -7860,11 +7845,10 @@ mod tests {
         │   [Stage 6] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
           ┌───── Stage 6 ── tasks=2, partitions=3
-          │ LocalLimitExec: fetch=100
-          │   ProjectionExec: expr=[w_substr@0 as w_substr, sm_type@1 as sm_type, web_name@2 as web_name, sum(CASE WHEN web_sales.ws_ship_date_sk - web_sales.ws_sold_date_sk <= Int64(30) THEN Int64(1) ELSE Int64(0) END)@3 as 30 days, sum(CASE WHEN web_sales.ws_ship_date_sk - web_sales.ws_sold_date_sk > Int64(30) AND web_sales.ws_ship_date_sk - web_sales.ws_sold_date_sk <= Int64(60) THEN Int64(1) ELSE Int64(0) END)@4 as 31-60 days, sum(CASE WHEN web_sales.ws_ship_date_sk - web_sales.ws_sold_date_sk > Int64(60) AND web_sales.ws_ship_date_sk - web_sales.ws_sold_date_sk <= Int64(90) THEN Int64(1) ELSE Int64(0) END)@5 as 61-90 days, sum(CASE WHEN web_sales.ws_ship_date_sk - web_sales.ws_sold_date_sk > Int64(90) AND web_sales.ws_ship_date_sk - web_sales.ws_sold_date_sk <= Int64(120) THEN Int64(1) ELSE Int64(0) END)@6 as 91-120 days, sum(CASE WHEN web_sales.ws_ship_date_sk - web_sales.ws_sold_date_sk > Int64(120) THEN Int64(1) ELSE Int64(0) END)@7 as >120 days]
-          │     SortExec: TopK(fetch=100), expr=[w_substr@0 ASC, sm_type@1 ASC, web_name@2 ASC], preserve_partitioning=[true]
-          │       AggregateExec: mode=FinalPartitioned, gby=[w_substr@0 as w_substr, sm_type@1 as sm_type, web_name@2 as web_name], aggr=[sum(CASE WHEN __common_expr_1 <= 30 THEN 1 ELSE 0 END) as sum(CASE WHEN web_sales.ws_ship_date_sk - web_sales.ws_sold_date_sk <= Int64(30) THEN Int64(1) ELSE Int64(0) END), sum(CASE WHEN __common_expr_1 > 30 AND __common_expr_1 <= 60 THEN 1 ELSE 0 END) as sum(CASE WHEN web_sales.ws_ship_date_sk - web_sales.ws_sold_date_sk > Int64(30) AND web_sales.ws_ship_date_sk - web_sales.ws_sold_date_sk <= Int64(60) THEN Int64(1) ELSE Int64(0) END), sum(CASE WHEN __common_expr_1 > 60 AND __common_expr_1 <= 90 THEN 1 ELSE 0 END) as sum(CASE WHEN web_sales.ws_ship_date_sk - web_sales.ws_sold_date_sk > Int64(60) AND web_sales.ws_ship_date_sk - web_sales.ws_sold_date_sk <= Int64(90) THEN Int64(1) ELSE Int64(0) END), sum(CASE WHEN __common_expr_1 > 90 AND __common_expr_1 <= 120 THEN 1 ELSE 0 END) as sum(CASE WHEN web_sales.ws_ship_date_sk - web_sales.ws_sold_date_sk > Int64(90) AND web_sales.ws_ship_date_sk - web_sales.ws_sold_date_sk <= Int64(120) THEN Int64(1) ELSE Int64(0) END), sum(CASE WHEN __common_expr_1 > 120 THEN 1 ELSE 0 END) as sum(CASE WHEN web_sales.ws_ship_date_sk - web_sales.ws_sold_date_sk > Int64(120) THEN Int64(1) ELSE Int64(0) END)]
-          │         [Stage 5] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          │ ProjectionExec: expr=[w_substr@0 as w_substr, sm_type@1 as sm_type, web_name@2 as web_name, sum(CASE WHEN web_sales.ws_ship_date_sk - web_sales.ws_sold_date_sk <= Int64(30) THEN Int64(1) ELSE Int64(0) END)@3 as 30 days, sum(CASE WHEN web_sales.ws_ship_date_sk - web_sales.ws_sold_date_sk > Int64(30) AND web_sales.ws_ship_date_sk - web_sales.ws_sold_date_sk <= Int64(60) THEN Int64(1) ELSE Int64(0) END)@4 as 31-60 days, sum(CASE WHEN web_sales.ws_ship_date_sk - web_sales.ws_sold_date_sk > Int64(60) AND web_sales.ws_ship_date_sk - web_sales.ws_sold_date_sk <= Int64(90) THEN Int64(1) ELSE Int64(0) END)@5 as 61-90 days, sum(CASE WHEN web_sales.ws_ship_date_sk - web_sales.ws_sold_date_sk > Int64(90) AND web_sales.ws_ship_date_sk - web_sales.ws_sold_date_sk <= Int64(120) THEN Int64(1) ELSE Int64(0) END)@6 as 91-120 days, sum(CASE WHEN web_sales.ws_ship_date_sk - web_sales.ws_sold_date_sk > Int64(120) THEN Int64(1) ELSE Int64(0) END)@7 as >120 days]
+          │   SortExec: TopK(fetch=100), expr=[w_substr@0 ASC, sm_type@1 ASC, web_name@2 ASC], preserve_partitioning=[true]
+          │     AggregateExec: mode=FinalPartitioned, gby=[w_substr@0 as w_substr, sm_type@1 as sm_type, web_name@2 as web_name], aggr=[sum(CASE WHEN __common_expr_1 <= 30 THEN 1 ELSE 0 END) as sum(CASE WHEN web_sales.ws_ship_date_sk - web_sales.ws_sold_date_sk <= Int64(30) THEN Int64(1) ELSE Int64(0) END), sum(CASE WHEN __common_expr_1 > 30 AND __common_expr_1 <= 60 THEN 1 ELSE 0 END) as sum(CASE WHEN web_sales.ws_ship_date_sk - web_sales.ws_sold_date_sk > Int64(30) AND web_sales.ws_ship_date_sk - web_sales.ws_sold_date_sk <= Int64(60) THEN Int64(1) ELSE Int64(0) END), sum(CASE WHEN __common_expr_1 > 60 AND __common_expr_1 <= 90 THEN 1 ELSE 0 END) as sum(CASE WHEN web_sales.ws_ship_date_sk - web_sales.ws_sold_date_sk > Int64(60) AND web_sales.ws_ship_date_sk - web_sales.ws_sold_date_sk <= Int64(90) THEN Int64(1) ELSE Int64(0) END), sum(CASE WHEN __common_expr_1 > 90 AND __common_expr_1 <= 120 THEN 1 ELSE 0 END) as sum(CASE WHEN web_sales.ws_ship_date_sk - web_sales.ws_sold_date_sk > Int64(90) AND web_sales.ws_ship_date_sk - web_sales.ws_sold_date_sk <= Int64(120) THEN Int64(1) ELSE Int64(0) END), sum(CASE WHEN __common_expr_1 > 120 THEN 1 ELSE 0 END) as sum(CASE WHEN web_sales.ws_ship_date_sk - web_sales.ws_sold_date_sk > Int64(120) THEN Int64(1) ELSE Int64(0) END)]
+          │       [Stage 5] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 5 ── tasks=4, partitions=6
             │ RepartitionExec: partitioning=Hash([w_substr@0, sm_type@1, web_name@2], 6), input_partitions=3
@@ -8889,11 +8873,10 @@ mod tests {
         │   [Stage 12] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
           ┌───── Stage 12 ── tasks=2, partitions=3
-          │ LocalLimitExec: fetch=100
-          │   ProjectionExec: expr=[cd_gender@0 as cd_gender, cd_marital_status@1 as cd_marital_status, cd_education_status@2 as cd_education_status, count(Int64(1))@5 as cnt1, cd_purchase_estimate@3 as cd_purchase_estimate, count(Int64(1))@5 as cnt2, cd_credit_rating@4 as cd_credit_rating, count(Int64(1))@5 as cnt3]
-          │     SortExec: TopK(fetch=100), expr=[cd_gender@0 ASC NULLS LAST, cd_marital_status@1 ASC NULLS LAST, cd_education_status@2 ASC NULLS LAST, cd_purchase_estimate@3 ASC NULLS LAST, cd_credit_rating@4 ASC NULLS LAST], preserve_partitioning=[true]
-          │       AggregateExec: mode=FinalPartitioned, gby=[cd_gender@0 as cd_gender, cd_marital_status@1 as cd_marital_status, cd_education_status@2 as cd_education_status, cd_purchase_estimate@3 as cd_purchase_estimate, cd_credit_rating@4 as cd_credit_rating], aggr=[count(Int64(1))]
-          │         [Stage 11] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          │ ProjectionExec: expr=[cd_gender@0 as cd_gender, cd_marital_status@1 as cd_marital_status, cd_education_status@2 as cd_education_status, count(Int64(1))@5 as cnt1, cd_purchase_estimate@3 as cd_purchase_estimate, count(Int64(1))@5 as cnt2, cd_credit_rating@4 as cd_credit_rating, count(Int64(1))@5 as cnt3]
+          │   SortExec: TopK(fetch=100), expr=[cd_gender@0 ASC NULLS LAST, cd_marital_status@1 ASC NULLS LAST, cd_education_status@2 ASC NULLS LAST, cd_purchase_estimate@3 ASC NULLS LAST, cd_credit_rating@4 ASC NULLS LAST], preserve_partitioning=[true]
+          │     AggregateExec: mode=FinalPartitioned, gby=[cd_gender@0 as cd_gender, cd_marital_status@1 as cd_marital_status, cd_education_status@2 as cd_education_status, cd_purchase_estimate@3 as cd_purchase_estimate, cd_credit_rating@4 as cd_credit_rating], aggr=[count(Int64(1))]
+          │       [Stage 11] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 11 ── tasks=4, partitions=6
             │ RepartitionExec: partitioning=Hash([cd_gender@0, cd_marital_status@1, cd_education_status@2, cd_purchase_estimate@3, cd_credit_rating@4], 6), input_partitions=3
@@ -9190,11 +9173,10 @@ mod tests {
         │   [Stage 15] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
           ┌───── Stage 15 ── tasks=2, partitions=3
-          │ LocalLimitExec: fetch=100
-          │   ProjectionExec: expr=[i_item_desc@0 as i_item_desc, w_warehouse_name@1 as w_warehouse_name, d_week_seq@2 as d_week_seq, sum(CASE WHEN promotion.p_promo_sk IS NULL THEN Int64(1) ELSE Int64(0) END)@3 as no_promo, sum(CASE WHEN promotion.p_promo_sk IS NOT NULL THEN Int64(1) ELSE Int64(0) END)@4 as promo, count(Int64(1))@5 as total_cnt]
-          │     SortExec: TopK(fetch=100), expr=[count(Int64(1))@5 DESC, i_item_desc@0 ASC, w_warehouse_name@1 ASC, d_week_seq@2 ASC], preserve_partitioning=[true]
-          │       AggregateExec: mode=FinalPartitioned, gby=[i_item_desc@0 as i_item_desc, w_warehouse_name@1 as w_warehouse_name, d_week_seq@2 as d_week_seq], aggr=[sum(CASE WHEN promotion.p_promo_sk IS NULL THEN Int64(1) ELSE Int64(0) END), sum(CASE WHEN promotion.p_promo_sk IS NOT NULL THEN Int64(1) ELSE Int64(0) END), count(Int64(1))]
-          │         [Stage 14] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          │ ProjectionExec: expr=[i_item_desc@0 as i_item_desc, w_warehouse_name@1 as w_warehouse_name, d_week_seq@2 as d_week_seq, sum(CASE WHEN promotion.p_promo_sk IS NULL THEN Int64(1) ELSE Int64(0) END)@3 as no_promo, sum(CASE WHEN promotion.p_promo_sk IS NOT NULL THEN Int64(1) ELSE Int64(0) END)@4 as promo, count(Int64(1))@5 as total_cnt]
+          │   SortExec: TopK(fetch=100), expr=[count(Int64(1))@5 DESC, i_item_desc@0 ASC, w_warehouse_name@1 ASC, d_week_seq@2 ASC], preserve_partitioning=[true]
+          │     AggregateExec: mode=FinalPartitioned, gby=[i_item_desc@0 as i_item_desc, w_warehouse_name@1 as w_warehouse_name, d_week_seq@2 as d_week_seq], aggr=[sum(CASE WHEN promotion.p_promo_sk IS NULL THEN Int64(1) ELSE Int64(0) END), sum(CASE WHEN promotion.p_promo_sk IS NOT NULL THEN Int64(1) ELSE Int64(0) END), count(Int64(1))]
+          │       [Stage 14] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 14 ── tasks=4, partitions=6
             │ RepartitionExec: partitioning=Hash([i_item_desc@0, w_warehouse_name@1, d_week_seq@2], 6), input_partitions=3
@@ -9905,11 +9887,10 @@ mod tests {
         │   [Stage 8] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
           ┌───── Stage 8 ── tasks=2, partitions=3
-          │ LocalLimitExec: fetch=100
-          │   ProjectionExec: expr=[channel@0 as channel, col_name@1 as col_name, d_year@2 as d_year, d_qoy@3 as d_qoy, i_category@4 as i_category, count(Int64(1))@5 as sales_cnt, sum(foo.ext_sales_price)@6 as sales_amt]
-          │     SortExec: TopK(fetch=100), expr=[channel@0 ASC, col_name@1 ASC, d_year@2 ASC, d_qoy@3 ASC, i_category@4 ASC], preserve_partitioning=[true]
-          │       AggregateExec: mode=FinalPartitioned, gby=[channel@0 as channel, col_name@1 as col_name, d_year@2 as d_year, d_qoy@3 as d_qoy, i_category@4 as i_category], aggr=[count(Int64(1)), sum(foo.ext_sales_price)]
-          │         [Stage 7] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          │ ProjectionExec: expr=[channel@0 as channel, col_name@1 as col_name, d_year@2 as d_year, d_qoy@3 as d_qoy, i_category@4 as i_category, count(Int64(1))@5 as sales_cnt, sum(foo.ext_sales_price)@6 as sales_amt]
+          │   SortExec: TopK(fetch=100), expr=[channel@0 ASC, col_name@1 ASC, d_year@2 ASC, d_qoy@3 ASC, i_category@4 ASC], preserve_partitioning=[true]
+          │     AggregateExec: mode=FinalPartitioned, gby=[channel@0 as channel, col_name@1 as col_name, d_year@2 as d_year, d_qoy@3 as d_qoy, i_category@4 as i_category], aggr=[count(Int64(1)), sum(foo.ext_sales_price)]
+          │       [Stage 7] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 7 ── tasks=4, partitions=6
             │ RepartitionExec: partitioning=Hash([channel@0, col_name@1, d_year@2, d_qoy@3, i_category@4], 6), input_partitions=3
@@ -12227,11 +12208,10 @@ mod tests {
         │   [Stage 5] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
           ┌───── Stage 5 ── tasks=2, partitions=3
-          │ LocalLimitExec: fetch=100
-          │   ProjectionExec: expr=[ss_customer_sk@0 as ss_customer_sk, sum(t.act_sales)@1 as sumsales]
-          │     SortExec: TopK(fetch=100), expr=[sum(t.act_sales)@1 ASC, ss_customer_sk@0 ASC], preserve_partitioning=[true]
-          │       AggregateExec: mode=FinalPartitioned, gby=[ss_customer_sk@0 as ss_customer_sk], aggr=[sum(t.act_sales)]
-          │         [Stage 4] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          │ ProjectionExec: expr=[ss_customer_sk@0 as ss_customer_sk, sum(t.act_sales)@1 as sumsales]
+          │   SortExec: TopK(fetch=100), expr=[sum(t.act_sales)@1 ASC, ss_customer_sk@0 ASC], preserve_partitioning=[true]
+          │     AggregateExec: mode=FinalPartitioned, gby=[ss_customer_sk@0 as ss_customer_sk], aggr=[sum(t.act_sales)]
+          │       [Stage 4] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 4 ── tasks=4, partitions=6
             │ RepartitionExec: partitioning=Hash([ss_customer_sk@0], 6), input_partitions=3
