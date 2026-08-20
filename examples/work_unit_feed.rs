@@ -17,11 +17,12 @@ use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use arrow::util::pretty::pretty_format_batches;
 use async_trait::async_trait;
 use datafusion::catalog::{Session, TableFunctionImpl};
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{DataFusionError, Result, ScalarValue, plan_err};
 use datafusion::datasource::{TableProvider, TableType};
 use datafusion::execution::{SendableRecordBatchStream, SessionStateBuilder, TaskContext};
 use datafusion::logical_expr::Expr;
-use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
+use datafusion::physical_expr::{EquivalenceProperties, Partitioning, PhysicalExpr};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
@@ -34,7 +35,7 @@ use datafusion_distributed::{
     ScaleUpLeafNodeEvent, ScaleUpLeafNodeEventResponse, SessionStateBuilderExt, WorkUnitFeed,
     WorkUnitFeedProto, WorkUnitFeedProvider, WorkerQueryContext, display_plan_ascii,
 };
-use datafusion_proto::physical_plan::PhysicalExtensionCodec;
+use datafusion_proto::physical_plan::{PhysicalExtensionCodec, PhysicalProtoConverterExtension};
 use datafusion_proto::protobuf::proto_error;
 use futures::stream::BoxStream;
 use futures::{StreamExt, TryStreamExt};
@@ -148,6 +149,13 @@ impl ExecutionPlan for RemoteScanExec {
         vec![]
     }
 
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
+    }
+
     fn with_new_children(
         self: Arc<Self>,
         _: Vec<Arc<dyn ExecutionPlan>>,
@@ -210,6 +218,7 @@ impl PhysicalExtensionCodec for RemoteScanExecCodec {
         buf: &[u8],
         _inputs: &[Arc<dyn ExecutionPlan>],
         _ctx: &TaskContext,
+        _proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let p = RemoteScanProto::decode(buf).map_err(|e| proto_error(format!("{e}")))?;
         let feed = WorkUnitFeed::<ChunkFeedProvider>::from_proto(
@@ -224,7 +233,12 @@ impl PhysicalExtensionCodec for RemoteScanExecCodec {
         )))
     }
 
-    fn try_encode(&self, node: Arc<dyn ExecutionPlan>, buf: &mut Vec<u8>) -> Result<()> {
+    fn try_encode(
+        &self,
+        node: Arc<dyn ExecutionPlan>,
+        buf: &mut Vec<u8>,
+        _proto_converter: &dyn PhysicalProtoConverterExtension,
+    ) -> Result<()> {
         let exec = node
             .downcast_ref::<RemoteScanExec>()
             .ok_or_else(|| proto_error(format!("expected RemoteScanExec, got {}", node.name())))?;

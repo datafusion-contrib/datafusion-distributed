@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use datafusion::common::Result;
 use datafusion::common::tree_node::{Transformed, TreeNode};
-use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::limit::GlobalLimitExec;
+use datafusion::physical_plan::{ChildrenPropertiesMode, ExecutionPlan, ReplaceChildrenOptions};
 
 use crate::NetworkCoalesceExec;
 
@@ -82,7 +82,11 @@ pub(crate) fn push_fetch_into_network_coalesce(
             .collect::<Result<Vec<_>>>()?;
 
         if changed {
-            node.with_new_children(new_children).map(Transformed::yes)
+            node.replace_children(
+                new_children,
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            )
+            .map(Transformed::yes)
         } else {
             Ok(Transformed::no(node))
         }

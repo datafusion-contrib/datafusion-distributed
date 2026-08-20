@@ -259,7 +259,7 @@ pub struct Metric {
     pub partition: ::core::option::Option<u64>,
     #[prost(
         oneof = "metric::Value",
-        tags = "10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34"
+        tags = "10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35"
     )]
     pub value: ::core::option::Option<metric::Value>,
 }
@@ -317,6 +317,8 @@ pub mod metric {
         CustomP99Latency(super::PercentileLatency),
         #[prost(message, tag = "34")]
         CustomMaxGauge(super::MaxGauge),
+        #[prost(message, tag = "35")]
+        PeakMemoryUsage(super::PeakMemoryUsage),
     }
 }
 /// A MetricsSet is a protobuf mirror of datafusion::physical_plan::metrics::MetricsSet. It represents
@@ -365,6 +367,13 @@ pub struct NamedCount {
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct NamedGauge {
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "2")]
+    pub value: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PeakMemoryUsage {
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
     #[prost(uint64, tag = "2")]
