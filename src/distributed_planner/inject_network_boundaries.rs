@@ -22,7 +22,9 @@ use datafusion::physical_plan::joins::{
 };
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
-use datafusion::physical_plan::{ExecutionPlan, PlanProperties};
+use datafusion::physical_plan::{
+    ChildrenPropertiesMode, ExecutionPlan, PlanProperties, ReplaceChildrenOptions,
+};
 use datafusion::prelude::SessionConfig;
 use std::any::TypeId;
 use std::sync::Arc;
@@ -311,7 +313,10 @@ async fn _inject_network_boundaries(
         task_count
     };
 
-    let plan = plan.with_new_children(processed_children)?;
+    let plan = plan.replace_children(
+        processed_children,
+        ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+    )?;
     // Cap the reconciled task count by the configured max-per-stage budget.
     let task_count = task_count.limit(nb_ctx.max_tasks()?);
 
@@ -379,11 +384,11 @@ async fn _inject_network_boundaries(
         // The parent that triggered this branch is a `CoalescePartitionsExec` or
         // `SortPreservingMergeExec`, both of which fold all partitions into one — so the
         // stage above this boundary must run in exactly one task.
-        let nb = Arc::new(NetworkCoalesceExec::from_stage(
+        let nb = Arc::new(NetworkCoalesceExec::try_from_stage(
             result.input_stage,
             result.input_properties,
             1,
-        ));
+        )?);
         Ok(nb_ctx.plan_with_task_count(nb, result.consumer_task_count))
     } else if parent.is_none() {
         // We've just finished walking the head stage's subplan. Run a final propagation so
@@ -497,7 +502,10 @@ impl InjectNetworkBoundaryContext<'_> {
                     self.propagate_task_count_until_network_boundaries(child, Maximum(task_count))?,
                 );
             }
-            let c_i_union = Arc::new(c_i_union).with_new_children(new_children)?;
+            let c_i_union = Arc::new(c_i_union).replace_children(
+                new_children,
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            )?;
             Ok(self.plan_with_task_count(c_i_union, task_count))
 
         // Handle middle nodes.
@@ -507,7 +515,10 @@ impl InjectNetworkBoundaryContext<'_> {
                 new_children
                     .push(self.propagate_task_count_until_network_boundaries(child, task_count)?);
             }
-            let plan = Arc::clone(plan).with_new_children(new_children)?;
+            let plan = Arc::clone(plan).replace_children(
+                new_children,
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            )?;
             Ok(self.plan_with_task_count(plan, task_count))
         }
     }
@@ -708,11 +719,11 @@ mod tests {
             .distributed_planner(false)
             .broadcast_joins(false);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
-        assert_snapshot!(annotated, @r"
+        assert_snapshot!(annotated, @"
         SortPreservingMergeExec: task_count=Maximum(1)
           NetworkCoalesceExec: task_count=Maximum(1)
-            SortExec: task_count=Desired(3)
-              ProjectionExec: task_count=Desired(3)
+            ProjectionExec: task_count=Desired(3)
+              SortExec: task_count=Desired(3)
                 AggregateExec: task_count=Desired(3)
                   NetworkShuffleExec: task_count=Desired(3)
                     RepartitionExec: task_count=Desired(4)
@@ -1035,10 +1046,10 @@ mod tests {
             .await
             .physical_plan_as_string(query)
             .await;
-        assert_snapshot!(physical_plan_string, @r"
+        assert_snapshot!(physical_plan_string, @"
         HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
           DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
-          DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ]
+          DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
         ");
 
         // With target_partitions=1, there is no CoalescePartitionsExec initially

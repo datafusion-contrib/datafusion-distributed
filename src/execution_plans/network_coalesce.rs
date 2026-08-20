@@ -4,15 +4,17 @@ use crate::distributed_planner::{NetworkBoundary, ProducerHead};
 use crate::execution_plans::common::scale_partitioning_props;
 use crate::stage::{LocalStage, Stage};
 use crate::worker::WorkerConnectionPool;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{exec_err, not_impl_err, plan_err};
 use datafusion::error::Result;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr_common::metrics::MetricsSet;
 use datafusion::physical_plan::limit::LocalLimitExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, EmptyRecordBatchStream, ExecutionPlan, PlanProperties,
-    Statistics, internal_err,
+    Statistics, StatisticsArgs, internal_err,
 };
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
@@ -80,22 +82,22 @@ pub struct NetworkCoalesceExec {
 }
 
 impl NetworkCoalesceExec {
-    pub(crate) fn from_stage(
+    pub(crate) fn try_from_stage(
         input_stage: Stage,
         input_properties: Arc<PlanProperties>,
         consumer_tasks: usize,
-    ) -> Self {
+    ) -> Result<Self> {
         // Each output task coalesces a group of input tasks. We size the output partition count
         // per output task based on the maximum group size, returning empty streams for tasks with
         // smaller groups.
         let max_input_task_count = input_stage.task_count().div_ceil(consumer_tasks).max(1);
-        let props = scale_partitioning_props(&input_properties, |p| p * max_input_task_count);
+        let props = scale_partitioning_props(&input_properties, |p| p * max_input_task_count)?;
 
-        Self {
+        Ok(Self {
             properties: props,
             worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
             input_stage,
-        }
+        })
     }
 
     /// Creates a new [NetworkCoalesceExec] fed by the provided `input` plan.
@@ -122,7 +124,7 @@ impl NetworkCoalesceExec {
         }
 
         let input_properties = Arc::clone(input.properties());
-        Ok(Self::from_stage(
+        Self::try_from_stage(
             Stage::Local(LocalStage {
                 // At this point, query_id and num are just placeholders that will be filled by
                 // prepare_network_boundaries.rs. Users are not expected to provide valid values for
@@ -135,7 +137,7 @@ impl NetworkCoalesceExec {
             }),
             input_properties,
             consumer_tasks,
-        ))
+        )
     }
 
     pub(crate) fn with_fetch_on_input_stage(&self, fetch: usize) -> Result<Arc<dyn ExecutionPlan>> {
@@ -173,14 +175,14 @@ impl NetworkBoundary for NetworkCoalesceExec {
         let mut self_clone = self.clone();
         self_clone.properties = scale_partitioning_props(self_clone.properties(), |p| {
             p * input_stage.task_count() / self_clone.input_stage.task_count().max(1)
-        });
+        })?;
         self_clone.worker_connections = WorkerConnectionPool::new(input_stage.task_count());
         self_clone.input_stage = input_stage;
         Ok(Arc::new(self_clone))
     }
 
-    fn producer_head(&self, _consumer_task_count: usize) -> ProducerHead {
-        ProducerHead::None
+    fn producer_head(&self, _consumer_task_count: usize) -> Result<ProducerHead> {
+        Ok(ProducerHead::None)
     }
 }
 
@@ -210,6 +212,13 @@ impl ExecutionPlan for NetworkCoalesceExec {
             Some(v) => vec![v],
             None => vec![],
         }
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
     }
 
     fn with_new_children(
@@ -297,7 +306,7 @@ impl ExecutionPlan for NetworkCoalesceExec {
             0..partitions_per_task,
             target_task,
             target_partition,
-            self.producer_head(task_context.task_count),
+            self.producer_head(task_context.task_count)?,
             &context,
         )?;
 
@@ -311,9 +320,13 @@ impl ExecutionPlan for NetworkCoalesceExec {
         Some(self.worker_connections.metrics.clone_inner())
     }
 
-    fn partition_statistics(&self, partition: Option<usize>) -> Result<Arc<Statistics>> {
+    fn statistics_from_inputs(
+        &self,
+        _input_stats: &[Arc<Statistics>],
+        args: &StatisticsArgs,
+    ) -> Result<Arc<Statistics>> {
         self.input_stage.partition_statistics(
-            partition,
+            args.partition(),
             self.properties.output_partitioning().partition_count(),
             self.schema(),
         )

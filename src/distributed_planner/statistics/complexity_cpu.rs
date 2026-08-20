@@ -59,7 +59,7 @@ pub(super) fn complexity_cpu(node: &Arc<dyn ExecutionPlan>) -> Complexity {
         // The sort comparators read every sort key on every row, so even a plain column key costs
         // its bytes (a wide UTF8 key is far costlier to compare than an int).
         for expr in node.expr() {
-            input = input.plus(hashed_or_sorted_key_complexity(&expr.expr))
+            input = input.plus(hash_or_comparison_key_complexity(&expr.expr))
         }
 
         if node.fetch().is_some() {
@@ -157,7 +157,7 @@ pub(super) fn complexity_cpu(node: &Arc<dyn ExecutionPlan>) -> Complexity {
         let mut c = Complexity::Linear(LinearComplexity::AllColumns);
         // Additional: evaluate and hash group-by key expressions
         for (expr, _) in agg.group_expr().expr() {
-            c = c.plus(hashed_or_sorted_key_complexity(expr));
+            c = c.plus(hash_or_comparison_key_complexity(expr));
         }
         // Per-aggregate filter expressions (e.g. COUNT(*) FILTER (WHERE ...))
         for filter in agg.filter_expr().iter().flatten() {
@@ -172,7 +172,7 @@ pub(super) fn complexity_cpu(node: &Arc<dyn ExecutionPlan>) -> Complexity {
         // Read all input data + evaluate/hash partition key expressions
         let mut c = Complexity::Linear(LinearComplexity::AllColumns);
         for expr in node.partition_keys() {
-            c = c.plus(hashed_or_sorted_key_complexity(&expr));
+            c = c.plus(hash_or_comparison_key_complexity(&expr));
         }
         return c;
     }
@@ -180,7 +180,7 @@ pub(super) fn complexity_cpu(node: &Arc<dyn ExecutionPlan>) -> Complexity {
     if let Some(node) = node.downcast_ref::<BoundedWindowAggExec>() {
         let mut c = Complexity::Linear(LinearComplexity::AllColumns);
         for expr in node.partition_keys() {
-            c = c.plus(hashed_or_sorted_key_complexity(&expr));
+            c = c.plus(hash_or_comparison_key_complexity(&expr));
         }
         return c;
     }
@@ -193,7 +193,7 @@ pub(super) fn complexity_cpu(node: &Arc<dyn ExecutionPlan>) -> Complexity {
         let mut n = Complexity::Linear(LinearComplexity::AllColumns);
         // and compare the sort keys on all of them; a plain column key still costs its bytes.
         for expr in node.expr() {
-            n = n.plus(hashed_or_sorted_key_complexity(&expr.expr))
+            n = n.plus(hash_or_comparison_key_complexity(&expr.expr))
         }
         return n;
     }
@@ -222,17 +222,22 @@ pub(super) fn complexity_cpu(node: &Arc<dyn ExecutionPlan>) -> Complexity {
         return n.unwrap_or(Complexity::Constant(1.));
     }
 
-    // RepartitionExec with Hash: computes hash per row + take_arrays
+    // RepartitionExec copies rows into output partitions and may evaluate repartition keys.
     // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/repartition/mod.rs
     if let Some(node) = node.downcast_ref::<RepartitionExec>() {
         // It needs to copy all the data for chunking it to the different output partitions...
         let mut n = Complexity::Linear(LinearComplexity::AllColumns);
-        // And it might need to compute a hash per row based on the provided expressions; hashing a
-        // plain column key still costs its bytes.
+        // Hash/range partitioning reads the partition keys. A plain column key still costs its
+        // bytes because the operator hashes or compares it.
         match node.partitioning() {
             Partitioning::Hash(expressions, _) => {
                 for expr in expressions {
-                    n = n.plus(hashed_or_sorted_key_complexity(expr))
+                    n = n.plus(hash_or_comparison_key_complexity(expr))
+                }
+            }
+            Partitioning::Range(range) => {
+                for expr in range.ordering() {
+                    n = n.plus(hash_or_comparison_key_complexity(&expr.expr))
                 }
             }
             Partitioning::RoundRobinBatch(_) => {}
@@ -371,7 +376,7 @@ fn remap_filter_columns(c: Complexity, column_indices: &[ColumnIndex]) -> Comple
 /// The hashing/comparison itself is performed by the operator — hash-table build, partition
 /// hashing, sort comparators — not by any expression in the plan, and its cost scales with the
 /// key's byte width. Use it for group-by keys, hash-partition keys and sort keys.
-fn hashed_or_sorted_key_complexity(expression: &Arc<dyn PhysicalExpr>) -> Complexity {
+fn hash_or_comparison_key_complexity(expression: &Arc<dyn PhysicalExpr>) -> Complexity {
     let bpr = _expression_complexity(expression);
     let mut result: Option<Complexity> = None;
     for col_idx in &bpr.cols_read {
@@ -435,8 +440,14 @@ mod tests {
     use crate::assert_snapshot;
     use crate::distributed_planner::statistics::complexity_cpu::complexity_cpu;
     use crate::test_utils::plans::TestPlanBuilder;
+    use arrow::datatypes::{DataType, Field, Schema};
     use datafusion::common::tree_node::{Transformed, TreeNode};
-    use datafusion::physical_plan::{ExecutionPlan, displayable};
+    use datafusion::common::{ScalarValue, SplitPoint};
+    use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr, RangePartitioning};
+    use datafusion::physical_plan::empty::EmptyExec;
+    use datafusion::physical_plan::expressions::Column;
+    use datafusion::physical_plan::repartition::RepartitionExec;
+    use datafusion::physical_plan::{ExecutionPlan, Partitioning, displayable};
     use std::cell::RefCell;
     use std::sync::Arc;
     /* schema for the "weather" table
@@ -532,9 +543,9 @@ mod tests {
             .target_partitions(1)
             .physical_plan(r#"SELECT * FROM weather ORDER BY "WindGustDir" LIMIT 10"#)
             .await;
-        assert_snapshot!(plan_costs(topk), @r"
+        assert_snapshot!(plan_costs(topk), @"
         O((Cols+Col5)*Log(out_Cols)) | SortExec: TopK(fetch=10), expr=[WindGustDir@5 ASC NULLS LAST], preserve_partitioning=[false]
-         O(out_Cols) | DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MinTemp, MaxTemp, Rainfall, Evaporation, Sunshine, WindGustDir, WindGustSpeed, WindDir9am, WindDir3pm, WindSpeed9am, WindSpeed3pm, Humidity9am, Humidity3pm, Pressure9am, Pressure3pm, Cloud9am, Cloud3pm, Temp9am, Temp3pm, RainToday, RISK_MM, RainTomorrow], file_type=parquet, predicate=DynamicFilter [ empty ], sort_order_for_reorder=[WindGustDir@5 ASC NULLS LAST]
+         O(out_Cols) | DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MinTemp, MaxTemp, Rainfall, Evaporation, Sunshine, WindGustDir, WindGustSpeed, WindDir9am, WindDir3pm, WindSpeed9am, WindSpeed3pm, Humidity9am, Humidity3pm, Pressure9am, Pressure3pm, Cloud9am, Cloud3pm, Temp9am, Temp3pm, RainToday, RISK_MM, RainTomorrow], file_type=parquet, predicate=DynamicFilter [ empty ], sort_order_for_reorder=[WindGustDir@5 ASC NULLS LAST], dynamic_rg_pruning=eligible
         ");
     }
 
@@ -569,6 +580,34 @@ mod tests {
         ");
     }
 
+    #[test]
+    fn range_repartition_exec() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "range_key",
+            DataType::Int64,
+            false,
+        )]));
+        let input = Arc::new(EmptyExec::new(schema).with_partitions(2));
+        let ordering = LexOrdering::new([PhysicalSortExpr::new_default(Arc::new(Column::new(
+            "range_key",
+            0,
+        )))])
+        .expect("non-empty ordering");
+        let partitioning = Partitioning::Range(
+            RangePartitioning::try_new(
+                ordering,
+                vec![SplitPoint::new(vec![ScalarValue::Int64(Some(10))])],
+            )
+            .expect("valid range partitioning"),
+        );
+        let plan = Arc::new(RepartitionExec::try_new(input, partitioning).unwrap());
+
+        assert_snapshot!(plan_costs(plan), @r"
+        O((Cols+Col0)) | RepartitionExec: partitioning=Range([range_key@0 ASC], [(10)], 2), input_partitions=2
+         O(1) | EmptyExec
+        ");
+    }
+
     // HashJoinExec: build side (2x read + key hash) + probe side (read + key hash).
     #[tokio::test]
     async fn hash_join_exec() {
@@ -581,10 +620,10 @@ mod tests {
         "#,
             )
             .await;
-        assert_snapshot!(plan_costs(plan), @r"
+        assert_snapshot!(plan_costs(plan), @"
         O(((2*left_Cols)+left_Col1+right_Cols+right_Col1)) | HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
          O(out_Cols) | DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
-         O(out_Cols) | DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ]
+         O(out_Cols) | DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
         ");
     }
 
@@ -605,10 +644,10 @@ mod tests {
         "#,
             )
             .await;
-        assert_snapshot!(plan_costs(plan), @r"
+        assert_snapshot!(plan_costs(plan), @"
         O(((2*left_Cols)+left_Col1+right_Cols+right_Col1+(left_Col0+right_Col0))) | HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], filter=MinTemp@0 > MaxTemp@1, projection=[MinTemp@0, MaxTemp@2]
          O(out_Cols) | DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
-         O(out_Cols) | DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ]
+         O(out_Cols) | DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
         ");
     }
 
@@ -809,12 +848,12 @@ mod tests {
         "#,
             )
             .await;
-        assert_snapshot!(plan_costs(plan), @r"
+        assert_snapshot!(plan_costs(plan), @"
         O(((2*left_Cols)+left_Col1+right_Cols+right_Col1)) | HashJoinExec: mode=Partitioned, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
          O((Cols+Col1)) | RepartitionExec: partitioning=Hash([RainToday@1], 4), input_partitions=3
           O(out_Cols) | DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
          O((Cols+Col1)) | RepartitionExec: partitioning=Hash([RainToday@1], 4), input_partitions=3
-          O(out_Cols) | DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ]
+          O(out_Cols) | DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
         ");
     }
 
