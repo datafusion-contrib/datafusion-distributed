@@ -14,8 +14,8 @@ use datafusion::physical_plan::limit::LocalLimitExec;
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, EmptyRecordBatchStream, ExecutionPlan, PlanProperties,
-    Statistics, StatisticsArgs, internal_err,
+    ChildrenPropertiesMode, DisplayAs, DisplayFormatType, EmptyRecordBatchStream, ExecutionPlan,
+    PlanProperties, ReplaceChildrenOptions, Statistics, StatisticsArgs, internal_err,
 };
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
@@ -160,23 +160,26 @@ impl NetworkCoalesceExec {
     }
 }
 
-/// Applies `fetch` to `plan`, looking through [ProjectionExec] nodes that preserve row count.
+/// Applies `fetch` to `plan`, looking through a [ProjectionExec] that preserves row count.
 ///
-/// If a child already carries a sufficient fetch, the plan is left unchanged instead of wrapping a
-/// redundant [LocalLimitExec].
+/// If the projection child already carries a sufficient fetch, the plan is left unchanged instead
+/// of wrapping a redundant [LocalLimitExec].
 fn apply_fetch_through_projection(
     plan: Arc<dyn ExecutionPlan>,
     fetch: usize,
 ) -> Result<Arc<dyn ExecutionPlan>> {
-    if let Some(input) = plan
-        .downcast_ref::<ProjectionExec>()
-        .map(|projection| Arc::clone(projection.input()))
-    {
-        let new_input = apply_fetch_through_projection(Arc::clone(&input), fetch)?;
-        if Arc::ptr_eq(&input, &new_input) {
+    if let Some(projection) = plan.downcast_ref::<ProjectionExec>() {
+        let input = Arc::clone(projection.input());
+        if input.fetch().is_some_and(|existing| existing <= fetch) {
             return Ok(plan);
         }
-        return plan.with_new_children(vec![new_input]);
+        let new_input = input
+            .with_fetch(Some(fetch))
+            .unwrap_or_else(|| Arc::new(LocalLimitExec::new(input, fetch)));
+        return plan.replace_children(
+            vec![new_input],
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+        );
     }
 
     if plan.fetch().is_some_and(|existing| existing <= fetch) {
