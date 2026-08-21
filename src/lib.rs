@@ -18,7 +18,7 @@ mod worker_resolver;
 
 #[cfg(feature = "grpc")]
 pub use arrow_ipc::CompressionType;
-pub use coordinator::DistributedExec;
+pub use coordinator::{DistributedExec, rewrite_distributed_plan_with_dynamic_filters};
 pub use distributed_ext::{DistributedExt, DistributedGetterExt};
 pub use distributed_planner::{
     DistributedConfig, NetworkBoundary, NetworkBoundaryExt, ProducerHead, SessionStateBuilderExt,
@@ -54,9 +54,9 @@ pub use worker_resolver::{WorkerResolver, get_distributed_worker_resolver};
 
 pub use protocol::{
     ChannelResolver, CoordinatorToWorkerMsg, ExecuteTaskRequest, GetWorkerInfoRequest,
-    GetWorkerInfoResponse, LoadInfo, SetPlanRequest, TaskKey, TaskMetrics, WorkUnitBatch,
-    WorkUnitFeedDeclaration, WorkUnitMsg, WorkerChannel, WorkerToCoordinatorMsg,
-    get_distributed_channel_resolver,
+    GetWorkerInfoResponse, LoadInfo, SetPlanRequest, TaskCompletedDynamicFilters,
+    TaskDynamicFilter, TaskKey, TaskMetrics, WorkUnitBatch, WorkUnitFeedDeclaration, WorkUnitMsg,
+    WorkerChannel, WorkerToCoordinatorMsg, get_distributed_channel_resolver,
 };
 pub use stage::{
     DistributedTaskContext, Stage, display_plan_ascii, display_plan_graphviz, explain_analyze,
