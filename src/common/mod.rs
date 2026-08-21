@@ -9,9 +9,7 @@ mod uuid;
 mod vec;
 
 pub(crate) use children_helpers::require_one_child;
-pub(crate) use dynamic_filtering::{
-    discover_dynamic_filter_consumers, dynamic_filter_consumer_ids,
-};
+pub(crate) use dynamic_filtering::discover_dynamic_filter_consumers;
 pub use maybe_encoded::MaybeEncoded;
 pub(crate) use once_lock::OnceLockResult;
 pub(crate) use recursion::TreeNodeExt;

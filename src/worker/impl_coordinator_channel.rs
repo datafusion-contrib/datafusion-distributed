@@ -1,3 +1,4 @@
+use crate::codec::encode_physical_expr;
 use crate::common::{TreeNodeExt, discover_dynamic_filter_consumers};
 use crate::events::{WorkerPlanRewriteEvent, WorkerPlanRewriteHandlers};
 use crate::execution_plans::SamplerExec;
@@ -5,16 +6,15 @@ use crate::protocol::LocalWorkerContext;
 use crate::work_unit_feed::{RemoteWorkUnitFeedRegistry, set_work_unit_received_time};
 use crate::worker::task_data::TaskDataMetrics;
 use crate::{
-    CoordinatorToWorkerMsg, DistributedCodec, DistributedConfig, DistributedExt,
-    DistributedTaskContext, SetPlanRequest, TaskCompletedDynamicFilters, TaskData,
-    TaskDynamicFilter, TaskMetrics, Worker, WorkerQueryContext, WorkerToCoordinatorMsg,
+    CoordinatorToWorkerMsg, DistributedConfig, DistributedExt, DistributedTaskContext,
+    SetPlanRequest, TaskCompletedDynamicFilters, TaskData, TaskDynamicFilter, TaskMetrics, Worker,
+    WorkerQueryContext, WorkerToCoordinatorMsg,
 };
 use datafusion::common::tree_node::TreeNodeRecursion;
-use datafusion::common::{DataFusionError, HashSet, Result, exec_datafusion_err, internal_err};
+use datafusion::common::{DataFusionError, Result, exec_datafusion_err, internal_err};
 use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionConfig;
-use datafusion_proto::physical_plan::to_proto::serialize_physical_expr;
 use datafusion_proto::protobuf::physical_expr_node::ExprType;
 use futures::stream::{BoxStream, FuturesUnordered};
 use futures::{FutureExt, StreamExt, TryStreamExt};
@@ -112,7 +112,6 @@ impl Worker {
         // Continue reading remaining messages (work unit feed data) in the background.
         let mut work_unit_senders = Some(remote_work_unit_feed_registry.senders);
         let task_data_entries = Arc::clone(&self.task_data_entries);
-        let dynamic_filter_ids: HashSet<_> = request.dynamic_filter_ids.iter().copied().collect();
 
         // This tokio task takes ownership of the final-report senders that keep the
         // worker->coordinator stream alive. As soon as this task ends, the runtime metrics and
@@ -174,12 +173,8 @@ impl Worker {
                 if let Some(metrics_tx) = metrics_tx {
                     send_metrics_via_channel(metrics_tx, plan, d_ctx, task_data_metrics);
                 }
-                dynamic_filters = build_task_completed_dynamic_filters(
-                    plan,
-                    &dynamic_filter_ids,
-                    &task_data.task_ctx,
-                )
-                .unwrap_or_default();
+                dynamic_filters = build_task_completed_dynamic_filters(plan, &task_data.task_ctx)
+                    .unwrap_or_default();
             }
             let _ = dynamic_filters_tx.send(dynamic_filters);
             task_data_entries.invalidate(&key).await
@@ -224,15 +219,13 @@ impl Worker {
 
 fn build_task_completed_dynamic_filters(
     plan: &Arc<dyn ExecutionPlan>,
-    allowed_ids: &HashSet<u64>,
     task_ctx: &Arc<datafusion::execution::TaskContext>,
 ) -> Result<TaskCompletedDynamicFilters> {
-    let codec = DistributedCodec::new_combined_with_user(task_ctx.session_config());
     let mut filters = vec![];
-    for consumer in discover_dynamic_filter_consumers(plan, Some(allowed_ids))? {
+    for consumer in discover_dynamic_filter_consumers(plan)? {
         // Serializing the complete DynamicFilterPhysicalExpr preserves both its current
         // predicate and its completion state through DataFusion's native proto hook.
-        let expression = serialize_physical_expr(&consumer.expression, &codec)?;
+        let expression = encode_physical_expr(&consumer.expression, task_ctx)?;
         let Some(ExprType::DynamicFilter(dynamic_filter)) = expression.expr_type.as_ref() else {
             return internal_err!("discovered dynamic filter did not serialize as one");
         };

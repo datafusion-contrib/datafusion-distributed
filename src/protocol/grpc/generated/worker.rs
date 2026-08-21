@@ -43,7 +43,18 @@ pub mod worker_to_coordinator_msg {
         LoadInfo(super::LoadInfo),
         #[prost(bool, tag = "3")]
         LoadInfoEos(bool),
-        /// Final task-local dynamic filters used by distributed leaf variants.
+        /// Final dynamic filters used by dynamic-filter consumer execution-plan nodes.
+        ///
+        /// Filters are deduplicated by expression_id because consumers with the same ID share
+        /// logical filter state within a task. For example, this plan includes one entry:
+        ///
+        /// HashJoin producer: expression_id=10
+        /// ├── DataSourceExec build side
+        /// └── UnionExec probe side
+        /// ├── DataSourceExec A consumer: expression_id=10
+        /// └── DataSourceExec B consumer: expression_id=10
+        ///
+        /// Another task in the same stage may report a different value for expression_id=10.
         #[prost(message, tag = "4")]
         TaskCompletedDynamicFilters(super::TaskCompletedDynamicFilters),
     }
@@ -138,9 +149,6 @@ pub struct SetPlanRequest {
     /// relative to when the query was fired in the coordinator.
     #[prost(uint64, tag = "6")]
     pub query_start_time_ns: u64,
-    /// Dynamic-filter consumer IDs belonging to the selected DistributedLeafExec variants.
-    #[prost(uint64, repeated, tag = "7")]
-    pub dynamic_filter_ids: ::prost::alloc::vec::Vec<u64>,
 }
 /// Nested message and enum types in `SetPlanRequest`.
 pub mod set_plan_request {

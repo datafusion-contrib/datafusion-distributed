@@ -78,9 +78,97 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn collect_left_union_probe_deduplicates_dynamic_filters() -> Result<()> {
+        let display = execute_local_union_probe_hash_join().await?;
+        assert_snapshot!(display, @r"
+        ┌───── DistributedExec
+        │ ProjectionExec: expr=[count(Int64(1))@0 as count(*)]
+        │   AggregateExec: mode=Final, gby=[], aggr=[count(Int64(1))]
+        │     CoalescePartitionsExec
+        │       [Stage 2] => NetworkCoalesceExec: output_partitions=14, input_tasks=2
+        └──────────────────────────────────────────────────
+          ┌───── Stage 2 ── tasks=2, partitions=14
+          │ AggregateExec: mode=Partial, gby=[], aggr=[count(Int64(1))]
+          │   HashJoinExec: mode=CollectLeft, join_type=RightSemi, on=[(key@0, MinTemp@0)], projection=[]
+          │     CoalescePartitionsExec
+          │       [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=6, input_tasks=1
+          │     DistributedUnionExec: t0:[c0, c2, c4] t1:[c1, c3]
+          │       DistributedLeafExec:
+          │         t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp], file_type=parquet, predicate=DynamicFilter [ MinTemp@0 >= -5.3 AND MinTemp@0 <= 20.9 AND true ], dynamic_rg_pruning=eligible, pruning_predicate=MinTemp_null_count@1 != row_count@2 AND MinTemp_max@0 >= -5.3 AND MinTemp_null_count@1 != row_count@2 AND MinTemp_min@3 <= 20.9, required_guarantees=[]
+          │       ProjectionExec: expr=[CAST(-1000 AS Float64) as MinTemp]
+          │         PlaceholderRowExec
+          │       DistributedLeafExec:
+          │         t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp], file_type=parquet, predicate=DynamicFilter [ MinTemp@0 >= -5.3 AND MinTemp@0 <= 20.9 AND true ], dynamic_rg_pruning=eligible, pruning_predicate=MinTemp_null_count@1 != row_count@2 AND MinTemp_max@0 >= -5.3 AND MinTemp_null_count@1 != row_count@2 AND MinTemp_min@3 <= 20.9, required_guarantees=[]
+          │       ProjectionExec: expr=[CAST(-1001 AS Float64) as MinTemp]
+          │         PlaceholderRowExec
+          │       ProjectionExec: expr=[CAST(-1002 AS Float64) as MinTemp]
+          │         PlaceholderRowExec
+          └──────────────────────────────────────────────────
+            ┌───── Stage 1 ── tasks=1, partitions=6
+            │ BroadcastExec: input_partitions=3, consumer_tasks=2, output_partitions=6
+            │   AggregateExec: mode=FinalPartitioned, gby=[key@0 as key], aggr=[]
+            │     RepartitionExec: partitioning=Hash([key@0], 3), input_partitions=3
+            │       AggregateExec: mode=Partial, gby=[key@0 as key], aggr=[]
+            │         DistributedLeafExec:
+            │           t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp@0 as key], file_type=parquet
+            └──────────────────────────────────────────────────
+        ");
+        Ok(())
+    }
+
     async fn execute_local_hash_join(broadcast_joins: bool) -> Result<String> {
+        execute_local_query(
+            broadcast_joins,
+            false,
+            r#"
+                SELECT COUNT(*)
+                FROM (
+                    SELECT DISTINCT "RainToday" AS key
+                    FROM weather
+                ) build
+                JOIN weather probe ON build.key = probe."RainToday"
+            "#,
+        )
+        .await
+    }
+
+    async fn execute_local_union_probe_hash_join() -> Result<String> {
+        execute_local_query(
+            true,
+            true,
+            r#"
+                SELECT COUNT(*)
+                FROM (
+                    SELECT DISTINCT "MinTemp" AS key
+                    FROM weather
+                ) build
+                JOIN (
+                    SELECT "MinTemp" FROM weather
+                    UNION ALL
+                    SELECT CAST(-1000.0 AS DOUBLE) AS "MinTemp"
+                    UNION ALL
+                    SELECT "MinTemp" FROM weather
+                    UNION ALL
+                    SELECT CAST(-1001.0 AS DOUBLE) AS "MinTemp"
+                    UNION ALL
+                    SELECT CAST(-1002.0 AS DOUBLE) AS "MinTemp"
+                ) probe ON build.key = probe."MinTemp"
+            "#,
+        )
+        .await
+    }
+
+    async fn execute_local_query(
+        broadcast_joins: bool,
+        one_task_per_leaf: bool,
+        sql: &str,
+    ) -> Result<String> {
         let (ctx, _guard, _) = start_localhost_context(2, DefaultSessionBuilder).await;
-        let ctx = ctx.with_distributed_broadcast_joins(broadcast_joins)?;
+        let mut ctx = ctx.with_distributed_broadcast_joins(broadcast_joins)?;
+        if one_task_per_leaf {
+            ctx = ctx.with_distributed_desired_task_count_handler(1usize);
+        }
         if !broadcast_joins {
             let state = ctx.state_ref();
             let mut state = state.write();
@@ -90,20 +178,7 @@ mod tests {
         }
         register_parquet_tables(&ctx).await?;
 
-        let plan = ctx
-            .sql(
-                r#"
-                SELECT COUNT(*)
-                FROM (
-                    SELECT DISTINCT "RainToday" AS key
-                    FROM weather
-                ) build
-                JOIN weather probe ON build.key = probe."RainToday"
-                "#,
-            )
-            .await?
-            .create_physical_plan()
-            .await?;
+        let plan = ctx.sql(sql).await?.create_physical_plan().await?;
 
         let results = collect(Arc::clone(&plan), ctx.task_ctx()).await?;
         assert_eq!(

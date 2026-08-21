@@ -1,5 +1,5 @@
 use crate::codec::{decode_execution_plan, encode_execution_plan};
-use crate::common::{TreeNodeExt, dynamic_filter_consumer_ids, now_ns, task_ctx_with_extension};
+use crate::common::{TreeNodeExt, now_ns, task_ctx_with_extension};
 use crate::config_extension_ext::get_config_extension_propagation_headers;
 use crate::coordinator::dynamic_filters::apply_reports_to_distributed_leaves;
 use crate::coordinator::latency_metric::LatencyMetric;
@@ -133,11 +133,7 @@ impl QueryCoordinator {
 /// - Building tasks that communicate a serialized plan to multiple workers for further execution.
 /// - Building tasks that stream partition feeds from local [WorkUnitFeedExec] nodes to their
 ///   remote counterparts.
-type SpecializedTaskPlan = (
-    Arc<dyn ExecutionPlan>,
-    Vec<WorkUnitFeedDeclaration>,
-    Vec<u64>,
-);
+type SpecializedTaskPlan = (Arc<dyn ExecutionPlan>, Vec<WorkUnitFeedDeclaration>);
 
 pub(super) struct StageCoordinator<'a> {
     plan: &'a Arc<dyn ExecutionPlan>,
@@ -167,8 +163,7 @@ impl<'a> StageCoordinator<'a> {
     )> {
         let session_config = self.task_ctx.session_config();
 
-        let (specialized, work_unit_feed_declarations, dynamic_filter_ids) =
-            self.task_specialized_plan(task_i)?;
+        let (specialized, work_unit_feed_declarations) = self.task_specialized_plan(task_i)?;
 
         let task_key = TaskKey {
             query_id: self.query_id,
@@ -179,7 +174,6 @@ impl<'a> StageCoordinator<'a> {
             task_key,
             task_count: self.task_count,
             plan: MaybeEncoded::Decoded(specialized),
-            dynamic_filter_ids,
             work_unit_feed_declarations,
             target_worker_url: url.clone(),
             query_start_time_ns: self.metrics.instantiation_time,
@@ -381,7 +375,6 @@ impl<'a> StageCoordinator<'a> {
             .unwrap_or_default();
 
         let mut work_unit_feed_declarations = vec![];
-        let mut dynamic_filter_ids = datafusion::common::HashSet::new();
         let d_ctx = DistributedTaskContext {
             task_index: task_i,
             task_count: self.task_count,
@@ -413,19 +406,12 @@ impl<'a> StageCoordinator<'a> {
 
             if let Some(dle) = plan.downcast_ref::<DistributedLeafExec>() {
                 let specialized = dle.to_task_specialized(d_ctx.task_index);
-                dynamic_filter_ids.extend(dynamic_filter_consumer_ids(&specialized)?);
                 return Ok(Transformed::yes(specialized));
             }
 
             Ok(Transformed::no(plan))
         })?;
-        let mut dynamic_filter_ids: Vec<_> = dynamic_filter_ids.into_iter().collect();
-        dynamic_filter_ids.sort_unstable();
-        Ok((
-            transformed.data,
-            work_unit_feed_declarations,
-            dynamic_filter_ids,
-        ))
+        Ok((transformed.data, work_unit_feed_declarations))
     }
 
     /// Returns as many URLs as the task count for the stage this [StageCoordinator]

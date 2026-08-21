@@ -79,9 +79,6 @@ pub struct SetPlanRequest {
     pub task_count: usize,
     /// The subplan the worker is expected to execute.
     pub plan: MaybeEncoded<Arc<dyn ExecutionPlan>>,
-    /// Expression IDs for dynamic-filter consumers that came from the selected
-    /// `DistributedLeafExec` variants. Workers report only these filters for visualization.
-    pub dynamic_filter_ids: Vec<u64>,
     /// Information about all the work unit feeds that will be streamed from coordinator to worker.
     /// This information is needed here because at the moment of setting the plan, all the appropriate
     /// channels for the incoming work unit feeds need to be constructed.

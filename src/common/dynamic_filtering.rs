@@ -1,33 +1,41 @@
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
-use datafusion::common::{HashMap, HashSet, Result};
+use datafusion::common::{HashMap, HashSet, Result, internal_err};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr::expressions::DynamicFilterPhysicalExpr;
 use datafusion::physical_plan::ExecutionPlan;
 use std::sync::Arc;
 
-/// A dynamic-filter consumer discovered in an execution plan.
+/// A dynamic-filter consumer discovered in an execution plan along with the schema its evaluated
+/// against.
 #[derive(Clone)]
 pub(crate) struct DiscoveredDynamicFilter {
     pub(crate) id: u64,
     pub(crate) expression: Arc<dyn PhysicalExpr>,
+    // The schema the filter is evaluated against.
     pub(crate) input_schema: SchemaRef,
 }
 
-/// Finds dynamic-filter consumers in `plan`, optionally restricting the result to `allowed_ids`.
-///
-/// Producer and consumer occurrences intentionally share expression IDs. Producer occurrences are
-/// therefore removed only from the node that reports them through
-/// [`ExecutionPlan::dynamic_expressions_produced`], rather than subtracting producer IDs from the
-/// whole plan.
+/// Finds dynamic-filter consumers in `plan`, deduplicated by expression ID.
 pub(crate) fn discover_dynamic_filter_consumers(
     plan: &Arc<dyn ExecutionPlan>,
-    allowed_ids: Option<&HashSet<u64>>,
 ) -> Result<Vec<DiscoveredDynamicFilter>> {
     let mut consumers = HashMap::new();
 
     plan.apply(|node| {
-        let produced = node.dynamic_expressions_produced();
+        let produced_ids: HashSet<_> = node
+            .dynamic_expressions_produced()
+            .into_iter()
+            .map(|produced| {
+                let Some(id) = produced.expression_id() else {
+                    return internal_err!(
+                        "{}::dynamic_expressions_produced returned an expression without an expression ID",
+                        node.name()
+                    );
+                };
+                Ok(id)
+            })
+            .collect::<Result<_>>()?;
         let input_schema = node
             .children()
             .first()
@@ -40,14 +48,13 @@ pub(crate) fn discover_dynamic_filter_consumers(
                     return Ok(TreeNodeRecursion::Continue);
                 };
 
-                let id = expression
-                    .expression_id()
-                    .expect("DynamicFilterPhysicalExpr always has an expression ID");
-                let is_producer_occurrence = produced
-                    .iter()
-                    .any(|produced| Arc::ptr_eq(produced, expression));
-                let is_allowed = allowed_ids.is_none_or(|ids| ids.contains(&id));
-                if !is_producer_occurrence && is_allowed {
+                let Some(id) = expression.expression_id() else {
+                    return internal_err!(
+                        "DynamicFilterPhysicalExpr did not have an expression ID"
+                    );
+                };
+                let is_producer_occurrence = produced_ids.contains(&id);
+                if !is_producer_occurrence {
                     consumers
                         .entry(id)
                         .or_insert_with(|| DiscoveredDynamicFilter {
@@ -68,13 +75,6 @@ pub(crate) fn discover_dynamic_filter_consumers(
     Ok(consumers)
 }
 
-pub(crate) fn dynamic_filter_consumer_ids(plan: &Arc<dyn ExecutionPlan>) -> Result<HashSet<u64>> {
-    Ok(discover_dynamic_filter_consumers(plan, None)?
-        .into_iter()
-        .map(|consumer| consumer.id)
-        .collect())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -84,6 +84,7 @@ mod tests {
     use datafusion::logical_expr::Operator;
     use datafusion::physical_expr::expressions::{BinaryExpr, Column, lit};
     use datafusion::physical_plan::empty::EmptyExec;
+    use datafusion::physical_plan::union::UnionExec;
     use datafusion::physical_plan::{
         DisplayAs, DisplayFormatType, PlanProperties, apply_expression_roots,
     };
@@ -112,7 +113,7 @@ mod tests {
             true,
         )) as Arc<dyn ExecutionPlan>;
 
-        let discovered = discover_dynamic_filter_consumers(&plan, None)?;
+        let discovered = discover_dynamic_filter_consumers(&plan)?;
         assert_eq!(discovered.len(), 1);
         assert_eq!(discovered[0].id, dynamic_filter.expression_id().unwrap());
 
@@ -131,6 +132,31 @@ mod tests {
             .unwrap()
             .current()?;
         assert_eq!(current.to_string(), "a@0 > 10");
+        Ok(())
+    }
+
+    #[test]
+    fn deduplicates_consumers_with_the_same_expression_id() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let dynamic_filter = Arc::new(DynamicFilterPhysicalExpr::new(
+            vec![Arc::new(Column::new("a", 0))],
+            lit(true),
+        )) as Arc<dyn PhysicalExpr>;
+        let consumers = (0..2)
+            .map(|_| {
+                Arc::new(ExpressionExec::new(
+                    Arc::new(EmptyExec::new(Arc::clone(&schema))),
+                    Arc::clone(&dynamic_filter),
+                    false,
+                )) as Arc<dyn ExecutionPlan>
+            })
+            .collect();
+        let plan = UnionExec::try_new(consumers)?;
+
+        let discovered = discover_dynamic_filter_consumers(&plan)?;
+
+        assert_eq!(discovered.len(), 1);
+        assert_eq!(discovered[0].id, dynamic_filter.expression_id().unwrap());
         Ok(())
     }
 

@@ -1,3 +1,4 @@
+use crate::codec::decode_physical_expr;
 use crate::common::discover_dynamic_filter_consumers;
 use crate::execution_plans::DistributedLeafExec;
 use crate::{DistributedCodec, TaskCompletedDynamicFilters, TaskKey};
@@ -6,7 +7,6 @@ use datafusion::common::{HashMap, Result};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::expressions::DynamicFilterPhysicalExpr;
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion_proto::physical_plan::from_proto::parse_physical_expr;
 use datafusion_proto::physical_plan::{DeduplicatingProtoConverter, PhysicalPlanNodeExt};
 use datafusion_proto::protobuf::PhysicalPlanNode;
 use std::sync::Arc;
@@ -50,7 +50,6 @@ pub(super) fn apply_reports_to_distributed_leaves(
     reports: &HashMap<TaskKey, TaskCompletedDynamicFilters>,
     task_ctx: &Arc<TaskContext>,
 ) {
-    let codec = DistributedCodec::new_combined_with_user(task_ctx.session_config());
     let _ = plan.apply(|node| {
         let Some(leaf) = node.downcast_ref::<DistributedLeafExec>() else {
             return Ok(TreeNodeRecursion::Continue);
@@ -65,7 +64,7 @@ pub(super) fn apply_reports_to_distributed_leaves(
                 .iter()
                 .map(|filter| (filter.expression_id, &filter.expression))
                 .collect();
-            let Ok(consumers) = discover_dynamic_filter_consumers(variant, None) else {
+            let Ok(consumers) = discover_dynamic_filter_consumers(variant) else {
                 continue;
             };
             for consumer in consumers {
@@ -73,7 +72,7 @@ pub(super) fn apply_reports_to_distributed_leaves(
                     continue;
                 };
                 let Ok(reported_expression) =
-                    parse_physical_expr(proto, task_ctx, consumer.input_schema.as_ref(), &codec)
+                    decode_physical_expr(proto, consumer.input_schema.as_ref(), task_ctx)
                 else {
                     continue;
                 };
@@ -114,7 +113,6 @@ mod tests {
     use datafusion::physical_plan::empty::EmptyExec;
     use datafusion::physical_plan::filter::FilterExec;
     use datafusion::prelude::SessionContext;
-    use datafusion_proto::physical_plan::to_proto::serialize_physical_expr;
     use uuid::Uuid;
 
     #[test]
@@ -147,11 +145,10 @@ mod tests {
             .downcast_ref::<DynamicFilterPhysicalExpr>()
             .unwrap()
             .mark_complete();
-        let codec = DistributedCodec::new_combined_with_user(task_ctx.session_config());
         let report = TaskCompletedDynamicFilters {
             filters: vec![crate::TaskDynamicFilter {
                 expression_id: dynamic_filter.expression_id().unwrap(),
-                expression: serialize_physical_expr(&dynamic_filter, &codec)?,
+                expression: crate::codec::encode_physical_expr(&dynamic_filter, &task_ctx)?,
             }],
         };
         let reports = HashMap::from_iter([(

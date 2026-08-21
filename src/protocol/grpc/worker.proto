@@ -40,7 +40,18 @@ message WorkerToCoordinatorMsg {
 
     bool load_info_eos = 3;
 
-    // Final task-local dynamic filters used by distributed leaf variants.
+    // Final dynamic filters used by dynamic-filter consumer execution-plan nodes.
+    //
+    // Filters are deduplicated by expression_id because consumers with the same ID share
+    // logical filter state within a task. For example, this plan includes one entry:
+    //
+    // HashJoin producer: expression_id=10
+    // ├── DataSourceExec build side
+    // └── UnionExec probe side
+    //     ├── DataSourceExec A consumer: expression_id=10
+    //     └── DataSourceExec B consumer: expression_id=10
+    //
+    // Another task in the same stage may report a different value for expression_id=10.
     TaskCompletedDynamicFilters task_completed_dynamic_filters = 4;
   }
 }
@@ -120,8 +131,6 @@ message SetPlanRequest {
   // Unix nanos when the query started as reported by the coordinator. Used for collecting temporal metrics
   // relative to when the query was fired in the coordinator.
   uint64 query_start_time_ns = 6;
-  // Dynamic-filter consumer IDs belonging to the selected DistributedLeafExec variants.
-  repeated uint64 dynamic_filter_ids = 7;
 }
 
 message WorkUnitBatch {
