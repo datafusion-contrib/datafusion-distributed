@@ -8,7 +8,9 @@ mod network_coalesce;
 mod network_shuffle;
 mod sampler;
 
-#[cfg(any(test, feature = "integration"))]
+// The benchmark fixtures spin up real gRPC workers (`tonic` servers, Flight channels), so they
+// only exist when that transport is compiled in.
+#[cfg(all(feature = "grpc", any(test, feature = "integration")))]
 pub mod benchmarks;
 
 pub use broadcast::BroadcastExec;

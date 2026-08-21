@@ -17,17 +17,31 @@ impl MetricsStore {
         Self { tx, rx }
     }
 
-    pub(crate) fn insert(&self, key: TaskKey, metrics: TaskMetrics) {
+    // Public for a driver whose transport returns worker metrics out-of-band; it files the
+    // decoded frames here before the per-task EXPLAIN rewrite reads them.
+    pub fn insert(&self, key: TaskKey, metrics: TaskMetrics) {
         self.tx.send_modify(|map| {
             map.insert(key, metrics);
         });
+    }
+
+    pub fn contains_key(&self, key: &TaskKey) -> bool {
+        self.rx.borrow().contains_key(key)
+    }
+
+    pub fn len(&self) -> usize {
+        self.rx.borrow().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.rx.borrow().is_empty()
     }
 
     pub(crate) fn get(&self, key: &TaskKey) -> Option<TaskMetrics> {
         self.rx.borrow().get(key).cloned()
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "grpc"))]
     pub(crate) fn from_entries(entries: impl IntoIterator<Item = (TaskKey, TaskMetrics)>) -> Self {
         let map: HashMap<_, _> = entries.into_iter().collect();
         let (tx, rx) = watch::channel(map);

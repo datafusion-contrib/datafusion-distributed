@@ -1,9 +1,5 @@
 [workspace]
-members = [
-    "benchmarks",
-    "cli",
-    "console",
-]
+members = ["benchmarks", "cli", "console"]
 
 [workspace.dependencies]
 datafusion = { version = "55", default-features = false }
@@ -21,11 +17,13 @@ repository = "https://github.com/datafusion-contrib/datafusion-distributed"
 [dependencies]
 chrono = { version = "0.4.44" }
 datafusion = { workspace = true, features = [
-  "unicode_expressions",
-  "datetime_expressions",
+    "unicode_expressions",
+    "datetime_expressions",
 ] }
 datafusion-proto = { workspace = true }
 async-trait = "0.1.89"
+async-stream = "0.3"
+log = "0.4"
 tokio = { version = "1.48", features = ["full"] }
 http = "1.3.1"
 itertools = "0.14.0"
@@ -47,7 +45,8 @@ sysinfo = { version = "0.30", optional = true }
 sketches-ddsketch = { version = "0.3", features = ["use_serde"] }
 num-traits = "0.2"
 bincode = "1"
-tonic-prost = "0.14.2"
+tonic-prost = { version = "0.14.2", optional = true }
+interprocess = { version = "2.4", features = ["tokio"] }
 
 # grpc-specific features
 arrow-flight = { version = "59", optional = true }
@@ -76,21 +75,25 @@ grpc = [
     "arrow-select",
     "arrow-ipc",
     "tonic",
-    "tower"
+    "tonic-prost",
+    "tower",
 ]
 
-integration = ["insta", "dep:parquet", "arrow", "hyper-util", "grpc", "parquet", "sql"]
+integration = [
+    "insta",
+    "dep:parquet",
+    "arrow",
+    "hyper-util",
+    "grpc",
+    "parquet",
+    "sql",
+]
 
 system-metrics = ["sysinfo"]
 
-tpch = ["integration"]
-tpcds = ["integration"]
-clickbench = ["integration"]
-slow-tests = []
 sysinfo = ["dep:sysinfo"]
 
 [dev-dependencies]
-datafusion-distributed-benchmarks = { path = "benchmarks" }
 # The crate's own tests drive `SessionContext::sql` and register parquet tables, so they need
 # both features regardless of which ones a consumer selects. Requesting them here keeps
 # `--no-default-features` test runs compiling without forcing either on library consumers.
@@ -104,6 +107,44 @@ tokio-stream = { version = "0.1.17", features = ["sync"] }
 hyper-util = "0.1.16"
 pretty_assertions = "1.4"
 test-case = "3.3.1"
+tempfile = "3"
+
+# Every example drives the gRPC transport, so a no-grpc build skips them.
+[[example]]
+name = "custom_distributed_partial_reduction_tree"
+required-features = ["integration"]
+
+[[example]]
+name = "custom_execution_plan"
+required-features = ["integration"]
+
+[[example]]
+name = "custom_worker_url_routing"
+required-features = ["integration"]
+
+[[example]]
+name = "work_unit_feed"
+required-features = ["integration"]
+
+[[example]]
+name = "in_memory_cluster"
+required-features = ["grpc"]
+
+[[example]]
+name = "localhost_run"
+required-features = ["grpc"]
+
+[[example]]
+name = "localhost_versioned_run"
+required-features = ["grpc"]
+
+[[example]]
+name = "localhost_worker"
+required-features = ["grpc"]
+
+[[example]]
+name = "localhost_versioned_worker"
+required-features = ["grpc"]
 
 [workspace.lints.clippy]
 disallowed_types = "deny"

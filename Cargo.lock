@@ -486,6 +486,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-stream"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b5a71a6f37880a80d1d7f19efd781e4b5de42c88f0722cc13bcb6cc2cfe8476"
+dependencies = [
+ "async-stream-impl",
+ "futures-core",
+ "pin-project-lite",
+]
+
+[[package]]
+name = "async-stream-impl"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c7c24de15d275a1ecfd47a380fb4d5ec9bfe0933f309ed5e705b775596a3574d"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "async-trait"
 version = "0.1.89"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2133,6 +2155,7 @@ dependencies = [
  "arrow-flight",
  "arrow-ipc",
  "arrow-select",
+ "async-stream",
  "async-trait",
  "bincode",
  "bytes",
@@ -2140,14 +2163,15 @@ dependencies = [
  "crossbeam-queue",
  "dashmap",
  "datafusion",
- "datafusion-distributed-benchmarks",
  "datafusion-proto",
  "delegate",
  "futures",
  "http 1.4.0",
  "hyper-util",
  "insta",
+ "interprocess",
  "itertools 0.14.0",
+ "log",
  "moka",
  "num-traits",
  "object_store",
@@ -2159,6 +2183,7 @@ dependencies = [
  "sketches-ddsketch",
  "structopt",
  "sysinfo",
+ "tempfile",
  "test-case",
  "tokio",
  "tokio-stream",
@@ -2188,12 +2213,14 @@ dependencies = [
  "object_store",
  "openssl",
  "parquet",
+ "pretty_assertions",
  "reqwest",
  "serde",
  "serde_json",
  "sketches-ddsketch",
  "structopt",
  "sysinfo",
+ "test-case",
  "tokio",
  "tonic",
  "tpchgen",
@@ -2807,6 +2834,12 @@ dependencies = [
  "quote",
  "syn 2.0.117",
 ]
+
+[[package]]
+name = "doctest-file"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2db04e74f0a9a93103b50e90b96024c9b2bdca8bce6a632ec71b88736d3d359"
 
 [[package]]
 name = "document-features"
@@ -3724,6 +3757,21 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "interprocess"
+version = "2.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "798de1433ba514cc6c04c4144c2469af81396e4906195218737c776d47769572"
+dependencies = [
+ "doctest-file",
+ "futures-core",
+ "libc",
+ "recvmsg",
+ "tokio",
+ "widestring",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5182,6 +5230,12 @@ dependencies = [
  "quote",
  "syn 2.0.117",
 ]
+
+[[package]]
+name = "recvmsg"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3edd4d5d42c92f0a659926464d4cce56b562761267ecf0f469d85b7de384175"
 
 [[package]]
 name = "redox_syscall"
@@ -6759,6 +6813,12 @@ dependencies = [
  "serde",
  "wezterm-dynamic",
 ]
+
+[[package]]
+name = "widestring"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72069c3113ab32ab29e5584db3c6ec55d416895e60715417b5b883a357c3e471"
 
 [[package]]
 name = "winapi"

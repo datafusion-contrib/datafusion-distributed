@@ -37,11 +37,40 @@ impl DistributedMetricsFormat {
     }
 }
 
-/// Rewrites a distributed plan with metrics. Does nothing if the root node is not a [DistributedExec].
+/// Rewrites a distributed plan with metrics. Does nothing if the plan does not contain a [DistributedExec].
 /// Returns an error if the distributed plan was not executed.
 ///
 /// Waits for all worker task metrics to arrive before rewriting, so the result is always complete.
 pub async fn rewrite_distributed_plan_with_metrics(
+    plan: Arc<dyn ExecutionPlan>,
+    format: DistributedMetricsFormat,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    if plan.downcast_ref::<DistributedExec>().is_some() {
+        return rewrite_single_distributed_exec(plan, format).await;
+    }
+    let mut has_dist = false;
+    let _ = plan.apply(|node| {
+        if node.downcast_ref::<DistributedExec>().is_some() {
+            has_dist = true;
+        }
+        Ok(TreeNodeRecursion::Continue)
+    });
+    if !has_dist {
+        return Ok(plan);
+    }
+    let mut new_children = Vec::new();
+    for child in plan.children() {
+        let rewritten_child = Box::pin(rewrite_distributed_plan_with_metrics(
+            Arc::clone(child),
+            format,
+        ))
+        .await?;
+        new_children.push(rewritten_child);
+    }
+    plan.with_new_children(new_children)
+}
+
+async fn rewrite_single_distributed_exec(
     plan: Arc<dyn ExecutionPlan>,
     format: DistributedMetricsFormat,
 ) -> Result<Arc<dyn ExecutionPlan>> {
@@ -283,7 +312,8 @@ pub fn stage_metrics_rewriter(
         .map(|v| v.data)
 }
 
-#[cfg(test)]
+// These tests execute over the in-memory gRPC transport, so they need that transport compiled in.
+#[cfg(all(test, feature = "grpc"))]
 mod tests {
     use crate::DistributedExt;
     use crate::coordinator::MetricsStore;
