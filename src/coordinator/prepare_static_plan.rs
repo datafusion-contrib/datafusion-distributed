@@ -1,5 +1,7 @@
+use crate::common::{crossing_dynamic_filter_consumers, discover_dynamic_filter_producers};
 use crate::coordinator::distributed::PreparedPlan;
 use crate::coordinator::query_coordinator::QueryCoordinator;
+use crate::distributed_planner::with_dynamic_filter_anchors;
 use crate::stage::RemoteStage;
 use crate::{NetworkBoundaryExt, Stage};
 use datafusion::common::tree_node::{Transformed, TreeNode};
@@ -21,6 +23,10 @@ pub(super) fn prepare_static_plan(
     query_coordinator: &QueryCoordinator,
     base_plan: &Arc<dyn ExecutionPlan>,
 ) -> Result<PreparedPlan> {
+    let dynamic_filter_ids = discover_dynamic_filter_producers(base_plan)?
+        .into_iter()
+        .map(|producer| producer.id)
+        .collect();
     let prepared = Arc::clone(base_plan).transform_up(|plan| {
         // The following logic is just applied on network boundaries.
         let Some(plan) = plan.as_network_boundary() else {
@@ -30,6 +36,8 @@ pub(super) fn prepare_static_plan(
         let Stage::Local(stage) = plan.input_stage() else {
             return exec_err!("Input stage from network boundary was not in Local state");
         };
+        let dynamic_filter_anchors =
+            crossing_dynamic_filter_consumers(&stage.plan, &dynamic_filter_ids)?;
 
         let mut stage_coordinator = query_coordinator.stage_coordinator(stage);
 
@@ -44,7 +52,9 @@ pub(super) fn prepare_static_plan(
             stage_coordinator.worker_to_coordinator_task(i, worker_rx);
             stage_coordinator.coordinator_to_worker_task(i, worker_tx)?;
         }
+        stage_coordinator.seal_dynamic_filter_stage();
 
+        let plan = with_dynamic_filter_anchors(plan, dynamic_filter_anchors)?;
         Ok(Transformed::yes(plan.with_input_stage(Stage::Remote(
             RemoteStage {
                 query_id: stage.query_id,

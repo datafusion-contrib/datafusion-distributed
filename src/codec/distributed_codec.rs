@@ -102,6 +102,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 schema,
                 partitioning,
                 input_stage,
+                dynamic_filter_anchors,
             }) => {
                 let schema: Schema = schema
                     .as_ref()
@@ -116,17 +117,27 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     proto_converter,
                 )?
                 .ok_or(proto_error("NetworkShuffleExec is missing partitioning"))?;
+                let dynamic_filter_anchors = dynamic_filter_anchors
+                    .iter()
+                    .map(|expression| {
+                        proto_converter.proto_to_physical_expr(expression, &schema, &decode_ctx)
+                    })
+                    .collect::<Result<Vec<_>>>()?;
 
-                Ok(Arc::new(new_network_hash_shuffle_exec(
-                    partitioning,
-                    Arc::new(schema),
-                    parse_stage_proto(input_stage, inputs)?,
-                )))
+                Ok(Arc::new(
+                    new_network_hash_shuffle_exec(
+                        partitioning,
+                        Arc::new(schema),
+                        parse_stage_proto(input_stage, inputs)?,
+                    )
+                    .with_dynamic_filter_anchors(dynamic_filter_anchors),
+                ))
             }
             DistributedExecNode::NetworkCoalesceTasks(NetworkCoalesceExecProto {
                 schema,
                 partitioning,
                 input_stage,
+                dynamic_filter_anchors,
             }) => {
                 let schema: Schema = schema
                     .as_ref()
@@ -141,17 +152,27 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     proto_converter,
                 )?
                 .ok_or(proto_error("NetworkCoalesceExec is missing partitioning"))?;
+                let dynamic_filter_anchors = dynamic_filter_anchors
+                    .iter()
+                    .map(|expression| {
+                        proto_converter.proto_to_physical_expr(expression, &schema, &decode_ctx)
+                    })
+                    .collect::<Result<Vec<_>>>()?;
 
-                Ok(Arc::new(new_network_coalesce_tasks_exec(
-                    partitioning,
-                    Arc::new(schema),
-                    parse_stage_proto(input_stage, inputs)?,
-                )))
+                Ok(Arc::new(
+                    new_network_coalesce_tasks_exec(
+                        partitioning,
+                        Arc::new(schema),
+                        parse_stage_proto(input_stage, inputs)?,
+                    )
+                    .with_dynamic_filter_anchors(dynamic_filter_anchors),
+                ))
             }
             DistributedExecNode::NetworkBroadcast(NetworkBroadcastExecProto {
                 schema,
                 partitioning,
                 input_stage,
+                dynamic_filter_anchors,
             }) => {
                 let schema: Schema = schema
                     .as_ref()
@@ -166,12 +187,21 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     proto_converter,
                 )?
                 .ok_or(proto_error("NetworkBroadcastExec is missing partitioning"))?;
+                let dynamic_filter_anchors = dynamic_filter_anchors
+                    .iter()
+                    .map(|expression| {
+                        proto_converter.proto_to_physical_expr(expression, &schema, &decode_ctx)
+                    })
+                    .collect::<Result<Vec<_>>>()?;
 
-                Ok(Arc::new(new_network_broadcast_exec(
-                    partitioning,
-                    Arc::new(schema),
-                    parse_stage_proto(input_stage, inputs)?,
-                )))
+                Ok(Arc::new(
+                    new_network_broadcast_exec(
+                        partitioning,
+                        Arc::new(schema),
+                        parse_stage_proto(input_stage, inputs)?,
+                    )
+                    .with_dynamic_filter_anchors(dynamic_filter_anchors),
+                ))
             }
             DistributedExecNode::Broadcast(BroadcastExecProto {
                 consumer_task_count,
@@ -280,6 +310,11 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     proto_converter,
                 )?),
                 input_stage: Some(encode_stage_proto(node.input_stage())?),
+                dynamic_filter_anchors: node
+                    .dynamic_filter_anchors()
+                    .iter()
+                    .map(|expression| proto_converter.physical_expr_to_proto(expression, self))
+                    .collect::<Result<Vec<_>>>()?,
             };
 
             let wrapper = DistributedExecProto {
@@ -296,6 +331,11 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     proto_converter,
                 )?),
                 input_stage: Some(encode_stage_proto(node.input_stage())?),
+                dynamic_filter_anchors: node
+                    .dynamic_filter_anchors()
+                    .iter()
+                    .map(|expression| proto_converter.physical_expr_to_proto(expression, self))
+                    .collect::<Result<Vec<_>>>()?,
             };
 
             let wrapper = DistributedExecProto {
@@ -312,6 +352,11 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     proto_converter,
                 )?),
                 input_stage: Some(encode_stage_proto(node.input_stage())?),
+                dynamic_filter_anchors: node
+                    .dynamic_filter_anchors()
+                    .iter()
+                    .map(|expression| proto_converter.physical_expr_to_proto(expression, self))
+                    .collect::<Result<Vec<_>>>()?,
             };
 
             let wrapper = DistributedExecProto {
@@ -431,6 +476,8 @@ pub struct NetworkShuffleExecProto {
     partitioning: Option<protobuf::Partitioning>,
     #[prost(message, optional, tag = "3")]
     input_stage: Option<StageProto>,
+    #[prost(message, repeated, tag = "4")]
+    dynamic_filter_anchors: Vec<protobuf::PhysicalExprNode>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -481,6 +528,7 @@ fn new_network_hash_shuffle_exec(
         )),
         worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
         input_stage,
+        dynamic_filter_anchors: vec![],
     }
 }
 
@@ -495,6 +543,8 @@ pub struct NetworkCoalesceExecProto {
     partitioning: Option<protobuf::Partitioning>,
     #[prost(message, optional, tag = "3")]
     input_stage: Option<StageProto>,
+    #[prost(message, repeated, tag = "4")]
+    dynamic_filter_anchors: Vec<protobuf::PhysicalExprNode>,
 }
 
 fn new_network_coalesce_tasks_exec(
@@ -511,6 +561,7 @@ fn new_network_coalesce_tasks_exec(
         )),
         worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
         input_stage,
+        dynamic_filter_anchors: vec![],
     }
 }
 
@@ -522,6 +573,8 @@ pub struct NetworkBroadcastExecProto {
     partitioning: Option<protobuf::Partitioning>,
     #[prost(message, optional, tag = "3")]
     input_stage: Option<StageProto>,
+    #[prost(message, repeated, tag = "4")]
+    dynamic_filter_anchors: Vec<protobuf::PhysicalExprNode>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -547,6 +600,7 @@ fn new_network_broadcast_exec(
         )),
         worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
         input_stage,
+        dynamic_filter_anchors: vec![],
     }
 }
 
@@ -559,7 +613,10 @@ mod tests {
     use datafusion::physical_plan::empty::EmptyExec;
     use datafusion::prelude::SessionContext;
     use datafusion::{
-        physical_expr::{Partitioning, PhysicalSortExpr, expressions::Column, expressions::col},
+        physical_expr::{
+            Partitioning, PhysicalSortExpr,
+            expressions::{Column, DynamicFilterPhysicalExpr, col, lit},
+        },
         physical_plan::{ExecutionPlan, displayable, sorts::sort::SortExec, union::UnionExec},
     };
 
@@ -614,6 +671,37 @@ mod tests {
         let decoded = codec.try_decode(&buf, &[], &ctx, &default_proto_converter())?;
         assert_eq!(repr(&plan), repr(&decoded));
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_roundtrip_network_dynamic_filter_anchor() -> datafusion::common::Result<()> {
+        let codec = DistributedCodec;
+        let ctx = create_context();
+        let schema = schema_i32("a");
+        let anchor = Arc::new(DynamicFilterPhysicalExpr::new(
+            vec![Arc::new(Column::new("a", 0))],
+            lit(true),
+        )) as Arc<dyn datafusion::physical_expr::PhysicalExpr>;
+        let expected_id = anchor.expression_id();
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(
+            new_network_hash_shuffle_exec(
+                Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 4),
+                schema,
+                dummy_stage(),
+            )
+            .with_dynamic_filter_anchors(vec![anchor]),
+        );
+
+        let mut buf = vec![];
+        codec.try_encode(Arc::clone(&plan), &mut buf, &default_proto_converter())?;
+        let decoded = codec.try_decode(&buf, &[], &ctx, &default_proto_converter())?;
+        let decoded = decoded.downcast_ref::<NetworkShuffleExec>().unwrap();
+        assert_eq!(decoded.dynamic_filter_anchors().len(), 1);
+        assert_eq!(
+            decoded.dynamic_filter_anchors()[0].expression_id(),
+            expected_id
+        );
         Ok(())
     }
 

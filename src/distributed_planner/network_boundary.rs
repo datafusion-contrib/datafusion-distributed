@@ -7,6 +7,7 @@ use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::Result;
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::Partitioning;
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::{
     ChildrenPropertiesMode, ExecutionPlan, ExecutionPlanProperties, ReplaceChildrenOptions,
@@ -68,6 +69,28 @@ impl NetworkBoundaryExt for dyn ExecutionPlan {
         } else {
             None
         }
+    }
+}
+
+pub(crate) fn with_dynamic_filter_anchors(
+    boundary: &dyn NetworkBoundary,
+    anchors: Vec<Arc<dyn PhysicalExpr>>,
+) -> Result<Arc<dyn NetworkBoundary>> {
+    let plan: &dyn ExecutionPlan = boundary;
+    if let Some(boundary) = plan.downcast_ref::<NetworkShuffleExec>() {
+        Ok(Arc::new(
+            boundary.clone().with_dynamic_filter_anchors(anchors),
+        ))
+    } else if let Some(boundary) = plan.downcast_ref::<NetworkCoalesceExec>() {
+        Ok(Arc::new(
+            boundary.clone().with_dynamic_filter_anchors(anchors),
+        ))
+    } else if let Some(boundary) = plan.downcast_ref::<NetworkBroadcastExec>() {
+        Ok(Arc::new(
+            boundary.clone().with_dynamic_filter_anchors(anchors),
+        ))
+    } else {
+        datafusion::common::internal_err!("unsupported network boundary")
     }
 }
 
