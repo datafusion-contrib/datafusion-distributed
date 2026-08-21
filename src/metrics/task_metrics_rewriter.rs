@@ -61,7 +61,7 @@ pub async fn rewrite_distributed_plan_with_metrics(
     // Rewrite the DistributedExec's child plan with metrics.
     let dist_exec_plan_with_metrics = rewrite_local_plan_with_metrics(
         format.to_rewrite_ctx(0), // Task id is 0 for the DistributedExec plan
-        distributed_exec.plan_for_viz()?,
+        distributed_exec.plan_for_viz(),
         task_metrics,
     )?;
 

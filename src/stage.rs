@@ -289,7 +289,7 @@ fn display_ascii(
     f: &mut String,
 ) -> std::fmt::Result {
     let prepared_plan = match stage {
-        Either::Left(distributed_exec) => Some(distributed_exec.plan_for_display()),
+        Either::Left(distributed_exec) => Some(distributed_exec.plan_for_viz()),
         Either::Right(_) => None,
     };
     let plan = match stage {

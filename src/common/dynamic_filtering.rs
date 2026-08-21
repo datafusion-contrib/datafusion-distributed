@@ -12,7 +12,6 @@ use std::sync::Arc;
 pub(crate) struct DiscoveredDynamicFilter {
     pub(crate) id: u64,
     pub(crate) expression: Arc<dyn PhysicalExpr>,
-    // The schema the filter is evaluated against.
     pub(crate) input_schema: SchemaRef,
 }
 

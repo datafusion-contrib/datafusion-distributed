@@ -91,20 +91,9 @@ impl DistributedExec {
         task_metrics.wait_for(&task_keys_for_plan(&plan)).await;
     }
 
-    /// Returns the plan which is lazily prepared on `execute()` and actually gets executed.
-    /// It is updated on every call to `execute()`. Returns an error if `.execute()` has not been
-    /// called.
-    pub(crate) fn plan_for_viz(&self) -> Result<Arc<dyn ExecutionPlan>> {
-        self.plan_for_viz
-            .lock()
-            .map_err(|e| internal_datafusion_err!("Failed to lock prepared plan: {}", e))?
-            .clone()
-            .ok_or_else(|| {
-                internal_datafusion_err!("No prepared plan found. Was execute() called?")
-            })
-    }
-
-    pub(crate) fn plan_for_display(&self) -> Arc<dyn ExecutionPlan> {
+    /// Returns the execution-derived plan used for visualization, falling back to the initial plan
+    /// until `execute()` has prepared it. It is updated on every call to `execute()`.
+    pub(crate) fn plan_for_viz(&self) -> Arc<dyn ExecutionPlan> {
         self.plan_for_viz
             .lock()
             .ok()
@@ -180,7 +169,7 @@ impl ExecutionPlan for DistributedExec {
         }
 
         let base_plan = Arc::clone(&self.base_plan);
-        let plan_for_viz = Arc::clone(&self.plan_for_viz);
+        let plan_for_viz_slot = Arc::clone(&self.plan_for_viz);
         let head_stage = Arc::clone(&self.head_stage);
 
         let query_coordinator = QueryCoordinator::new(
@@ -211,12 +200,12 @@ impl ExecutionPlan for DistributedExec {
                 false => prepare_static_plan(&query_coordinator, &base_plan)?,
             };
 
-            let display_plan =
+            let plan_for_viz =
                 isolate_distributed_leaf_variants_for_display(result.plan_for_viz, &context)?;
-            plan_for_viz
+            plan_for_viz_slot
                 .lock()
                 .expect("poisoned lock")
-                .replace(Arc::clone(&display_plan));
+                .replace(Arc::clone(&plan_for_viz));
             head_stage
                 .lock()
                 .expect("poisoned lock")
@@ -229,7 +218,7 @@ impl ExecutionPlan for DistributedExec {
             }
             drop(guard);
             query_coordinator
-                .finish_dynamic_filter_display(&display_plan)
+                .finish_dynamic_filter_display(&plan_for_viz)
                 .await;
             drop(tx);
             query_coordinator.drain_pending_tasks().await?;
