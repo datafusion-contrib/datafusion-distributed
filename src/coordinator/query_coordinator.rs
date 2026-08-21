@@ -1,9 +1,7 @@
 use crate::codec::{decode_execution_plan, encode_execution_plan};
 use crate::common::{TreeNodeExt, now_ns, task_ctx_with_extension};
 use crate::config_extension_ext::get_config_extension_propagation_headers;
-use crate::coordinator::dynamic_filters::apply_reports_to_distributed_leaves;
 use crate::coordinator::latency_metric::LatencyMetric;
-use crate::coordinator::store::task_keys_for_plan;
 use crate::coordinator::{CompletedDynamicFilterStore, MetricsStore};
 use crate::events::{RouteTasksEvent, RouteTasksHandlers};
 use crate::execution_plans::{ChildrenIsolatorUnionExec, DistributedLeafExec};
@@ -61,12 +59,13 @@ impl QueryCoordinator {
         task_ctx: Arc<TaskContext>,
         metrics_set: &ExecutionPlanMetricsSet,
         metrics_store: Option<Arc<MetricsStore>>,
+        completed_dynamic_filter_store: Arc<CompletedDynamicFilterStore>,
     ) -> Self {
         Self {
             task_ctx,
             metrics: metrics_set.clone(),
             metrics_store,
-            completed_dynamic_filter_store: Arc::new(CompletedDynamicFilterStore::new()),
+            completed_dynamic_filter_store,
             coordinator_to_worker_metrics: CoordinatorToWorkerMetrics::new(metrics_set),
             end_stream_notifier: Arc::new(Notify::new()),
             join_set: Mutex::new(JoinSet::new()),
@@ -101,17 +100,6 @@ impl QueryCoordinator {
     /// clean up any remaining state.
     pub(super) fn end_query_guard(&self) -> NotifyGuard {
         NotifyGuard(Arc::clone(&self.end_stream_notifier))
-    }
-
-    pub(super) async fn finish_dynamic_filter_display(
-        &self,
-        plan_for_viz: &Arc<dyn ExecutionPlan>,
-    ) {
-        let reports = self
-            .completed_dynamic_filter_store
-            .wait_for(&task_keys_for_plan(plan_for_viz))
-            .await;
-        apply_reports_to_distributed_leaves(plan_for_viz, &reports, &self.task_ctx);
     }
 
     /// Blocks until all background tasks have finished (e.g., sending WorkUnit feeds, or collecting

@@ -288,12 +288,8 @@ fn display_ascii(
     show_metrics: bool,
     f: &mut String,
 ) -> std::fmt::Result {
-    let prepared_plan = match stage {
-        Either::Left(distributed_exec) => Some(distributed_exec.plan_for_viz()),
-        Either::Right(_) => None,
-    };
     let plan = match stage {
-        Either::Left(_) => prepared_plan.as_ref().unwrap(),
+        Either::Left(distributed_exec) => distributed_exec.children().first().unwrap(),
         Either::Right(stage) => {
             let Some(plan) = stage.local_plan() else {
                 return write!(f, "StageExec: encoded input plan");

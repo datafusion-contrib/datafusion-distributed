@@ -26,8 +26,11 @@ channel, so they are not lost even if the result stream is dropped early (for ex
 
 ## Rendering a plan with metrics
 
-Two functions, both exported from the crate root, do the work:
+These functions, all exported from the crate root, do the work:
 
+- `rewrite_distributed_plan_with_dynamic_filters(plan)` — folds the completed dynamic filters
+  reported by each worker task into an isolated copy of the plan. When displaying both dynamic
+  filters and metrics, apply the dynamic-filter rewrite first.
 - `rewrite_distributed_plan_with_metrics(plan, format)` — folds every task's metrics back into the
   coordinator's copy of the plan. It waits for all worker metrics to arrive, so the result is always
   complete. The `format` is a `DistributedMetricsFormat`:
@@ -54,11 +57,15 @@ execute_stream(plan.clone(), ctx.task_ctx())?
     .try_collect::<Vec<_>>()
     .await?;
 
-// 3. Fold the per-task metrics back into the plan...
+// 3. Fold the completed per-task dynamic filters back into the plan...
+let plan =
+    rewrite_distributed_plan_with_dynamic_filters(plan).await?;
+
+// 4. Fold the per-task metrics back into the plan...
 let plan =
     rewrite_distributed_plan_with_metrics(plan, DistributedMetricsFormat::Aggregated).await?;
 
-// 4. ...and render it.
+// 5. ...and render it.
 println!("{}", display_plan_ascii(plan.as_ref(), true));
 ```
 

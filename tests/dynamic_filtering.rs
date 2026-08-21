@@ -5,7 +5,9 @@ mod tests {
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::parquet::register_parquet_tables;
     use datafusion_distributed::{
-        DefaultSessionBuilder, DistributedExt, assert_snapshot, display_plan_ascii,
+        DefaultSessionBuilder, DistributedExt, DistributedMetricsFormat, assert_snapshot,
+        display_plan_ascii, rewrite_distributed_plan_with_dynamic_filters,
+        rewrite_distributed_plan_with_metrics,
     };
     use std::sync::Arc;
 
@@ -186,6 +188,17 @@ mod tests {
             1
         );
 
-        Ok(display_plan_ascii(plan.as_ref(), false))
+        let original_display = display_plan_ascii(plan.as_ref(), false);
+
+        let plan_with_dynamic_filters =
+            rewrite_distributed_plan_with_dynamic_filters(Arc::clone(&plan)).await?;
+        assert_eq!(display_plan_ascii(plan.as_ref(), false), original_display);
+
+        let plan_with_metrics = rewrite_distributed_plan_with_metrics(
+            plan_with_dynamic_filters,
+            DistributedMetricsFormat::Aggregated,
+        )
+        .await?;
+        Ok(display_plan_ascii(plan_with_metrics.as_ref(), false))
     }
 }

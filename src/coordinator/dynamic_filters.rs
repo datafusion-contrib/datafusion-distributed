@@ -1,5 +1,6 @@
 use crate::codec::decode_physical_expr;
 use crate::common::discover_dynamic_filter_consumers;
+use crate::coordinator::DistributedExec;
 use crate::execution_plans::DistributedLeafExec;
 use crate::{DistributedCodec, TaskCompletedDynamicFilters, TaskKey};
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
@@ -10,6 +11,26 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::physical_plan::{DeduplicatingProtoConverter, PhysicalPlanNodeExt};
 use datafusion_proto::protobuf::PhysicalPlanNode;
 use std::sync::Arc;
+
+/// Rewrites an executed distributed plan with the completed dynamic filters reported by its
+/// worker tasks.
+///
+/// When composing this with [`crate::rewrite_distributed_plan_with_metrics`], dynamic filters must
+/// be rewritten first.
+pub async fn rewrite_distributed_plan_with_dynamic_filters(
+    plan: Arc<dyn ExecutionPlan>,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let Some(distributed_exec) = plan.downcast_ref::<DistributedExec>() else {
+        return Ok(plan);
+    };
+
+    let plan_for_viz = distributed_exec.plan_for_viz()?;
+    let task_ctx = distributed_exec.task_ctx()?;
+    let reports = distributed_exec.wait_for_dynamic_filters().await?;
+    let plan_for_viz = isolate_distributed_leaf_variants_for_display(plan_for_viz, &task_ctx)?;
+    apply_reports_to_distributed_leaves(&plan_for_viz, &reports, &task_ctx);
+    distributed_exec.with_rewritten_plan(plan_for_viz)
+}
 
 /// Replaces the variants in the visualization plan with independent per-task copies.
 pub(super) fn isolate_distributed_leaf_variants_for_display(
