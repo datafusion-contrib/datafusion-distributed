@@ -92,9 +92,14 @@ pub(super) fn apply_reports_to_distributed_leaves(
                 let Some(proto) = updates.get(&consumer.id).copied() else {
                     continue;
                 };
-                let Ok(reported_expression) =
-                    decode_physical_expr(proto, consumer.input_schema.as_ref(), task_ctx)
-                else {
+                let Ok(reported_expression) = decode_physical_expr(
+                    proto,
+                    consumer.input_schema.as_ref(),
+                    task_ctx,
+                )
+                .or_else(|_| {
+                    decode_physical_expr(proto, consumer.expression_schema.as_ref(), task_ctx)
+                }) else {
                     continue;
                 };
                 let Some(reported_dynamic_filter) =

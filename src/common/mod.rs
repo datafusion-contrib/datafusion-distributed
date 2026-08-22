@@ -10,8 +10,8 @@ mod vec;
 
 pub(crate) use children_helpers::require_one_child;
 pub(crate) use dynamic_filtering::{
-    crossing_dynamic_filter_consumers, discover_dynamic_filter_consumers,
-    discover_dynamic_filter_producers,
+    DiscoveredDynamicFilter, crossing_dynamic_filter_consumers, discover_dynamic_filter_consumers,
+    discover_dynamic_filter_producers, discover_runtime_dynamic_filter_consumers,
 };
 pub use maybe_encoded::MaybeEncoded;
 pub(crate) use once_lock::OnceLockResult;

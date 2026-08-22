@@ -1,13 +1,15 @@
-use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::datatypes::{Schema, SchemaRef};
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::common::{HashMap, HashSet, Result, internal_err};
+use datafusion::datasource::physical_plan::FileScanConfig;
+use datafusion::datasource::source::DataSourceExec;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr::expressions::DynamicFilterPhysicalExpr;
 use datafusion::physical_plan::ExecutionPlan;
 use std::sync::Arc;
 
-/// A dynamic-filter consumer discovered in an execution plan along with the schema its evaluated
-/// against.
+use crate::NetworkBoundaryExt;
+
 /// A dynamic filter produced by an execution plan.
 #[derive(Clone)]
 pub(crate) struct DiscoveredDynamicFilterProducer {
@@ -15,11 +17,30 @@ pub(crate) struct DiscoveredDynamicFilterProducer {
     pub(crate) expression: Arc<dyn PhysicalExpr>,
 }
 
+/// A dynamic-filter consumer discovered in an execution plan.
 #[derive(Clone)]
 pub(crate) struct DiscoveredDynamicFilter {
     pub(crate) id: u64,
     pub(crate) expression: Arc<dyn PhysicalExpr>,
+    /// Schema used to decode a producer-coordinate predicate before this consumer remaps it.
     pub(crate) input_schema: SchemaRef,
+    /// Schema used by this concrete consumer occurrence after expression remapping. File scan
+    /// predicates, for example, are evaluated against the unprojected table schema.
+    pub(crate) expression_schema: SchemaRef,
+}
+
+fn expression_schema(node: &Arc<dyn ExecutionPlan>, fallback: &SchemaRef) -> SchemaRef {
+    node.downcast_ref::<DataSourceExec>()
+        .and_then(|exec| exec.data_source().downcast_ref::<FileScanConfig>())
+        .map(|scan| {
+            let mut fields = scan.file_schema().fields().to_vec();
+            fields.extend(scan.table_partition_cols().iter().cloned());
+            Arc::new(Schema::new_with_metadata(
+                fields,
+                scan.file_schema().metadata().clone(),
+            ))
+        })
+        .unwrap_or_else(|| Arc::clone(fallback))
 }
 
 /// Finds dynamic-filter consumers in `plan`, deduplicated by expression ID.
@@ -47,6 +68,7 @@ pub(crate) fn discover_dynamic_filter_consumers(
             .first()
             .map(|child| child.schema())
             .unwrap_or_else(|| node.schema());
+        let expression_schema = expression_schema(node, &input_schema);
 
         node.apply_expressions(&mut |root| {
             root.apply(|expression| {
@@ -67,6 +89,7 @@ pub(crate) fn discover_dynamic_filter_consumers(
                             id,
                             expression: Arc::clone(expression),
                             input_schema: Arc::clone(&input_schema),
+                            expression_schema: Arc::clone(&expression_schema),
                         });
                 }
 
@@ -78,6 +101,75 @@ pub(crate) fn discover_dynamic_filter_consumers(
 
     let mut consumers: Vec<_> = consumers.into_values().collect();
     consumers.sort_unstable_by_key(|consumer| consumer.id);
+    Ok(consumers)
+}
+
+/// Finds every runtime dynamic-filter consumer in a worker task plan, grouped by expression ID.
+///
+/// Expressions attached to network operators are coordinator visibility anchors. They preserve
+/// topology through distributed planning but do not evaluate rows, so only real plan-node
+/// consumers are returned here.
+pub(crate) fn discover_runtime_dynamic_filter_consumers(
+    plan: &Arc<dyn ExecutionPlan>,
+) -> Result<HashMap<u64, Vec<DiscoveredDynamicFilter>>> {
+    let mut consumers: HashMap<u64, Vec<DiscoveredDynamicFilter>> = HashMap::new();
+
+    plan.apply(|node| {
+        if node.is_network_boundary() {
+            return Ok(TreeNodeRecursion::Continue);
+        }
+        let produced_ids: HashSet<_> = node
+            .dynamic_expressions_produced()
+            .into_iter()
+            .map(|produced| {
+                let Some(id) = produced.expression_id() else {
+                    return internal_err!(
+                        "{}::dynamic_expressions_produced returned an expression without an expression ID",
+                        node.name()
+                    );
+                };
+                Ok(id)
+            })
+            .collect::<Result<_>>()?;
+        let input_schema = node
+            .children()
+            .first()
+            .map(|child| child.schema())
+            .unwrap_or_else(|| node.schema());
+        let expression_schema = expression_schema(node, &input_schema);
+
+        node.apply_expressions(&mut |root| {
+            root.apply(|expression| {
+                if expression
+                    .downcast_ref::<DynamicFilterPhysicalExpr>()
+                    .is_none()
+                {
+                    return Ok(TreeNodeRecursion::Continue);
+                }
+
+                let Some(id) = expression.expression_id() else {
+                    return internal_err!(
+                        "DynamicFilterPhysicalExpr did not have an expression ID"
+                    );
+                };
+                if produced_ids.contains(&id) {
+                    return Ok(TreeNodeRecursion::Continue);
+                }
+                consumers
+                    .entry(id)
+                    .or_default()
+                    .push(DiscoveredDynamicFilter {
+                        id,
+                        expression: Arc::clone(expression),
+                        input_schema: Arc::clone(&input_schema),
+                        expression_schema: Arc::clone(&expression_schema),
+                    });
+                Ok(TreeNodeRecursion::Continue)
+            })
+        })?;
+        Ok(TreeNodeRecursion::Continue)
+    })?;
+
     Ok(consumers)
 }
 
@@ -249,6 +341,30 @@ mod tests {
                 second.expression_id().unwrap()
             ]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_discovery_keeps_every_consumer_occurrence() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let input = Arc::new(EmptyExec::new(schema)) as Arc<dyn ExecutionPlan>;
+        let dynamic_filter = Arc::new(DynamicFilterPhysicalExpr::new(
+            vec![Arc::new(Column::new("a", 0))],
+            lit(true),
+        )) as Arc<dyn PhysicalExpr>;
+        let first = Arc::new(ExpressionExec::new(
+            input,
+            Arc::clone(&dynamic_filter),
+            false,
+        )) as Arc<dyn ExecutionPlan>;
+        let plan = Arc::new(ExpressionExec::new(
+            first,
+            Arc::clone(&dynamic_filter),
+            false,
+        )) as Arc<dyn ExecutionPlan>;
+
+        let consumers = discover_runtime_dynamic_filter_consumers(&plan)?;
+        assert_eq!(consumers[&dynamic_filter.expression_id().unwrap()].len(), 2);
         Ok(())
     }
 
