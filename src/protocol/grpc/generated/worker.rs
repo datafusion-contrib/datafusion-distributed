@@ -24,7 +24,7 @@ pub mod coordinator_to_worker_msg {
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WorkerToCoordinatorMsg {
-    #[prost(oneof = "worker_to_coordinator_msg::Inner", tags = "1, 2, 3")]
+    #[prost(oneof = "worker_to_coordinator_msg::Inner", tags = "1, 2, 3, 4")]
     pub inner: ::core::option::Option<worker_to_coordinator_msg::Inner>,
 }
 /// Nested message and enum types in `WorkerToCoordinatorMsg`.
@@ -43,6 +43,36 @@ pub mod worker_to_coordinator_msg {
         LoadInfo(super::LoadInfo),
         #[prost(bool, tag = "3")]
         LoadInfoEos(bool),
+        /// Final dynamic filters used by dynamic-filter consumer execution-plan nodes.
+        ///
+        /// Filters are deduplicated by expression_id because consumers with the same ID share
+        /// logical filter state within a task. For example, this plan includes one entry:
+        ///
+        /// HashJoin producer: expression_id=10
+        /// ├── DataSourceExec build side
+        /// └── UnionExec probe side
+        /// ├── DataSourceExec A consumer: expression_id=10
+        /// └── DataSourceExec B consumer: expression_id=10
+        ///
+        /// Another task in the same stage may report a different value for expression_id=10.
+        #[prost(message, tag = "4")]
+        TaskCompletedDynamicFilters(super::TaskCompletedDynamicFilters),
+    }
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct TaskCompletedDynamicFilters {
+    #[prost(message, repeated, tag = "1")]
+    pub filters: ::prost::alloc::vec::Vec<task_completed_dynamic_filters::DynamicFilter>,
+}
+/// Nested message and enum types in `TaskCompletedDynamicFilters`.
+pub mod task_completed_dynamic_filters {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct DynamicFilter {
+        #[prost(uint64, tag = "1")]
+        pub expression_id: u64,
+        /// Serialized datafusion.proto.PhysicalExprNode.
+        #[prost(bytes = "vec", tag = "2")]
+        pub expression_proto: ::prost::alloc::vec::Vec<u8>,
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -80,8 +110,8 @@ pub struct LoadInfo {
     /// The amount of rows that were pulled from leaf nodes while this partition was sampling data.
     #[prost(uint64, tag = "8")]
     pub rows_pulled_from_leaf: u64,
-    /// Whether the sampled partition stream reached end-of-stream by the time this LoadInfo was
-    /// captured.
+    /// Whether the sampled partition stream reached end-of-stream (i.e. the partition finished
+    /// producing all of its output) by the time this LoadInfo was captured.
     #[prost(bool, tag = "9")]
     pub reached_eos: bool,
 }

@@ -9,9 +9,9 @@ use crate::{
     BytesMetricExt, CoordinatorToWorkerMsg, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL,
     DistributedConfig, ExecuteTaskRequest, FirstLatencyMetric, GetWorkerInfoRequest,
     GetWorkerInfoResponse, LatencyMetricExt, LoadInfo, MaxLatencyMetric, MaybeEncoded,
-    MinLatencyMetric, P50LatencyMetric, P95LatencyMetric, ProducerHead, SetPlanRequest, TaskKey,
-    TaskMetrics, WorkUnitBatch, WorkUnitFeedDeclaration, WorkUnitMsg, WorkerChannel,
-    WorkerToCoordinatorMsg,
+    MinLatencyMetric, P50LatencyMetric, P95LatencyMetric, ProducerHead, SetPlanRequest,
+    TaskCompletedDynamicFilters, TaskDynamicFilter, TaskKey, TaskMetrics, WorkUnitBatch,
+    WorkUnitFeedDeclaration, WorkUnitMsg, WorkerChannel, WorkerToCoordinatorMsg,
 };
 use arrow_flight::FlightData;
 use arrow_flight::decode::FlightRecordBatchStream;
@@ -25,6 +25,7 @@ use datafusion::execution::TaskContext;
 use datafusion::execution::memory_pool::MemoryConsumer;
 use datafusion::physical_expr_common::metrics::{Count, Label, MetricBuilder, MetricValue, Time};
 use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
+use datafusion_proto::protobuf::PhysicalExprNode;
 use futures::stream::BoxStream;
 use futures::{FutureExt, Stream, StreamExt, TryStreamExt};
 use http::{Extensions, HeaderMap};
@@ -508,8 +509,31 @@ fn decode_worker_to_coordinator_msg(
             pb::worker_to_coordinator_msg::Inner::LoadInfoEos(_) => {
                 WorkerToCoordinatorMsg::LoadInfoEos
             }
+            pb::worker_to_coordinator_msg::Inner::TaskCompletedDynamicFilters(filters) => {
+                WorkerToCoordinatorMsg::TaskCompletedDynamicFilters(
+                    decode_task_completed_dynamic_filters(filters)?,
+                )
+            }
         },
     )
+}
+
+fn decode_task_completed_dynamic_filters(
+    filters: pb::TaskCompletedDynamicFilters,
+) -> Result<TaskCompletedDynamicFilters> {
+    Ok(TaskCompletedDynamicFilters {
+        filters: filters
+            .filters
+            .into_iter()
+            .map(|filter| {
+                Ok(TaskDynamicFilter {
+                    expression_id: filter.expression_id,
+                    expression: PhysicalExprNode::decode(filter.expression_proto.as_slice())
+                        .map_err(|error| DataFusionError::External(Box::new(error)))?,
+                })
+            })
+            .collect::<Result<_>>()?,
+    })
 }
 
 fn decode_task_metrics(task_metrics: pb::TaskMetrics) -> Result<TaskMetrics> {

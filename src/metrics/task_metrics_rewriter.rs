@@ -12,9 +12,9 @@ use datafusion::common::tree_node::Transformed;
 use datafusion::common::tree_node::TreeNode;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::Result;
+use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::internal_err;
 use datafusion::physical_plan::metrics::{Label, Metric, MetricsSet};
-use datafusion::physical_plan::{ChildrenPropertiesMode, ExecutionPlan, ReplaceChildrenOptions};
 use std::sync::Arc;
 
 /// Format to use when displaying metrics for a distributed plan.
@@ -89,10 +89,7 @@ pub async fn rewrite_distributed_plan_with_metrics(
 
         Ok(Transformed::no(plan))
     })?;
-    plan.replace_children(
-        vec![transformed.data],
-        ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
-    )
+    distributed_exec.with_rewritten_plan(transformed.data)
 }
 
 /// Extra information for rewriting local plans.

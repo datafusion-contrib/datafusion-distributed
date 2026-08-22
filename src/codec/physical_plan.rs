@@ -1,15 +1,17 @@
 use super::DistributedCodec;
-use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::datatypes::{Schema, SchemaRef};
 use datafusion::common::Result;
 use datafusion::execution::TaskContext;
-use datafusion::physical_expr::Partitioning;
+use datafusion::physical_expr::{Partitioning, PhysicalExpr};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::bytes::{
     physical_plan_from_bytes_with_proto_converter, physical_plan_to_bytes_with_proto_converter,
 };
 use datafusion_proto::physical_plan::from_proto::parse_protobuf_partitioning;
 use datafusion_proto::physical_plan::to_proto::serialize_partitioning;
-use datafusion_proto::physical_plan::{DeduplicatingProtoConverter, PhysicalPlanDecodeContext};
+use datafusion_proto::physical_plan::{
+    DeduplicatingProtoConverter, PhysicalPlanDecodeContext, PhysicalProtoConverterExtension,
+};
 use datafusion_proto::protobuf;
 use datafusion_proto::protobuf::proto_error;
 use prost::Message;
@@ -40,6 +42,26 @@ pub(crate) fn decode_execution_plan(
     let codec = DistributedCodec::new_combined_with_user(task_ctx.session_config());
     let converter = new_proto_converter();
     physical_plan_from_bytes_with_proto_converter(encoded, task_ctx, &codec, &converter)
+}
+
+pub(crate) fn encode_physical_expr(
+    expression: &Arc<dyn PhysicalExpr>,
+    task_ctx: &TaskContext,
+) -> Result<protobuf::PhysicalExprNode> {
+    let codec = DistributedCodec::new_combined_with_user(task_ctx.session_config());
+    let converter = new_proto_converter();
+    converter.physical_expr_to_proto(expression, &codec)
+}
+
+pub(crate) fn decode_physical_expr(
+    proto: &protobuf::PhysicalExprNode,
+    input_schema: &Schema,
+    task_ctx: &TaskContext,
+) -> Result<Arc<dyn PhysicalExpr>> {
+    let codec = DistributedCodec::new_combined_with_user(task_ctx.session_config());
+    let decode_ctx = PhysicalPlanDecodeContext::new(task_ctx, &codec);
+    let converter = new_proto_converter();
+    converter.proto_to_physical_expr(proto, input_schema, &decode_ctx)
 }
 
 pub(crate) fn encode_partitioning(
