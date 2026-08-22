@@ -108,11 +108,13 @@ fn fetch_required_from_child(plan: &Arc<dyn ExecutionPlan>) -> Option<usize> {
 mod tests {
     use std::sync::Arc;
 
-    use datafusion::arrow::datatypes::Schema;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
     use datafusion::physical_plan::empty::EmptyExec;
     use datafusion::physical_plan::limit::{GlobalLimitExec, LocalLimitExec};
+    use datafusion::physical_plan::projection::{ProjectionExec, ProjectionExpr};
 
     use crate::{NetworkBoundary, Stage};
 
@@ -177,5 +179,65 @@ mod tests {
 
         assert_eq!(local_limit.fetch(), 110);
         Ok(())
+    }
+
+    #[test]
+    fn fetch_separated_by_projection_does_not_add_local_limit() -> Result<()> {
+        let inner = Arc::new(CoalescePartitionsExec::new(empty_plan()).with_fetch(Some(7)));
+        let network_coalesce: Arc<dyn ExecutionPlan> = Arc::new(NetworkCoalesceExec::try_new(
+            identity_projection(inner)?,
+            1,
+            1,
+        )?);
+        let plan: Arc<dyn ExecutionPlan> =
+            Arc::new(CoalescePartitionsExec::new(network_coalesce).with_fetch(Some(7)));
+
+        let rewritten = push_fetch_into_network_coalesce(plan)?;
+        let input_stage = local_input_stage_plan(&rewritten);
+
+        assert!(
+            input_stage.downcast_ref::<LocalLimitExec>().is_none(),
+            "ProjectionExec preserves row count, so a LocalLimitExec above it is redundant"
+        );
+        let projection = input_stage
+            .downcast_ref::<ProjectionExec>()
+            .expect("input stage root should remain ProjectionExec");
+        assert_eq!(projection.input().fetch(), Some(7));
+        Ok(())
+    }
+
+    fn empty_plan() -> Arc<dyn ExecutionPlan> {
+        Arc::new(EmptyExec::new(Arc::new(Schema::new(vec![Field::new(
+            "c",
+            DataType::Int32,
+            true,
+        )]))))
+    }
+
+    fn identity_projection(input: Arc<dyn ExecutionPlan>) -> Result<Arc<dyn ExecutionPlan>> {
+        let schema = input.schema();
+        let exprs = schema
+            .fields()
+            .iter()
+            .enumerate()
+            .map(|(i, field)| ProjectionExpr {
+                expr: Arc::new(Column::new(field.name(), i)),
+                alias: field.name().to_string(),
+            })
+            .collect::<Vec<_>>();
+        Ok(Arc::new(ProjectionExec::try_new(exprs, input)?))
+    }
+
+    fn local_input_stage_plan(plan: &Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+        fn find(node: &Arc<dyn ExecutionPlan>) -> Option<Arc<dyn ExecutionPlan>> {
+            if let Some(network_coalesce) = node.downcast_ref::<NetworkCoalesceExec>() {
+                let Stage::Local(local) = network_coalesce.input_stage() else {
+                    return None;
+                };
+                return Some(Arc::clone(&local.plan));
+            }
+            node.children().into_iter().find_map(find)
+        }
+        find(plan).expect("plan should contain a local NetworkCoalesceExec stage")
     }
 }
