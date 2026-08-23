@@ -14,7 +14,7 @@ use crate::{
     TaskDynamicFilter, TaskMetrics, Worker, WorkerQueryContext, WorkerToCoordinatorMsg,
 };
 use datafusion::common::tree_node::TreeNodeRecursion;
-use datafusion::common::{DataFusionError, HashSet, Result, exec_datafusion_err, internal_err};
+use datafusion::common::{DataFusionError, HashSet, Result, exec_datafusion_err};
 use datafusion::execution::{SessionStateBuilder, TaskContext};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr::expressions::DynamicFilterPhysicalExpr;
