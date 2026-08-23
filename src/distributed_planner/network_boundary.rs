@@ -72,6 +72,9 @@ impl NetworkBoundaryExt for dyn ExecutionPlan {
     }
 }
 
+/// Helper to add dynamic filter references to [`NetworkBoundary`] so the boundaries
+/// may appear as dynamic filter consumers. This helps keep the consumers "alive"
+/// when they are moved across network boundaries and cannot be found by producers.
 pub(crate) fn with_dynamic_filter_anchors(
     boundary: &dyn NetworkBoundary,
     anchors: Vec<Arc<dyn PhysicalExpr>>,
