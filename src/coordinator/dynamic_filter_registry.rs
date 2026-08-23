@@ -7,6 +7,10 @@ use std::sync::{Arc, Mutex};
 
 #[derive(Default)]
 pub(super) struct PlannedDynamicFilter {
+    // Producer and consumer tasks for a dynamic filter. Note that it is not guaranteed
+    // that every task within a stage produces / consumes dynamic filters so we specifically store
+    // task keys rather than stage ids. For example, a distributed union may prevent a dynamic filter
+    // consumer from appearing in all tasks.
     pub(super) producer_tasks: HashSet<TaskKey>,
     pub(super) consumer_tasks: HashSet<TaskKey>,
 }
