@@ -1,5 +1,5 @@
-use crate::{ProducedDynamicFilter, TaskKey};
 use crate::dynamic_filtering::discover_dynamic_filter_consumers;
+use crate::{ProducedDynamicFilter, TaskKey};
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::common::{HashMap, HashSet, Result, internal_err};
 use datafusion::physical_expr::expressions::DynamicFilterPhysicalExpr;
@@ -132,7 +132,7 @@ impl DynamicFilterRegistry {
     }
 
     /// Tracks a partial dynamic filter update in hte registry.
-    pub(crate) fn update(&self, task_key: TaskKey, report: ProducedDynamicFilter) {
+    pub(crate) fn add_partial(&self, task_key: TaskKey, report: ProducedDynamicFilter) {
         if report.expression.expr_id != Some(report.expression_id) {
             return;
         }
@@ -348,7 +348,7 @@ mod tests {
             [first, second],
         );
 
-        registry.update(second, report(expression_id, true, predicate(2)));
+        registry.add_partial(second, report(expression_id, true, predicate(2)));
         registry.seal_stage(3);
         assert!(
             registry.state.lock().unwrap().filters[&expression_id]
@@ -356,7 +356,7 @@ mod tests {
                 .is_none()
         );
 
-        registry.update(first, report(expression_id, true, predicate(1)));
+        registry.add_partial(first, report(expression_id, true, predicate(1)));
         let state = registry.state.lock().unwrap();
         let filter = &state.filters[&expression_id];
         let ExprType::BinaryExpr(binary) =
@@ -381,7 +381,7 @@ mod tests {
             [first, second],
         );
 
-        registry.update(second, report(expression_id, true, predicate(2)));
+        registry.add_partial(second, report(expression_id, true, predicate(2)));
 
         let state = registry.state.lock().unwrap();
         let filter = &state.filters[&expression_id];
@@ -398,9 +398,9 @@ mod tests {
             [producer_task],
         );
 
-        registry.update(producer_task, report(expression_id, false, predicate(1)));
-        registry.update(task_key(1), report(expression_id, true, predicate(1)));
-        registry.update(producer_task, report(expression_id + 1, true, predicate(1)));
+        registry.add_partial(producer_task, report(expression_id, false, predicate(1)));
+        registry.add_partial(task_key(1), report(expression_id, true, predicate(1)));
+        registry.add_partial(producer_task, report(expression_id + 1, true, predicate(1)));
         let state = registry.state.lock().unwrap();
         let filter = &state.filters[&expression_id];
         assert!(filter.completed_predicates.is_empty());
