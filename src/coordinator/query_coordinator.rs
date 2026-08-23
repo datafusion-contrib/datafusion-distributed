@@ -299,7 +299,7 @@ impl<'a> StageCoordinator<'a> {
                         }
                     }
                     WorkerToCoordinatorMsg::ProducedDynamicFilter(filter) => {
-                        dynamic_filter_registry.add_report(task_key, *filter);
+                        dynamic_filter_registry.update(task_key, *filter);
                     }
                 }
             }

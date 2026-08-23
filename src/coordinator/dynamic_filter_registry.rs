@@ -30,13 +30,19 @@ pub(super) struct PlannedDynamicFilter {
     pub(super) consumer_tasks: HashSet<TaskKey>,
     /// Complete inner predicate reported by each producer task.
     pub(super) completed_predicates: HashMap<TaskKey, PhysicalExprNode>,
-    /// The result of merging all the filters used by consumers.
+    /// The result of merging all the filters from the producer tasks.
     pub(super) merged: Option<PhysicalExprNode>,
 }
 
 #[derive(Default)]
 pub(super) struct DynamicFilterRegistryState {
     pub(super) filters: HashMap<u64, PlannedDynamicFilter>,
+    /// Track which stages have registered all of their tasks.
+    ///
+    /// Dynamic filter updates need to be forwarded to consumers when all
+    /// producer tasks have sent updates. However, the coorindator needs to
+    /// indicate that it will not register any more tasks by sealing
+    /// particular stage ids.
     pub(super) sealed_stages: HashSet<usize>,
 }
 
@@ -115,18 +121,18 @@ impl DynamicFilterRegistry {
         Ok(())
     }
 
+    /// Mark that a stage has registered all of its tasks.
     pub(crate) fn seal_stage(&self, stage_id: usize) {
-        let ids = {
-            let mut state = self.state.lock().expect("dynamic filter registry poisoned");
-            state.sealed_stages.insert(stage_id);
-            state.filters.keys().copied().collect::<Vec<_>>()
-        };
+        let mut state = self.state.lock().expect("dynamic filter registry poisoned");
+        state.sealed_stages.insert(stage_id);
+        let ids = state.filters.keys().copied().collect::<Vec<_>>();
         for id in ids {
-            self.try_merge(id);
+            Self::try_merge(&mut state, id);
         }
     }
 
-    pub(crate) fn add_report(&self, task_key: TaskKey, report: ProducedDynamicFilter) {
+    /// Tracks a partial dynamic filter update in hte registry.
+    pub(crate) fn update(&self, task_key: TaskKey, report: ProducedDynamicFilter) {
         if report.expression.expr_id != Some(report.expression_id) {
             return;
         }
@@ -151,12 +157,12 @@ impl DynamicFilterRegistry {
             return;
         }
         filter.completed_predicates.insert(task_key, predicate);
-        drop(state);
-        self.try_merge(report.expression_id);
+        Self::try_merge(&mut state, report.expression_id);
     }
 
-    fn try_merge(&self, id: u64) {
-        let mut state = self.state.lock().expect("dynamic filter registry poisoned");
+    /// Merges partial dynamic filters together for the provided dynamic filter
+    /// id only if there are enough updates present.
+    fn try_merge(state: &mut DynamicFilterRegistryState, id: u64) {
         let merged = {
             let Some(filter) = state.filters.get(&id) else {
                 return;
@@ -209,6 +215,7 @@ impl DynamicFilterRegistry {
     }
 }
 
+/// Merges [`PhysicalExprNode`] together by ORing them.
 fn merge_predicates(mut predicates: Vec<PhysicalExprNode>) -> Option<PhysicalExprNode> {
     match predicates.len() {
         0 => None,
@@ -341,7 +348,7 @@ mod tests {
             [first, second],
         );
 
-        registry.add_report(second, report(expression_id, true, predicate(2)));
+        registry.update(second, report(expression_id, true, predicate(2)));
         registry.seal_stage(3);
         assert!(
             registry.state.lock().unwrap().filters[&expression_id]
@@ -349,7 +356,7 @@ mod tests {
                 .is_none()
         );
 
-        registry.add_report(first, report(expression_id, true, predicate(1)));
+        registry.update(first, report(expression_id, true, predicate(1)));
         let state = registry.state.lock().unwrap();
         let filter = &state.filters[&expression_id];
         let ExprType::BinaryExpr(binary) =
@@ -374,7 +381,7 @@ mod tests {
             [first, second],
         );
 
-        registry.add_report(second, report(expression_id, true, predicate(2)));
+        registry.update(second, report(expression_id, true, predicate(2)));
 
         let state = registry.state.lock().unwrap();
         let filter = &state.filters[&expression_id];
@@ -391,9 +398,9 @@ mod tests {
             [producer_task],
         );
 
-        registry.add_report(producer_task, report(expression_id, false, predicate(1)));
-        registry.add_report(task_key(1), report(expression_id, true, predicate(1)));
-        registry.add_report(producer_task, report(expression_id + 1, true, predicate(1)));
+        registry.update(producer_task, report(expression_id, false, predicate(1)));
+        registry.update(task_key(1), report(expression_id, true, predicate(1)));
+        registry.update(producer_task, report(expression_id + 1, true, predicate(1)));
         let state = registry.state.lock().unwrap();
         let filter = &state.filters[&expression_id];
         assert!(filter.completed_predicates.is_empty());
