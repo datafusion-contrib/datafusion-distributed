@@ -44,6 +44,7 @@ pub(super) fn prepare_static_plan(
             stage_coordinator.worker_to_coordinator_task(i, worker_rx);
             stage_coordinator.coordinator_to_worker_task(i, worker_tx)?;
         }
+
         Ok(Transformed::yes(plan.with_input_stage(Stage::Remote(
             RemoteStage {
                 query_id: stage.query_id,

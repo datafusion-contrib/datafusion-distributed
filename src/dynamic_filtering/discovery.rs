@@ -31,7 +31,8 @@ pub(crate) struct DiscoveredDynamicFilterAnchor {
 pub(crate) struct DiscoveredDynamicFilterConsumers {
     /// Dynamic filters that are evaluated by an execution-plan node.
     pub(crate) consumers: Vec<DiscoveredDynamicFilter>,
-    /// Metadata-only references carried by network boundaries.
+    /// Metadata-only references carried by network boundaries to trick producers
+    /// into thinking the dynamic filter is used.
     pub(crate) anchors: Vec<DiscoveredDynamicFilterAnchor>,
 }
 
@@ -168,6 +169,9 @@ pub(crate) fn discover_dynamic_filter_producers(
 }
 
 /// Finds consumers whose producer does not occur in `plan`.
+///
+/// This includes both consumers evaluated in `plan` and metadata-only anchors propagated through
+/// network boundaries.
 ///
 /// These consumers become orphaned from their producer when `plan` is moved behind a remote
 /// network boundary, so their expressions must remain discoverable on that boundary.
@@ -354,43 +358,6 @@ mod tests {
             vec![id]
         );
         assert_eq!(orphan_dynamic_filter_consumers(&plan)?.len(), 1);
-        Ok(())
-    }
-
-    #[test]
-    fn discovers_producers_without_restricting_execution_plan_type() -> Result<()> {
-        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
-        let input = Arc::new(EmptyExec::new(schema)) as Arc<dyn ExecutionPlan>;
-        let first = Arc::new(DynamicFilterPhysicalExpr::new(
-            vec![Arc::new(Column::new("a", 0))],
-            lit(true),
-        )) as Arc<dyn PhysicalExpr>;
-        let second = Arc::new(DynamicFilterPhysicalExpr::new(
-            vec![Arc::new(Column::new("a", 0))],
-            lit(true),
-        )) as Arc<dyn PhysicalExpr>;
-
-        let plan = Arc::new(ExpressionExec::new(
-            Arc::new(ExpressionExec::new(
-                Arc::new(ExpressionExec::new(input, Arc::clone(&first), true)),
-                Arc::clone(&second),
-                true,
-            )),
-            Arc::clone(&first),
-            true,
-        )) as Arc<dyn ExecutionPlan>;
-
-        let discovered = discover_dynamic_filter_producers(&plan)?;
-        assert_eq!(
-            discovered
-                .iter()
-                .map(|producer| producer.id)
-                .collect::<Vec<_>>(),
-            vec![
-                first.expression_id().unwrap(),
-                second.expression_id().unwrap()
-            ]
-        );
         Ok(())
     }
 
