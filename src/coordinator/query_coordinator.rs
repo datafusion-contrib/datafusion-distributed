@@ -379,10 +379,7 @@ impl<'a> StageCoordinator<'a> {
     /// trimming down any unnecessary information that the specific `task_i` task is not going to
     /// need, like unexecuted branches in [ChildrenIsolatorUnionExec], or unexecuted variants of
     /// [DistributedLeafExec].
-    fn task_specialized_plan(
-        &self,
-        task_i: usize,
-    ) -> Result<SpecializedTaskPlan> {
+    fn task_specialized_plan(&self, task_i: usize) -> Result<SpecializedTaskPlan> {
         let session_config = self.task_ctx.session_config();
         let wuf_registry = session_config
             .get_extension::<WorkUnitFeedRegistry>()
@@ -462,11 +459,13 @@ impl<'a> StageCoordinator<'a> {
     }
 }
 
-/// Returns producer IDs whose consumers cross a network boundary in this task plan.
+/// Returns producer IDs with at least one remote consumer.
 ///
-/// Consumers in the same task share their dynamic-filter expression with the producer and are
-/// updated directly by DataFusion. Network-boundary expressions are metadata anchors installed by
-/// distributed planning; their IDs identify the producers whose updates must cross the coordinator.
+/// If a producer ID is present in the dynamic-filter anchors of any [`NetworkBoundary`], the plan
+/// contains at least one remote consumer and the producer's updates must be forwarded to the
+/// coordinator.
+///
+/// [`NetworkBoundary`]: crate::NetworkBoundary
 fn dynamic_filter_remote_producer_ids(plan: &Arc<dyn ExecutionPlan>) -> Result<Vec<u64>> {
     let producer_ids: HashSet<_> = discover_dynamic_filter_producers(plan)?
         .into_iter()

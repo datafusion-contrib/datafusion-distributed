@@ -81,7 +81,8 @@ pub struct SetPlanRequest {
     /// The subplan the worker is expected to execute.
     pub plan: MaybeEncoded<Arc<dyn ExecutionPlan>>,
     /// Producer expression IDs whose consumers cross a network boundary. Workers observe and
-    /// report updates only for these IDs; task-local consumers are updated directly in memory.
+    /// report updates only for these IDs; task-local consumers are updated directly in memory
+    /// so they do not need to be reported.
     pub dynamic_filter_remote_producer_ids: Vec<u64>,
     /// Information about all the work unit feeds that will be streamed from coordinator to worker.
     /// This information is needed here because at the moment of setting the plan, all the appropriate
