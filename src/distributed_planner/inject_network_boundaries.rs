@@ -1,3 +1,4 @@
+use crate::dynamic_filtering::orphan_dynamic_filter_consumers;
 use crate::distributed_planner::insert_broadcast::is_left_broadcast_safe;
 use crate::events::TaskCountAnnotation::{Desired, Maximum};
 use crate::events::{
@@ -14,7 +15,7 @@ use crate::{
 use async_trait::async_trait;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::common::{HashMap, JoinType, Result, plan_err};
-use datafusion::physical_expr::{Partitioning, PhysicalExpr};
+use datafusion::physical_expr::Partitioning;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::execution_plan::CardinalityEffect;
 use datafusion::physical_plan::joins::{
@@ -331,13 +332,14 @@ async fn _inject_network_boundaries(
             tasks: task_count.as_usize(),
             metrics_set: Default::default(),
         };
+        let dynamic_filter_anchors = orphan_dynamic_filter_consumers(&input_stage.plan)?;
         let result = nb_ctx
             .nb_builder
             .build(input_stage, TypeId::of::<NetworkShuffleExec>(), nb_ctx)
             .await?;
         let nb = Arc::new(
             NetworkShuffleExec::from_stage(result.input_stage, result.input_properties)
-                .with_dynamic_filter_anchors(result.dynamic_filter_anchors),
+                .with_dynamic_filter_anchors(dynamic_filter_anchors),
         );
         Ok(nb_ctx.plan_with_task_count(nb, result.consumer_task_count))
     }
@@ -350,13 +352,14 @@ async fn _inject_network_boundaries(
             tasks: task_count.as_usize(),
             metrics_set: Default::default(),
         };
+        let dynamic_filter_anchors = orphan_dynamic_filter_consumers(&input_stage.plan)?;
         let result = nb_ctx
             .nb_builder
             .build(input_stage, TypeId::of::<NetworkBroadcastExec>(), nb_ctx)
             .await?;
         let nb = Arc::new(
             NetworkBroadcastExec::from_stage(result.input_stage, result.input_properties)
-                .with_dynamic_filter_anchors(result.dynamic_filter_anchors),
+                .with_dynamic_filter_anchors(dynamic_filter_anchors),
         );
         Ok(nb_ctx.plan_with_task_count(nb, result.consumer_task_count))
     }
@@ -372,6 +375,7 @@ async fn _inject_network_boundaries(
             tasks: task_count.as_usize(),
             metrics_set: Default::default(),
         };
+        let dynamic_filter_anchors = orphan_dynamic_filter_consumers(&input_stage.plan)?;
         let result = nb_ctx
             .nb_builder
             .build(input_stage, TypeId::of::<NetworkCoalesceExec>(), nb_ctx)
@@ -386,7 +390,7 @@ async fn _inject_network_boundaries(
         // stage above this boundary must run in exactly one task.
         let nb = Arc::new(
             NetworkCoalesceExec::try_from_stage(result.input_stage, result.input_properties, 1)?
-                .with_dynamic_filter_anchors(result.dynamic_filter_anchors),
+                .with_dynamic_filter_anchors(dynamic_filter_anchors),
         );
         Ok(nb_ctx.plan_with_task_count(nb, result.consumer_task_count))
     } else if parent.is_none() {
@@ -537,9 +541,6 @@ pub(crate) struct NetworkBoundaryBuilderResult {
     /// actually execute. This information might not be present in the `input_stage` field, as it
     /// might be in [Stage::Remote] state because it was already sent for execution.
     pub(crate) input_properties: Arc<PlanProperties>,
-    /// Dynamic-filter consumers from the input stage that must remain visible after it becomes
-    /// remote. These expressions are metadata only and do not change the plan topology.
-    pub(crate) dynamic_filter_anchors: Vec<Arc<dyn PhysicalExpr>>,
 }
 
 #[async_trait]
@@ -625,7 +626,6 @@ impl NetworkBoundaryBuilder for CardinalityBasedNetworkBoundaryBuilder {
                 consumer_task_count: Maximum(1),
                 input_stage: Stage::Local(input_stage),
                 input_properties,
-                dynamic_filter_anchors: vec![],
             });
         }
 
@@ -656,7 +656,6 @@ impl NetworkBoundaryBuilder for CardinalityBasedNetworkBoundaryBuilder {
             consumer_task_count: Desired((f * input_stage.tasks as f64).ceil() as usize),
             input_stage: Stage::Local(input_stage),
             input_properties,
-            dynamic_filter_anchors: vec![],
         })
     }
 }

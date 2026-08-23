@@ -243,7 +243,7 @@ fn build_task_completed_dynamic_filters(
     plan: &Arc<dyn ExecutionPlan>,
 ) -> Result<TaskCompletedDynamicFilters> {
     let mut filters = vec![];
-    for consumer in discover_dynamic_filter_consumers(plan)? {
+    for consumer in discover_dynamic_filter_consumers(plan)?.consumers {
         filters.push(TaskDynamicFilter {
             expression_id: consumer.id,
             expression: MaybeEncoded::Decoded(consumer.expression),
