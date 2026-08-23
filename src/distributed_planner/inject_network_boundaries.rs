@@ -1,5 +1,5 @@
-use crate::dynamic_filtering::orphan_dynamic_filter_consumers;
 use crate::distributed_planner::insert_broadcast::is_left_broadcast_safe;
+use crate::dynamic_filtering::orphan_dynamic_filter_consumers;
 use crate::events::TaskCountAnnotation::{Desired, Maximum};
 use crate::events::{
     DesiredTaskCountEvent, DesiredTaskCountHandlers, ScaleUpLeafNodeEvent, ScaleUpLeafNodeHandlers,

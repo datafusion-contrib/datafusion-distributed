@@ -98,6 +98,7 @@ pub(super) async fn prepare_dynamic_plan(
                 });
                 stage_coordinator.coordinator_to_worker_task(i, worker_tx)?;
             }
+
             let plans_for_viz = Arc::clone(&plans_for_viz);
             Ok(async move {
                 let (stats, consumer_tc) = if nb_type == TypeId::of::<NetworkCoalesceExec>() {
