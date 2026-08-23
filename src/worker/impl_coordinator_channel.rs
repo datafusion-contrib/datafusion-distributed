@@ -486,23 +486,42 @@ mod tests {
     }
 
     #[test]
-    fn applies_and_completes_a_merged_filter() -> Result<()> {
-        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+    fn applies_and_completes_a_merged_filter_for_every_consumer() -> Result<()> {
+        let source_schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
+        let expression_schema = Arc::new(Schema::new(vec![
+            Field::new("unused", DataType::Int32, false),
+            Field::new("first_key", DataType::Int32, false),
+            Field::new("second_key", DataType::Int32, false),
+        ]));
         let expression = Arc::new(DynamicFilterPhysicalExpr::new(
-            vec![Arc::new(Column::new("a", 0))],
+            vec![Arc::new(Column::new("key", 0))],
             lit(true),
         )) as Arc<dyn PhysicalExpr>;
         let id = expression.expression_id().unwrap();
-        let consumer = DiscoveredDynamicFilter {
+        let first = Arc::clone(&expression)
+            .with_new_children(vec![Arc::new(Column::new("first_key", 1))])?;
+        let second = Arc::clone(&expression)
+            .with_new_children(vec![Arc::new(Column::new("second_key", 2))])?;
+        let consumers = HashMap::from([(
             id,
-            expression: Arc::clone(&expression),
-            input_schema: Arc::clone(&schema),
-            expression_schema: Arc::clone(&schema),
-        };
-        let consumers = HashMap::from([(id, vec![consumer])]);
+            vec![
+                DiscoveredDynamicFilter {
+                    id,
+                    expression: Arc::clone(&first),
+                    input_schema: Arc::clone(&source_schema),
+                    expression_schema: Arc::clone(&expression_schema),
+                },
+                DiscoveredDynamicFilter {
+                    id,
+                    expression: Arc::clone(&second),
+                    input_schema: Arc::clone(&source_schema),
+                    expression_schema: Arc::clone(&expression_schema),
+                },
+            ],
+        )]);
         let task_ctx = SessionContext::new().task_ctx();
         let predicate = Arc::new(BinaryExpr::new(
-            Arc::new(Column::new("a", 0)),
+            Arc::new(Column::new("key", 0)),
             Operator::Gt,
             lit(10_i32),
         )) as Arc<dyn PhysicalExpr>;
@@ -516,15 +535,17 @@ mod tests {
             &task_ctx,
         )?;
 
-        let dynamic_filter = expression
-            .downcast_ref::<DynamicFilterPhysicalExpr>()
-            .unwrap();
-        assert_eq!(dynamic_filter.current()?.to_string(), "a@0 > 10");
-        let serialized = encode_physical_expr(&expression, &task_ctx)?;
-        let Some(ExprType::DynamicFilter(serialized)) = serialized.expr_type else {
-            panic!("expected dynamic filter");
-        };
-        assert!(serialized.is_complete);
+        for (consumer, expected) in [(&first, "first_key@1 > 10"), (&second, "second_key@2 > 10")] {
+            let dynamic_filter = consumer
+                .downcast_ref::<DynamicFilterPhysicalExpr>()
+                .unwrap();
+            assert_eq!(dynamic_filter.current()?.to_string(), expected);
+            let serialized = encode_physical_expr(consumer, &task_ctx)?;
+            let Some(ExprType::DynamicFilter(serialized)) = serialized.expr_type else {
+                panic!("expected dynamic filter");
+            };
+            assert!(serialized.is_complete);
+        }
         Ok(())
     }
 }
