@@ -13,8 +13,10 @@ use std::sync::{Arc, Mutex};
 pub(super) enum DynamicFilterMergeMode {
     /// Wait for every planned producer task to report a complete filter, then merge them.
     AllProducersComplete,
-    /// Use the first complete producer report.
+    /// Use the first complete producer report and forward it.
     FirstProducerComplete,
+    // TODO: Merge and forward updates for filters that do not complete, such as filters produced
+    // by aggregates and sorts. See https://github.com/datafusion-contrib/datafusion-distributed/issues/665.
 }
 
 #[derive(Default)]
@@ -26,12 +28,10 @@ pub(super) struct PlannedDynamicFilter {
     // consumer from appearing in all tasks.
     pub(super) producer_tasks: HashSet<TaskKey>,
     pub(super) consumer_tasks: HashSet<TaskKey>,
-    /// Latest observed producer state for each task, including incomplete states.
-    pub(super) reports: HashMap<TaskKey, PhysicalExprNode>,
-    /// Number of producer tasks whose latest state is complete.
-    pub(super) completed_producer_count: usize,
+    /// Complete inner predicate reported by each producer task.
+    pub(super) completed_predicates: HashMap<TaskKey, PhysicalExprNode>,
+    /// The result of merging all the filters used by consumers.
     pub(super) merged: Option<PhysicalExprNode>,
-    pub(super) disabled: bool,
 }
 
 #[derive(Default)]
@@ -112,25 +112,31 @@ impl DynamicFilterRegistry {
                 .consumer_tasks
                 .insert(task_key);
         }
-        drop(state);
-        self.try_merge_all();
         Ok(())
     }
 
     pub(crate) fn seal_stage(&self, stage_id: usize) {
-        self.state
-            .lock()
-            .expect("dynamic filter registry poisoned")
-            .sealed_stages
-            .insert(stage_id);
-        self.try_merge_all();
+        let ids = {
+            let mut state = self.state.lock().expect("dynamic filter registry poisoned");
+            state.sealed_stages.insert(stage_id);
+            state.filters.keys().copied().collect::<Vec<_>>()
+        };
+        for id in ids {
+            self.try_merge(id);
+        }
     }
 
     pub(crate) fn add_report(&self, task_key: TaskKey, report: ProducedDynamicFilter) {
         if report.expression.expr_id != Some(report.expression_id) {
             return;
         }
-        let Some((generation, is_complete)) = report_state(&report.expression) else {
+        let Some(ExprType::DynamicFilter(dynamic_filter)) = report.expression.expr_type else {
+            return;
+        };
+        if !dynamic_filter.is_complete {
+            return;
+        }
+        let Some(predicate) = dynamic_filter.inner_expr.map(|predicate| *predicate) else {
             return;
         };
 
@@ -138,95 +144,42 @@ impl DynamicFilterRegistry {
         let Some(filter) = state.filters.get_mut(&report.expression_id) else {
             return;
         };
-        if filter.disabled || filter.merged.is_some() || !filter.producer_tasks.contains(&task_key)
+        if filter.merged.is_some()
+            || !filter.producer_tasks.contains(&task_key)
+            || filter.completed_predicates.contains_key(&task_key)
         {
             return;
         }
-
-        let advances_state = match filter.reports.get(&task_key) {
-            None => true,
-            Some(previous) => {
-                let Some((previous_generation, previous_is_complete)) = report_state(previous)
-                else {
-                    // Only validated reports are inserted below.
-                    unreachable!("stored producer report must be a dynamic filter")
-                };
-                // A complete report is terminal. Otherwise, keep only a newer generation, except
-                // that completion may replace an incomplete report at the same generation because
-                // DataFusion's mark_complete() does not increment the generation.
-                !previous_is_complete
-                    && (generation > previous_generation
-                        || (generation == previous_generation && is_complete))
-            }
-        };
-        if !advances_state {
-            return;
-        }
-
-        if is_complete {
-            filter.completed_producer_count += 1;
-        }
-        filter.reports.insert(task_key, report.expression);
+        filter.completed_predicates.insert(task_key, predicate);
         drop(state);
         self.try_merge(report.expression_id);
     }
 
-    fn try_merge_all(&self) {
-        let ids: Vec<_> = self
-            .state
-            .lock()
-            .expect("dynamic filter registry poisoned")
-            .filters
-            .keys()
-            .copied()
-            .collect();
-        for id in ids {
-            self.try_merge(id);
-        }
-    }
-
     fn try_merge(&self, id: u64) {
-        if self.try_merge_inner(id).is_err()
-            && let Some(filter) = self
-                .state
-                .lock()
-                .expect("dynamic filter registry poisoned")
-                .filters
-                .get_mut(&id)
-        {
-            // Dynamic filtering is an optimization. A malformed or unsupported report must not
-            // fail the query.
-            filter.disabled = true;
-        }
-    }
-
-    fn try_merge_inner(&self, id: u64) -> Result<()> {
+        let mut state = self.state.lock().expect("dynamic filter registry poisoned");
         let merged = {
-            let state = self.state.lock().expect("dynamic filter registry poisoned");
             let Some(filter) = state.filters.get(&id) else {
-                return Ok(());
+                return;
             };
-            if filter.disabled || filter.merged.is_some() {
-                return Ok(());
+            if filter.merged.is_some() {
+                return;
             }
             let Some(merge_mode) = filter.merge_mode else {
-                return Ok(());
+                return;
             };
 
             let mut task_keys: Vec<_> = filter.producer_tasks.iter().copied().collect();
             task_keys.sort_unstable_by_key(|key| (key.stage_id, key.task_number));
-            let ready_keys = match merge_mode {
-                DynamicFilterMergeMode::FirstProducerComplete => task_keys
-                    .into_iter()
-                    .find(|task_key| {
-                        filter
-                            .reports
-                            .get(task_key)
-                            .and_then(report_state)
-                            .is_some_and(|(_, is_complete)| is_complete)
-                    })
-                    .into_iter()
-                    .collect::<Vec<_>>(),
+            let predicates = match merge_mode {
+                DynamicFilterMergeMode::FirstProducerComplete => {
+                    let Some(predicate) = task_keys
+                        .iter()
+                        .find_map(|task_key| filter.completed_predicates.get(task_key))
+                    else {
+                        return;
+                    };
+                    vec![predicate.clone()]
+                }
                 DynamicFilterMergeMode::AllProducersComplete => {
                     let stages_sealed = filter
                         .producer_tasks
@@ -234,57 +187,33 @@ impl DynamicFilterRegistry {
                         .all(|task| state.sealed_stages.contains(&task.stage_id));
                     if !stages_sealed
                         || task_keys.is_empty()
-                        || filter.completed_producer_count != task_keys.len()
+                        || filter.completed_predicates.len() != task_keys.len()
                     {
-                        return Ok(());
+                        return;
                     }
                     task_keys
+                        .iter()
+                        .filter_map(|task_key| filter.completed_predicates.get(task_key).cloned())
+                        .collect()
                 }
             };
-            let predicates = ready_keys
-                .into_iter()
-                .map(|task_key| completed_inner_expr(&filter.reports[&task_key]))
-                .collect::<Result<Vec<_>>>()?;
-            merge_predicates(predicates)?
+            let Some(merged) = merge_predicates(predicates) else {
+                return;
+            };
+            merged
         };
 
-        let mut state = self.state.lock().expect("dynamic filter registry poisoned");
-        if let Some(filter) = state.filters.get_mut(&id)
-            && !filter.disabled
-        {
+        if let Some(filter) = state.filters.get_mut(&id) {
             filter.merged.get_or_insert(merged);
         }
-        Ok(())
     }
 }
 
-fn report_state(expression: &PhysicalExprNode) -> Option<(u64, bool)> {
-    let Some(ExprType::DynamicFilter(filter)) = expression.expr_type.as_ref() else {
-        return None;
-    };
-    Some((filter.generation, filter.is_complete))
-}
-
-fn completed_inner_expr(expression: &PhysicalExprNode) -> Result<PhysicalExprNode> {
-    let Some(ExprType::DynamicFilter(filter)) = expression.expr_type.as_ref() else {
-        return internal_err!("producer report was not a DynamicFilterPhysicalExpr");
-    };
-    if !filter.is_complete {
-        return internal_err!("attempted to merge an incomplete dynamic filter");
-    }
-    let Some(inner_expr) = filter.inner_expr.as_deref() else {
-        return internal_err!("completed dynamic filter did not contain an inner expression");
-    };
-    Ok(inner_expr.clone())
-}
-
-fn merge_predicates(mut predicates: Vec<PhysicalExprNode>) -> Result<PhysicalExprNode> {
+fn merge_predicates(mut predicates: Vec<PhysicalExprNode>) -> Option<PhysicalExprNode> {
     match predicates.len() {
-        0 => internal_err!("attempted to merge no dynamic filters"),
-        1 => predicates
-            .pop()
-            .ok_or_else(|| datafusion::common::internal_datafusion_err!("missing predicate")),
-        _ => Ok(PhysicalExprNode {
+        0 => None,
+        1 => predicates.pop(),
+        _ => Some(PhysicalExprNode {
             expr_id: None,
             expr_type: Some(ExprType::BinaryExpr(Box::new(PhysicalBinaryExprNode {
                 l: None,
@@ -402,44 +331,6 @@ mod tests {
     }
 
     #[test]
-    fn stores_latest_report_and_counts_completion_once() {
-        let expression_id = 42;
-        let producer_task = task_key(0);
-        let registry = registry_with_producers(
-            expression_id,
-            DynamicFilterMergeMode::AllProducersComplete,
-            [producer_task],
-        );
-
-        registry.add_report(producer_task, report(expression_id, 1, false, predicate(1)));
-        registry.add_report(producer_task, report(expression_id, 0, false, predicate(0)));
-        registry.add_report(producer_task, report(expression_id, 2, false, predicate(2)));
-        {
-            let state = registry.state.lock().unwrap();
-            let filter = &state.filters[&expression_id];
-            assert_eq!(
-                report_state(&filter.reports[&producer_task]),
-                Some((2, false))
-            );
-            assert_eq!(filter.completed_producer_count, 0);
-            assert!(filter.merged.is_none());
-        }
-
-        // Completion is a state change even though it has the same generation as the last update.
-        registry.add_report(producer_task, report(expression_id, 2, true, predicate(2)));
-        registry.add_report(producer_task, report(expression_id, 2, true, predicate(2)));
-        registry.add_report(producer_task, report(expression_id, 3, false, predicate(3)));
-        let state = registry.state.lock().unwrap();
-        let filter = &state.filters[&expression_id];
-        assert_eq!(
-            report_state(&filter.reports[&producer_task]),
-            Some((2, true))
-        );
-        assert_eq!(filter.completed_producer_count, 1);
-        assert!(filter.merged.is_none());
-    }
-
-    #[test]
     fn all_producers_complete_merges_flat_or_in_task_order() {
         let expression_id = 43;
         let first = task_key(0);
@@ -450,7 +341,7 @@ mod tests {
             [first, second],
         );
 
-        registry.add_report(second, report(expression_id, 1, true, predicate(2)));
+        registry.add_report(second, report(expression_id, true, predicate(2)));
         registry.seal_stage(3);
         assert!(
             registry.state.lock().unwrap().filters[&expression_id]
@@ -458,10 +349,9 @@ mod tests {
                 .is_none()
         );
 
-        registry.add_report(first, report(expression_id, 1, true, predicate(1)));
+        registry.add_report(first, report(expression_id, true, predicate(1)));
         let state = registry.state.lock().unwrap();
         let filter = &state.filters[&expression_id];
-        assert_eq!(filter.completed_producer_count, 2);
         let ExprType::BinaryExpr(binary) =
             filter.merged.as_ref().unwrap().expr_type.as_ref().unwrap()
         else {
@@ -484,16 +374,15 @@ mod tests {
             [first, second],
         );
 
-        registry.add_report(second, report(expression_id, 1, true, predicate(2)));
+        registry.add_report(second, report(expression_id, true, predicate(2)));
 
         let state = registry.state.lock().unwrap();
         let filter = &state.filters[&expression_id];
-        assert_eq!(filter.completed_producer_count, 1);
         assert_eq!(filter.merged.as_ref(), Some(&predicate(2)));
     }
 
     #[test]
-    fn ignores_reports_from_unknown_tasks_and_expression_ids() {
+    fn ignores_incomplete_and_unknown_reports() {
         let expression_id = 45;
         let producer_task = task_key(0);
         let registry = registry_with_producers(
@@ -502,15 +391,12 @@ mod tests {
             [producer_task],
         );
 
-        registry.add_report(task_key(1), report(expression_id, 1, true, predicate(1)));
-        registry.add_report(
-            producer_task,
-            report(expression_id + 1, 1, true, predicate(1)),
-        );
+        registry.add_report(producer_task, report(expression_id, false, predicate(1)));
+        registry.add_report(task_key(1), report(expression_id, true, predicate(1)));
+        registry.add_report(producer_task, report(expression_id + 1, true, predicate(1)));
         let state = registry.state.lock().unwrap();
         let filter = &state.filters[&expression_id];
-        assert!(filter.reports.is_empty());
-        assert_eq!(filter.completed_producer_count, 0);
+        assert!(filter.completed_predicates.is_empty());
     }
 
     fn registry_with_producers<const N: usize>(
@@ -532,7 +418,6 @@ mod tests {
 
     fn report(
         expression_id: u64,
-        generation: u64,
         is_complete: bool,
         inner_expr: PhysicalExprNode,
     ) -> ProducedDynamicFilter {
@@ -542,7 +427,6 @@ mod tests {
                 expr_id: Some(expression_id),
                 expr_type: Some(ExprType::DynamicFilter(Box::new(
                     PhysicalDynamicFilterNode {
-                        generation,
                         inner_expr: Some(Box::new(inner_expr)),
                         is_complete,
                         ..Default::default()
