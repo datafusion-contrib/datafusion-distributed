@@ -1,7 +1,7 @@
-use crate::dynamic_filtering::orphan_dynamic_filter_consumers;
 use crate::coordinator::distributed::PreparedPlan;
 use crate::coordinator::query_coordinator::QueryCoordinator;
 use crate::distributed_planner::with_dynamic_filter_anchors;
+use crate::dynamic_filtering::orphan_dynamic_filter_consumers;
 use crate::stage::RemoteStage;
 use crate::{NetworkBoundaryExt, Stage};
 use datafusion::common::tree_node::{Transformed, TreeNode};

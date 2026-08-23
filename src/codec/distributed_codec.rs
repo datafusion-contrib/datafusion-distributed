@@ -14,8 +14,8 @@ use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::Result;
 use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
-use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_expr::equivalence::{EquivalenceClass, EquivalenceGroup};
+use datafusion::physical_expr::{EquivalenceProperties, PhysicalExpr};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::union::UnionExec;
 use datafusion::physical_plan::{ExecutionPlan, Partitioning, PlanProperties};
@@ -44,6 +44,29 @@ impl DistributedCodec {
         codecs.extend(get_distributed_user_codecs(cfg));
         ComposedPhysicalExtensionCodec::new(codecs)
     }
+}
+
+fn decode_dynamic_filter_anchors(
+    anchors: &[protobuf::PhysicalExprNode],
+    schema: &Schema,
+    decode_ctx: &PhysicalPlanDecodeContext<'_>,
+    proto_converter: &dyn PhysicalProtoConverterExtension,
+) -> Result<Vec<Arc<dyn PhysicalExpr>>> {
+    anchors
+        .iter()
+        .map(|expression| proto_converter.proto_to_physical_expr(expression, schema, decode_ctx))
+        .collect()
+}
+
+fn encode_dynamic_filter_anchors(
+    anchors: &[Arc<dyn PhysicalExpr>],
+    codec: &dyn PhysicalExtensionCodec,
+    proto_converter: &dyn PhysicalProtoConverterExtension,
+) -> Result<Vec<protobuf::PhysicalExprNode>> {
+    anchors
+        .iter()
+        .map(|expression| proto_converter.physical_expr_to_proto(expression, codec))
+        .collect()
 }
 
 impl PhysicalExtensionCodec for DistributedCodec {
@@ -119,12 +142,12 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     proto_converter,
                 )?
                 .ok_or(proto_error("NetworkShuffleExec is missing partitioning"))?;
-                let dynamic_filter_anchors = dynamic_filter_anchors
-                    .iter()
-                    .map(|expression| {
-                        proto_converter.proto_to_physical_expr(expression, &schema, &decode_ctx)
-                    })
-                    .collect::<Result<Vec<_>>>()?;
+                let dynamic_filter_anchors = decode_dynamic_filter_anchors(
+                    &dynamic_filter_anchors,
+                    &schema,
+                    &decode_ctx,
+                    proto_converter,
+                )?;
                 let schema = Arc::new(schema);
                 let equivalence_properties = parse_equivalence_properties(
                     equivalence_classes,
@@ -162,12 +185,12 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     proto_converter,
                 )?
                 .ok_or(proto_error("NetworkCoalesceExec is missing partitioning"))?;
-                let dynamic_filter_anchors = dynamic_filter_anchors
-                    .iter()
-                    .map(|expression| {
-                        proto_converter.proto_to_physical_expr(expression, &schema, &decode_ctx)
-                    })
-                    .collect::<Result<Vec<_>>>()?;
+                let dynamic_filter_anchors = decode_dynamic_filter_anchors(
+                    &dynamic_filter_anchors,
+                    &schema,
+                    &decode_ctx,
+                    proto_converter,
+                )?;
                 let schema = Arc::new(schema);
                 let equivalence_properties = parse_equivalence_properties(
                     equivalence_classes,
@@ -205,12 +228,12 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     proto_converter,
                 )?
                 .ok_or(proto_error("NetworkBroadcastExec is missing partitioning"))?;
-                let dynamic_filter_anchors = dynamic_filter_anchors
-                    .iter()
-                    .map(|expression| {
-                        proto_converter.proto_to_physical_expr(expression, &schema, &decode_ctx)
-                    })
-                    .collect::<Result<Vec<_>>>()?;
+                let dynamic_filter_anchors = decode_dynamic_filter_anchors(
+                    &dynamic_filter_anchors,
+                    &schema,
+                    &decode_ctx,
+                    proto_converter,
+                )?;
                 let schema = Arc::new(schema);
                 let equivalence_properties = parse_equivalence_properties(
                     equivalence_classes,
@@ -340,11 +363,11 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     self,
                     proto_converter,
                 )?,
-                dynamic_filter_anchors: node
-                    .dynamic_filter_anchors()
-                    .iter()
-                    .map(|expression| proto_converter.physical_expr_to_proto(expression, self))
-                    .collect::<Result<Vec<_>>>()?,
+                dynamic_filter_anchors: encode_dynamic_filter_anchors(
+                    node.dynamic_filter_anchors(),
+                    self,
+                    proto_converter,
+                )?,
             };
 
             let wrapper = DistributedExecProto {
@@ -366,11 +389,11 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     self,
                     proto_converter,
                 )?,
-                dynamic_filter_anchors: node
-                    .dynamic_filter_anchors()
-                    .iter()
-                    .map(|expression| proto_converter.physical_expr_to_proto(expression, self))
-                    .collect::<Result<Vec<_>>>()?,
+                dynamic_filter_anchors: encode_dynamic_filter_anchors(
+                    node.dynamic_filter_anchors(),
+                    self,
+                    proto_converter,
+                )?,
             };
 
             let wrapper = DistributedExecProto {
@@ -392,11 +415,11 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     self,
                     proto_converter,
                 )?,
-                dynamic_filter_anchors: node
-                    .dynamic_filter_anchors()
-                    .iter()
-                    .map(|expression| proto_converter.physical_expr_to_proto(expression, self))
-                    .collect::<Result<Vec<_>>>()?,
+                dynamic_filter_anchors: encode_dynamic_filter_anchors(
+                    node.dynamic_filter_anchors(),
+                    self,
+                    proto_converter,
+                )?,
             };
 
             let wrapper = DistributedExecProto {
