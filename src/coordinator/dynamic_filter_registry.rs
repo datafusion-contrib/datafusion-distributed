@@ -1,7 +1,8 @@
-use crate::{NetworkBoundaryExt, TaskKey};
-use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
-use datafusion::common::{HashMap, HashSet, Result, internal_err};
-use datafusion::physical_expr::expressions::DynamicFilterPhysicalExpr;
+use crate::TaskKey;
+use crate::dynamic_filtering::{
+    discover_dynamic_filter_consumers, discover_dynamic_filter_producers,
+};
+use datafusion::common::{HashMap, HashSet, Result};
 use datafusion::physical_plan::ExecutionPlan;
 use std::sync::{Arc, Mutex};
 
@@ -38,66 +39,22 @@ impl DynamicFilterRegistry {
         plan: &Arc<dyn ExecutionPlan>,
         task_key: TaskKey,
     ) -> Result<()> {
-        let mut producers = HashSet::new();
-        let mut consumers = HashSet::new();
-
-        plan.apply(|node| {
-            let produced_ids: HashSet<_> = node
-                .dynamic_expressions_produced()
-                .into_iter()
-                .filter_map(|expression| {
-                    expression
-                        .downcast_ref::<DynamicFilterPhysicalExpr>()
-                        .map(|_| expression.expression_id())
-                })
-                .map(|id| match id {
-                    Some(id) => Ok(id),
-                    None => {
-                        internal_err!("DynamicFilterPhysicalExpr did not have an expression ID")
-                    }
-                })
-                .collect::<Result<_>>()?;
-            producers.extend(produced_ids.iter().copied());
-
-            // Network-boundary expressions preserve visibility across stages. They are anchors,
-            // not consumers which can receive a dynamic-filter update.
-            if !node.is_network_boundary() {
-                node.apply_expressions(&mut |root| {
-                    root.apply(|expression| {
-                        if expression
-                            .downcast_ref::<DynamicFilterPhysicalExpr>()
-                            .is_some()
-                        {
-                            let Some(id) = expression.expression_id() else {
-                                return internal_err!(
-                                    "DynamicFilterPhysicalExpr did not have an expression ID"
-                                );
-                            };
-                            if !produced_ids.contains(&id) {
-                                consumers.insert(id);
-                            }
-                        }
-                        Ok(TreeNodeRecursion::Continue)
-                    })
-                })?;
-            }
-
-            Ok(TreeNodeRecursion::Continue)
-        })?;
+        let producers = discover_dynamic_filter_producers(plan)?;
+        let consumers = discover_dynamic_filter_consumers(plan)?.consumers;
 
         let mut state = self.state.lock().expect("dynamic filter registry poisoned");
-        for id in producers {
+        for producer in producers {
             state
                 .filters
-                .entry(id)
+                .entry(producer.id)
                 .or_default()
                 .producer_tasks
                 .insert(task_key);
         }
-        for id in consumers {
+        for consumer in consumers {
             state
                 .filters
-                .entry(id)
+                .entry(consumer.id)
                 .or_default()
                 .consumer_tasks
                 .insert(task_key);
@@ -111,6 +68,7 @@ mod tests {
     use super::*;
     use crate::execution_plans::NetworkShuffleExec;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::common::tree_node::TreeNodeRecursion;
     use datafusion::execution::{SendableRecordBatchStream, TaskContext};
     use datafusion::physical_expr::expressions::{Column, DynamicFilterPhysicalExpr, lit};
     use datafusion::physical_expr::{Partitioning, PhysicalExpr};

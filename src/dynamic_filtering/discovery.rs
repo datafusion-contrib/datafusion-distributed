@@ -1,3 +1,4 @@
+use crate::NetworkBoundaryExt;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::common::{HashMap, HashSet, Result, internal_err};
@@ -21,11 +22,26 @@ pub(crate) struct DiscoveredDynamicFilter {
     pub(crate) input_schema: SchemaRef,
 }
 
-/// Finds dynamic-filter consumers in `plan`, deduplicated by expression ID.
+#[derive(Clone)]
+pub(crate) struct DiscoveredDynamicFilterAnchor {
+    pub(crate) id: u64,
+    pub(crate) expression: Arc<dyn PhysicalExpr>,
+}
+
+pub(crate) struct DiscoveredDynamicFilterConsumers {
+    /// Dynamic filters that are evaluated by an execution-plan node.
+    pub(crate) consumers: Vec<DiscoveredDynamicFilter>,
+    /// Metadata-only references carried by network boundaries.
+    pub(crate) anchors: Vec<DiscoveredDynamicFilterAnchor>,
+}
+
+/// Finds dynamic-filter consumers and network-boundary anchors in `plan`, deduplicated by
+/// expression ID within each category.
 pub(crate) fn discover_dynamic_filter_consumers(
     plan: &Arc<dyn ExecutionPlan>,
-) -> Result<Vec<DiscoveredDynamicFilter>> {
+) -> Result<DiscoveredDynamicFilterConsumers> {
     let mut consumers = HashMap::new();
+    let mut anchors = HashMap::new();
 
     plan.apply(|node| {
         let produced_ids: HashSet<_> = node
@@ -46,6 +62,7 @@ pub(crate) fn discover_dynamic_filter_consumers(
             .first()
             .map(|child| child.schema())
             .unwrap_or_else(|| node.schema());
+        let is_network_boundary = node.is_network_boundary();
 
         node.apply_expressions(&mut |root| {
             root.apply(|expression| {
@@ -59,8 +76,16 @@ pub(crate) fn discover_dynamic_filter_consumers(
                         "DynamicFilterPhysicalExpr did not have an expression ID"
                     );
                 };
-                let is_producer_occurrence = produced_ids.contains(&id);
-                if !is_producer_occurrence {
+                if is_network_boundary {
+                    // Network-boundary expressions are metadata-only dependencies, not expressions
+                    // evaluated by the node.
+                    anchors
+                        .entry(id)
+                        .or_insert_with(|| DiscoveredDynamicFilterAnchor {
+                            id,
+                            expression: Arc::clone(expression),
+                        });
+                } else if !produced_ids.contains(&id) {
                     consumers
                         .entry(id)
                         .or_insert_with(|| DiscoveredDynamicFilter {
@@ -78,7 +103,9 @@ pub(crate) fn discover_dynamic_filter_consumers(
 
     let mut consumers: Vec<_> = consumers.into_values().collect();
     consumers.sort_unstable_by_key(|consumer| consumer.id);
-    Ok(consumers)
+    let mut anchors: Vec<_> = anchors.into_values().collect();
+    anchors.sort_unstable_by_key(|anchor| anchor.id);
+    Ok(DiscoveredDynamicFilterConsumers { consumers, anchors })
 }
 
 /// Returns whether `plan` contains only the consumer side of a dynamic filter
@@ -87,6 +114,7 @@ pub(crate) fn has_nonlocal_dynamic_filter_relationships(
     plan: &Arc<dyn ExecutionPlan>,
 ) -> Result<bool> {
     let consumer_ids: HashSet<_> = discover_dynamic_filter_consumers(plan)?
+        .consumers
         .into_iter()
         .map(|consumer| consumer.id)
         .collect();
@@ -150,22 +178,39 @@ pub(crate) fn orphan_dynamic_filter_consumers(
         .into_iter()
         .map(|producer| producer.id)
         .collect();
-    Ok(discover_dynamic_filter_consumers(plan)?
+    let discovered = discover_dynamic_filter_consumers(plan)?;
+    let orphaned: HashMap<_, _> = discovered
+        .consumers
         .into_iter()
-        .filter(|consumer| !produced_here.contains(&consumer.id))
-        .map(|consumer| consumer.expression)
+        .map(|consumer| (consumer.id, consumer.expression))
+        .chain(
+            discovered
+                .anchors
+                .into_iter()
+                .map(|anchor| (anchor.id, anchor.expression)),
+        )
+        .filter(|(id, _)| !produced_here.contains(id))
+        .collect();
+    let mut orphaned: Vec<_> = orphaned.into_iter().collect();
+    orphaned.sort_unstable_by_key(|(id, _)| *id);
+    Ok(orphaned
+        .into_iter()
+        .map(|(_, expression)| expression)
         .collect())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::NetworkShuffleExec;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::common::Result;
     use datafusion::execution::{SendableRecordBatchStream, TaskContext};
     use datafusion::logical_expr::Operator;
+    use datafusion::physical_expr::Partitioning;
     use datafusion::physical_expr::expressions::{BinaryExpr, Column, lit};
     use datafusion::physical_plan::empty::EmptyExec;
+    use datafusion::physical_plan::repartition::RepartitionExec;
     use datafusion::physical_plan::union::UnionExec;
     use datafusion::physical_plan::{
         DisplayAs, DisplayFormatType, PlanProperties, apply_expression_roots,
@@ -196,8 +241,12 @@ mod tests {
         )) as Arc<dyn ExecutionPlan>;
 
         let discovered = discover_dynamic_filter_consumers(&plan)?;
-        assert_eq!(discovered.len(), 1);
-        assert_eq!(discovered[0].id, dynamic_filter.expression_id().unwrap());
+        assert_eq!(discovered.consumers.len(), 1);
+        assert!(discovered.anchors.is_empty());
+        assert_eq!(
+            discovered.consumers[0].id,
+            dynamic_filter.expression_id().unwrap()
+        );
         assert!(!has_nonlocal_dynamic_filter_relationships(&plan)?);
         assert!(orphan_dynamic_filter_consumers(&plan)?.is_empty());
 
@@ -210,7 +259,7 @@ mod tests {
             .unwrap()
             .mark_complete();
 
-        let current = discovered[0].expression.current()?;
+        let current = discovered.consumers[0].expression.current()?;
         assert_eq!(current.to_string(), "a@0 > 10");
         Ok(())
     }
@@ -235,8 +284,12 @@ mod tests {
 
         let discovered = discover_dynamic_filter_consumers(&plan)?;
 
-        assert_eq!(discovered.len(), 1);
-        assert_eq!(discovered[0].id, dynamic_filter.expression_id().unwrap());
+        assert_eq!(discovered.consumers.len(), 1);
+        assert!(discovered.anchors.is_empty());
+        assert_eq!(
+            discovered.consumers[0].id,
+            dynamic_filter.expression_id().unwrap()
+        );
         assert!(has_nonlocal_dynamic_filter_relationships(&plan)?);
         Ok(())
     }
@@ -255,6 +308,52 @@ mod tests {
         )) as Arc<dyn ExecutionPlan>;
 
         assert!(has_nonlocal_dynamic_filter_relationships(&plan)?);
+        Ok(())
+    }
+
+    #[test]
+    fn distinguishes_consumers_from_network_boundary_anchors() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let column = Arc::new(Column::new("a", 0)) as Arc<dyn PhysicalExpr>;
+        let dynamic_filter = Arc::new(DynamicFilterPhysicalExpr::new(
+            vec![Arc::clone(&column)],
+            lit(true),
+        )) as Arc<dyn PhysicalExpr>;
+        let id = dynamic_filter.expression_id().unwrap();
+
+        let input = Arc::new(EmptyExec::new(schema)) as Arc<dyn ExecutionPlan>;
+        let repartition = Arc::new(RepartitionExec::try_new(
+            input,
+            Partitioning::Hash(vec![column], 1),
+        )?) as Arc<dyn ExecutionPlan>;
+        let boundary = Arc::new(
+            NetworkShuffleExec::try_new(repartition, 1)?
+                .with_dynamic_filter_anchors(vec![Arc::clone(&dynamic_filter)]),
+        ) as Arc<dyn ExecutionPlan>;
+        let plan = Arc::new(ExpressionExec::new(
+            boundary,
+            Arc::clone(&dynamic_filter),
+            false,
+        )) as Arc<dyn ExecutionPlan>;
+
+        let discovered = discover_dynamic_filter_consumers(&plan)?;
+        assert_eq!(
+            discovered
+                .consumers
+                .iter()
+                .map(|consumer| consumer.id)
+                .collect::<Vec<_>>(),
+            vec![id]
+        );
+        assert_eq!(
+            discovered
+                .anchors
+                .iter()
+                .map(|anchor| anchor.id)
+                .collect::<Vec<_>>(),
+            vec![id]
+        );
+        assert_eq!(orphan_dynamic_filter_consumers(&plan)?.len(), 1);
         Ok(())
     }
 
