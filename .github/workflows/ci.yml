@@ -118,6 +118,13 @@ jobs:
           key: "data"
       - run: cargo test --features clickbench --test clickbench_plans_test
 
+  iceberg-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: cargo test -p datafusion-distributed-iceberg
+
   format-check:
     runs-on: ubuntu-latest
     steps:
