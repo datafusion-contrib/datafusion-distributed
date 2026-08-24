@@ -285,13 +285,19 @@ mod tests {
         INNER JOIN weather b
         ON a."RainToday" = b."RainToday"
         "#;
-        let plan = sql_to_plan_with_broadcast(query, true, 4).await;
+        // LIMIT pushdown may keep a single weather parquet file, but which file
+        // is not stable across platforms (000000 locally vs 000001 on Linux CI).
+        let plan = sql_to_plan_with_broadcast(query, true, 4)
+            .await
+            .replace("result-000000.parquet", "result-<n>.parquet")
+            .replace("result-000001.parquet", "result-<n>.parquet")
+            .replace("result-000002.parquet", "result-<n>.parquet");
         assert_snapshot!(plan, @r"
         HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
           CoalescePartitionsExec
             BroadcastExec: input_partitions=1, consumer_tasks=1, output_partitions=1
-              DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000001.parquet]]}, projection=[MinTemp, RainToday], limit=50, file_type=parquet
-          DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ]
+              DataSourceExec: file_groups={1 group: [[/testdata/weather/result-<n>.parquet]]}, projection=[MinTemp, RainToday], limit=50, file_type=parquet
+          DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-<n>.parquet], [/testdata/weather/result-<n>.parquet], [/testdata/weather/result-<n>.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ]
         ");
     }
 

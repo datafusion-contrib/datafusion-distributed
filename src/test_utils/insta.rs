@@ -30,5 +30,9 @@ pub fn settings() -> insta::Settings {
         r"(DynamicFilter \[[^\[\]]*IN \(SET\) \(\[)[^\]]*(\]\))",
         "${1}<values>${2}",
     );
+    // DataFusion may append this when a dynamic filter is eligible for parquet
+    // row-group pruning. Eligibility is statistics-dependent and unrelated to
+    // DFD rewrites, so strip it for stable snapshots.
+    settings.add_filter(r", dynamic_rg_pruning=\S+", "");
     settings
 }
