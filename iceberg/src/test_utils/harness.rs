@@ -47,6 +47,11 @@ impl IcebergTestHarness {
         Ok(Self { ctx })
     }
 
+    #[cfg(test)]
+    pub(crate) fn context(&self) -> &SessionContext {
+        &self.ctx
+    }
+
     pub async fn query(&self, sql: &str) -> Result<(String, String)> {
         let dataframe: DataFrame = self.ctx.sql(sql).await?;
         let plan = dataframe.create_physical_plan().await?;
@@ -60,7 +65,7 @@ impl IcebergTestHarness {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct FixtureStorageFactory {
+pub struct FixtureStorageFactory {
     root: PathBuf,
 }
 

@@ -18,6 +18,7 @@ use datafusion::prelude::Expr;
 use datafusion_distributed::WorkUnitFeed;
 use futures::{StreamExt, TryStreamExt};
 use iceberg::arrow::ArrowReaderBuilder;
+use iceberg::io::{FileIO, StorageConfig};
 
 use crate::common::{convert_filters_to_predicate, df_err, iceberg_err};
 use crate::work_unit_wire::FileScanTaskDecoder;
@@ -116,7 +117,7 @@ pub struct IcebergDataSource {
     partitioning: Partitioning,
     fetch: Option<usize>,
     metrics: ExecutionPlanMetricsSet,
-    iceberg_file_io: iceberg::io::FileIO,
+    iceberg_file_io: FileIO,
     iceberg_runtime: iceberg::Runtime,
     feed: WorkUnitFeed<IcebergWorkUnitFeed>,
 }
@@ -169,6 +170,33 @@ impl IcebergDataSource {
                 sync_manager: Default::default(),
             }),
         }
+    }
+
+    pub(crate) fn from_remote(
+        schema: SchemaRef,
+        partitioning: Partitioning,
+        fetch: Option<usize>,
+        iceberg_file_io: FileIO,
+        iceberg_runtime: iceberg::Runtime,
+        feed: WorkUnitFeed<IcebergWorkUnitFeed>,
+    ) -> Self {
+        Self {
+            schema,
+            partitioning,
+            fetch,
+            metrics: ExecutionPlanMetricsSet::new(),
+            iceberg_file_io,
+            iceberg_runtime,
+            feed,
+        }
+    }
+
+    pub(crate) fn schema_ref(&self) -> &SchemaRef {
+        &self.schema
+    }
+
+    pub(crate) fn storage_config(&self) -> &StorageConfig {
+        self.iceberg_file_io.config()
     }
 }
 

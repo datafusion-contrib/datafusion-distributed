@@ -138,8 +138,14 @@ pub trait DistributedExt: Sized {
     ) -> Result<(), DataFusionError>;
 
     /// Injects a user-defined [PhysicalExtensionCodec] that is capable of encoding/decoding
-    /// custom execution nodes. Multiple user-defined [PhysicalExtensionCodec] can be added
-    /// by calling this method several times.
+    /// custom execution nodes. Multiple user-defined [PhysicalExtensionCodec] implementations can
+    /// be added by calling this method several times. Registering the same concrete codec type
+    /// again replaces its previous value without changing its position.
+    ///
+    /// The composed codec wire format identifies codecs by position. Coordinators and workers must
+    /// therefore register distinct codec types in the same order. Replacement by type makes
+    /// repeated integration setup idempotent, but cannot make different registration orders wire
+    /// compatible.
     ///
     /// Example:
     ///
@@ -183,9 +189,11 @@ pub trait DistributedExt: Sized {
     fn set_distributed_user_codec<T: PhysicalExtensionCodec + 'static>(&mut self, codec: T);
 
     /// Same as [DistributedExt::with_distributed_user_codec] but with a dynamic argument.
+    /// The codec's concrete [`std::any::TypeId`] is used for replacement.
     fn with_distributed_user_codec_arc(self, codec: Arc<dyn PhysicalExtensionCodec>) -> Self;
 
     /// Same as [DistributedExt::set_distributed_user_codec] but with a dynamic argument.
+    /// The codec's concrete [`std::any::TypeId`] is used for replacement.
     fn set_distributed_user_codec_arc(&mut self, codec: Arc<dyn PhysicalExtensionCodec>);
 
     /// This is what tells Distributed DataFusion the URLs of the workers available for serving queries.

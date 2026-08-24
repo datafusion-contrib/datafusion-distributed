@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::{SessionState, SessionStateBuilder};
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_distributed::DistributedExt;
@@ -9,7 +10,7 @@ use iceberg_storage_opendal::OpenDalResolvingStorageFactory;
 
 use crate::codec::IcebergCodec;
 use crate::distributed_desired_task_count_handler::iceberg_desired_task_count;
-use crate::{IcebergConfig, IcebergTableProviderFactory};
+use crate::{IcebergConfig, IcebergDataSource, IcebergTableProviderFactory};
 
 /// Configuration required to register the Iceberg SQL integration.
 pub struct IcebergIntegrationOptions {
@@ -100,6 +101,10 @@ const TABLE_FACTORY_IDENTIFIER: &str = "ICEBERG";
 
 fn set_iceberg_integration(state: &mut SessionState, options: IcebergIntegrationOptions) {
     iceberg_config_mut(state.config_mut());
+    let codec = IcebergCodec::new(
+        Arc::clone(&options.storage_factory),
+        options.iceberg_runtime.clone(),
+    );
     state.table_factories_mut().insert(
         TABLE_FACTORY_IDENTIFIER.to_string(),
         Arc::new(IcebergTableProviderFactory::new_with_runtime(
@@ -108,12 +113,21 @@ fn set_iceberg_integration(state: &mut SessionState, options: IcebergIntegration
         )),
     );
     state.set_distributed_desired_task_count_handler(iceberg_desired_task_count);
-    state.set_distributed_user_codec(IcebergCodec);
+    state.set_distributed_work_unit_feed(|plan: &DataSourceExec| {
+        plan.data_source()
+            .downcast_ref::<IcebergDataSource>()
+            .map(IcebergDataSource::feed)
+    });
+    state.set_distributed_user_codec(codec);
 }
 
 impl IcebergExt for SessionStateBuilder {
     fn set_iceberg_integration(&mut self, options: IcebergIntegrationOptions) {
         iceberg_config_mut(self.config().get_or_insert_default());
+        let codec = IcebergCodec::new(
+            Arc::clone(&options.storage_factory),
+            options.iceberg_runtime.clone(),
+        );
         self.table_factories().get_or_insert_default().insert(
             TABLE_FACTORY_IDENTIFIER.to_string(),
             Arc::new(IcebergTableProviderFactory::new_with_runtime(
@@ -122,7 +136,12 @@ impl IcebergExt for SessionStateBuilder {
             )),
         );
         self.set_distributed_desired_task_count_handler(iceberg_desired_task_count);
-        self.set_distributed_user_codec(IcebergCodec);
+        self.set_distributed_work_unit_feed(|plan: &DataSourceExec| {
+            plan.data_source()
+                .downcast_ref::<IcebergDataSource>()
+                .map(IcebergDataSource::feed)
+        });
+        self.set_distributed_user_codec(codec);
     }
 
     delegate! {
@@ -209,6 +228,53 @@ impl IcebergExt for SessionContext {
             #[call(set_iceberg_row_selection_enabled)]
             #[expr($;self)]
             fn with_iceberg_row_selection_enabled(mut self, enabled: bool) -> Self;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use datafusion_distributed::DistributedCodec;
+    use iceberg::io::{Storage, StorageConfig};
+    use serde::{Deserialize, Serialize};
+
+    use crate::test_utils::FixtureStorageFactory;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn repeated_integration_registration_keeps_only_latest_codec() {
+        let mut builder = SessionStateBuilder::new();
+        builder.set_iceberg_integration(integration_options("first"));
+        builder.set_iceberg_integration(integration_options("second"));
+        let state = builder.build();
+
+        let codecs = format!(
+            "{:?}",
+            DistributedCodec::new_combined_with_user(state.config())
+        );
+        assert!(!codecs.contains("first"));
+        assert_eq!(codecs.matches("second").count(), 1);
+    }
+
+    fn integration_options(name: &str) -> IcebergIntegrationOptions {
+        IcebergIntegrationOptions {
+            storage_factory: Arc::new(NamedStorageFactory {
+                name: name.to_string(),
+            }),
+            iceberg_runtime: iceberg::Runtime::current(),
+        }
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    struct NamedStorageFactory {
+        name: String,
+    }
+
+    #[typetag::serde]
+    impl StorageFactory for NamedStorageFactory {
+        fn build(&self, config: &StorageConfig) -> iceberg::Result<Arc<dyn Storage>> {
+            FixtureStorageFactory::default().build(config)
         }
     }
 }
