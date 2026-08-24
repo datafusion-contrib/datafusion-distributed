@@ -363,7 +363,8 @@ mod tests {
             .await;
         let ctx = test_plan.get_ctx();
         if disable_dynamic_filters {
-            let mut state = ctx.state_ref().write();
+            let state_ref = ctx.state_ref();
+            let mut state = state_ref.write();
             let options = state.config_mut().options_mut();
             options
                 .set(
