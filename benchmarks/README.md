@@ -10,11 +10,11 @@ Generate datasets alongside the integration-test fixtures under `testdata/`.
 For example, `tpch/sf1` is stored in `testdata/tpch/sf1`.
 
 ```shell
-# TPC-H (default: SCALE_FACTOR=1, PARTITIONS=16 - override by setting these environment variables)
+# TPC-H (default: SCALE_FACTOR=1, PARTITIONS=16, SORTED=false - override by setting these environment variables)
 ./gen-tpch.sh
 
 # Sorted TPC-H (same generators, Parquet sorting_columns metadata)
-./gen-tpch-sorted.sh
+SORTED=true ./gen-tpch.sh
 
 # TPC-DS (only SCALE_FACTOR=1 is supported)
 ./gen-tpcds.sh
