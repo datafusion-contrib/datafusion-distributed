@@ -38,13 +38,41 @@ fn strip_dynamic_rg_pruning(s: &str) -> String {
     out
 }
 
-struct StripDynamicRgPruning;
+/// LIMIT pushdown may keep a subset of generated parquet parts, and which
+/// `part-N.parquet` files remain is not stable across platforms (part-0..2
+/// locally vs part-1..3 on Linux CI). Grouping structure stays asserted.
+fn redact_part_parquet(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(idx) = rest.find("part-") {
+        out.push_str(&rest[..idx]);
+        let after = &rest[idx + "part-".len()..];
+        let digit_end = after
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(after.len());
+        if digit_end > 0 && after[digit_end..].starts_with(".parquet") {
+            out.push_str("part-<n>.parquet");
+            rest = &after[digit_end + ".parquet".len()..];
+        } else {
+            out.push_str("part-");
+            rest = after;
+        }
+    }
+    out.push_str(rest);
+    out
+}
 
-impl Comparator for StripDynamicRgPruning {
+fn normalize_display_noise(s: &str) -> String {
+    redact_part_parquet(&strip_dynamic_rg_pruning(s))
+}
+
+struct NormalizeDisplayNoise;
+
+impl Comparator for NormalizeDisplayNoise {
     fn matches(&self, reference: &Snapshot, test: &Snapshot) -> bool {
         match (reference.as_text(), test.as_text()) {
             (Some(a), Some(b)) => {
-                strip_dynamic_rg_pruning(&a.to_string()) == strip_dynamic_rg_pruning(&b.to_string())
+                normalize_display_noise(&a.to_string()) == normalize_display_noise(&b.to_string())
             }
             _ => DefaultComparator.matches(reference, test),
         }
@@ -77,13 +105,14 @@ pub fn settings() -> insta::Settings {
     // Do not use `\S+`: that swallows the comma before a following field such as
     // `pruning_predicate=`.
     settings.add_filter(r", dynamic_rg_pruning=[^\s,]+", "");
-    settings.set_comparator(Box::new(StripDynamicRgPruning));
+    settings.add_filter(r"part-\d+\.parquet", "part-<n>.parquet");
+    settings.set_comparator(Box::new(NormalizeDisplayNoise));
     settings
 }
 
 #[cfg(test)]
 mod tests {
-    use super::strip_dynamic_rg_pruning;
+    use super::{normalize_display_noise, redact_part_parquet, strip_dynamic_rg_pruning};
 
     #[test]
     fn strip_rg_pruning_at_eol_and_before_next_field() {
@@ -94,6 +123,29 @@ mod tests {
         assert_eq!(
             strip_dynamic_rg_pruning("pred, dynamic_rg_pruning=eligible, pruning_predicate=x"),
             "pred, pruning_predicate=x"
+        );
+    }
+
+    #[test]
+    fn redact_part_numbers_without_changing_grouping() {
+        assert_eq!(
+            redact_part_parquet(
+                "[[/build_side/part-0.parquet:<int>..<int>], [/build_side/part-1.parquet:<int>..<int>]]"
+            ),
+            "[[/build_side/part-<n>.parquet:<int>..<int>], [/build_side/part-<n>.parquet:<int>..<int>]]"
+        );
+        assert_eq!(
+            redact_part_parquet(
+                "[[/build_side/part-1.parquet:<int>..<int>], [/build_side/part-2.parquet:<int>..<int>]]"
+            ),
+            "[[/build_side/part-<n>.parquet:<int>..<int>], [/build_side/part-<n>.parquet:<int>..<int>]]"
+        );
+        assert_eq!(redact_part_parquet("part-<n>.parquet"), "part-<n>.parquet");
+        assert_eq!(
+            normalize_display_noise(
+                "part-1.parquet, dynamic_rg_pruning=eligible, pruning_predicate=x"
+            ),
+            "part-<n>.parquet, pruning_predicate=x"
         );
     }
 }
