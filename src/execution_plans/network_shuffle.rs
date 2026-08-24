@@ -13,8 +13,7 @@ use datafusion::physical_expr_common::metrics::MetricsSet;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, Statistics, StatisticsArgs,
-};
+    DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, Statistics, StatisticsArgs, ReplaceChildrenOptions};
 use std::fmt::Formatter;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -216,6 +215,15 @@ impl ExecutionPlan for NetworkShuffleExec {
             }
         }
         Ok(Arc::new(self_clone))
+    }
+
+    fn replace_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+        _options: ReplaceChildrenOptions,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        // Prefer replace_children over deprecated with_new_children (#657).
+        self.with_new_children(children)
     }
 
     fn execute(

@@ -1,3 +1,4 @@
+use datafusion::physical_plan::ReplaceChildrenOptions;
 //! Demonstrates **custom task routing** for **cache affinity**: consistently routing each parquet
 //! file to the *same* worker so that worker can serve it from an in-memory cache on repeat queries.
 //!
@@ -106,6 +107,14 @@ impl ExecutionPlan for CacheExec {
         mut children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         Ok(CacheExec::new(children.remove(0)))
+    }
+
+    fn replace_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+        _options: ReplaceChildrenOptions,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        self.with_new_children(children)
     }
 
     fn execute(

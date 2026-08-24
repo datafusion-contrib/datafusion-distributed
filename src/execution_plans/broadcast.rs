@@ -9,8 +9,7 @@ use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties, internal_err,
-};
+    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties, internal_err, ReplaceChildrenOptions};
 use futures::{Stream, StreamExt};
 use std::fmt::Formatter;
 use std::pin::Pin;
@@ -153,6 +152,15 @@ impl ExecutionPlan for BroadcastExec {
             require_one_child(children)?,
             self.consumer_task_count,
         )))
+    }
+
+    fn replace_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+        _options: ReplaceChildrenOptions,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        // Prefer replace_children over deprecated with_new_children (#657).
+        self.with_new_children(children)
     }
 
     fn execute(

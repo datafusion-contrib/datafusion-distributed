@@ -264,6 +264,15 @@ impl ExecutionPlan for NetworkCoalesceExec {
         Ok(Arc::new(self_clone))
     }
 
+    fn replace_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+        _options: ReplaceChildrenOptions,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        // Prefer replace_children over deprecated with_new_children (#657).
+        self.with_new_children(children)
+    }
+
     fn execute(
         &self,
         partition: usize,

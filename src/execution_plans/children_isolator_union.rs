@@ -12,8 +12,7 @@ use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSe
 use datafusion::physical_plan::union::UnionExec;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, EmptyRecordBatchStream, ExecutionPlan, ExecutionPlanProperties,
-    Partitioning, PlanProperties,
-};
+    Partitioning, PlanProperties, ReplaceChildrenOptions};
 use futures::{Stream, StreamExt};
 use itertools::Itertools;
 use std::fmt::Formatter;
@@ -293,6 +292,15 @@ impl ExecutionPlan for ChildrenIsolatorUnionExec {
             self.child_weights.clone(),
             self.task_idx_map.len(),
         )?))
+    }
+
+    fn replace_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+        _options: ReplaceChildrenOptions,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        // Prefer replace_children over deprecated with_new_children (#657).
+        self.with_new_children(children)
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
