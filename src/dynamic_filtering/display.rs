@@ -6,7 +6,6 @@ use crate::{TaskCompletedDynamicFilters, TaskKey};
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{HashMap, Result, internal_err};
 use datafusion::execution::TaskContext;
-use datafusion::physical_expr::expressions::DynamicFilterPhysicalExpr;
 use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::{
@@ -179,11 +178,9 @@ fn apply_reports_to_distributed_leaves(
                 let Some(predicate) = dynamic_filter_proto.inner_expr.as_deref() else {
                     continue;
                 };
-                let Ok(predicate) = decode_physical_expr(
-                    predicate,
-                    consumer.input_schema.as_ref(),
-                    task_ctx,
-                ) else {
+                let Ok(predicate) =
+                    decode_physical_expr(predicate, consumer.input_schema.as_ref(), task_ctx)
+                else {
                     continue;
                 };
                 let Ok(dynamic_filter) = dynamic_filter_update_target(
