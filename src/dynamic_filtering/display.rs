@@ -1,4 +1,4 @@
-use crate::codec::{decode_physical_expr, roundtrip_pb};
+use crate::codec::{decode_physical_expr, dynamic_filter_update_target, roundtrip_pb};
 use crate::coordinator::DistributedExec;
 use crate::dynamic_filtering::discover_dynamic_filter_consumers;
 use crate::execution_plans::DistributedLeafExec;
@@ -173,27 +173,27 @@ fn apply_reports_to_distributed_leaves(
                 else {
                     continue;
                 };
-                let Ok(reported_expression) = decode_physical_expr(
-                    &proto,
+                if dynamic_filter_proto.generation <= 1 {
+                    continue;
+                }
+                let Some(predicate) = dynamic_filter_proto.inner_expr.as_deref() else {
+                    continue;
+                };
+                let Ok(predicate) = decode_physical_expr(
+                    predicate,
                     consumer.input_schema.as_ref(),
                     task_ctx,
-                )
-                .or_else(|_| {
-                    decode_physical_expr(&proto, consumer.expression_schema.as_ref(), task_ctx)
-                }) else {
+                ) else {
                     continue;
                 };
-                let Some(reported_dynamic_filter) =
-                    reported_expression.downcast_ref::<DynamicFilterPhysicalExpr>()
-                else {
+                let Ok(dynamic_filter) = dynamic_filter_update_target(
+                    &consumer.expression,
+                    consumer.input_schema.as_ref(),
+                    task_ctx,
+                ) else {
                     continue;
                 };
-                let Ok(expression) = reported_dynamic_filter.current() else {
-                    continue;
-                };
-                if dynamic_filter_proto.generation > 1 {
-                    let _ = consumer.expression.update(expression);
-                }
+                let _ = dynamic_filter.update(predicate);
             }
         }
 
