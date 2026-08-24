@@ -285,19 +285,13 @@ mod tests {
         INNER JOIN weather b
         ON a."RainToday" = b."RainToday"
         "#;
-        // LIMIT pushdown may keep a single weather parquet file, but which file
-        // is not stable across platforms (000000 locally vs 000001 on Linux CI).
-        let plan = sql_to_plan_with_broadcast(query, true, 4)
-            .await
-            .replace("result-000000.parquet", "result-<n>.parquet")
-            .replace("result-000001.parquet", "result-<n>.parquet")
-            .replace("result-000002.parquet", "result-<n>.parquet");
+        let plan = sql_to_plan_with_broadcast_opts(query, true, 4, true).await;
         assert_snapshot!(plan, @r"
         HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
           CoalescePartitionsExec
             BroadcastExec: input_partitions=1, consumer_tasks=1, output_partitions=1
-              DataSourceExec: file_groups={1 group: [[/testdata/weather/result-<n>.parquet]]}, projection=[MinTemp, RainToday], limit=50, file_type=parquet
-          DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-<n>.parquet], [/testdata/weather/result-<n>.parquet], [/testdata/weather/result-<n>.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ]
+              DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], limit=50, file_type=parquet
+          DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet
         ");
     }
 
@@ -353,12 +347,34 @@ mod tests {
         broadcast_enabled: bool,
         target_partitions: usize,
     ) -> String {
+        sql_to_plan_with_broadcast_opts(query, broadcast_enabled, target_partitions, false).await
+    }
+
+    async fn sql_to_plan_with_broadcast_opts(
+        query: &str,
+        broadcast_enabled: bool,
+        target_partitions: usize,
+        disable_dynamic_filters: bool,
+    ) -> String {
         let test_plan = TestPlanBuilder::new()
             .target_partitions(target_partitions)
             .broadcast_joins(broadcast_enabled)
             .build()
             .await;
         let ctx = test_plan.get_ctx();
+        if disable_dynamic_filters {
+            let mut state = ctx.state_ref().write();
+            let options = state.config_mut().options_mut();
+            options
+                .set(
+                    "datafusion.optimizer.enable_dynamic_filter_pushdown",
+                    "false",
+                )
+                .expect("static dynamic-filter setting should be valid");
+            options
+                .set("datafusion.execution.parquet.pruning", "false")
+                .expect("static parquet pruning setting should be valid");
+        }
         let plan = test_plan.physical_plan(query).await;
         let plan = insert_broadcast_execs(plan, ctx.state_ref().read().config_options().as_ref())
             .expect("failed to insert broadcasts");
