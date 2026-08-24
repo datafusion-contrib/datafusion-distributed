@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::common::{Statistics, exec_datafusion_err};
+use datafusion::common::Statistics;
 use datafusion::config::ConfigOptions;
 use datafusion::datasource::source::DataSource;
 use datafusion::error::Result;
@@ -20,6 +20,7 @@ use futures::{StreamExt, TryStreamExt};
 use iceberg::arrow::ArrowReaderBuilder;
 
 use crate::common::{convert_filters_to_predicate, df_err, iceberg_err};
+use crate::work_unit_wire::FileScanTaskDecoder;
 use crate::{IcebergConfig, IcebergWorkUnitFeed};
 
 /// Consumes a stream of [iceberg::scan::FileScanTask]s per partition and reads the underlying
@@ -195,14 +196,12 @@ impl DataSource for IcebergDataSource {
                 .with_row_selection_enabled(config.row_selection_enabled)
                 .build();
 
+        let mut decoder = FileScanTaskDecoder::default();
         let feed = self
             .feed
             .feed(partition, context)?
-            .map(|msg_or_err| match msg_or_err {
-                Ok(msg) => match msg.inner {
-                    Some(msg) => Ok(msg),
-                    None => Err(iceberg_err(exec_datafusion_err!("Missing inner"))),
-                },
+            .map(move |msg_or_err| match msg_or_err {
+                Ok(msg) => decoder.decode(msg).map_err(iceberg_err),
                 Err(err) => Err(iceberg_err(err)),
             })
             .boxed();

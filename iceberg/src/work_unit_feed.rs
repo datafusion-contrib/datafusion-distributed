@@ -1,6 +1,5 @@
 use std::sync::{Arc, Mutex, OnceLock};
 
-use bytes::{Buf, BufMut};
 use datafusion::common::runtime::SpawnedTask;
 use datafusion::common::{Result, exec_err, internal_err};
 use datafusion::error::DataFusionError;
@@ -10,13 +9,12 @@ use datafusion_distributed::{DistributedWorkUnitFeedContext, WorkUnitFeedProvide
 use futures::stream::BoxStream;
 use futures::{StreamExt, TryStreamExt};
 use iceberg::expr::Predicate;
-use iceberg::scan::FileScanTask;
-use prost::encoding::{DecodeContext, WireType};
-use prost::{DecodeError, Message};
+
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::common::df_err;
+use crate::work_unit_wire::{FileScanTaskEncoder, FileScanTaskMessage};
 
 /// Work unit feed implementation that yields [FileScanTask] messages at execution time.
 ///
@@ -91,7 +89,7 @@ pub struct IcebergWorkUnitFeed {
     pub(crate) predicates: Option<Predicate>,
     /// Partitioning scheme to which the feeds should adhere.
     /// TODO: Today, only Partitioning::UnknownPartitioning partitioning is supported.
-    ///  Ideally, both Range partitioning and hash partitioning should be supported.
+    /// Ideally, both range partitioning and hash partitioning should be supported.
     pub(crate) partitioning: Partitioning,
     /// Container for the lazily initialized task that scans the Iceberg table.
     /// It will start as soon as the first [IcebergWorkUnitFeed::feed] is called.
@@ -117,17 +115,6 @@ type TakeableVec<T> = Vec<Mutex<Option<T>>>;
 pub(crate) struct SyncManager {
     task: Arc<SpawnedTask<()>>,
     feeds: TakeableVec<UnboundedReceiver<Result<FileScanTaskMessage>>>,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct FileScanTaskMessage {
-    pub(crate) inner: Option<FileScanTask>,
-}
-
-impl FileScanTaskMessage {
-    fn new(inner: FileScanTask) -> Self {
-        Self { inner: Some(inner) }
-    }
 }
 
 impl WorkUnitFeedProvider for IcebergWorkUnitFeed {
@@ -165,30 +152,38 @@ impl WorkUnitFeedProvider for IcebergWorkUnitFeed {
             let out_partitions = wuf_ctx.fan_out_tasks * self.partitioning.partition_count();
             let mut rxs = Vec::with_capacity(out_partitions);
             let mut txs = Vec::with_capacity(out_partitions);
+            // These queues remain unbounded because feeds are opened lazily: blocking on a
+            // partition whose feed has not opened could prevent active partitions from making
+            // progress. Routing-aware backpressure is tracked by #606. The encoders below only
+            // deduplicate repeated wire context; they do not bound queued task count.
             for _ in 0..out_partitions {
                 let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
                 rxs.push(Mutex::new(Some(rx)));
                 txs.push(tx);
             }
 
-            // A reference to this spawned task needs to be held, otherwise it will automatically
-            // be canceled. The lifetime of this `task` variable needs to leave as long as any of
-            // the return streams of the `feed()` method.
+            // Keep this handle alive for at least as long as any stream returned by `feed()`;
+            // dropping the last handle cancels the task.
             let task = SpawnedTask::spawn(async move {
                 let mut stream = match table_scan.plan_files().await {
-                    Ok(stream) => stream.map_ok(FileScanTaskMessage::new),
+                    Ok(stream) => stream.map_err(df_err).boxed(),
                     Err(err) => {
                         let _ = txs[0].send(Err(df_err(err)));
                         return;
                     }
                 };
 
-                // Round robing across output partitions.
-                // TODO: this is fine for Partitioning::UnknownPartitioning, but any other
-                //  partitioning will require smarter routing across output channels.
+                // Round robin across output partitions. Smarter routing is required for
+                // partitioning schemes other than UnknownPartitioning.
+                let mut encoders = (0..txs.len())
+                    .map(|_| FileScanTaskEncoder::default())
+                    .collect::<Vec<_>>();
                 let mut i = 0;
                 while let Some(scan_task_or_err) = stream.next().await {
-                    let _ = txs[i % txs.len()].send(scan_task_or_err.map_err(df_err));
+                    let partition = i % txs.len();
+                    let message =
+                        scan_task_or_err.and_then(|task| encoders[partition].encode(task));
+                    let _ = txs[partition].send(message);
                     i += 1;
                 }
             });
