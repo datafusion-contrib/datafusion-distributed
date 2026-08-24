@@ -366,8 +366,8 @@ mod tests {
         )?;
 
         assert_eq!(replaced.name(), "BroadcastExec");
-        assert!(Arc::ptr_eq(&replaced.children()[0], &replacement));
-        assert!(!Arc::ptr_eq(&replaced.children()[0], &original));
+        assert!(Arc::ptr_eq(replaced.children()[0], &replacement));
+        assert!(!Arc::ptr_eq(replaced.children()[0], &original));
         Ok(())
     }
 
