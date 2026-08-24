@@ -370,63 +370,48 @@ mod tests {
     /// task applies `fetch=50` locally and the broadcast receives 50 * tasks
     /// rows. Every build id has 50 probe matches, so `count(*)` is 2500 for any
     /// unordered 50 ids.
-    ///
-    /// The product-sum query is only used to assert the stage topology. File
-    /// parts selected by unordered `LIMIT` are not stable across platforms, so
-    /// this is not a full plan snapshot.
     #[tokio::test]
     async fn build_side_fetch_is_preserved_by_broadcast() {
-        assert_distributed_matches_single_node(
+        let plan = assert_distributed_matches_single_node(
             "SELECT count(*) FROM (SELECT id FROM build_side LIMIT 50) b \
              JOIN probe_side p ON b.id = p.id",
             true,
         )
         .await
         .unwrap();
-
-        ensure_data().await;
-        let d_ctx = make_distributed_ctx(true).await.unwrap();
-        let (plan, _) = run(
-            &d_ctx,
-            "SELECT sum(b.id * b.id * p.id * p.id) FROM (SELECT id FROM build_side LIMIT 50) b \
-             CROSS JOIN probe_side p",
-        )
-        .await
-        .unwrap();
-        let plan = display_plan_ascii(plan.as_ref(), false);
-        assert!(
-            plan.lines()
-                .any(|line| line.contains("Stage 2") && line.contains("tasks=1")),
-            "expected Stage 2 with tasks=1:\n{plan}"
-        );
-        assert!(
-            plan.contains("BroadcastExec"),
-            "expected BroadcastExec:\n{plan}"
-        );
-        assert!(
-            plan.contains("CoalescePartitionsExec: fetch=50"),
-            "expected CoalescePartitionsExec: fetch=50:\n{plan}"
-        );
-        let after_fetch = plan
-            .split_once("CoalescePartitionsExec: fetch=50")
-            .map(|(_, rest)| rest)
-            .unwrap_or("");
-        assert!(
-            after_fetch.lines().any(|line| {
-                line.contains("NetworkCoalesceExec") && line.contains("input_tasks=4")
-            }),
-            "expected NetworkCoalesceExec with input_tasks=4 under fetch:\n{plan}"
-        );
-        assert!(
-            plan.contains("LocalLimitExec: fetch=50"),
-            "expected LocalLimitExec: fetch=50:\n{plan}"
-        );
-        assert!(
-            plan.lines().any(|line| {
-                line.contains("NetworkBroadcastExec") && line.contains("input_tasks=1")
-            }),
-            "expected NetworkBroadcastExec with input_tasks=1:\n{plan}"
-        );
+        assert_snapshot!(display_plan_ascii(plan.as_ref(), false), @"
+        ┌───── DistributedExec
+        │ ProjectionExec: expr=[count(Int64(1))@0 as count(*)]
+        │   AggregateExec: mode=Final, gby=[], aggr=[count(Int64(1))]
+        │     CoalescePartitionsExec
+        │       [Stage 3] => NetworkCoalesceExec: output_partitions=12, input_tasks=4
+        └──────────────────────────────────────────────────
+          ┌───── Stage 3 ── tasks=4, partitions=12
+          │ AggregateExec: mode=Partial, gby=[], aggr=[count(Int64(1))]
+          │   RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
+          │     HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(id@0, id@0)], projection=[]
+          │       CoalescePartitionsExec
+          │         [Stage 2] => NetworkBroadcastExec: partitions_per_consumer=1, stage_partitions=4, input_tasks=1
+          │       DistributedLeafExec:
+          │         t0: DataSourceExec: file_groups={2 groups: [[/target/multi_task_collect_join_repros/probe_side/part-0.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/probe_side/part-2.parquet:<int>..<int>]]}, projection=[id], file_type=parquet, predicate=DynamicFilter [ empty ]
+          │         t1: DataSourceExec: file_groups={2 groups: [[/target/multi_task_collect_join_repros/probe_side/part-0.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/probe_side/part-2.parquet:<int>..<int>]]}, projection=[id], file_type=parquet, predicate=DynamicFilter [ empty ]
+          │         t2: DataSourceExec: file_groups={2 groups: [[/target/multi_task_collect_join_repros/probe_side/part-1.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/probe_side/part-3.parquet:<int>..<int>]]}, projection=[id], file_type=parquet, predicate=DynamicFilter [ empty ]
+          │         t3: DataSourceExec: file_groups={2 groups: [[/target/multi_task_collect_join_repros/probe_side/part-1.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/probe_side/part-3.parquet:<int>..<int>]]}, projection=[id], file_type=parquet, predicate=DynamicFilter [ empty ]
+          └──────────────────────────────────────────────────
+            ┌───── Stage 2 ── tasks=1, partitions=4
+            │ BroadcastExec: input_partitions=1, consumer_tasks=4, output_partitions=4
+            │   CoalescePartitionsExec: fetch=50
+            │     [Stage 1] => NetworkCoalesceExec: output_partitions=12, input_tasks=4
+            └──────────────────────────────────────────────────
+              ┌───── Stage 1 ── tasks=4, partitions=12
+              │ LocalLimitExec: fetch=50
+              │   DistributedLeafExec:
+              │     t0: DataSourceExec: file_groups={3 groups: [[/target/multi_task_collect_join_repros/build_side/part-0.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-1.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-2.parquet:<int>..<int>]]}, projection=[id], limit=50, file_type=parquet
+              │     t1: DataSourceExec: file_groups={3 groups: [[/target/multi_task_collect_join_repros/build_side/part-0.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-1.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-2.parquet:<int>..<int>]]}, projection=[id], limit=50, file_type=parquet
+              │     t2: DataSourceExec: file_groups={3 groups: [[/target/multi_task_collect_join_repros/build_side/part-0.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-1.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-2.parquet:<int>..<int>]]}, projection=[id], limit=50, file_type=parquet
+              │     t3: DataSourceExec: file_groups={3 groups: [[/target/multi_task_collect_join_repros/build_side/part-0.parquet:<int>..<int>, /target/multi_task_collect_join_repros/build_side/part-1.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-1.parquet:<int>..<int>, /target/multi_task_collect_join_repros/build_side/part-2.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-2.parquet:<int>..<int>]]}, projection=[id], limit=50, file_type=parquet
+              └──────────────────────────────────────────────────
+        ")
     }
 
     fn data_dir() -> PathBuf {
