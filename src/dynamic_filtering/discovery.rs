@@ -1,9 +1,7 @@
 use crate::NetworkBoundaryExt;
-use datafusion::arrow::datatypes::{Schema, SchemaRef};
+use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::common::{HashMap, HashSet, Result, internal_err};
-use datafusion::datasource::physical_plan::FileScanConfig;
-use datafusion::datasource::source::DataSourceExec;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr::expressions::DynamicFilterPhysicalExpr;
 use datafusion::physical_plan::ExecutionPlan;
@@ -24,23 +22,6 @@ pub(crate) struct DiscoveredDynamicFilter {
     pub(crate) expression: Arc<DynamicFilterPhysicalExpr>,
     /// Schema used to decode a producer-coordinate predicate before this consumer remaps it.
     pub(crate) input_schema: SchemaRef,
-    /// Schema used by this concrete consumer occurrence after expression remapping. File scan
-    /// predicates, for example, are evaluated against the unprojected table schema.
-    pub(crate) expression_schema: SchemaRef,
-}
-
-fn expression_schema(node: &Arc<dyn ExecutionPlan>, fallback: &SchemaRef) -> SchemaRef {
-    node.downcast_ref::<DataSourceExec>()
-        .and_then(|exec| exec.data_source().downcast_ref::<FileScanConfig>())
-        .map(|scan| {
-            let mut fields = scan.file_schema().fields().to_vec();
-            fields.extend(scan.table_partition_cols().iter().cloned());
-            Arc::new(Schema::new_with_metadata(
-                fields,
-                scan.file_schema().metadata().clone(),
-            ))
-        })
-        .unwrap_or_else(|| Arc::clone(fallback))
 }
 
 #[derive(Clone)]
@@ -85,7 +66,6 @@ pub(crate) fn discover_dynamic_filter_consumers(
             .map(|child| child.schema())
             .unwrap_or_else(|| node.schema());
         let is_network_boundary = node.is_network_boundary();
-        let expression_schema = expression_schema(node, &input_schema);
 
         node.apply_expressions(&mut |root| {
             root.apply(|expression| {
@@ -115,7 +95,6 @@ pub(crate) fn discover_dynamic_filter_consumers(
                             id,
                             expression,
                             input_schema: Arc::clone(&input_schema),
-                            expression_schema: Arc::clone(&expression_schema),
                         });
                 }
 
@@ -192,7 +171,6 @@ pub(crate) fn discover_runtime_dynamic_filter_consumers(
             .first()
             .map(|child| child.schema())
             .unwrap_or_else(|| node.schema());
-        let expression_schema = expression_schema(node, &input_schema);
 
         node.apply_expressions(&mut |root| {
             root.apply(|expression| {
@@ -218,7 +196,6 @@ pub(crate) fn discover_runtime_dynamic_filter_consumers(
                         id,
                         expression: Arc::clone(expression),
                         input_schema: Arc::clone(&input_schema),
-                        expression_schema: Arc::clone(&expression_schema),
                     });
                 Ok(TreeNodeRecursion::Continue)
             })

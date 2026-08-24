@@ -94,10 +94,10 @@ pub(crate) fn decode_physical_expr(
 ///
 /// Behavior:
 /// 1. [`DynamicFilterPhysicalExpr::update()`] remaps any occurences of `original` to `children`
-/// and stores the result in the shared state.
+///    and stores the result in the shared state.
 ///
 /// 2. [`DynamicFilterPhysicalExpr::current()`] reads the remapped expression and remaps it again,
-/// mapping `original` to `children` and returns it without storing.
+///    mapping `original` to `children` and returns it without storing.
 ///
 /// In the above plan, the producer calls update() so an expression like `key > 123` is mapped to
 /// `key > 123` and this is stored. Then, the consumers call current(), reading from the same state,
@@ -111,7 +111,7 @@ pub(crate) fn dynamic_filter_update_target(
     input_schema: &Schema,
     task_ctx: &TaskContext,
 ) -> Result<Arc<DynamicFilterPhysicalExpr>> {
-    // Since consumer.children() returns the remapped children, we use the proto as a workaround to get the 
+    // Since consumer.children() returns the remapped children, we use the proto as a workaround to get the
     // original children from the producer.
     let proto = encode_physical_expr(consumer, task_ctx)?;
     let Some(ExprType::DynamicFilter(dynamic_filter)) = proto.expr_type else {
