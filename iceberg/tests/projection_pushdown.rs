@@ -17,15 +17,15 @@ mod tests {
             .await?;
 
         insta::assert_snapshot!(plan, @r"
-    SortPreservingMergeExec: [pickup_date@0 ASC NULLS LAST]
-      SortExec: expr=[pickup_date@0 ASC NULLS LAST], preserve_partitioning=[true]
-        ProjectionExec: expr=[pickup_date@0 as pickup_date, count(Int64(1))@1 as trips]
-          AggregateExec: mode=FinalPartitioned, gby=[pickup_date@0 as pickup_date], aggr=[count(Int64(1))]
-            RepartitionExec: partitioning=Hash([pickup_date@0], 16), input_partitions=16
-              AggregateExec: mode=Partial, gby=[pickup_date@0 as pickup_date], aggr=[count(Int64(1))]
-                FilterExec: pickup_date@0 >= 2024-01-10
-                  DataSourceExec: format=iceberg, projection=[pickup_date], predicate=pickup_date >= 2024-01-10
-    ");
+        SortPreservingMergeExec: [pickup_date@0 ASC NULLS LAST]
+          SortExec: expr=[pickup_date@0 ASC NULLS LAST], preserve_partitioning=[true]
+            ProjectionExec: expr=[pickup_date@0 as pickup_date, count(Int64(1))@1 as trips]
+              AggregateExec: mode=FinalPartitioned, gby=[pickup_date@0 as pickup_date], aggr=[count(Int64(1))]
+                RepartitionExec: partitioning=Hash([pickup_date@0], 4), input_partitions=4
+                  AggregateExec: mode=Partial, gby=[pickup_date@0 as pickup_date], aggr=[count(Int64(1))]
+                    FilterExec: pickup_date@0 >= 2024-01-10
+                      DataSourceExec: format=iceberg, projection=[pickup_date], predicate=pickup_date >= 2024-01-10
+        ");
         insta::assert_snapshot!(batches, @r"
     +-------------+-------+
     | pickup_date | trips |

@@ -8,7 +8,7 @@ use datafusion::dataframe::DataFrame;
 use datafusion::error::Result;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_plan::displayable;
-use datafusion::prelude::SessionContext;
+use datafusion::prelude::{SessionConfig, SessionContext};
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use iceberg::io::{
@@ -31,6 +31,7 @@ impl IcebergTestHarness {
     pub async fn new() -> Result<Self> {
         let state = SessionStateBuilder::new()
             .with_default_features()
+            .with_config(SessionConfig::new().with_target_partitions(4))
             .with_iceberg_integration(IcebergIntegrationOptions {
                 storage_factory: Arc::new(FixtureStorageFactory::default()),
                 iceberg_runtime: iceberg::Runtime::current(),
