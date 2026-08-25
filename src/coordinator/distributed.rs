@@ -3,8 +3,8 @@ use crate::coordinator::dynamic_filters::isolate_distributed_leaf_variants_for_d
 use crate::coordinator::prepare_dynamic_plan::prepare_dynamic_plan;
 use crate::coordinator::prepare_static_plan::prepare_static_plan;
 use crate::coordinator::query_coordinator::QueryCoordinator;
-use crate::coordinator::store::{CompletedDynamicFilterStore, MetricsStore, task_keys_for_plan};
-use crate::{DistributedConfig, TaskCompletedDynamicFilters, TaskKey};
+use crate::coordinator::store::{Store, task_keys_for_plan};
+use crate::{DistributedConfig, TaskCompletedDynamicFilters, TaskKey, TaskMetrics};
 use datafusion::common::internal_datafusion_err;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{HashMap, Result, exec_err};
@@ -38,9 +38,9 @@ pub struct DistributedExec {
     metrics: ExecutionPlanMetricsSet,
     /// Storage where metrics collected from workers at runtime will place their results as they
     /// finish their respective remote tasks.
-    pub(crate) metrics_store: Option<Arc<MetricsStore>>,
+    pub(crate) metrics_store: Option<Arc<Store<TaskMetrics>>>,
     /// Storage for the completed dynamic filters reported by each worker task.
-    pub(crate) completed_dynamic_filter_store: Arc<CompletedDynamicFilterStore>,
+    pub(crate) completed_dynamic_filter_store: Arc<Store<TaskCompletedDynamicFilters>>,
 }
 
 /// Execution state produced by distributed planning (static or dynamic) retained
@@ -69,14 +69,14 @@ impl DistributedExec {
             prepared_execution: Arc::new(Mutex::new(None)),
             metrics: ExecutionPlanMetricsSet::new(),
             metrics_store: None,
-            completed_dynamic_filter_store: Arc::new(CompletedDynamicFilterStore::new()),
+            completed_dynamic_filter_store: Arc::new(Store::new()),
         }
     }
 
     /// Enables task metrics collection from remote workers.
     pub fn with_metrics_collection(mut self, enabled: bool) -> Self {
         self.metrics_store = match enabled {
-            true => Some(Arc::new(MetricsStore::new())),
+            true => Some(Arc::new(Store::new())),
             false => None,
         };
         self

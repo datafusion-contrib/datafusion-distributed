@@ -1,8 +1,8 @@
 use crate::codec::{decode_execution_plan, encode_execution_plan};
 use crate::common::{TreeNodeExt, now_ns, task_ctx_with_extension};
 use crate::config_extension_ext::get_config_extension_propagation_headers;
+use crate::coordinator::Store;
 use crate::coordinator::latency_metric::LatencyMetric;
-use crate::coordinator::{CompletedDynamicFilterStore, MetricsStore};
 use crate::events::{RouteTasksEvent, RouteTasksHandlers};
 use crate::execution_plans::{ChildrenIsolatorUnionExec, DistributedLeafExec};
 use crate::passthrough_headers::get_passthrough_headers;
@@ -12,8 +12,8 @@ use crate::work_unit_feed::{build_work_unit_batch_msg, set_work_unit_send_time};
 use crate::{
     CoordinatorToWorkerMsg, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedTaskContext,
     DistributedWorkUnitFeedContext, LoadInfo, LocalWorkerContext, MaybeEncoded, SetPlanRequest,
-    TaskCompletedDynamicFilters, TaskKey, WorkUnitFeedDeclaration, WorkerToCoordinatorMsg,
-    get_distributed_channel_resolver,
+    TaskCompletedDynamicFilters, TaskKey, TaskMetrics, WorkUnitFeedDeclaration,
+    WorkerToCoordinatorMsg, get_distributed_channel_resolver,
 };
 use datafusion::common::DataFusionError;
 use datafusion::common::instant::Instant;
@@ -47,8 +47,8 @@ pub(super) struct QueryCoordinator {
     task_ctx: Arc<TaskContext>,
     metrics: ExecutionPlanMetricsSet,
     coordinator_to_worker_metrics: CoordinatorToWorkerMetrics,
-    metrics_store: Option<Arc<MetricsStore>>,
-    completed_dynamic_filter_store: Arc<CompletedDynamicFilterStore>,
+    metrics_store: Option<Arc<Store<TaskMetrics>>>,
+    completed_dynamic_filter_store: Arc<Store<TaskCompletedDynamicFilters>>,
     end_stream_notifier: Arc<Notify>,
     join_set: Mutex<JoinSet<Result<()>>>,
 }
@@ -58,8 +58,8 @@ impl QueryCoordinator {
     pub(super) fn new(
         task_ctx: Arc<TaskContext>,
         metrics_set: &ExecutionPlanMetricsSet,
-        metrics_store: Option<Arc<MetricsStore>>,
-        completed_dynamic_filter_store: Arc<CompletedDynamicFilterStore>,
+        metrics_store: Option<Arc<Store<TaskMetrics>>>,
+        completed_dynamic_filter_store: Arc<Store<TaskCompletedDynamicFilters>>,
     ) -> Self {
         Self {
             task_ctx,
@@ -121,8 +121,6 @@ impl QueryCoordinator {
 /// - Building tasks that communicate a serialized plan to multiple workers for further execution.
 /// - Building tasks that stream partition feeds from local [WorkUnitFeedExec] nodes to their
 ///   remote counterparts.
-type SpecializedTaskPlan = (Arc<dyn ExecutionPlan>, Vec<WorkUnitFeedDeclaration>);
-
 pub(super) struct StageCoordinator<'a> {
     plan: &'a Arc<dyn ExecutionPlan>,
     query_id: Uuid,
@@ -131,8 +129,8 @@ pub(super) struct StageCoordinator<'a> {
     task_ctx: &'a Arc<TaskContext>,
     metrics_set: &'a ExecutionPlanMetricsSet,
     metrics: &'a CoordinatorToWorkerMetrics,
-    metrics_store: &'a Option<Arc<MetricsStore>>,
-    completed_dynamic_filter_store: &'a Arc<CompletedDynamicFilterStore>,
+    metrics_store: &'a Option<Arc<Store<TaskMetrics>>>,
+    completed_dynamic_filter_store: &'a Arc<Store<TaskCompletedDynamicFilters>>,
     end_stream_notifier: &'a Arc<Notify>,
     join_set: &'a Mutex<JoinSet<Result<()>>>,
 }
@@ -356,7 +354,10 @@ impl<'a> StageCoordinator<'a> {
     /// trimming down any unnecessary information that the specific `task_i` task is not going to
     /// need, like unexecuted branches in [ChildrenIsolatorUnionExec], or unexecuted variants of
     /// [DistributedLeafExec].
-    fn task_specialized_plan(&self, task_i: usize) -> Result<SpecializedTaskPlan> {
+    fn task_specialized_plan(
+        &self,
+        task_i: usize,
+    ) -> Result<(Arc<dyn ExecutionPlan>, Vec<WorkUnitFeedDeclaration>)> {
         let session_config = self.task_ctx.session_config();
         let wuf_registry = session_config
             .get_extension::<WorkUnitFeedRegistry>()

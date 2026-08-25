@@ -1,4 +1,4 @@
-use crate::coordinator::{DistributedExec, MetricsStore};
+use crate::coordinator::{DistributedExec, Store};
 use crate::execution_plans::{DistributedLeafExec, NetworkCoalesceExec};
 use crate::metrics::DISTRIBUTED_DATAFUSION_TASK_ID_LABEL;
 use datafusion::common::{HashMap, Statistics, config_err};
@@ -224,7 +224,8 @@ impl DistributedTaskContext {
 }
 
 use crate::{
-    DistributedMetricsFormat, NetworkShuffleExec, TaskKey, rewrite_distributed_plan_with_metrics,
+    DistributedMetricsFormat, NetworkShuffleExec, TaskKey, TaskMetrics,
+    rewrite_distributed_plan_with_metrics,
 };
 use crate::{NetworkBoundary, NetworkBoundaryExt};
 use datafusion::arrow::datatypes::SchemaRef;
@@ -439,7 +440,7 @@ fn display_inner_distributed_leaf(
 
 /// Gathers the metrics global to a stage. These metrics are not specific to any plan node, and
 /// are instead global to a whole stage.
-fn gather_stage_header_metrics(stage: &Stage, metrics_store: &MetricsStore) -> MetricsSet {
+fn gather_stage_header_metrics(stage: &Stage, metrics_store: &Store<TaskMetrics>) -> MetricsSet {
     let mut task_key = TaskKey {
         query_id: stage.query_id(),
         stage_id: stage.num(),

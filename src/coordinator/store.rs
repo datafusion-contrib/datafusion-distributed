@@ -1,5 +1,5 @@
+use crate::TaskKey;
 use crate::distributed_planner::NetworkBoundaryExt;
-use crate::{TaskCompletedDynamicFilters, TaskKey, TaskMetrics};
 use datafusion::common::HashMap;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::physical_plan::ExecutionPlan;
@@ -54,9 +54,6 @@ impl<T> Store<T> {
         Self { tx, rx }
     }
 }
-
-pub(crate) type MetricsStore = Store<TaskMetrics>;
-pub(crate) type CompletedDynamicFilterStore = Store<TaskCompletedDynamicFilters>;
 
 pub(crate) fn task_keys_for_plan(plan: &Arc<dyn ExecutionPlan>) -> Vec<TaskKey> {
     let mut task_keys = Vec::new();

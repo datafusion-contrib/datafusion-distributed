@@ -1,11 +1,11 @@
 use crate::common::TreeNodeExt;
-use crate::coordinator::{DistributedExec, MetricsStore};
+use crate::coordinator::{DistributedExec, Store};
 use crate::distributed_planner::NetworkBoundaryExt;
 use crate::execution_plans::MetricsWrapperExec;
 use crate::metrics::DISTRIBUTED_DATAFUSION_TASK_ID_LABEL;
 use crate::metrics::collect_plan_metrics;
 use crate::stage::{LocalStage, Stage};
-use crate::{DistributedTaskContext, TaskKey};
+use crate::{DistributedTaskContext, TaskKey, TaskMetrics};
 use datafusion::common::HashMap;
 use datafusion::common::plan_err;
 use datafusion::common::tree_node::Transformed;
@@ -207,7 +207,7 @@ pub fn rewrite_local_plan_with_metrics(
 /// Note: Metrics may be aggregated by name (ex. output_rows) automatically by various datafusion utils.
 pub fn stage_metrics_rewriter(
     stage: &LocalStage,
-    metrics_collection: Arc<MetricsStore>,
+    metrics_collection: Arc<Store<TaskMetrics>>,
     format: DistributedMetricsFormat,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     // Phase 1 — accumulate per-task metrics into a map keyed by node identity.
@@ -283,7 +283,7 @@ pub fn stage_metrics_rewriter(
 #[cfg(test)]
 mod tests {
     use crate::DistributedExt;
-    use crate::coordinator::MetricsStore;
+    use crate::coordinator::Store;
     use crate::metrics::DISTRIBUTED_DATAFUSION_TASK_ID_LABEL;
     use crate::metrics::task_metrics_rewriter::MetricsWrapperExec;
     use crate::metrics::task_metrics_rewriter::{
@@ -449,7 +449,7 @@ mod tests {
         let num_metrics_per_task_per_node = 4;
 
         // Generate metrics for each task and store them in the map.
-        let metrics_collection = MetricsStore::from_entries((0..stage.tasks).map(|task_id| {
+        let metrics_collection = Store::from_entries((0..stage.tasks).map(|task_id| {
             let task_key = TaskKey {
                 query_id: stage.query_id,
                 stage_id: stage.num,

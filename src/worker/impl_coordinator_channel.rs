@@ -16,7 +16,7 @@ use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionConfig;
 use datafusion_proto::protobuf::physical_expr_node::ExprType;
-use futures::stream::{BoxStream, FuturesUnordered};
+use futures::stream::{BoxStream, FuturesUnordered, select_all};
 use futures::{FutureExt, StreamExt, TryStreamExt};
 use http::HeaderMap;
 use std::sync::{Arc, OnceLock};
@@ -208,10 +208,11 @@ impl Worker {
             },
         );
 
-        Ok(futures::stream::select(
-            load_info_stream,
-            futures::stream::select(metrics_stream, dynamic_filters_stream),
-        )
+        Ok(select_all([
+            load_info_stream.boxed(),
+            metrics_stream.boxed(),
+            dynamic_filters_stream.boxed(),
+        ])
         .map(Ok)
         .boxed())
     }
