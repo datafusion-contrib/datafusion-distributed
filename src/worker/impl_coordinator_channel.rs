@@ -12,7 +12,7 @@ use crate::{
 };
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{DataFusionError, Result, exec_datafusion_err, internal_err};
-use datafusion::execution::SessionStateBuilder;
+use datafusion::execution::{SessionStateBuilder, TaskContext};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionConfig;
 use datafusion_proto::protobuf::physical_expr_node::ExprType;
@@ -220,7 +220,7 @@ impl Worker {
 
 fn build_task_completed_dynamic_filters(
     plan: &Arc<dyn ExecutionPlan>,
-    task_ctx: &Arc<datafusion::execution::TaskContext>,
+    task_ctx: &Arc<TaskContext>,
 ) -> Result<TaskCompletedDynamicFilters> {
     let mut filters = vec![];
     for consumer in discover_dynamic_filter_consumers(plan)? {
