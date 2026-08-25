@@ -117,6 +117,7 @@ pub struct IcebergDataSource {
     partitioning: Partitioning,
     fetch: Option<usize>,
     metrics: ExecutionPlanMetricsSet,
+    current_snapshot: Option<SnapshotRef>,
     iceberg_file_io: iceberg::io::FileIO,
     iceberg_runtime: iceberg::Runtime,
     feed: WorkUnitFeed<IcebergWorkUnitFeed>,
@@ -150,6 +151,8 @@ impl IcebergDataSource {
                 .collect::<Vec<String>>()
         });
 
+        let current_snapshot = table.metadata().current_snapshot().cloned();
+
         let predicates = convert_filters_to_predicate(opts.filters);
 
         Self {
@@ -169,6 +172,7 @@ impl IcebergDataSource {
                 partitioning,
                 sync_manager: Default::default(),
             }),
+            current_snapshot,
         }
     }
 }
