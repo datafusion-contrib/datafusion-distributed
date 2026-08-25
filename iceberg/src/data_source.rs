@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::common::stats::Precision;
 use datafusion::common::{Statistics, exec_datafusion_err};
 use datafusion::config::ConfigOptions;
 use datafusion::datasource::source::DataSource;
@@ -18,6 +19,7 @@ use datafusion::prelude::Expr;
 use datafusion_distributed::WorkUnitFeed;
 use futures::{StreamExt, TryStreamExt};
 use iceberg::arrow::ArrowReaderBuilder;
+use iceberg::spec::SnapshotRef;
 
 use crate::common::{convert_filters_to_predicate, df_err, iceberg_err};
 use crate::{IcebergConfig, IcebergWorkUnitFeed};
@@ -249,10 +251,7 @@ impl DataSource for IcebergDataSource {
     }
 
     fn partition_statistics(&self, _partition: Option<usize>) -> Result<Arc<Statistics>> {
-        // TODO: Implement planning time statistics for this DataSource.
-        //  At this point, we have information about the iceberg::table::Table which we are about
-        //  to read, so maybe there's something we can get from there.
-        Ok(Arc::new(Statistics::new_unknown(&self.schema)))
+        stats_from_snapshot(self.current_snapshot.as_ref(), &self.schema)
     }
 
     fn with_fetch(&self, fetch: Option<usize>) -> Option<Arc<dyn DataSource>> {
@@ -295,5 +294,100 @@ impl DataSource for IcebergDataSource {
     ) -> Result<SortOrderPushdownResult<Arc<dyn DataSource>>> {
         // TODO: Allow this DataSource to be pushed down sort expressions.
         Ok(SortOrderPushdownResult::Unsupported)
+    }
+}
+
+/// Getting statistics from the provided snapshot.
+fn stats_from_snapshot(
+    snapshot: Option<&SnapshotRef>,
+    schema: &SchemaRef,
+) -> Result<Arc<Statistics>> {
+    let Some(snap) = snapshot else {
+        return Ok(Arc::new(Statistics::new_unknown(schema)));
+    };
+    let props = &snap.summary().additional_properties;
+
+    let num_rows = props
+        .get("total-records")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let total_byte_size = props
+        .get("total-files-size")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+
+    Ok(Arc::new(Statistics {
+        num_rows: Precision::Exact(num_rows),
+        total_byte_size: Precision::Exact(total_byte_size),
+        column_statistics: vec![],
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use iceberg::spec::{Operation, Snapshot, Summary};
+
+    fn schema() -> SchemaRef {
+        Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]))
+    }
+
+    fn make_snapshot(extras: &[(&str, &str)]) -> SnapshotRef {
+        let props = extras
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        Arc::new(
+            Snapshot::builder()
+                .with_snapshot_id(1)
+                .with_timestamp_ms(0)
+                .with_sequence_number(0)
+                .with_schema_id(0)
+                .with_manifest_list("")
+                .with_summary(Summary {
+                    operation: Operation::Append,
+                    additional_properties: props,
+                })
+                .build(),
+        )
+    }
+
+    #[test]
+    fn no_snapshot_returns_unknown_stats() {
+        let s = stats_from_snapshot(None, &schema()).unwrap();
+        assert!(matches!(s.num_rows, Precision::Absent));
+        assert!(matches!(s.total_byte_size, Precision::Absent));
+    }
+
+    #[test]
+    fn valid_props_are_parsed_exactly_stats() {
+        let snap = make_snapshot(&[("total-records", "100"), ("total-files-size", "4096")]);
+        let s = stats_from_snapshot(Some(&snap), &schema()).unwrap();
+        assert_eq!(s.num_rows, Precision::Exact(100));
+        assert_eq!(s.total_byte_size, Precision::Exact(4096));
+    }
+
+    #[test]
+    fn missing_props_default_to_zero_stats() {
+        let snap = make_snapshot(&[]);
+        let s = stats_from_snapshot(Some(&snap), &schema()).unwrap();
+        assert_eq!(s.num_rows, Precision::Exact(0));
+        assert_eq!(s.total_byte_size, Precision::Exact(0));
+    }
+
+    #[test]
+    fn unparseable_props_default_to_zero_stats() {
+        let snap = make_snapshot(&[("total-records", "3.14"), ("total-files-size", "-1")]);
+        let s = stats_from_snapshot(Some(&snap), &schema()).unwrap();
+        assert_eq!(s.num_rows, Precision::Exact(0));
+        assert_eq!(s.total_byte_size, Precision::Exact(0));
+    }
+
+    #[test]
+    fn column_statistics_are_empty_stats() {
+        let snap = make_snapshot(&[("total-records", "10"), ("total-files-size", "512")]);
+        let s = stats_from_snapshot(Some(&snap), &schema()).unwrap();
+        assert!(s.column_statistics.is_empty());
     }
 }
