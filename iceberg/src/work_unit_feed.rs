@@ -1,6 +1,5 @@
 use std::sync::{Arc, Mutex, OnceLock};
 
-use bytes::{Buf, BufMut};
 use datafusion::common::runtime::SpawnedTask;
 use datafusion::common::{Result, exec_err, internal_err};
 use datafusion::error::DataFusionError;
@@ -11,8 +10,6 @@ use futures::stream::BoxStream;
 use futures::{StreamExt, TryStreamExt};
 use iceberg::expr::Predicate;
 use iceberg::scan::FileScanTask;
-use prost::encoding::{DecodeContext, WireType};
-use prost::{DecodeError, Message};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
