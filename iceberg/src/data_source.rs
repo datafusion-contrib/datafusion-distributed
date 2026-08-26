@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::common::{Statistics, exec_datafusion_err};
+use datafusion::common::stats::Precision;
+use datafusion::common::{ColumnStatistics, Statistics, exec_datafusion_err};
 use datafusion::config::ConfigOptions;
 use datafusion::datasource::source::DataSource;
 use datafusion::error::Result;
@@ -18,9 +19,18 @@ use datafusion::prelude::Expr;
 use datafusion_distributed::WorkUnitFeed;
 use futures::{StreamExt, TryStreamExt};
 use iceberg::arrow::ArrowReaderBuilder;
+use iceberg::spec::SnapshotRef;
 
 use crate::common::{convert_filters_to_predicate, df_err, iceberg_err};
 use crate::{IcebergConfig, IcebergWorkUnitFeed};
+
+/// Snapshot summary keys defined by the Iceberg table spec:
+/// https://iceberg.apache.org/spec/#optional-snapshot-summary-fields
+///
+/// iceberg-rust defines them privately:
+/// https://github.com/apache/iceberg-rust/blob/4168a0b2950dc5f85588e5cb3ab6796e5228b309/crates/iceberg/src/spec/snapshot_summary.rs#L46-L47
+const TOTAL_RECORDS: &str = "total-records";
+const TOTAL_FILE_SIZE: &str = "total-files-size";
 
 /// Consumes a stream of [iceberg::scan::FileScanTask]s per partition and reads the underlying
 /// files into an Arrow stream.
@@ -115,6 +125,7 @@ pub struct IcebergDataSource {
     partitioning: Partitioning,
     fetch: Option<usize>,
     metrics: ExecutionPlanMetricsSet,
+    current_snapshot: Option<SnapshotRef>,
     iceberg_file_io: iceberg::io::FileIO,
     iceberg_runtime: iceberg::Runtime,
     feed: WorkUnitFeed<IcebergWorkUnitFeed>,
@@ -148,6 +159,8 @@ impl IcebergDataSource {
                 .collect::<Vec<String>>()
         });
 
+        let current_snapshot = table.metadata().current_snapshot().cloned();
+
         let predicates = convert_filters_to_predicate(opts.filters);
 
         Self {
@@ -167,6 +180,7 @@ impl IcebergDataSource {
                 partitioning,
                 sync_manager: Default::default(),
             }),
+            current_snapshot,
         }
     }
 }
@@ -249,10 +263,7 @@ impl DataSource for IcebergDataSource {
     }
 
     fn partition_statistics(&self, _partition: Option<usize>) -> Result<Arc<Statistics>> {
-        // TODO: Implement planning time statistics for this DataSource.
-        //  At this point, we have information about the iceberg::table::Table which we are about
-        //  to read, so maybe there's something we can get from there.
-        Ok(Arc::new(Statistics::new_unknown(&self.schema)))
+        stats_from_snapshot(self.current_snapshot.as_ref(), &self.schema)
     }
 
     fn with_fetch(&self, fetch: Option<usize>) -> Option<Arc<dyn DataSource>> {
@@ -296,4 +307,35 @@ impl DataSource for IcebergDataSource {
         // TODO: Allow this DataSource to be pushed down sort expressions.
         Ok(SortOrderPushdownResult::Unsupported)
     }
+}
+
+/// Getting statistics from the provided snapshot.
+fn stats_from_snapshot(
+    snapshot: Option<&SnapshotRef>,
+    schema: &SchemaRef,
+) -> Result<Arc<Statistics>> {
+    let Some(snap) = snapshot else {
+        // A table with no current snapshot has never had a commit. It was created, but zero data files were added
+        return Ok(Arc::new(Statistics {
+            num_rows: Precision::Exact(0),
+            total_byte_size: Precision::Exact(0),
+            column_statistics: vec![ColumnStatistics::new_unknown(); schema.fields().len()],
+        }));
+    };
+    let props = &snap.summary().additional_properties;
+
+    let num_rows = props
+        .get(TOTAL_RECORDS)
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let total_byte_size = props
+        .get(TOTAL_FILE_SIZE)
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+
+    Ok(Arc::new(Statistics {
+        num_rows: Precision::Exact(num_rows),
+        total_byte_size: Precision::Exact(total_byte_size),
+        column_statistics: vec![ColumnStatistics::new_unknown(); schema.fields().len()],
+    }))
 }

@@ -7,7 +7,7 @@ use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::dataframe::DataFrame;
 use datafusion::error::Result;
 use datafusion::execution::SessionStateBuilder;
-use datafusion::physical_plan::displayable;
+use datafusion::physical_plan::{ExecutionPlan, displayable};
 use datafusion::prelude::{SessionConfig, SessionContext};
 use futures::StreamExt;
 use futures::stream::BoxStream;
@@ -57,6 +57,10 @@ impl IcebergTestHarness {
             displayable(plan.as_ref()).indent(true).to_string(),
             pretty_format_batches(&batches)?.to_string(),
         ))
+    }
+
+    pub async fn physical_plan(&self, sql: &str) -> Result<Arc<dyn ExecutionPlan>> {
+        self.ctx.sql(sql).await?.create_physical_plan().await
     }
 }
 
