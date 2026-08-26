@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::stats::Precision;
-use datafusion::common::{Statistics, exec_datafusion_err};
+use datafusion::common::{ColumnStatistics, Statistics, exec_datafusion_err};
 use datafusion::config::ConfigOptions;
 use datafusion::datasource::source::DataSource;
 use datafusion::error::Result;
@@ -23,6 +23,14 @@ use iceberg::spec::SnapshotRef;
 
 use crate::common::{convert_filters_to_predicate, df_err, iceberg_err};
 use crate::{IcebergConfig, IcebergWorkUnitFeed};
+
+/// Snapshot summary keys defined by the Iceberg table spec:
+/// https://iceberg.apache.org/spec/#optional-snapshot-summary-fields
+///
+/// iceberg-rust defines them privately:
+/// https://github.com/apache/iceberg-rust/blob/4168a0b2950dc5f85588e5cb3ab6796e5228b309/crates/iceberg/src/spec/snapshot_summary.rs#L46-L47
+const TOTAL_RECORDS: &str = "total-records";
+const TOTAL_FILE_SIZE: &str = "total-files-size";
 
 /// Consumes a stream of [iceberg::scan::FileScanTask]s per partition and reads the underlying
 /// files into an Arrow stream.
@@ -307,23 +315,28 @@ fn stats_from_snapshot(
     schema: &SchemaRef,
 ) -> Result<Arc<Statistics>> {
     let Some(snap) = snapshot else {
-        return Ok(Arc::new(Statistics::new_unknown(schema)));
+        // A table with no current snapshot has never had a commit. It was created, but zero data files were added
+        return Ok(Arc::new(Statistics {
+            num_rows: Precision::Exact(0),
+            total_byte_size: Precision::Exact(0),
+            column_statistics: vec![ColumnStatistics::new_unknown(); schema.fields().len()],
+        }));
     };
     let props = &snap.summary().additional_properties;
 
     let num_rows = props
-        .get("total-records")
+        .get(TOTAL_RECORDS)
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
     let total_byte_size = props
-        .get("total-files-size")
+        .get(TOTAL_FILE_SIZE)
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
 
     Ok(Arc::new(Statistics {
         num_rows: Precision::Exact(num_rows),
         total_byte_size: Precision::Exact(total_byte_size),
-        column_statistics: vec![],
+        column_statistics: vec![ColumnStatistics::new_unknown(); schema.fields().len()],
     }))
 }
 
@@ -357,11 +370,12 @@ mod tests {
         )
     }
 
+    /// Table was created, but not committed => means no snapshot and everything is set to zero
     #[test]
     fn no_snapshot_returns_unknown_stats() {
         let s = stats_from_snapshot(None, &schema()).unwrap();
-        assert!(matches!(s.num_rows, Precision::Absent));
-        assert!(matches!(s.total_byte_size, Precision::Absent));
+        assert!(matches!(s.num_rows, Precision::Exact(0)));
+        assert!(matches!(s.total_byte_size, Precision::Exact(0)));
     }
 
     #[test]
@@ -386,12 +400,5 @@ mod tests {
         let s = stats_from_snapshot(Some(&snap), &schema()).unwrap();
         assert_eq!(s.num_rows, Precision::Exact(0));
         assert_eq!(s.total_byte_size, Precision::Exact(0));
-    }
-
-    #[test]
-    fn column_statistics_are_empty_stats() {
-        let snap = make_snapshot(&[("total-records", "10"), ("total-files-size", "512")]);
-        let s = stats_from_snapshot(Some(&snap), &schema()).unwrap();
-        assert!(s.column_statistics.is_empty());
     }
 }
