@@ -2,13 +2,13 @@
 mod tests {
     use std::sync::Arc;
 
-    use datafusion::common::stats::Precision;
     use datafusion::common::Statistics;
+    use datafusion::common::stats::Precision;
     use datafusion::datasource::source::DataSourceExec;
     use datafusion::error::Result;
-    use datafusion::physical_plan::{displayable, ExecutionPlan};
-    use datafusion_distributed_iceberg::test_utils::IcebergTestHarness;
+    use datafusion::physical_plan::{ExecutionPlan, displayable};
     use datafusion_distributed_iceberg::IcebergDataSource;
+    use datafusion_distributed_iceberg::test_utils::IcebergTestHarness;
 
     // Values from testdata/iceberg/taxi/metadata/v1.metadata.json snapshot summary.
     const TAXI_ROWS: usize = 175_000;
