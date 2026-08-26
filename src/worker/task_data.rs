@@ -1,5 +1,6 @@
 use crate::common::OnceLockResult;
 use crate::common::now_ns;
+use crate::metrics::{PLAN_ADDED_AT_METRIC, PLAN_EXECUTED_AT_METRIC, PLAN_FINISHED_AT_METRIC};
 use crate::{MaxLatencyMetric, ProducerHead, TaskMetrics};
 use datafusion::common::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
@@ -27,10 +28,6 @@ pub struct TaskData {
     /// was fed by the coordinator to the worker.
     pub(super) task_data_metrics: Arc<TaskDataMetrics>,
 }
-
-pub(crate) const PLAN_ADDED_AT_METRIC: &str = "plan_added_at";
-pub(crate) const PLAN_EXECUTED_AT_METRIC: &str = "plan_executed_at";
-pub(crate) const PLAN_FINISHED_AT_METRIC: &str = "plan_finished_at";
 
 #[derive(Debug)]
 pub(super) struct TaskDataMetrics {

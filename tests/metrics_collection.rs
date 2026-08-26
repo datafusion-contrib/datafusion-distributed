@@ -16,9 +16,12 @@ mod tests {
         row_generator_desired_task_count_handler, row_generator_scale_up_leaf_node_handler,
     };
     use datafusion_distributed::{
-        DefaultSessionBuilder, DistributedExt, DistributedLeafExec, DistributedMetricsFormat,
-        NetworkCoalesceExec, NetworkShuffleExec, WorkerQueryContext, display_plan_ascii,
-        rewrite_distributed_plan_with_metrics,
+        BYTES_TRANSFERRED_METRIC, DefaultSessionBuilder, DistributedExt, DistributedLeafExec,
+        DistributedMetricsFormat, MAX_MEMORY_USED_METRIC, NETWORK_LATENCY_COUNT_METRIC,
+        NETWORK_LATENCY_FIRST_METRIC, NETWORK_LATENCY_MAX_METRIC, NETWORK_LATENCY_MIN_METRIC,
+        NETWORK_LATENCY_P50_METRIC, NETWORK_LATENCY_SUM_METRIC, NetworkCoalesceExec,
+        NetworkShuffleExec, PLAN_ADDED_AT_METRIC, PLAN_EXECUTED_AT_METRIC, PLAN_FINISHED_AT_METRIC,
+        WorkerQueryContext, display_plan_ascii, rewrite_distributed_plan_with_metrics,
     };
     use futures::TryStreamExt;
     use std::sync::Arc;
@@ -161,42 +164,46 @@ mod tests {
         println!("{}", display_plan_ascii(s_physical.as_ref(), true));
         println!("{}", display_plan_ascii(d_physical.as_ref(), true));
 
-        let value = node_metrics::<NetworkCoalesceExec>(&d_physical, "bytes_transferred", 1);
+        let value = node_metrics::<NetworkCoalesceExec>(&d_physical, BYTES_TRANSFERRED_METRIC, 1);
         assert!(value > 100);
-        let value = node_metrics::<NetworkCoalesceExec>(&d_physical, "max_mem_used", 1);
+        let value = node_metrics::<NetworkCoalesceExec>(&d_physical, MAX_MEMORY_USED_METRIC, 1);
         assert!(value > 100);
         let value = node_metrics::<NetworkCoalesceExec>(&d_physical, "elapsed_compute", 1);
         assert!(value > 100);
-        let value = node_metrics::<NetworkCoalesceExec>(&d_physical, "network_latency_min", 1);
+        let value = node_metrics::<NetworkCoalesceExec>(&d_physical, NETWORK_LATENCY_MIN_METRIC, 1);
         assert!(value > 0);
-        let value = node_metrics::<NetworkCoalesceExec>(&d_physical, "network_latency_max", 1);
+        let value = node_metrics::<NetworkCoalesceExec>(&d_physical, NETWORK_LATENCY_MAX_METRIC, 1);
         assert!(value > 0);
-        let value = node_metrics::<NetworkCoalesceExec>(&d_physical, "network_latency_p50", 1);
+        let value = node_metrics::<NetworkCoalesceExec>(&d_physical, NETWORK_LATENCY_P50_METRIC, 1);
         assert!(value > 0);
-        let value = node_metrics::<NetworkCoalesceExec>(&d_physical, "network_latency_first", 1);
+        let value =
+            node_metrics::<NetworkCoalesceExec>(&d_physical, NETWORK_LATENCY_FIRST_METRIC, 1);
         assert!(value > 0);
-        let value = node_metrics::<NetworkCoalesceExec>(&d_physical, "network_latency_sum", 1);
+        let value = node_metrics::<NetworkCoalesceExec>(&d_physical, NETWORK_LATENCY_SUM_METRIC, 1);
         assert!(value > 0);
-        let value = node_metrics::<NetworkCoalesceExec>(&d_physical, "network_latency_count", 1);
+        let value =
+            node_metrics::<NetworkCoalesceExec>(&d_physical, NETWORK_LATENCY_COUNT_METRIC, 1);
         assert!(value > 0);
 
-        let value = node_metrics::<NetworkShuffleExec>(&d_physical, "bytes_transferred", 1);
+        let value = node_metrics::<NetworkShuffleExec>(&d_physical, BYTES_TRANSFERRED_METRIC, 1);
         assert!(value > 100);
-        let value = node_metrics::<NetworkShuffleExec>(&d_physical, "max_mem_used", 1);
+        let value = node_metrics::<NetworkShuffleExec>(&d_physical, MAX_MEMORY_USED_METRIC, 1);
         assert!(value > 100);
         let value = node_metrics::<NetworkShuffleExec>(&d_physical, "elapsed_compute", 1);
         assert!(value > 100);
-        let value = node_metrics::<NetworkShuffleExec>(&d_physical, "network_latency_min", 1);
+        let value = node_metrics::<NetworkShuffleExec>(&d_physical, NETWORK_LATENCY_MIN_METRIC, 1);
         assert!(value > 0);
-        let value = node_metrics::<NetworkShuffleExec>(&d_physical, "network_latency_max", 1);
+        let value = node_metrics::<NetworkShuffleExec>(&d_physical, NETWORK_LATENCY_MAX_METRIC, 1);
         assert!(value > 0);
-        let value = node_metrics::<NetworkCoalesceExec>(&d_physical, "network_latency_p50", 1);
+        let value = node_metrics::<NetworkCoalesceExec>(&d_physical, NETWORK_LATENCY_P50_METRIC, 1);
         assert!(value > 0);
-        let value = node_metrics::<NetworkShuffleExec>(&d_physical, "network_latency_first", 1);
+        let value =
+            node_metrics::<NetworkShuffleExec>(&d_physical, NETWORK_LATENCY_FIRST_METRIC, 1);
         assert!(value > 0);
-        let value = node_metrics::<NetworkShuffleExec>(&d_physical, "network_latency_sum", 1);
+        let value = node_metrics::<NetworkShuffleExec>(&d_physical, NETWORK_LATENCY_SUM_METRIC, 1);
         assert!(value > 0);
-        let value = node_metrics::<NetworkShuffleExec>(&d_physical, "network_latency_count", 1);
+        let value =
+            node_metrics::<NetworkShuffleExec>(&d_physical, NETWORK_LATENCY_COUNT_METRIC, 1);
         assert!(value > 0);
 
         Ok(())
@@ -216,9 +223,9 @@ mod tests {
 
         let display = display_plan_ascii(d_physical.as_ref(), true);
         assert_not_contains!(&display, "metrics=[]");
-        assert_contains!(&display, "plan_added_at");
-        assert_contains!(&display, "plan_executed_at");
-        assert_contains!(&display, "plan_finished_at");
+        assert_contains!(&display, PLAN_ADDED_AT_METRIC);
+        assert_contains!(&display, PLAN_EXECUTED_AT_METRIC);
+        assert_contains!(&display, PLAN_FINISHED_AT_METRIC);
 
         Ok(())
     }

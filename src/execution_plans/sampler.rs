@@ -1,4 +1,10 @@
 use crate::common::{TreeNodeExt, require_one_child, vec_cast};
+use crate::metrics::{
+    BYTES_READY_METRIC, KICK_OFF_TO_EXECUTION_MAX_METRIC, KICK_OFF_TO_EXECUTION_P50_METRIC,
+    KICK_OFF_TO_FIRST_BATCH_MAX_METRIC, KICK_OFF_TO_FIRST_BATCH_P50_METRIC,
+    KICK_OFF_TO_LOAD_INFO_SENT_MAX_METRIC, KICK_OFF_TO_LOAD_INFO_SENT_P50_METRIC,
+    MAX_BATCHES_PEEKED_METRIC, MAX_MEMORY_USED_METRIC,
+};
 use crate::{
     BytesCounterMetric, BytesMetricExt, GaugeMetricExt, LatencyMetricExt, LoadInfo, MaxGaugeMetric,
     MaxLatencyMetric, P50LatencyMetric,
@@ -75,15 +81,17 @@ impl SamplerExecMetrics {
     fn new(metric_set: &ExecutionPlanMetricsSet) -> Self {
         let bdr = || MetricBuilder::new(metric_set);
         Self {
-            kick_off_to_fist_batch_p50: bdr().p50_latency("kick_off_to_first_batch_p50"),
-            kick_off_to_fist_batch_max: bdr().max_latency("kick_off_to_first_batch_max"),
-            kick_off_to_load_info_sent_p50: bdr().p50_latency("kick_off_to_load_info_sent_p50"),
-            kick_off_to_load_info_sent_max: bdr().max_latency("kick_off_to_load_info_sent_max"),
-            kick_off_to_execution_p50: bdr().p50_latency("kick_off_to_execution_p50"),
-            kick_off_to_execution_max: bdr().max_latency("kick_off_to_execution_max"),
-            max_batches_peeked: bdr().max_gauge("max_batches_peeked"),
-            max_mem_used: bdr().global_gauge("max_mem_used"),
-            bytes_ready: bdr().bytes_counter("bytes_ready"),
+            kick_off_to_fist_batch_p50: bdr().p50_latency(KICK_OFF_TO_FIRST_BATCH_P50_METRIC),
+            kick_off_to_fist_batch_max: bdr().max_latency(KICK_OFF_TO_FIRST_BATCH_MAX_METRIC),
+            kick_off_to_load_info_sent_p50: bdr()
+                .p50_latency(KICK_OFF_TO_LOAD_INFO_SENT_P50_METRIC),
+            kick_off_to_load_info_sent_max: bdr()
+                .max_latency(KICK_OFF_TO_LOAD_INFO_SENT_MAX_METRIC),
+            kick_off_to_execution_p50: bdr().p50_latency(KICK_OFF_TO_EXECUTION_P50_METRIC),
+            kick_off_to_execution_max: bdr().max_latency(KICK_OFF_TO_EXECUTION_MAX_METRIC),
+            max_batches_peeked: bdr().max_gauge(MAX_BATCHES_PEEKED_METRIC),
+            max_mem_used: bdr().global_gauge(MAX_MEMORY_USED_METRIC),
+            bytes_ready: bdr().bytes_counter(BYTES_READY_METRIC),
             elapsed_compute: {
                 let time = Time::new();
                 bdr().build(MetricValue::ElapsedCompute(time.clone()));

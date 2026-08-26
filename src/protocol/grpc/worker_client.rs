@@ -5,6 +5,12 @@ use super::metrics_proto::metrics_set_proto_to_df;
 use crate::common::serialize_uuid;
 use crate::grpc::generated::worker::FlightAppMetadata;
 use crate::grpc::on_drop_stream::on_drop_stream;
+use crate::metrics::{
+    BYTES_TRANSFERRED_METRIC, MAX_MEMORY_USED_METRIC, MESSAGE_COUNT_METRIC,
+    NETWORK_LATENCY_COUNT_METRIC, NETWORK_LATENCY_FIRST_METRIC, NETWORK_LATENCY_MAX_METRIC,
+    NETWORK_LATENCY_MIN_METRIC, NETWORK_LATENCY_P50_METRIC, NETWORK_LATENCY_P95_METRIC,
+    NETWORK_LATENCY_SUM_METRIC, PLAN_BYTES_SENT_METRIC,
+};
 use crate::{
     BytesMetricExt, CoordinatorToWorkerMsg, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL,
     DistributedConfig, ExecuteTaskRequest, FirstLatencyMetric, GetWorkerInfoRequest,
@@ -80,7 +86,7 @@ impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSy
 
         MetricBuilder::new(&metrics)
             .with_label(Label::new(DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, "0"))
-            .bytes_counter("plan_bytes_sent")
+            .bytes_counter(PLAN_BYTES_SENT_METRIC)
             .add_bytes(plan_bytes_sent);
 
         Ok(output_stream)
@@ -104,10 +110,11 @@ impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSy
 
         // Track the maximum memory used to buffer recieved messages.
         let mut curr_max_mem = 0;
-        let max_mem_used = MetricBuilder::new(&metrics).global_gauge("max_mem_used");
+        let max_mem_used = MetricBuilder::new(&metrics).global_gauge(MAX_MEMORY_USED_METRIC);
         // Track the total encoded size of all recieved messages.
-        let bytes_transferred = MetricBuilder::new(&metrics).bytes_counter("bytes_transferred");
-        let msg_count = MetricBuilder::new(&metrics).global_counter("msg_count");
+        let bytes_transferred =
+            MetricBuilder::new(&metrics).bytes_counter(BYTES_TRANSFERRED_METRIC);
+        let msg_count = MetricBuilder::new(&metrics).global_counter(MESSAGE_COUNT_METRIC);
         // Track end-to-end network latency distribution for messages that actually arrive.
         let mut latency_metrics = NetworkLatencyMetrics::new(&metrics);
         // Track the total CPU time spent in polling messages over the network + decoding them.
@@ -368,17 +375,17 @@ struct NetworkLatencyMetricValues {
 
 impl NetworkLatencyMetricValues {
     fn new(metrics: &ExecutionPlanMetricsSet) -> Self {
-        let min_latency = MetricBuilder::new(metrics).min_latency("network_latency_min");
-        let max_latency = MetricBuilder::new(metrics).max_latency("network_latency_max");
-        let p50_latency = MetricBuilder::new(metrics).p50_latency("network_latency_p50");
-        let p95_latency = MetricBuilder::new(metrics).p95_latency("network_latency_p95");
-        let first_latency = MetricBuilder::new(metrics).first_latency("network_latency_first");
+        let min_latency = MetricBuilder::new(metrics).min_latency(NETWORK_LATENCY_MIN_METRIC);
+        let max_latency = MetricBuilder::new(metrics).max_latency(NETWORK_LATENCY_MAX_METRIC);
+        let p50_latency = MetricBuilder::new(metrics).p50_latency(NETWORK_LATENCY_P50_METRIC);
+        let p95_latency = MetricBuilder::new(metrics).p95_latency(NETWORK_LATENCY_P95_METRIC);
+        let first_latency = MetricBuilder::new(metrics).first_latency(NETWORK_LATENCY_FIRST_METRIC);
         let sum_latency = Time::new();
         MetricBuilder::new(metrics).build(MetricValue::Time {
-            name: Cow::Borrowed("network_latency_sum"),
+            name: Cow::Borrowed(NETWORK_LATENCY_SUM_METRIC),
             time: sum_latency.clone(),
         });
-        let latency_count = MetricBuilder::new(metrics).counter("network_latency_count", 0);
+        let latency_count = MetricBuilder::new(metrics).counter(NETWORK_LATENCY_COUNT_METRIC, 0);
 
         Self {
             min_latency,

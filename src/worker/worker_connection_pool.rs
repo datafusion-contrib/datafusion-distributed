@@ -1,4 +1,5 @@
 use crate::distributed_planner::ProducerHead;
+use crate::metrics::LOCAL_CONNECTIONS_USED_METRIC;
 use crate::passthrough_headers::get_passthrough_headers;
 use crate::stage::RemoteStage;
 use crate::{ExecuteTaskRequest, LocalWorkerContext, TaskKey, get_distributed_channel_resolver};
@@ -63,7 +64,7 @@ impl WorkerConnectionPool {
         let bdr = || MetricBuilder::new(&self.metrics);
         let output_bytes = bdr().output_bytes(target_partition);
         let output_rows = bdr().output_rows(target_partition);
-        let local_connections_used = bdr().global_counter("local_connections_used");
+        let local_connections_used = bdr().global_counter(LOCAL_CONNECTIONS_USED_METRIC);
 
         // Otherwise, we need to reach the remote worker through the `WorkerChannel`. Unlike local
         // connections, these remote connections span a range of partitions so that `WorkerChannel`

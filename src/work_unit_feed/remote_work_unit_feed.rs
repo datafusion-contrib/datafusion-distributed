@@ -1,4 +1,10 @@
 use crate::common::now_ns;
+use crate::metrics::{
+    WORK_UNIT_BYTES_METRIC, WORK_UNIT_COUNT_METRIC, WORK_UNIT_IN_MEMORY_COUNT_METRIC,
+    WORK_UNIT_PROCESSED_LATENCY_MAX_METRIC, WORK_UNIT_PROCESSED_LATENCY_P50_METRIC,
+    WORK_UNIT_RECEIVED_LATENCY_MAX_METRIC, WORK_UNIT_RECEIVED_LATENCY_P50_METRIC,
+    WORK_UNIT_SEND_LATENCY_MAX_METRIC, WORK_UNIT_SEND_LATENCY_P50_METRIC,
+};
 use crate::{
     BytesMetricExt, CoordinatorToWorkerMsg, LatencyMetricExt, MaybeEncoded, WorkUnit,
     WorkUnitBatch, WorkUnitMsg,
@@ -123,18 +129,18 @@ impl RemoteFeedProvider {
     ) -> Result<BoxStream<'static, Result<T>>> {
         let bdr = || MetricBuilder::new(&self.metrics);
 
-        let bytes_transferred = bdr().bytes_counter("work_unit_bytes");
-        let in_memory_transferred = bdr().global_counter("work_unit_in_memory_count");
-        let msg_count = bdr().global_counter("work_unit_count");
+        let bytes_transferred = bdr().bytes_counter(WORK_UNIT_BYTES_METRIC);
+        let in_memory_transferred = bdr().global_counter(WORK_UNIT_IN_MEMORY_COUNT_METRIC);
+        let msg_count = bdr().global_counter(WORK_UNIT_COUNT_METRIC);
         // Track end-to-end network latency distribution for all work units.
-        let send_latency_max = bdr().max_latency("work_unit_send_latency_max");
-        let send_latency_p50 = bdr().p50_latency("work_unit_send_latency_p50");
+        let send_latency_max = bdr().max_latency(WORK_UNIT_SEND_LATENCY_MAX_METRIC);
+        let send_latency_p50 = bdr().p50_latency(WORK_UNIT_SEND_LATENCY_P50_METRIC);
 
-        let received_latency_max = bdr().max_latency("work_unit_received_latency_max");
-        let received_latency_p50 = bdr().p50_latency("work_unit_received_latency_p50");
+        let received_latency_max = bdr().max_latency(WORK_UNIT_RECEIVED_LATENCY_MAX_METRIC);
+        let received_latency_p50 = bdr().p50_latency(WORK_UNIT_RECEIVED_LATENCY_P50_METRIC);
 
-        let processed_latency_max = bdr().max_latency("work_unit_processed_latency_max");
-        let processed_latency_p50 = bdr().p50_latency("work_unit_processed_latency_p50");
+        let processed_latency_max = bdr().max_latency(WORK_UNIT_PROCESSED_LATENCY_MAX_METRIC);
+        let processed_latency_p50 = bdr().p50_latency(WORK_UNIT_PROCESSED_LATENCY_P50_METRIC);
 
         let elapsed_compute = bdr().elapsed_compute(partition);
 
