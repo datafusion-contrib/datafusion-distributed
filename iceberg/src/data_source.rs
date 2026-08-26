@@ -19,6 +19,7 @@ use datafusion::prelude::Expr;
 use datafusion_distributed::WorkUnitFeed;
 use futures::{StreamExt, TryStreamExt};
 use iceberg::arrow::ArrowReaderBuilder;
+use iceberg::io::FileIO;
 use iceberg::spec::SnapshotRef;
 
 use crate::common::{convert_filters_to_predicate, df_err, iceberg_err};
@@ -122,14 +123,13 @@ const TOTAL_FILE_SIZE: &str = "total-files-size";
 /// This distributed mechanism is transparent to this [DataSource].
 #[derive(Debug, Clone)]
 pub struct IcebergDataSource {
-    schema: SchemaRef,
-    partitioning: Partitioning,
-    fetch: Option<usize>,
-    metrics: ExecutionPlanMetricsSet,
-    current_snapshot: Option<SnapshotRef>,
-    iceberg_file_io: iceberg::io::FileIO,
-    iceberg_runtime: iceberg::Runtime,
-    feed: WorkUnitFeed<IcebergWorkUnitFeed>,
+    pub(crate) schema: SchemaRef,
+    pub(crate) partitioning: Partitioning,
+    pub(crate) fetch: Option<usize>,
+    pub(crate) metrics: ExecutionPlanMetricsSet,
+    pub(crate) iceberg_file_io: FileIO,
+    pub(crate) iceberg_runtime: iceberg::Runtime,
+    pub(crate) feed: WorkUnitFeed<IcebergWorkUnitFeed>,
 }
 
 /// Optional fields for building an [IcebergDataSource].
@@ -160,8 +160,6 @@ impl IcebergDataSource {
                 .collect::<Vec<String>>()
         });
 
-        let current_snapshot = table.metadata().current_snapshot().cloned();
-
         let predicates = convert_filters_to_predicate(opts.filters);
 
         Self {
@@ -181,7 +179,6 @@ impl IcebergDataSource {
                 partitioning,
                 sync_manager: Default::default(),
             }),
-            current_snapshot,
         }
     }
 }
@@ -262,7 +259,15 @@ impl DataSource for IcebergDataSource {
     }
 
     fn partition_statistics(&self, _partition: Option<usize>) -> Result<Arc<Statistics>> {
-        stats_from_snapshot(self.current_snapshot.as_ref(), &self.schema)
+        let Some(feed) = self.feed.inner() else {
+            return Ok(Arc::new(Statistics::new_unknown(&self.schema)));
+        };
+        let metadata = feed.iceberg_table.metadata();
+        let snapshot = match feed.snapshot_id {
+            Some(snapshot_id) => metadata.snapshot_by_id(snapshot_id),
+            None => metadata.current_snapshot(),
+        };
+        Ok(stats_from_snapshot(snapshot, &self.schema))
     }
 
     fn with_fetch(&self, fetch: Option<usize>) -> Option<Arc<dyn DataSource>> {
@@ -309,17 +314,14 @@ impl DataSource for IcebergDataSource {
 }
 
 /// Getting statistics from the provided snapshot.
-fn stats_from_snapshot(
-    snapshot: Option<&SnapshotRef>,
-    schema: &SchemaRef,
-) -> Result<Arc<Statistics>> {
+fn stats_from_snapshot(snapshot: Option<&SnapshotRef>, schema: &SchemaRef) -> Arc<Statistics> {
     let Some(snap) = snapshot else {
         // A table with no current snapshot has never had a commit. It was created, but zero data files were added
-        return Ok(Arc::new(Statistics {
+        return Arc::new(Statistics {
             num_rows: Precision::Exact(0),
             total_byte_size: Precision::Exact(0),
             column_statistics: vec![ColumnStatistics::new_unknown(); schema.fields().len()],
-        }));
+        });
     };
     let props = &snap.summary().additional_properties;
 
@@ -334,9 +336,9 @@ fn stats_from_snapshot(
         .map(Precision::Exact)
         .unwrap_or(Precision::Absent);
 
-    Ok(Arc::new(Statistics {
+    Arc::new(Statistics {
         num_rows,
         total_byte_size,
         column_statistics: vec![ColumnStatistics::new_unknown(); schema.fields().len()],
-    }))
+    })
 }
