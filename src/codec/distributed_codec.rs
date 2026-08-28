@@ -126,7 +126,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     proto_converter,
                 )?;
 
-                Ok(Arc::new(new_network_hash_shuffle_exec_with_properties(
+                Ok(Arc::new(new_network_hash_shuffle_exec(
                     partitioning,
                     equivalence_properties,
                     parse_stage_proto(input_stage, inputs)?,
@@ -159,7 +159,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     proto_converter,
                 )?;
 
-                Ok(Arc::new(new_network_coalesce_tasks_exec_with_properties(
+                Ok(Arc::new(new_network_coalesce_tasks_exec(
                     partitioning,
                     equivalence_properties,
                     parse_stage_proto(input_stage, inputs)?,
@@ -192,7 +192,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     proto_converter,
                 )?;
 
-                Ok(Arc::new(new_network_broadcast_exec_with_properties(
+                Ok(Arc::new(new_network_broadcast_exec(
                     partitioning,
                     equivalence_properties,
                     parse_stage_proto(input_stage, inputs)?,
@@ -560,20 +560,7 @@ pub struct ChildIdxWithTaskContextProto {
     task_count: u64,
 }
 
-#[cfg(test)]
 fn new_network_hash_shuffle_exec(
-    partitioning: Partitioning,
-    schema: SchemaRef,
-    input_stage: Stage,
-) -> NetworkShuffleExec {
-    new_network_hash_shuffle_exec_with_properties(
-        partitioning,
-        EquivalenceProperties::new(schema),
-        input_stage,
-    )
-}
-
-fn new_network_hash_shuffle_exec_with_properties(
     partitioning: Partitioning,
     equivalence_properties: EquivalenceProperties,
     input_stage: Stage,
@@ -605,20 +592,7 @@ pub struct NetworkCoalesceExecProto {
     equivalence_classes: Vec<EquivalenceClassProto>,
 }
 
-#[cfg(test)]
 fn new_network_coalesce_tasks_exec(
-    partitioning: Partitioning,
-    schema: SchemaRef,
-    input_stage: Stage,
-) -> NetworkCoalesceExec {
-    new_network_coalesce_tasks_exec_with_properties(
-        partitioning,
-        EquivalenceProperties::new(schema),
-        input_stage,
-    )
-}
-
-fn new_network_coalesce_tasks_exec_with_properties(
     partitioning: Partitioning,
     equivalence_properties: EquivalenceProperties,
     input_stage: Stage,
@@ -656,7 +630,7 @@ pub struct BroadcastExecProto {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SamplerExecProto {}
 
-fn new_network_broadcast_exec_with_properties(
+fn new_network_broadcast_exec(
     partitioning: Partitioning,
     equivalence_properties: EquivalenceProperties,
     input_stage: Stage,
@@ -728,8 +702,11 @@ mod tests {
 
         let schema = schema_i32("a");
         let part = Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 4);
-        let plan: Arc<dyn ExecutionPlan> =
-            Arc::new(new_network_hash_shuffle_exec(part, schema, dummy_stage()));
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(new_network_hash_shuffle_exec(
+            part,
+            EquivalenceProperties::new(schema),
+            dummy_stage(),
+        ));
 
         let mut buf = Vec::new();
         codec.try_encode(plan.clone(), &mut buf, &default_proto_converter())?;
@@ -748,12 +725,12 @@ mod tests {
         let schema = schema_i32("c");
         let left = Arc::new(new_network_hash_shuffle_exec(
             Partitioning::RoundRobinBatch(2),
-            schema.clone(),
+            EquivalenceProperties::new(schema.clone()),
             dummy_stage(),
         ));
         let right = Arc::new(new_network_hash_shuffle_exec(
             Partitioning::RoundRobinBatch(2),
-            schema.clone(),
+            EquivalenceProperties::new(schema.clone()),
             dummy_stage(),
         ));
 
@@ -778,7 +755,7 @@ mod tests {
         let schema = schema_i32("d");
         let flight = Arc::new(new_network_hash_shuffle_exec(
             Partitioning::UnknownPartitioning(1),
-            schema.clone(),
+            EquivalenceProperties::new(schema.clone()),
             dummy_stage(),
         ));
 
@@ -811,7 +788,7 @@ mod tests {
         let schema = schema_i32("e");
         let plan: Arc<dyn ExecutionPlan> = Arc::new(new_network_coalesce_tasks_exec(
             Partitioning::RoundRobinBatch(3),
-            schema,
+            EquivalenceProperties::new(schema),
             dummy_stage(),
         ));
 
@@ -833,7 +810,7 @@ mod tests {
         let part = Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 4);
         let plan: Arc<dyn ExecutionPlan> = Arc::new(new_network_hash_shuffle_exec(
             part,
-            schema,
+            EquivalenceProperties::new(schema),
             dummy_stage_with_plan(),
         ));
 
@@ -854,7 +831,7 @@ mod tests {
         let schema = schema_i32("e");
         let plan: Arc<dyn ExecutionPlan> = Arc::new(new_network_coalesce_tasks_exec(
             Partitioning::RoundRobinBatch(3),
-            schema,
+            EquivalenceProperties::new(schema),
             dummy_stage_with_plan(),
         ));
 
@@ -875,7 +852,7 @@ mod tests {
         let schema = schema_i32("f");
         let flight = Arc::new(new_network_coalesce_tasks_exec(
             Partitioning::UnknownPartitioning(1),
-            schema,
+            EquivalenceProperties::new(schema),
             dummy_stage(),
         ));
 
@@ -899,12 +876,12 @@ mod tests {
         let schema = schema_i32("g");
         let left = Arc::new(new_network_coalesce_tasks_exec(
             Partitioning::RoundRobinBatch(2),
-            schema.clone(),
+            EquivalenceProperties::new(schema.clone()),
             dummy_stage(),
         ));
         let right = Arc::new(new_network_coalesce_tasks_exec(
             Partitioning::RoundRobinBatch(2),
-            schema.clone(),
+            EquivalenceProperties::new(schema.clone()),
             dummy_stage(),
         ));
 
@@ -929,12 +906,12 @@ mod tests {
         let schema = schema_i32("h");
         let left = Arc::new(new_network_hash_shuffle_exec(
             Partitioning::RoundRobinBatch(2),
-            schema.clone(),
+            EquivalenceProperties::new(schema.clone()),
             dummy_stage(),
         )) as Arc<dyn ExecutionPlan>;
         let right = Arc::new(new_network_hash_shuffle_exec(
             Partitioning::RoundRobinBatch(2),
-            schema.clone(),
+            EquivalenceProperties::new(schema.clone()),
             dummy_stage(),
         )) as Arc<dyn ExecutionPlan>;
 
@@ -970,38 +947,30 @@ mod tests {
         equivalence_properties.add_equal_conditions(a.clone(), b.clone())?;
         equivalence_properties.add_ordering([PhysicalSortExpr::new_default(a.clone())]);
 
-        let properties = || {
-            Arc::new(PlanProperties::new(
-                equivalence_properties.clone(),
-                Partitioning::UnknownPartitioning(1),
-                EmissionType::Incremental,
-                Boundedness::Bounded,
-            ))
-        };
         let plans: Vec<(&str, Arc<dyn ExecutionPlan>)> = vec![
             (
                 "shuffle",
-                Arc::new(NetworkShuffleExec {
-                    properties: properties(),
-                    input_stage: dummy_stage(),
-                    worker_connections: WorkerConnectionPool::new(0),
-                }),
+                Arc::new(new_network_hash_shuffle_exec(
+                    Partitioning::UnknownPartitioning(1),
+                    equivalence_properties.clone(),
+                    dummy_stage(),
+                )),
             ),
             (
                 "coalesce",
-                Arc::new(NetworkCoalesceExec {
-                    properties: properties(),
-                    input_stage: dummy_stage(),
-                    worker_connections: WorkerConnectionPool::new(0),
-                }),
+                Arc::new(new_network_coalesce_tasks_exec(
+                    Partitioning::UnknownPartitioning(1),
+                    equivalence_properties.clone(),
+                    dummy_stage(),
+                )),
             ),
             (
                 "broadcast",
-                Arc::new(NetworkBroadcastExec {
-                    properties: properties(),
-                    input_stage: dummy_stage(),
-                    worker_connections: WorkerConnectionPool::new(0),
-                }),
+                Arc::new(new_network_broadcast_exec(
+                    Partitioning::UnknownPartitioning(1),
+                    equivalence_properties,
+                    dummy_stage(),
+                )),
             ),
         ];
 
