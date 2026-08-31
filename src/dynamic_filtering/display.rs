@@ -41,12 +41,11 @@ pub async fn rewrite_distributed_plan_with_dynamic_filters(
     distributed_exec.with_plan_for_viz(plan_for_viz)
 }
 
-/// The purpose of this function is to sever dynamic filter connections so we can update
-/// filter values for display purposes without having an update in one node propagate to another.
+/// Severs dynamic filter connections so we can update filter values for
+/// display purposes without having an update in one node propagate to another.
 ///
 /// For example, in this plan, we would like to be able to [`update()`] every variant independently
-/// without mutating the producer or other variants (some producers like [`SortExec`] display their
-/// dynamic filters).
+/// without mutating the producer or other variants
 ///
 /// ```text
 ///  RepartitionExec:
@@ -60,7 +59,7 @@ pub async fn rewrite_distributed_plan_with_dynamic_filters(
 ///          t1: DataSourceExec:  predicate=DynamicFilter [ f_dkey@2 >= B AND f_dkey@2 <= B AND f_dkey@2 IN (SET) ([<values>]) ] <- unique filter
 /// ```
 ///
-/// This is done by deep-copying every leaf variant and every [`SortExec`] so we don't have to
+/// This is done by deep-copying every leaf variant so we don't have to
 /// worry about any shared state.
 ///
 /// [`update()`]: DynamicFilterPhysicalExpr::update()
@@ -79,6 +78,7 @@ pub(crate) fn sever_dynamic_filter_relationships_in_plan_for_display(
             .variants()
             .iter()
             .map(|variant| {
+                // Proto roundtrip is used to deep copy the variant.
                 let proto = PhysicalPlanNode::try_from_physical_plan_with_converter(
                     Arc::clone(variant),
                     &codec,
@@ -86,6 +86,7 @@ pub(crate) fn sever_dynamic_filter_relationships_in_plan_for_display(
                 )?;
                 let variant =
                     proto.try_into_physical_plan_with_converter(task_ctx, &codec, &converter)?;
+                // The variant can have a SortExec
                 isolate_sort_dynamic_filters_for_display(variant, task_ctx)
             })
             .collect::<Result<Vec<_>>>()?;
@@ -95,27 +96,23 @@ pub(crate) fn sever_dynamic_filter_relationships_in_plan_for_display(
             variants,
         )?) as Arc<dyn ExecutionPlan>))
     })
+    // Handle SortExec nodes not inside variants.
     .and_then(|transformed| isolate_sort_dynamic_filters_for_display(transformed.data, task_ctx))
 }
 
-/// Deep-copies dynamic-filter-producing sorts without serializing their input subtrees.
+/// Deep-copies dynamic-filter-producing [`SortExec`]s by doing a proto roundtrip. Some producers
+/// like [`SortExec`] display their dynamic filters, so we need to explicitly handle
+/// displaying different dynamic filters for each task containing a [`SortExec`]. For now, we
+/// just clear the dynamic filter and don't display it.
 ///
-/// A `SortExec` requires one child, so each sort is temporarily given an `EmptyExec` with the
-/// input's schema and partition count. Only that two-node plan is round-tripped through protobuf;
-/// the real child is restored afterwards:
+/// To avoid serializing an entire subtree, we swap in an [`EmptyExec`]:
 ///
 /// ```text
-/// SortExec                 SortExec                 isolated SortExec
-///   real child    ->         EmptyExec    ->          real child
-///                     protobuf roundtrip       restore + recompute properties
+/// SortExec           SortExec          SortExec
+///   ...children  ->    EmptyExec  ->     ...children
 /// ```
 ///
-/// The roundtrip preserves the filter value and expression ID while severing its runtime state
-/// from the executable plan. Recomputing properties after restoring the real child is required
-/// because the placeholder does not preserve its ordering, equivalences, boundedness, or
-/// partitioning kind.
-///
-/// See <https://github.com/datafusion-contrib/datafusion-distributed/issues/677>.
+/// TODO(#677): display producer dynamic filters
 fn isolate_sort_dynamic_filters_for_display(
     plan: Arc<dyn ExecutionPlan>,
     task_ctx: &Arc<TaskContext>,
@@ -175,7 +172,10 @@ pub(super) fn apply_reports_to_distributed_leaves(
                 continue;
             };
             for consumer in consumers {
-                let Some(proto) = updates.get(&consumer.id).copied() else {
+                let Some(expression) = updates.get(&consumer.id).copied() else {
+                    continue;
+                };
+                let Ok(proto) = expression.to_proto(task_ctx) else {
                     continue;
                 };
                 let Some(ExprType::DynamicFilter(dynamic_filter_proto)) = proto.expr_type.as_ref()
@@ -183,7 +183,7 @@ pub(super) fn apply_reports_to_distributed_leaves(
                     continue;
                 };
                 let Ok(reported_expression) =
-                    decode_physical_expr(proto, consumer.input_schema.as_ref(), task_ctx)
+                    decode_physical_expr(&proto, consumer.input_schema.as_ref(), task_ctx)
                 else {
                     continue;
                 };
@@ -215,6 +215,7 @@ pub(super) fn apply_reports_to_distributed_leaves(
 mod tests {
     use super::*;
     use crate::test_utils::mock_exec::MockExec;
+    use crate::{MaybeEncoded, TaskDynamicFilter};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::logical_expr::Operator;
     use datafusion::physical_expr::expressions::{
@@ -259,9 +260,9 @@ mod tests {
             .unwrap()
             .mark_complete();
         let report = TaskCompletedDynamicFilters {
-            filters: vec![crate::TaskDynamicFilter {
+            filters: vec![TaskDynamicFilter {
                 expression_id: dynamic_filter.expression_id().unwrap(),
-                expression: crate::codec::encode_physical_expr(&dynamic_filter, &task_ctx)?,
+                expression: MaybeEncoded::Decoded(Arc::clone(&dynamic_filter)),
             }],
         };
         let reports = HashMap::from_iter([(

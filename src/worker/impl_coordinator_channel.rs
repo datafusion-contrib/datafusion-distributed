@@ -1,4 +1,3 @@
-use crate::codec::encode_physical_expr;
 use crate::common::TreeNodeExt;
 use crate::dynamic_filtering::discover_dynamic_filter_consumers;
 use crate::events::{WorkerPlanRewriteEvent, WorkerPlanRewriteHandlers};
@@ -8,15 +7,14 @@ use crate::work_unit_feed::{RemoteWorkUnitFeedRegistry, set_work_unit_received_t
 use crate::worker::task_data::TaskDataMetrics;
 use crate::{
     CoordinatorToWorkerMsg, DistributedConfig, DistributedExt, DistributedTaskContext,
-    SetPlanRequest, TaskCompletedDynamicFilters, TaskData, TaskDynamicFilter, TaskMetrics, Worker,
-    WorkerQueryContext, WorkerToCoordinatorMsg,
+    MaybeEncoded, SetPlanRequest, TaskCompletedDynamicFilters, TaskData, TaskDynamicFilter,
+    TaskMetrics, Worker, WorkerQueryContext, WorkerToCoordinatorMsg,
 };
 use datafusion::common::tree_node::TreeNodeRecursion;
-use datafusion::common::{DataFusionError, Result, exec_datafusion_err, internal_err};
-use datafusion::execution::{SessionStateBuilder, TaskContext};
+use datafusion::common::{DataFusionError, Result, exec_datafusion_err};
+use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionConfig;
-use datafusion_proto::protobuf::physical_expr_node::ExprType;
 use futures::stream::{BoxStream, FuturesUnordered, select_all};
 use futures::{FutureExt, StreamExt, TryStreamExt};
 use http::HeaderMap;
@@ -170,7 +168,11 @@ impl Worker {
             // Send metrics and completed dynamic filters if enabled.
             // TODO(#686): handle errors
             let metrics_tx = task_data.metrics_tx.lock().unwrap().take();
-            let dynamic_filters_tx = task_data.completed_dynamic_filters_tx.lock().unwrap().take();
+            let dynamic_filters_tx = task_data
+                .completed_dynamic_filters_tx
+                .lock()
+                .unwrap()
+                .take();
             let mut dynamic_filters = None;
             if let Some(Ok(plan)) = task_data.final_plan.get() {
                 let d_ctx = DistributedTaskContext {
@@ -184,10 +186,8 @@ impl Worker {
                 }
                 if dynamic_filters_tx.is_some() {
                     // TODO(#686): handle error
-                    dynamic_filters = Some(
-                        build_task_completed_dynamic_filters(plan, &task_data.task_ctx)
-                            .unwrap_or_default(),
-                    );
+                    dynamic_filters =
+                        Some(build_task_completed_dynamic_filters(plan).unwrap_or_default());
                 }
             }
             if let Some(dynamic_filters_tx) = dynamic_filters_tx {
@@ -235,7 +235,7 @@ impl Worker {
     }
 }
 
-/// Finds all consumed dynamic filters and serializes them.
+/// Finds all consumed dynamic filters for the completed task report.
 ///
 /// Note that it's possible that a dynamic filter is consumed by the leaf, updated by
 /// the producer, then read here, meaning the observed dynamic filter was not
@@ -245,17 +245,12 @@ impl Worker {
 /// before executing.
 fn build_task_completed_dynamic_filters(
     plan: &Arc<dyn ExecutionPlan>,
-    task_ctx: &Arc<TaskContext>,
 ) -> Result<TaskCompletedDynamicFilters> {
     let mut filters = vec![];
     for consumer in discover_dynamic_filter_consumers(plan)? {
-        let expression = encode_physical_expr(&consumer.expression, task_ctx)?;
-        let Some(ExprType::DynamicFilter(_)) = expression.expr_type.as_ref() else {
-            return internal_err!("discovered dynamic filter did not serialize as one");
-        };
         filters.push(TaskDynamicFilter {
             expression_id: consumer.id,
-            expression,
+            expression: MaybeEncoded::Decoded(consumer.expression),
         });
     }
     Ok(TaskCompletedDynamicFilters { filters })

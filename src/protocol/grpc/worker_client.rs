@@ -25,7 +25,6 @@ use datafusion::execution::TaskContext;
 use datafusion::execution::memory_pool::MemoryConsumer;
 use datafusion::physical_expr_common::metrics::{Count, Label, MetricBuilder, MetricValue, Time};
 use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
-use datafusion_proto::protobuf::PhysicalExprNode;
 use futures::stream::BoxStream;
 use futures::{FutureExt, Stream, StreamExt, TryStreamExt};
 use http::{Extensions, HeaderMap};
@@ -525,14 +524,11 @@ fn decode_task_completed_dynamic_filters(
         filters: filters
             .filters
             .into_iter()
-            .map(|filter| {
-                Ok(TaskDynamicFilter {
-                    expression_id: filter.expression_id,
-                    expression: PhysicalExprNode::decode(filter.expression_proto.as_slice())
-                        .map_err(|error| DataFusionError::External(Box::new(error)))?,
-                })
+            .map(|filter| TaskDynamicFilter {
+                expression_id: filter.expression_id,
+                expression: MaybeEncoded::Encoded(filter.expression_proto),
             })
-            .collect::<Result<_>>()?,
+            .collect(),
     })
 }
 

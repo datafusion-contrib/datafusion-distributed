@@ -56,13 +56,13 @@ message WorkerToCoordinatorMsg {
   }
 }
 
-message TaskCompletedDynamicFilters {
-  message DynamicFilter {
-    uint64 expression_id = 1;
-    // Serialized datafusion.proto.PhysicalExprNode.
-    bytes expression_proto = 2;
-  }
+message DynamicFilter {
+  uint64 expression_id = 1;
+  // Serialized datafusion.proto.PhysicalExprNode.
+  bytes expression_proto = 2;
+}
 
+message TaskCompletedDynamicFilters {
   repeated DynamicFilter filters = 1;
 }
 

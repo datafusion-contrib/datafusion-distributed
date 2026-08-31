@@ -20,7 +20,7 @@ use datafusion::arrow::array::{Array, AsArray, RecordBatch, RecordBatchOptions};
 use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::ipc::writer::IpcWriteOptions;
 use datafusion::common::DataFusionError;
-use datafusion::execution::SendableRecordBatchStream;
+use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use futures::stream::BoxStream;
 use futures::{StreamExt, TryStreamExt};
 use prost::Message;
@@ -107,6 +107,14 @@ impl pb::worker_service_server::WorkerService for Worker {
         };
 
         let set_plan_request = decode_set_plan_request(set_plan_request)?;
+        let task_key = set_plan_request.task_key;
+        // Dynamic-filter reports may carry decoded physical expressions. Retain the worker's
+        // task data so the gRPC boundary can encode them with its configured codecs, even after
+        // the completed task has been removed from the worker cache.
+        let task_data_entry = self
+            .task_data_entries
+            .get_with(task_key, async { Default::default() })
+            .await;
 
         let input_stream = body
             .map_err(map_status_to_datafusion_error)
@@ -118,9 +126,15 @@ impl pb::worker_service_server::WorkerService for Worker {
         let output_stream = self
             .coordinator_channel(metadata.into_headers(), set_plan_request, input_stream)
             .await
-            .map_err(datafusion_error_to_tonic_status)?
-            .map(|msg| match msg {
-                Ok(msg) => encode_worker_to_coordinator_msg(msg),
+            .map_err(datafusion_error_to_tonic_status)?;
+        let task_data = task_data_entry
+            .read_now()
+            .ok_or_else(|| Status::internal("worker task data was not initialized"))?
+            .map_err(|error| datafusion_error_to_tonic_status(DataFusionError::Shared(error)))?;
+        let task_ctx = Arc::clone(&task_data.task_ctx);
+        let output_stream = output_stream
+            .map(move |msg| match msg {
+                Ok(msg) => encode_worker_to_coordinator_msg(msg, &task_ctx),
                 Err(err) => Err(datafusion_error_to_tonic_status(err)),
             })
             .boxed();
@@ -258,6 +272,7 @@ pub(super) fn decode_producer_head(proto: pb::execute_task_request::ProducerHead
 
 fn encode_worker_to_coordinator_msg(
     msg: WorkerToCoordinatorMsg,
+    task_ctx: &Arc<TaskContext>,
 ) -> Result<pb::WorkerToCoordinatorMsg, Status> {
     Ok(pb::WorkerToCoordinatorMsg {
         inner: Some(match msg {
@@ -274,7 +289,7 @@ fn encode_worker_to_coordinator_msg(
             }
             WorkerToCoordinatorMsg::TaskCompletedDynamicFilters(filters) => {
                 pb::worker_to_coordinator_msg::Inner::TaskCompletedDynamicFilters(
-                    encode_task_completed_dynamic_filters(filters),
+                    encode_task_completed_dynamic_filters(filters, task_ctx)?,
                 )
             }
         }),
@@ -283,17 +298,23 @@ fn encode_worker_to_coordinator_msg(
 
 fn encode_task_completed_dynamic_filters(
     filters: TaskCompletedDynamicFilters,
-) -> pb::TaskCompletedDynamicFilters {
-    pb::TaskCompletedDynamicFilters {
+    task_ctx: &Arc<TaskContext>,
+) -> Result<pb::TaskCompletedDynamicFilters, Status> {
+    Ok(pb::TaskCompletedDynamicFilters {
         filters: filters
             .filters
             .into_iter()
-            .map(|filter| pb::task_completed_dynamic_filters::DynamicFilter {
-                expression_id: filter.expression_id,
-                expression_proto: filter.expression.encode_to_vec(),
+            .map(|filter| {
+                Ok(pb::DynamicFilter {
+                    expression_id: filter.expression_id,
+                    expression_proto: filter
+                        .expression
+                        .encode(task_ctx)
+                        .map_err(datafusion_error_to_tonic_status)?,
+                })
             })
-            .collect(),
-    }
+            .collect::<Result<_, Status>>()?,
+    })
 }
 
 fn encode_task_metrics(task_metrics: TaskMetrics) -> Result<pb::TaskMetrics, Status> {

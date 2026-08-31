@@ -3,9 +3,9 @@ use async_trait::async_trait;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::Result;
 use datafusion::execution::TaskContext;
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricsSet};
-use datafusion_proto::protobuf::PhysicalExprNode;
 use futures::stream::BoxStream;
 use http::HeaderMap;
 use std::sync::Arc;
@@ -140,8 +140,8 @@ pub struct TaskCompletedDynamicFilters {
 #[derive(Clone, Debug)]
 pub struct TaskDynamicFilter {
     pub expression_id: u64,
-    /// A `DynamicFilterPhysicalExpr` proto containing its final predicate and completion state.
-    pub expression: PhysicalExprNode,
+    /// A `DynamicFilterPhysicalExpr` containing its final predicate and completion state.
+    pub expression: MaybeEncoded<Arc<dyn PhysicalExpr>>,
 }
 
 #[derive(Clone, Debug)]

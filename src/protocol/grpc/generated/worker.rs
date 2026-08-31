@@ -59,21 +59,18 @@ pub mod worker_to_coordinator_msg {
         TaskCompletedDynamicFilters(super::TaskCompletedDynamicFilters),
     }
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct DynamicFilter {
+    #[prost(uint64, tag = "1")]
+    pub expression_id: u64,
+    /// Serialized datafusion.proto.PhysicalExprNode.
+    #[prost(bytes = "vec", tag = "2")]
+    pub expression_proto: ::prost::alloc::vec::Vec<u8>,
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TaskCompletedDynamicFilters {
     #[prost(message, repeated, tag = "1")]
-    pub filters: ::prost::alloc::vec::Vec<task_completed_dynamic_filters::DynamicFilter>,
-}
-/// Nested message and enum types in `TaskCompletedDynamicFilters`.
-pub mod task_completed_dynamic_filters {
-    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-    pub struct DynamicFilter {
-        #[prost(uint64, tag = "1")]
-        pub expression_id: u64,
-        /// Serialized datafusion.proto.PhysicalExprNode.
-        #[prost(bytes = "vec", tag = "2")]
-        pub expression_proto: ::prost::alloc::vec::Vec<u8>,
-    }
+    pub filters: ::prost::alloc::vec::Vec<DynamicFilter>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TaskMetrics {
