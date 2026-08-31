@@ -89,7 +89,7 @@ pub async fn rewrite_distributed_plan_with_metrics(
 
         Ok(Transformed::no(plan))
     })?;
-    distributed_exec.with_rewritten_plan(transformed.data)
+    distributed_exec.with_plan_for_viz(transformed.data)
 }
 
 /// Extra information for rewriting local plans.

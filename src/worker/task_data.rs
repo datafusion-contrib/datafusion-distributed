@@ -1,6 +1,6 @@
 use crate::common::OnceLockResult;
 use crate::common::now_ns;
-use crate::{MaxLatencyMetric, ProducerHead, TaskMetrics};
+use crate::{MaxLatencyMetric, ProducerHead, TaskCompletedDynamicFilters, TaskMetrics};
 use datafusion::common::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
@@ -22,6 +22,10 @@ pub struct TaskData {
     /// `Option::take`) when the coordinator channel reaches EOS, sending the collected metrics
     /// back to the coordinator through the `CoordinatorChannel` side channel.
     pub(super) metrics_tx: Arc<std::sync::Mutex<Option<oneshot::Sender<TaskMetrics>>>>,
+    /// Sender half of the completed dynamic-filter channel. It is absent when the user does not
+    /// want to display dynamic filters.
+    pub(super) completed_dynamic_filters_tx:
+        Arc<std::sync::Mutex<Option<oneshot::Sender<TaskCompletedDynamicFilters>>>>,
     /// Metrics related to the execution of a task within a stage. This metrics, instead of being
     /// associated to a specific node, they are global to the task, like the time at which the plan
     /// was fed by the coordinator to the worker.
