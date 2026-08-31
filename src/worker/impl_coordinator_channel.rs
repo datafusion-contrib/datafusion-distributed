@@ -168,6 +168,7 @@ impl Worker {
             }
 
             // Send metrics and completed dynamic filters if enabled.
+            // TODO(#686): handle errors
             let metrics_tx = task_data.metrics_tx.lock().unwrap().take();
             let dynamic_filters_tx = task_data.completed_dynamic_filters_tx.lock().unwrap().take();
             let mut dynamic_filters = None;
@@ -182,6 +183,7 @@ impl Worker {
                     send_metrics_via_channel(metrics_tx, plan, d_ctx, task_data_metrics);
                 }
                 if dynamic_filters_tx.is_some() {
+                    // TODO(#686): handle error
                     dynamic_filters = Some(
                         build_task_completed_dynamic_filters(plan, &task_data.task_ctx)
                             .unwrap_or_default(),
@@ -189,6 +191,7 @@ impl Worker {
                 }
             }
             if let Some(dynamic_filters_tx) = dynamic_filters_tx {
+                // TODO(#686): handle error
                 let _ = dynamic_filters_tx.send(dynamic_filters.unwrap_or_default());
             }
             task_data_entries.invalidate(&key).await
