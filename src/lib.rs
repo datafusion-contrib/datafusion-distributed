@@ -6,6 +6,7 @@ mod config_extension_ext;
 mod coordinator;
 mod distributed_ext;
 mod distributed_planner;
+mod dynamic_filtering;
 mod execution_plans;
 mod explain_analyze;
 mod metrics;
@@ -18,11 +19,12 @@ mod worker_resolver;
 
 #[cfg(feature = "grpc")]
 pub use arrow_ipc::CompressionType;
-pub use coordinator::{DistributedExec, rewrite_distributed_plan_with_dynamic_filters};
+pub use coordinator::DistributedExec;
 pub use distributed_ext::{DistributedExt, DistributedGetterExt};
 pub use distributed_planner::{
     DistributedConfig, NetworkBoundary, NetworkBoundaryExt, ProducerHead, SessionStateBuilderExt,
 };
+pub use dynamic_filtering::rewrite_distributed_plan_with_dynamic_filters;
 pub use events::{
     DesiredTaskCountEvent, DesiredTaskCountEventResponse, DesiredTaskCountHandler, RouteTasksEvent,
     RouteTasksEventResponse, RouteTasksHandler, ScaleUpLeafNodeEvent, ScaleUpLeafNodeEventResponse,

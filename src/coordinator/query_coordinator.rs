@@ -3,6 +3,7 @@ use crate::common::{TreeNodeExt, now_ns, task_ctx_with_extension};
 use crate::config_extension_ext::get_config_extension_propagation_headers;
 use crate::coordinator::Store;
 use crate::coordinator::latency_metric::LatencyMetric;
+use crate::dynamic_filtering::maybe_roundtrip_plan_to_sever_in_memory_dynamic_filter_relationships;
 use crate::events::{RouteTasksEvent, RouteTasksHandlers};
 use crate::execution_plans::{ChildrenIsolatorUnionExec, DistributedLeafExec};
 use crate::passthrough_headers::get_passthrough_headers;
@@ -48,7 +49,7 @@ pub(super) struct QueryCoordinator {
     metrics: ExecutionPlanMetricsSet,
     coordinator_to_worker_metrics: CoordinatorToWorkerMetrics,
     metrics_store: Option<Arc<Store<TaskMetrics>>>,
-    completed_dynamic_filter_store: Arc<Store<TaskCompletedDynamicFilters>>,
+    completed_dynamic_filter_store: Option<Arc<Store<TaskCompletedDynamicFilters>>>,
     end_stream_notifier: Arc<Notify>,
     join_set: Mutex<JoinSet<Result<()>>>,
 }
@@ -59,7 +60,7 @@ impl QueryCoordinator {
         task_ctx: Arc<TaskContext>,
         metrics_set: &ExecutionPlanMetricsSet,
         metrics_store: Option<Arc<Store<TaskMetrics>>>,
-        completed_dynamic_filter_store: Arc<Store<TaskCompletedDynamicFilters>>,
+        completed_dynamic_filter_store: Option<Arc<Store<TaskCompletedDynamicFilters>>>,
     ) -> Self {
         Self {
             task_ctx,
@@ -130,7 +131,7 @@ pub(super) struct StageCoordinator<'a> {
     metrics_set: &'a ExecutionPlanMetricsSet,
     metrics: &'a CoordinatorToWorkerMetrics,
     metrics_store: &'a Option<Arc<Store<TaskMetrics>>>,
-    completed_dynamic_filter_store: &'a Arc<Store<TaskCompletedDynamicFilters>>,
+    completed_dynamic_filter_store: &'a Option<Arc<Store<TaskCompletedDynamicFilters>>>,
     end_stream_notifier: &'a Arc<Notify>,
     join_set: &'a Mutex<JoinSet<Result<()>>>,
 }
@@ -241,7 +242,7 @@ impl<'a> StageCoordinator<'a> {
             task_number: task_i,
         };
         let task_metrics = self.metrics_store.clone();
-        let completed_dynamic_filter_store = Arc::clone(self.completed_dynamic_filter_store);
+        let completed_dynamic_filter_store = self.completed_dynamic_filter_store.clone();
         let (load_info_tx, load_info_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut load_info_tx_opt = Some(load_info_tx);
 
@@ -265,13 +266,21 @@ impl<'a> StageCoordinator<'a> {
                         let _ = load_info_tx_opt.take();
                     }
                     WorkerToCoordinatorMsg::TaskCompletedDynamicFilters(filters) => {
-                        completed_dynamic_filter_store.insert(task_key, filters);
+                        if let Some(store) = &completed_dynamic_filter_store {
+                            store.insert(task_key, filters);
+                        }
                     }
                 }
             }
-            if completed_dynamic_filter_store.get(&task_key).is_none() {
-                completed_dynamic_filter_store
-                    .insert(task_key, TaskCompletedDynamicFilters::default());
+            // The store abstraction relies on one entry being present for each task to mark
+            // completition. Since not all tasks report dynamic filters, add placeholders here.
+            //
+            // Also, note that completed_dynamic_filter_store will be None if collection is
+            // disabled.
+            if let Some(store) = &completed_dynamic_filter_store
+                && store.get(&task_key).is_none()
+            {
+                store.insert(task_key, TaskCompletedDynamicFilters::default());
             }
         });
         load_info_rx
@@ -400,7 +409,11 @@ impl<'a> StageCoordinator<'a> {
 
             Ok(Transformed::no(plan))
         })?;
-        Ok((transformed.data, work_unit_feed_declarations))
+        let plan = maybe_roundtrip_plan_to_sever_in_memory_dynamic_filter_relationships(
+            Arc::clone(&transformed.data),
+            self.task_ctx,
+        )?;
+        Ok((plan, work_unit_feed_declarations))
     }
 
     /// Returns as many URLs as the task count for the stage this [StageCoordinator]

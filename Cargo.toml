@@ -18,6 +18,11 @@ license = "Apache-2.0"
 documentation = "https://datafusion-contrib.github.io/datafusion-distributed/"
 repository = "https://github.com/datafusion-contrib/datafusion-distributed"
 
+[[test]]
+name = "dynamic_filtering"
+path = "tests/dynamic_filtering/main.rs"
+required-features = ["integration"]
+
 [dependencies]
 chrono = { version = "0.4.44" }
 datafusion = { workspace = true, features = [

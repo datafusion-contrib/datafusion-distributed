@@ -290,12 +290,12 @@ fn display_ascii(
     f: &mut String,
 ) -> std::fmt::Result {
     let plan = match stage {
-        Either::Left(distributed_exec) => distributed_exec.children().first().unwrap(),
+        Either::Left(distributed_exec) => distributed_exec.plan_for_viz_or_base_plan(),
         Either::Right(stage) => {
             let Some(plan) = stage.local_plan() else {
                 return write!(f, "StageExec: encoded input plan");
             };
-            plan
+            Arc::clone(plan)
         }
     };
     match stage {
@@ -329,7 +329,7 @@ fn display_ascii(
                 HORIZONTAL.repeat(5),
                 stage.num(),
                 HORIZONTAL.repeat(2),
-                format_tasks_for_stage(stage.task_count(), plan)
+                format_tasks_for_stage(stage.task_count(), &plan)
             )?;
             if show_metrics && let Some(metrics_store) = &root.metrics_store {
                 let metrics = gather_stage_header_metrics(stage, metrics_store);
@@ -342,7 +342,7 @@ fn display_ascii(
     }
 
     let mut plan_str = String::new();
-    display_inner_ascii(plan, 0, show_metrics, &mut plan_str)?;
+    display_inner_ascii(&plan, 0, show_metrics, &mut plan_str)?;
     let plan_str = plan_str
         .split('\n')
         .filter(|v| !v.is_empty())

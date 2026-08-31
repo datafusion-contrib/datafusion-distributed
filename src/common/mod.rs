@@ -1,5 +1,4 @@
 mod children_helpers;
-mod dynamic_filtering;
 mod maybe_encoded;
 mod once_lock;
 mod recursion;
@@ -9,7 +8,6 @@ mod uuid;
 mod vec;
 
 pub(crate) use children_helpers::require_one_child;
-pub(crate) use dynamic_filtering::discover_dynamic_filter_consumers;
 pub use maybe_encoded::MaybeEncoded;
 pub(crate) use once_lock::OnceLockResult;
 pub(crate) use recursion::TreeNodeExt;

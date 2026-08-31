@@ -1,9 +1,9 @@
 use crate::common::require_one_child;
-use crate::coordinator::dynamic_filters::isolate_distributed_leaf_variants_for_display;
 use crate::coordinator::prepare_dynamic_plan::prepare_dynamic_plan;
 use crate::coordinator::prepare_static_plan::prepare_static_plan;
 use crate::coordinator::query_coordinator::QueryCoordinator;
 use crate::coordinator::store::{Store, task_keys_for_plan};
+use crate::dynamic_filtering::sever_dynamic_filter_relationships_in_plan_for_display;
 use crate::{DistributedConfig, TaskCompletedDynamicFilters, TaskKey, TaskMetrics};
 use datafusion::common::internal_datafusion_err;
 use datafusion::common::tree_node::TreeNodeRecursion;
@@ -40,7 +40,7 @@ pub struct DistributedExec {
     /// finish their respective remote tasks.
     pub(crate) metrics_store: Option<Arc<Store<TaskMetrics>>>,
     /// Storage for the completed dynamic filters reported by each worker task.
-    pub(crate) completed_dynamic_filter_store: Arc<Store<TaskCompletedDynamicFilters>>,
+    pub(crate) completed_dynamic_filter_store: Option<Arc<Store<TaskCompletedDynamicFilters>>>,
 }
 
 /// Execution state produced by distributed planning (static or dynamic) retained
@@ -69,13 +69,22 @@ impl DistributedExec {
             prepared_execution: Arc::new(Mutex::new(None)),
             metrics: ExecutionPlanMetricsSet::new(),
             metrics_store: None,
-            completed_dynamic_filter_store: Arc::new(Store::new()),
+            completed_dynamic_filter_store: None,
         }
     }
 
     /// Enables task metrics collection from remote workers.
     pub fn with_metrics_collection(mut self, enabled: bool) -> Self {
         self.metrics_store = match enabled {
+            true => Some(Arc::new(Store::new())),
+            false => None,
+        };
+        self
+    }
+
+    /// Enables collection of completed dynamic filters from remote workers for display.
+    pub fn with_dynamic_filter_collection(mut self, enabled: bool) -> Self {
+        self.completed_dynamic_filter_store = match enabled {
             true => Some(Arc::new(Store::new())),
             false => None,
         };
@@ -101,12 +110,12 @@ impl DistributedExec {
 
     pub(crate) async fn wait_for_dynamic_filters(
         &self,
-    ) -> Result<HashMap<TaskKey, TaskCompletedDynamicFilters>> {
+    ) -> Result<Option<HashMap<TaskKey, TaskCompletedDynamicFilters>>> {
+        let Some(store) = &self.completed_dynamic_filter_store else {
+            return Ok(None);
+        };
         let plan = self.plan_for_viz()?;
-        Ok(self
-            .completed_dynamic_filter_store
-            .wait_for(&task_keys_for_plan(&plan))
-            .await)
+        Ok(Some(store.wait_for(&task_keys_for_plan(&plan)).await))
     }
 
     fn prepared_execution(&self) -> Result<PreparedExecution> {
@@ -124,6 +133,13 @@ impl DistributedExec {
         Ok(self.prepared_execution()?.plan_for_viz)
     }
 
+    /// Returns the prepared visualization plan when available, or the original optimized plan
+    /// before execution has prepared one.
+    pub(crate) fn plan_for_viz_or_base_plan(&self) -> Arc<dyn ExecutionPlan> {
+        self.plan_for_viz()
+            .unwrap_or_else(|_| Arc::clone(&self.base_plan))
+    }
+
     /// Returns the head stage that was actually executed. Unlike [`Self::plan_for_viz`] (which is
     /// reconstructed for visualization, with `Stage::Local` boundaries and rebuilt ancestor
     /// `Arc`s), this returns the original `Arc` instances whose metrics were populated during
@@ -138,18 +154,18 @@ impl DistributedExec {
 
     /// Builds a non-executable visualization result while preserving the state needed by a
     /// subsequent rewrite. Dynamic filters must be rewritten before metrics.
-    pub(crate) fn with_rewritten_plan(
+    pub(crate) fn with_plan_for_viz(
         &self,
         plan_for_viz: Arc<dyn ExecutionPlan>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let mut prepared_execution = self.prepared_execution()?;
         prepared_execution.plan_for_viz = Arc::clone(&plan_for_viz);
         Ok(Arc::new(Self {
-            base_plan: plan_for_viz,
+            base_plan: Arc::clone(&self.base_plan),
             prepared_execution: Arc::new(Mutex::new(Some(prepared_execution))),
             metrics: self.metrics.clone(),
             metrics_store: self.metrics_store.clone(),
-            completed_dynamic_filter_store: Arc::clone(&self.completed_dynamic_filter_store),
+            completed_dynamic_filter_store: self.completed_dynamic_filter_store.clone(),
         }))
     }
 }
@@ -189,7 +205,7 @@ impl ExecutionPlan for DistributedExec {
             prepared_execution: Arc::new(Mutex::new(None)),
             metrics: self.metrics.clone(),
             metrics_store: self.metrics_store.clone(),
-            completed_dynamic_filter_store: Arc::clone(&self.completed_dynamic_filter_store),
+            completed_dynamic_filter_store: self.completed_dynamic_filter_store.clone(),
         }))
     }
 
@@ -210,12 +226,13 @@ impl ExecutionPlan for DistributedExec {
 
         let base_plan = Arc::clone(&self.base_plan);
         let prepared_execution = Arc::clone(&self.prepared_execution);
+        let collect_dynamic_filters = self.completed_dynamic_filter_store.is_some();
 
         let query_coordinator = QueryCoordinator::new(
             Arc::clone(&context),
             &self.metrics,
             self.metrics_store.clone(),
-            Arc::clone(&self.completed_dynamic_filter_store),
+            self.completed_dynamic_filter_store.clone(),
         );
 
         let mut builder = RecordBatchReceiverStreamBuilder::new(self.schema(), 1);
@@ -240,8 +257,13 @@ impl ExecutionPlan for DistributedExec {
                 false => prepare_static_plan(&query_coordinator, &base_plan)?,
             };
 
-            let plan_for_viz =
-                isolate_distributed_leaf_variants_for_display(result.plan_for_viz, &context)?;
+            let plan_for_viz = match collect_dynamic_filters {
+                true => sever_dynamic_filter_relationships_in_plan_for_display(
+                    result.plan_for_viz,
+                    &context,
+                )?,
+                false => result.plan_for_viz,
+            };
             prepared_execution
                 .lock()
                 .map_err(|e| internal_datafusion_err!("Failed to lock prepared execution: {e}"))?

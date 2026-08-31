@@ -6,7 +6,7 @@ use datafusion::physical_expr::expressions::DynamicFilterPhysicalExpr;
 use datafusion::physical_plan::ExecutionPlan;
 use std::sync::Arc;
 
-/// A dynamic-filter consumer discovered in an execution plan along with the schema its evaluated
+/// A dynamic-filter consumer discovered in an execution plan along with the schema it is evaluated
 /// against.
 #[derive(Clone)]
 pub(crate) struct DiscoveredDynamicFilter {
@@ -74,6 +74,33 @@ pub(crate) fn discover_dynamic_filter_consumers(
     Ok(consumers)
 }
 
+/// Returns whether `plan` contains only the consumer side of a dynamic filter
+/// relationship.
+pub(crate) fn has_nonlocal_dynamic_filter_relationships(
+    plan: &Arc<dyn ExecutionPlan>,
+) -> Result<bool> {
+    let consumer_ids: HashSet<_> = discover_dynamic_filter_consumers(plan)?
+        .into_iter()
+        .map(|consumer| consumer.id)
+        .collect();
+
+    let mut producer_ids = HashSet::new();
+    plan.apply(|node| {
+        for produced in node.dynamic_expressions_produced() {
+            let Some(id) = produced.expression_id() else {
+                return internal_err!(
+                    "{}::dynamic_expressions_produced returned an expression without an expression ID",
+                    node.name()
+                );
+            };
+            producer_ids.insert(id);
+        }
+        Ok(TreeNodeRecursion::Continue)
+    })?;
+
+    Ok(consumer_ids != producer_ids)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -115,6 +142,7 @@ mod tests {
         let discovered = discover_dynamic_filter_consumers(&plan)?;
         assert_eq!(discovered.len(), 1);
         assert_eq!(discovered[0].id, dynamic_filter.expression_id().unwrap());
+        assert!(!has_nonlocal_dynamic_filter_relationships(&plan)?);
 
         dynamic_filter
             .downcast_ref::<DynamicFilterPhysicalExpr>()
@@ -156,6 +184,24 @@ mod tests {
 
         assert_eq!(discovered.len(), 1);
         assert_eq!(discovered[0].id, dynamic_filter.expression_id().unwrap());
+        assert!(has_nonlocal_dynamic_filter_relationships(&plan)?);
+        Ok(())
+    }
+
+    #[test]
+    fn identifies_a_producer_without_a_local_consumer() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let dynamic_filter = Arc::new(DynamicFilterPhysicalExpr::new(
+            vec![Arc::new(Column::new("a", 0))],
+            lit(true),
+        )) as Arc<dyn PhysicalExpr>;
+        let plan = Arc::new(ExpressionExec::new(
+            Arc::new(EmptyExec::new(schema)),
+            dynamic_filter,
+            true,
+        )) as Arc<dyn ExecutionPlan>;
+
+        assert!(has_nonlocal_dynamic_filter_relationships(&plan)?);
         Ok(())
     }
 
