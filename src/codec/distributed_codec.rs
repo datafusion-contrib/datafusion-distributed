@@ -187,7 +187,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 let schema = Arc::new(schema);
                 let equivalence_properties = parse_equivalence_properties(
                     equivalence_classes,
-                    schema.clone(),
+                    schema,
                     &decode_ctx,
                     proto_converter,
                 )?;
