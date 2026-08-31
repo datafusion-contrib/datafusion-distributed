@@ -132,6 +132,10 @@ mod tests {
             "#,
         )
         .with_broadcast_joins()
+        // Indirectly forces the union to put c0 and c2 on the same task. We would like to test
+        // that consumers of a dynamic filter on the same node get the same filter.
+        //
+        // If we don't do this, inject_network_boundaries splits them up to spread out the load.
         .with_one_task_per_leaf()
         .execute()
         .await?;

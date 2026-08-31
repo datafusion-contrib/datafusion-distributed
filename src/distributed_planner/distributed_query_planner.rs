@@ -167,7 +167,10 @@ fn create_distributed_plan(
     })
 }
 
-fn create_distributed_exec(plan: Arc<dyn ExecutionPlan>, d_cfg: &DistributedConfig) -> Arc<dyn ExecutionPlan> {
+fn create_distributed_exec(
+    plan: Arc<dyn ExecutionPlan>,
+    d_cfg: &DistributedConfig,
+) -> Arc<dyn ExecutionPlan> {
     Arc::new(
         DistributedExec::new(plan)
             .with_metrics_collection(d_cfg.collect_metrics)

@@ -11,8 +11,8 @@ use datafusion_distributed::test_utils::localhost::start_localhost_context;
 use datafusion_distributed::test_utils::parquet::register_parquet_tables;
 use datafusion_distributed::test_utils::routing::url_emitter_route_tasks;
 use datafusion_distributed::{
-    DefaultSessionBuilder, DistributedExt, DistributedMetricsFormat, display_plan_ascii,
-    rewrite_distributed_plan_with_dynamic_filters, rewrite_distributed_plan_with_metrics,
+    DefaultSessionBuilder, DistributedExt, display_plan_ascii,
+    rewrite_distributed_plan_with_dynamic_filters,
 };
 use std::sync::Arc;
 
@@ -35,21 +35,25 @@ impl<'a> TestQuery<'a> {
         }
     }
 
+    /// Assert the number of rows after the query runs.
     pub(crate) fn with_expected_rows(mut self, expected_rows: usize) -> Self {
         self.expected_rows = expected_rows;
         self
     }
 
+    /// Forces collect left joins and enables distributed broadcast joins.
     pub(crate) fn with_broadcast_joins(mut self) -> Self {
         self.broadcast_joins = true;
         self
     }
 
+    /// Sets the desired task count to 1.
     pub(crate) fn with_one_task_per_leaf(mut self) -> Self {
         self.one_task_per_leaf = true;
         self
     }
 
+    /// Disables dynamic filter collection.
     pub(crate) fn without_dynamic_filter_collection(mut self) -> Self {
         self.collect_dynamic_filters = false;
         self
@@ -64,6 +68,7 @@ impl<'a> TestQuery<'a> {
             ctx = ctx.with_distributed_desired_task_count_handler(1usize);
         }
         if !self.broadcast_joins {
+            // Force partitioned hash joins.
             let state = ctx.state_ref();
             let mut state = state.write();
             let optimizer = &mut state.config_mut().options_mut().optimizer;
@@ -152,10 +157,8 @@ async fn execute_query_and_display(
     );
     assert_eq!(display_plan_ascii(plan.as_ref(), false), original_display);
 
-    let plan_with_metrics = rewrite_distributed_plan_with_metrics(
-        plan_with_dynamic_filters,
-        DistributedMetricsFormat::Aggregated,
-    )
-    .await?;
-    Ok(display_plan_ascii(plan_with_metrics.as_ref(), false))
+    Ok(display_plan_ascii(
+        plan_with_dynamic_filters.as_ref(),
+        false,
+    ))
 }

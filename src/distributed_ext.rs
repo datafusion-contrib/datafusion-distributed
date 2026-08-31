@@ -382,7 +382,7 @@ pub trait DistributedExt: Sized {
         enabled: bool,
     ) -> Result<Self, DataFusionError>;
 
-    /// Same as [DistributedExt::with_distributed_dynamic_filter_collection] but with an in-place
+    /// Same as [`DistributedExt::with_distributed_dynamic_filter_collection`] but with an in-place
     /// mutation.
     fn set_distributed_dynamic_filter_collection(
         &mut self,
