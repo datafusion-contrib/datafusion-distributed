@@ -1,4 +1,4 @@
-use crate::codec::{decode_execution_plan, encode_execution_plan};
+use crate::codec::roundtrip_pb;
 use crate::common::{TreeNodeExt, now_ns, task_ctx_with_extension};
 use crate::config_extension_ext::get_config_extension_propagation_headers;
 use crate::coordinator::Store;
@@ -390,9 +390,8 @@ impl<'a> StageCoordinator<'a> {
                 // Right now, there's no other way for a WorkUnitFeed to be transitioned to
                 // remote mode so that it can pull WorkUnits over the WorkerChannel.
                 //
-                // Doing this roundtrip here is not super clean, but it actually does the trick in
-                // very few LOC, and performance overhead is negligible, as the roundtrip does not
-                // even imply serialization.
+                // Doing this roundtrip here is not super clean, but it transitions the feed with
+                // very little specialized code.
                 let plan = roundtrip_pb(plan, self.task_ctx)?;
                 return Ok(Transformed::yes(plan));
             };
@@ -440,15 +439,6 @@ impl<'a> StageCoordinator<'a> {
         }
         Ok(routed.urls)
     }
-}
-
-/// Round-trips a plan converting it to a protobuf message and back to an [ExecutionPlan].
-fn roundtrip_pb(
-    plan: Arc<dyn ExecutionPlan>,
-    ctx: &Arc<TaskContext>,
-) -> Result<Arc<dyn ExecutionPlan>> {
-    let encoded = encode_execution_plan(plan, ctx)?;
-    decode_execution_plan(&encoded, ctx)
 }
 
 fn keep_stream_alive<T: 'static>(notify: Arc<Notify>) -> impl Stream<Item = T> + 'static {

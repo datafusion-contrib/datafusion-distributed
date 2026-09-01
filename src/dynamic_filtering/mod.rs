@@ -1,7 +1,7 @@
 mod discovery;
 mod display;
 
-use crate::codec::{decode_execution_plan, encode_execution_plan};
+use crate::codec::roundtrip_pb;
 use datafusion::common::Result;
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
@@ -42,8 +42,7 @@ pub(crate) fn maybe_roundtrip_plan_to_sever_in_memory_dynamic_filter_relationshi
     task_ctx: &Arc<TaskContext>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     if has_nonlocal_dynamic_filter_relationships(&plan)? {
-        let encoded = encode_execution_plan(plan, task_ctx)?;
-        decode_execution_plan(&encoded, task_ctx)
+        roundtrip_pb(plan, task_ctx)
     } else {
         Ok(plan)
     }

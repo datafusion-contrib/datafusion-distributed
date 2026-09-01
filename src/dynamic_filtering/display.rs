@@ -1,8 +1,8 @@
-use crate::codec::decode_physical_expr;
+use crate::codec::{decode_physical_expr, roundtrip_pb};
 use crate::coordinator::DistributedExec;
 use crate::dynamic_filtering::discover_dynamic_filter_consumers;
 use crate::execution_plans::DistributedLeafExec;
-use crate::{DistributedCodec, TaskCompletedDynamicFilters, TaskKey};
+use crate::{TaskCompletedDynamicFilters, TaskKey};
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{HashMap, Result};
 use datafusion::execution::TaskContext;
@@ -12,8 +12,6 @@ use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::{
     ChildrenPropertiesMode, ExecutionPlan, ExecutionPlanProperties, ReplaceChildrenOptions,
 };
-use datafusion_proto::physical_plan::{DeduplicatingProtoConverter, PhysicalPlanNodeExt};
-use datafusion_proto::protobuf::PhysicalPlanNode;
 use datafusion_proto::protobuf::physical_expr_node::ExprType;
 use std::sync::Arc;
 
@@ -67,8 +65,6 @@ pub(crate) fn sever_dynamic_filter_relationships_in_plan_for_display(
     plan: Arc<dyn ExecutionPlan>,
     task_ctx: &Arc<TaskContext>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
-    let codec = DistributedCodec::new_combined_with_user(task_ctx.session_config());
-    let converter = DeduplicatingProtoConverter::default();
     plan.transform_up(|node| {
         let Some(leaf) = node.downcast_ref::<DistributedLeafExec>() else {
             return Ok(Transformed::no(node));
@@ -78,14 +74,7 @@ pub(crate) fn sever_dynamic_filter_relationships_in_plan_for_display(
             .variants()
             .iter()
             .map(|variant| {
-                // Proto roundtrip is used to deep copy the variant.
-                let proto = PhysicalPlanNode::try_from_physical_plan_with_converter(
-                    Arc::clone(variant),
-                    &codec,
-                    &converter,
-                )?;
-                let variant =
-                    proto.try_into_physical_plan_with_converter(task_ctx, &codec, &converter)?;
+                let variant = roundtrip_pb(Arc::clone(variant), task_ctx)?;
                 // The variant can have a SortExec
                 isolate_sort_dynamic_filters_for_display(variant, task_ctx)
             })
@@ -117,7 +106,6 @@ fn isolate_sort_dynamic_filters_for_display(
     plan: Arc<dyn ExecutionPlan>,
     task_ctx: &Arc<TaskContext>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
-    let codec = DistributedCodec::new_combined_with_user(task_ctx.session_config());
     plan.transform_up(|node| {
         let Some(sort) = node.downcast_ref::<SortExec>() else {
             return Ok(Transformed::no(node));
@@ -134,13 +122,7 @@ fn isolate_sort_dynamic_filters_for_display(
         let recompute = ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute);
         let sort_with_placeholder = node.replace_children(vec![placeholder], recompute)?;
 
-        let converter = DeduplicatingProtoConverter::default();
-        let proto = PhysicalPlanNode::try_from_physical_plan_with_converter(
-            sort_with_placeholder,
-            &codec,
-            &converter,
-        )?;
-        let isolated = proto.try_into_physical_plan_with_converter(task_ctx, &codec, &converter)?;
+        let isolated = roundtrip_pb(sort_with_placeholder, task_ctx)?;
         let isolated = isolated.replace_children(vec![input], recompute)?;
 
         Ok(Transformed::yes(isolated))

@@ -44,6 +44,15 @@ pub(crate) fn decode_execution_plan(
     physical_plan_from_bytes_with_proto_converter(encoded, task_ctx, &codec, &converter)
 }
 
+/// Round-trips a plan through protobuf to produce an independent [`ExecutionPlan`].
+pub(crate) fn roundtrip_pb(
+    plan: Arc<dyn ExecutionPlan>,
+    task_ctx: &TaskContext,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let encoded = encode_execution_plan(plan, task_ctx)?;
+    decode_execution_plan(&encoded, task_ctx)
+}
+
 pub(crate) fn encode_physical_expr(
     expression: &Arc<dyn PhysicalExpr>,
     task_ctx: &TaskContext,
