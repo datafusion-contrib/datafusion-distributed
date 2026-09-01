@@ -602,9 +602,7 @@ mod tests {
             rewrite_distributed_plan_with_metrics(plan, DistributedMetricsFormat::Aggregated)
                 .await
                 .unwrap();
-        assert!(rewritten_plan.metrics().unwrap().iter().count() > 0);
-        let distributed_exec = rewritten_plan.downcast_ref::<DistributedExec>().unwrap();
-        assert_metrics_present_in_plan(&distributed_exec.plan_for_viz().unwrap());
+        assert_metrics_present_in_plan(&rewritten_plan);
     }
 
     #[test]

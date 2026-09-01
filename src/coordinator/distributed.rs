@@ -16,7 +16,7 @@ use datafusion::physical_plan::stream::RecordBatchReceiverStreamBuilder;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
 use futures::StreamExt;
 use std::fmt::Formatter;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, OnceLock};
 
 /// [ExecutionPlan] that executes the inner plan in distributed mode.
 /// Before executing it, two modifications are lazily performed on the plan:
@@ -33,7 +33,7 @@ pub struct DistributedExec {
     /// - If the plan is going to be distributed dynamically during execution, this is the initial
     ///   non-distributed plan.
     base_plan: Arc<dyn ExecutionPlan>,
-    prepared_execution: Arc<Mutex<Option<PreparedExecution>>>,
+    prepared_execution: Arc<OnceLock<PreparedExecution>>,
     /// DataFusion metrics.
     metrics: ExecutionPlanMetricsSet,
     /// Storage where metrics collected from workers at runtime will place their results as they
@@ -66,7 +66,7 @@ impl DistributedExec {
     pub fn new(base_plan: Arc<dyn ExecutionPlan>) -> Self {
         Self {
             base_plan,
-            prepared_execution: Arc::new(Mutex::new(None)),
+            prepared_execution: Arc::new(OnceLock::new()),
             metrics: ExecutionPlanMetricsSet::new(),
             metrics_store: None,
             completed_dynamic_filter_store: None,
@@ -119,13 +119,9 @@ impl DistributedExec {
     }
 
     fn prepared_execution(&self) -> Result<PreparedExecution> {
-        self.prepared_execution
-            .lock()
-            .map_err(|e| internal_datafusion_err!("Failed to lock prepared execution: {e}"))?
-            .clone()
-            .ok_or_else(|| {
-                internal_datafusion_err!("No prepared execution found. Was execute() called?")
-            })
+        self.prepared_execution.get().cloned().ok_or_else(|| {
+            internal_datafusion_err!("No prepared execution found. Was execute() called?")
+        })
     }
 
     /// Returns the plan reconstructed from the execution for visualization and rewriting.
@@ -136,8 +132,10 @@ impl DistributedExec {
     /// Returns the prepared visualization plan when available, or the original optimized plan
     /// before execution has prepared one.
     pub(crate) fn plan_for_viz_or_base_plan(&self) -> Arc<dyn ExecutionPlan> {
-        self.plan_for_viz()
-            .unwrap_or_else(|_| Arc::clone(&self.base_plan))
+        self.prepared_execution
+            .get()
+            .map(|prepared| Arc::clone(&prepared.plan_for_viz))
+            .unwrap_or_else(|| Arc::clone(&self.base_plan))
     }
 
     /// Returns the head stage that was actually executed. Unlike [`Self::plan_for_viz`] (which is
@@ -162,7 +160,7 @@ impl DistributedExec {
         prepared_execution.plan_for_viz = Arc::clone(&plan_for_viz);
         Ok(Arc::new(Self {
             base_plan: Arc::clone(&self.base_plan),
-            prepared_execution: Arc::new(Mutex::new(Some(prepared_execution))),
+            prepared_execution: Arc::new(OnceLock::from(prepared_execution)),
             metrics: self.metrics.clone(),
             metrics_store: self.metrics_store.clone(),
             completed_dynamic_filter_store: self.completed_dynamic_filter_store.clone(),
@@ -186,7 +184,12 @@ impl ExecutionPlan for DistributedExec {
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-        vec![&self.base_plan]
+        vec![
+            self.prepared_execution
+                .get()
+                .map(|prepared| &prepared.plan_for_viz)
+                .unwrap_or(&self.base_plan),
+        ]
     }
 
     fn apply_expressions(
@@ -200,9 +203,13 @@ impl ExecutionPlan for DistributedExec {
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
+        let child = require_one_child(&children)?;
+        if self.prepared_execution.get().is_some() {
+            return self.with_plan_for_viz(child);
+        }
         Ok(Arc::new(DistributedExec {
-            base_plan: require_one_child(&children)?,
-            prepared_execution: Arc::new(Mutex::new(None)),
+            base_plan: child,
+            prepared_execution: Arc::new(OnceLock::new()),
             metrics: self.metrics.clone(),
             metrics_store: self.metrics_store.clone(),
             completed_dynamic_filter_store: self.completed_dynamic_filter_store.clone(),
@@ -265,13 +272,14 @@ impl ExecutionPlan for DistributedExec {
                 false => result.plan_for_viz,
             };
             prepared_execution
-                .lock()
-                .map_err(|e| internal_datafusion_err!("Failed to lock prepared execution: {e}"))?
-                .replace(PreparedExecution {
+                .set(PreparedExecution {
                     plan_for_viz,
                     head_stage: Arc::clone(&result.head_stage),
                     task_ctx: Arc::clone(&context),
-                });
+                })
+                .map_err(|_| {
+                    internal_datafusion_err!("DistributedExec was already prepared for execution")
+                })?;
             let mut stream = result.head_stage.execute(partition, context)?;
             while let Some(msg) = stream.next().await {
                 if tx.send(msg).await.is_err() {
