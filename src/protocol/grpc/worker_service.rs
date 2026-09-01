@@ -490,16 +490,19 @@ fn garbage_collect_arrays(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use datafusion::prelude::SessionContext;
     use datafusion_proto::protobuf::PhysicalExprNode;
 
     #[test]
     fn encode_produced_dynamic_filter() {
         let expression = PhysicalExprNode::default();
+        let task_ctx = SessionContext::new().task_ctx();
         let encoded = encode_worker_to_coordinator_msg(
             WorkerToCoordinatorMsg::ProducedDynamicFilter(Box::new(ProducedDynamicFilter {
                 expression_id: 42,
                 expression: expression.clone(),
             })),
+            &task_ctx,
         )
         .unwrap();
 
