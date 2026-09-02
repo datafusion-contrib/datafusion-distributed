@@ -87,6 +87,7 @@ tpch = ["integration"]
 tpcds = ["integration"]
 clickbench = ["integration"]
 slow-tests = []
+chaos-tests = []
 sysinfo = ["dep:sysinfo"]
 
 [dev-dependencies]
