@@ -223,9 +223,7 @@ impl DistributedTaskContext {
     }
 }
 
-use crate::{
-    DistributedMetricsFormat, NetworkShuffleExec, rewrite_distributed_plan_with_metrics,
-};
+use crate::{DistributedMetricsFormat, NetworkShuffleExec, rewrite_distributed_plan_with_metrics};
 use crate::{NetworkBoundary, NetworkBoundaryExt};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::DataFusionError;

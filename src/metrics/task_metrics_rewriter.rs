@@ -92,6 +92,41 @@ pub async fn rewrite_distributed_plan_with_metrics(
     distributed_exec.with_plan_for_viz(transformed.data)
 }
 
+/// Gathers metrics that belong to a task as a whole rather than to an execution-plan node.
+fn stage_metrics(
+    stage: &LocalStage,
+    metrics_collection: &HashMap<TaskKey, TaskMetrics>,
+) -> Result<MetricsSet> {
+    let mut all_metrics = stage.metrics_set.clone();
+    for task_number in 0..stage.tasks {
+        let task_key = TaskKey {
+            query_id: stage.query_id,
+            stage_id: stage.num,
+            task_number,
+        };
+        let Some(task_metrics) = metrics_collection.get(&task_key) else {
+            return internal_err!(
+                "not enough metrics provided to rewrite task: missing metrics for task {} in stage {}",
+                task_number,
+                stage.num
+            );
+        };
+        for metric in task_metrics.task_metrics.iter() {
+            let mut labels = metric.labels().to_vec();
+            labels.push(Label::new(
+                DISTRIBUTED_DATAFUSION_TASK_ID_LABEL,
+                task_number.to_string(),
+            ));
+            all_metrics.push(Arc::new(Metric::new_with_labels(
+                metric.value().clone(),
+                metric.partition(),
+                labels,
+            )));
+        }
+    }
+    Ok(all_metrics)
+}
+
 /// Extra information for rewriting local plans.
 #[derive(Default)]
 pub struct RewriteCtx {
