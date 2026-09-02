@@ -6,14 +6,14 @@ use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::Partitioning;
 use datafusion_distributed::{DistributedWorkUnitFeedContext, WorkUnitFeedProvider};
+use futures::StreamExt;
 use futures::stream::BoxStream;
-use futures::{StreamExt, TryStreamExt};
 use iceberg::expr::Predicate;
-use iceberg::scan::FileScanTask;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::common::df_err;
+use crate::work_unit_wire::FileScanTaskMessage;
 
 /// Work unit feed implementation that yields [FileScanTask] messages at execution time.
 ///
@@ -116,17 +116,6 @@ pub(crate) struct SyncManager {
     feeds: TakeableVec<UnboundedReceiver<Result<FileScanTaskMessage>>>,
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct FileScanTaskMessage {
-    pub(crate) inner: Option<FileScanTask>,
-}
-
-impl FileScanTaskMessage {
-    fn new(inner: FileScanTask) -> Self {
-        Self { inner: Some(inner) }
-    }
-}
-
 impl WorkUnitFeedProvider for IcebergWorkUnitFeed {
     type WorkUnit = FileScanTaskMessage;
 
@@ -173,7 +162,7 @@ impl WorkUnitFeedProvider for IcebergWorkUnitFeed {
             // the return streams of the `feed()` method.
             let task = SpawnedTask::spawn(async move {
                 let mut stream = match table_scan.plan_files().await {
-                    Ok(stream) => stream.map_ok(FileScanTaskMessage::new),
+                    Ok(stream) => stream,
                     Err(err) => {
                         let _ = txs[0].send(Err(df_err(err)));
                         return;
@@ -185,7 +174,10 @@ impl WorkUnitFeedProvider for IcebergWorkUnitFeed {
                 //  partitioning will require smarter routing across output channels.
                 let mut i = 0;
                 while let Some(scan_task_or_err) = stream.next().await {
-                    let _ = txs[i % txs.len()].send(scan_task_or_err.map_err(df_err));
+                    let message = scan_task_or_err
+                        .map_err(df_err)
+                        .and_then(FileScanTaskMessage::new);
+                    let _ = txs[i % txs.len()].send(message);
                     i += 1;
                 }
             });

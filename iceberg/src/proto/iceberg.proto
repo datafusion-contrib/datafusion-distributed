@@ -1,0 +1,270 @@
+syntax = "proto3";
+package iceberg;
+
+message FileScanTask {
+  uint32 context_id = 1;
+  FileScanTaskContext context = 2;
+  FileScanTaskBody task = 3;
+}
+
+message FileScanTaskContext {
+  Schema schema = 1;
+  repeated int32 projected_field_ids = 2;
+  BoundPredicate predicate = 3;
+  PartitionSpec partition_spec = 4;
+  NameMapping name_mapping = 5;
+  bool case_sensitive = 6;
+}
+
+message FileScanTaskBody {
+  uint64 file_size_in_bytes = 1;
+  uint64 start = 2;
+  uint64 length = 3;
+  optional uint64 record_count = 4;
+  string data_file_path = 5;
+  DataFileFormat data_file_format = 6;
+  repeated DeleteFile deletes = 7;
+  PartitionValues partition = 8;
+}
+
+enum DataFileFormat {
+  DATA_FILE_FORMAT_UNSPECIFIED = 0;
+  DATA_FILE_FORMAT_AVRO = 1;
+  DATA_FILE_FORMAT_ORC = 2;
+  DATA_FILE_FORMAT_PARQUET = 3;
+  DATA_FILE_FORMAT_PUFFIN = 4;
+}
+
+message DeleteFile {
+  string file_path = 1;
+  uint64 file_size_in_bytes = 2;
+  DataContentType file_type = 3;
+  int32 partition_spec_id = 4;
+  EqualityIds equality_ids = 5;
+}
+
+message EqualityIds {
+  repeated int32 values = 1;
+}
+
+enum DataContentType {
+  DATA_CONTENT_TYPE_UNSPECIFIED = 0;
+  DATA_CONTENT_TYPE_DATA = 1;
+  DATA_CONTENT_TYPE_POSITION_DELETES = 2;
+  DATA_CONTENT_TYPE_EQUALITY_DELETES = 3;
+}
+
+message PartitionValues {
+  repeated PartitionValue values = 1;
+}
+
+message PartitionValue {
+  optional bytes value = 1;
+}
+
+message Schema {
+  int32 schema_id = 1;
+  repeated NestedField fields = 2;
+  repeated int32 identifier_field_ids = 3;
+}
+
+message NestedField {
+  int32 id = 1;
+  string name = 2;
+  bool required = 3;
+  Type field_type = 4;
+  optional string doc = 5;
+  Literal initial_default = 6;
+  Literal write_default = 7;
+}
+
+message Type {
+  oneof kind {
+    PrimitiveType primitive = 1;
+    StructType struct = 2;
+    ListType list = 3;
+    MapType map = 4;
+  }
+}
+
+message PrimitiveType {
+  oneof kind {
+    Empty boolean = 1;
+    Empty int = 2;
+    Empty long = 3;
+    Empty float = 4;
+    Empty double = 5;
+    DecimalType decimal = 6;
+    Empty date = 7;
+    Empty time = 8;
+    Empty timestamp = 9;
+    Empty timestamptz = 10;
+    Empty timestamp_ns = 11;
+    Empty timestamptz_ns = 12;
+    Empty string = 13;
+    Empty uuid = 14;
+    uint64 fixed = 15;
+    Empty binary = 16;
+  }
+}
+
+message DecimalType {
+  uint32 precision = 1;
+  uint32 scale = 2;
+}
+
+message StructType {
+  repeated NestedField fields = 1;
+}
+
+message ListType {
+  NestedField element = 1;
+}
+
+message MapType {
+  NestedField key = 1;
+  NestedField value = 2;
+}
+
+message Literal {
+  oneof value {
+    PrimitiveLiteral primitive = 1;
+    LiteralValues struct = 2;
+    LiteralValues list = 3;
+    MapLiteral map = 4;
+  }
+}
+
+message LiteralValues {
+  repeated LiteralValue values = 1;
+}
+
+message LiteralValue {
+  Literal value = 1;
+}
+
+message MapLiteral {
+  repeated MapEntry entries = 1;
+}
+
+message MapEntry {
+  Literal key = 1;
+  Literal value = 2;
+}
+
+message PrimitiveLiteral {
+  oneof value {
+    bool boolean = 1;
+    sint32 int = 2;
+    sint64 long = 3;
+    fixed32 float_bits = 4;
+    fixed64 double_bits = 5;
+    string string = 6;
+    bytes binary = 7;
+    bytes int128 = 8;
+    bytes uint128 = 9;
+    Empty above_max = 10;
+    Empty below_min = 11;
+  }
+}
+
+message BoundPredicate {
+  oneof expression {
+    Empty always_true = 1;
+    Empty always_false = 2;
+    BinaryLogicalPredicate and = 3;
+    BinaryLogicalPredicate or = 4;
+    BoundPredicate not = 5;
+    UnaryPredicate unary = 6;
+    BinaryPredicate binary = 7;
+    SetPredicate set = 8;
+  }
+}
+
+message BinaryLogicalPredicate {
+  BoundPredicate left = 1;
+  BoundPredicate right = 2;
+}
+
+message BoundReference {
+  string column_name = 1;
+  int32 field_id = 2;
+}
+
+message UnaryPredicate {
+  PredicateOperator op = 1;
+  BoundReference term = 2;
+}
+
+message BinaryPredicate {
+  PredicateOperator op = 1;
+  BoundReference term = 2;
+  Datum literal = 3;
+}
+
+message SetPredicate {
+  PredicateOperator op = 1;
+  BoundReference term = 2;
+  repeated Datum literals = 3;
+}
+
+enum PredicateOperator {
+  PREDICATE_OPERATOR_UNSPECIFIED = 0;
+  PREDICATE_OPERATOR_IS_NULL = 1;
+  PREDICATE_OPERATOR_NOT_NULL = 2;
+  PREDICATE_OPERATOR_IS_NAN = 3;
+  PREDICATE_OPERATOR_NOT_NAN = 4;
+  PREDICATE_OPERATOR_LESS_THAN = 5;
+  PREDICATE_OPERATOR_LESS_THAN_OR_EQUAL = 6;
+  PREDICATE_OPERATOR_GREATER_THAN = 7;
+  PREDICATE_OPERATOR_GREATER_THAN_OR_EQUAL = 8;
+  PREDICATE_OPERATOR_EQUAL = 9;
+  PREDICATE_OPERATOR_NOT_EQUAL = 10;
+  PREDICATE_OPERATOR_STARTS_WITH = 11;
+  PREDICATE_OPERATOR_NOT_STARTS_WITH = 12;
+  PREDICATE_OPERATOR_IN = 13;
+  PREDICATE_OPERATOR_NOT_IN = 14;
+}
+
+message Datum {
+  PrimitiveType data_type = 1;
+  PrimitiveLiteral literal = 2;
+}
+
+message PartitionSpec {
+  int32 spec_id = 1;
+  repeated PartitionField fields = 2;
+}
+
+message PartitionField {
+  int32 source_id = 1;
+  int32 field_id = 2;
+  string name = 3;
+  Transform transform = 4;
+}
+
+message Transform {
+  oneof kind {
+    Empty identity = 1;
+    uint32 bucket = 2;
+    uint32 truncate = 3;
+    Empty year = 4;
+    Empty month = 5;
+    Empty day = 6;
+    Empty hour = 7;
+    Empty void = 8;
+    Empty unknown = 9;
+  }
+}
+
+message NameMapping {
+  repeated MappedField fields = 1;
+}
+
+message MappedField {
+  optional int32 field_id = 1;
+  repeated string names = 2;
+  repeated MappedField fields = 3;
+}
+
+message Empty {}

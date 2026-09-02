@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::stats::Precision;
-use datafusion::common::{ColumnStatistics, Statistics, exec_datafusion_err};
+use datafusion::common::{ColumnStatistics, Statistics};
 use datafusion::config::ConfigOptions;
 use datafusion::datasource::source::DataSource;
 use datafusion::error::Result;
@@ -213,10 +213,7 @@ impl DataSource for IcebergDataSource {
             .feed
             .feed(partition, context)?
             .map(|msg_or_err| match msg_or_err {
-                Ok(msg) => match msg.inner {
-                    Some(msg) => Ok(msg),
-                    None => Err(iceberg_err(exec_datafusion_err!("Missing inner"))),
-                },
+                Ok(msg) => msg.into_task().map_err(iceberg_err),
                 Err(err) => Err(iceberg_err(err)),
             })
             .boxed();
