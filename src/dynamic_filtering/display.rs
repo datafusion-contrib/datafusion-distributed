@@ -41,7 +41,11 @@ pub async fn rewrite_distributed_plan_with_dynamic_filters(
     let plan_for_viz =
         sever_dynamic_filter_relationships_in_plan_for_display(plan_for_viz, task_ctx)?;
     apply_reports_to_distributed_leaves(&plan_for_viz, &reports, task_ctx);
-    distributed_exec.with_plan_for_viz(plan_for_viz)
+    let plan = distributed_exec.with_plan_for_viz(Arc::clone(&plan_for_viz))?;
+    plan.replace_children(
+        vec![plan_for_viz],
+        ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+    )
 }
 
 /// Severs dynamic filter connections so we can update filter values for

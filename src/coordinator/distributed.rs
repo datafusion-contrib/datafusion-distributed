@@ -27,13 +27,20 @@ use std::sync::{Arc, OnceLock};
 ///    over the wire.
 #[derive(Debug)]
 pub struct DistributedExec {
-    /// Initial [ExecutionPlan] present before execution.
+    /// [ExecutionPlan] exposed through [`ExecutionPlan::children`] and used as the input to
+    /// execution.
+    ///
+    /// Initially, this is the plan present before execution:
     /// - If the plan was distributed statically, this will be the final distributed plan with all
     ///   the appropriate network boundaries in it.
     /// - If the plan is going to be distributed dynamically during execution, this is the initial
     ///   non-distributed plan.
+    ///
+    /// Post-execution rewrites replace this plan in the returned clone while leaving the original
+    /// [`DistributedExec`] unchanged.
     base_plan: Arc<dyn ExecutionPlan>,
-    prepared_execution: Arc<OnceLock<PreparedExecution>>,
+    /// Plan after static or dynamic planning.
+    prepared_plan: Arc<OnceLock<PreparedPlan>>,
     /// DataFusion metrics.
     metrics: ExecutionPlanMetricsSet,
     /// Storage where metrics collected from workers at runtime will place their results as they
@@ -43,20 +50,12 @@ pub struct DistributedExec {
     pub(crate) completed_dynamic_filter_store: Option<Arc<Store<TaskCompletedDynamicFilters>>>,
 }
 
-/// Execution state produced by distributed planning (static or dynamic) retained
-/// for post-execution work such as plan rewrites to display metrics and dynamic filters.
 #[derive(Debug, Clone)]
-struct PreparedExecution {
-    /// Resulting plan reconstructed after static or dynamic planning.
-    plan_for_viz: Arc<dyn ExecutionPlan>,
-    /// The head stage actually executed locally by the coordinator.
-    head_stage: Arc<dyn ExecutionPlan>,
-}
-
 pub(super) struct PreparedPlan {
-    /// The head stage meant to be executed locally by the coordinator.
+    /// The coordinator-side plan prepared for execution.
     pub(super) head_stage: Arc<dyn ExecutionPlan>,
-    /// A final representation of the plan for visualization purposes.
+    /// The complete distributed plan reconstructed for visualization. Contains
+    /// all stages.
     pub(super) plan_for_viz: Arc<dyn ExecutionPlan>,
 }
 
@@ -64,7 +63,7 @@ impl DistributedExec {
     pub fn new(base_plan: Arc<dyn ExecutionPlan>) -> Self {
         Self {
             base_plan,
-            prepared_execution: Arc::new(OnceLock::new()),
+            prepared_plan: Arc::new(OnceLock::new()),
             metrics: ExecutionPlanMetricsSet::new(),
             metrics_store: None,
             completed_dynamic_filter_store: None,
@@ -93,7 +92,7 @@ impl DistributedExec {
     /// if metrics collection is enabled.
     pub async fn wait_for_metrics(&self) -> Option<HashMap<TaskKey, TaskMetrics>> {
         let task_metrics = self.metrics_store.as_ref()?;
-        let plan = &self.prepared_execution.get()?.plan_for_viz;
+        let plan = &self.prepared_plan.get()?.plan_for_viz;
         Some(task_metrics.wait_for(&task_keys_for_plan(plan)).await)
     }
 
@@ -103,49 +102,53 @@ impl DistributedExec {
         &self,
     ) -> Option<HashMap<TaskKey, TaskCompletedDynamicFilters>> {
         let store = self.completed_dynamic_filter_store.as_ref()?;
-        let plan = &self.prepared_execution.get()?.plan_for_viz;
+        let plan = &self.prepared_plan.get()?.plan_for_viz;
         Some(store.wait_for(&task_keys_for_plan(plan)).await)
     }
 
-    fn prepared_execution(&self) -> Result<PreparedExecution> {
-        self.prepared_execution.get().cloned().ok_or_else(|| {
-            internal_datafusion_err!("No prepared execution found. Was execute() called?")
+    fn prepared_plan(&self) -> Result<PreparedPlan> {
+        self.prepared_plan.get().cloned().ok_or_else(|| {
+            internal_datafusion_err!("No prepared plan found. Was execute() called?")
         })
     }
 
-    /// Returns the plan reconstructed from the execution for visualization and rewriting.
+    /// Returns the plan reconstructed during preparation for visualization and rewriting.
     pub(crate) fn plan_for_viz(&self) -> Result<Arc<dyn ExecutionPlan>> {
-        Ok(self.prepared_execution()?.plan_for_viz)
+        Ok(self.prepared_plan()?.plan_for_viz)
     }
 
     /// Returns the prepared visualization plan when available, or the original optimized plan
     /// before execution has prepared one.
     pub(crate) fn plan_for_viz_or_base_plan(&self) -> Arc<dyn ExecutionPlan> {
-        self.prepared_execution
+        self.prepared_plan
             .get()
             .map(|prepared| Arc::clone(&prepared.plan_for_viz))
             .unwrap_or_else(|| Arc::clone(&self.base_plan))
     }
 
-    /// Returns the head stage that was actually executed. Unlike [`Self::plan_for_viz`] (which is
-    /// reconstructed for visualization, with `Stage::Local` boundaries and rebuilt ancestor
-    /// `Arc`s), this returns the original `Arc` instances whose metrics were populated during
-    /// execution.
+    /// Returns the head stage which is executed by the [`DistributedExec`]. Does not contain
+    /// any remotely execute plan nodes, (unlike [`Self::plan_for_viz`] which contains the whole
+    /// plan tree with [`Stage::Local`] stages).
+    ///
+    /// Also, this does not contain rebuilt [`Arc<dyn ExecutionPlan>`] nodes. This returns the
+    /// original instances  whose metrics were populated during execution.
+    ///
+    /// [`Stage::Local`]: crate::stage::Stage::Local
     pub(crate) fn head_stage(&self) -> Result<Arc<dyn ExecutionPlan>> {
-        Ok(self.prepared_execution()?.head_stage)
+        Ok(self.prepared_plan()?.head_stage)
     }
 
-    /// Builds a non-executable visualization result while preserving the state needed by a
-    /// subsequent rewrite. Dynamic filters must be rewritten before metrics.
+    /// Returns a new [`DistributedExec`] with an updated visualization plan while leaving its
+    /// public child unchanged.
     pub(crate) fn with_plan_for_viz(
         &self,
         plan_for_viz: Arc<dyn ExecutionPlan>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        let mut prepared_execution = self.prepared_execution()?;
-        prepared_execution.plan_for_viz = Arc::clone(&plan_for_viz);
+        let mut prepared_plan = self.prepared_plan()?;
+        prepared_plan.plan_for_viz = plan_for_viz;
         Ok(Arc::new(Self {
             base_plan: Arc::clone(&self.base_plan),
-            prepared_execution: Arc::new(OnceLock::from(prepared_execution)),
+            prepared_plan: Arc::new(OnceLock::from(prepared_plan)),
             metrics: self.metrics.clone(),
             metrics_store: self.metrics_store.clone(),
             completed_dynamic_filter_store: self.completed_dynamic_filter_store.clone(),
@@ -169,12 +172,7 @@ impl ExecutionPlan for DistributedExec {
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-        vec![
-            self.prepared_execution
-                .get()
-                .map(|prepared| &prepared.plan_for_viz)
-                .unwrap_or(&self.base_plan),
-        ]
+        vec![&self.base_plan]
     }
 
     fn apply_expressions(
@@ -189,12 +187,16 @@ impl ExecutionPlan for DistributedExec {
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let child = require_one_child(&children)?;
-        if self.prepared_execution.get().is_some() {
-            return self.with_plan_for_viz(child);
-        }
+        // Replacing the public child is independent from replacing the visualization plan. A
+        // post-execution rewrite updates the latter explicitly via `with_plan_for_viz`.
+        let prepared_plan = self
+            .prepared_plan
+            .get()
+            .cloned()
+            .map_or_else(OnceLock::new, OnceLock::from);
         Ok(Arc::new(DistributedExec {
             base_plan: child,
-            prepared_execution: Arc::new(OnceLock::new()),
+            prepared_plan: Arc::new(prepared_plan),
             metrics: self.metrics.clone(),
             metrics_store: self.metrics_store.clone(),
             completed_dynamic_filter_store: self.completed_dynamic_filter_store.clone(),
@@ -217,7 +219,7 @@ impl ExecutionPlan for DistributedExec {
         }
 
         let base_plan = Arc::clone(&self.base_plan);
-        let prepared_execution = Arc::clone(&self.prepared_execution);
+        let prepared_plan = Arc::clone(&self.prepared_plan);
         let collect_dynamic_filters = self.completed_dynamic_filter_store.is_some();
 
         let query_coordinator = QueryCoordinator::new(
@@ -244,27 +246,23 @@ impl ExecutionPlan for DistributedExec {
             let guard = query_coordinator.end_query_guard();
 
             let d_cfg = DistributedConfig::from_config_options(context.session_config().options())?;
-            let result = match d_cfg.dynamic_task_count {
+            let mut prepared = match d_cfg.dynamic_task_count {
                 true => prepare_dynamic_plan(&query_coordinator, &base_plan).await?,
                 false => prepare_static_plan(&query_coordinator, &base_plan)?,
             };
 
-            let plan_for_viz = match collect_dynamic_filters {
+            prepared.plan_for_viz = match collect_dynamic_filters {
                 true => sever_dynamic_filter_relationships_in_plan_for_display(
-                    result.plan_for_viz,
+                    prepared.plan_for_viz,
                     &context,
                 )?,
-                false => result.plan_for_viz,
+                false => prepared.plan_for_viz,
             };
-            prepared_execution
-                .set(PreparedExecution {
-                    plan_for_viz,
-                    head_stage: Arc::clone(&result.head_stage),
-                })
-                .map_err(|_| {
-                    internal_datafusion_err!("DistributedExec was already prepared for execution")
-                })?;
-            let mut stream = result.head_stage.execute(partition, context)?;
+            let head_stage = Arc::clone(&prepared.head_stage);
+            prepared_plan.set(prepared).map_err(|_| {
+                internal_datafusion_err!("DistributedExec was already prepared for execution")
+            })?;
+            let mut stream = head_stage.execute(partition, context)?;
             while let Some(msg) = stream.next().await {
                 if tx.send(msg).await.is_err() {
                     break; // channel closed

@@ -12,9 +12,9 @@ use datafusion::common::tree_node::Transformed;
 use datafusion::common::tree_node::TreeNode;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::Result;
-use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::internal_err;
 use datafusion::physical_plan::metrics::{Label, Metric, MetricsSet};
+use datafusion::physical_plan::{ChildrenPropertiesMode, ExecutionPlan, ReplaceChildrenOptions};
 use std::sync::Arc;
 
 /// Format to use when displaying metrics for a distributed plan.
@@ -89,7 +89,11 @@ pub async fn rewrite_distributed_plan_with_metrics(
 
         Ok(Transformed::no(plan))
     })?;
-    distributed_exec.with_plan_for_viz(transformed.data)
+    let plan = distributed_exec.with_plan_for_viz(Arc::clone(&transformed.data))?;
+    plan.replace_children(
+        vec![transformed.data],
+        ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+    )
 }
 
 /// Gathers metrics that belong to a task as a whole rather than to an execution-plan node.
@@ -628,8 +632,10 @@ mod tests {
             .create_physical_plan()
             .await
             .unwrap();
+        let original_child = Arc::clone(plan.children()[0]);
         collect(plan.clone(), ctx.task_ctx()).await.unwrap();
         assert!(plan.is::<DistributedExec>());
+        assert!(Arc::ptr_eq(plan.children()[0], &original_child));
         let rewritten_plan =
             rewrite_distributed_plan_with_metrics(plan, DistributedMetricsFormat::Aggregated)
                 .await
