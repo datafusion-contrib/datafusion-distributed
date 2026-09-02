@@ -7,6 +7,10 @@ use crate::distributed_planner::{
 };
 use crate::events::TaskCountAnnotation::{Desired, Maximum};
 use crate::execution_plans::SamplerExec;
+use crate::metrics::{
+    CPU_COST_METRIC, ESTIMATED_OUTPUT_BYTES_METRIC, ESTIMATED_PCT_SAMPLED_METRIC,
+    MEMORY_COST_METRIC, NETWORK_COST_METRIC,
+};
 use crate::stage::{LocalStage, RemoteStage};
 use crate::{
     BytesCounterMetric, LoadInfo, MaxGaugeMetric, NetworkBoundaryExt, NetworkCoalesceExec, Stage,
@@ -48,15 +52,15 @@ pub(super) async fn prepare_dynamic_plan(
             //   by the SamplerExec injected by this same function.
             let cost = calculate_cost(&input_stage.plan)?;
             metrics.push(BytesCounterMetric::new_metric(
-                "cpu_cost",
+                CPU_COST_METRIC,
                 *cost.cpu.get_value().unwrap_or(&0),
             ));
             metrics.push(BytesCounterMetric::new_metric(
-                "memory_cost",
+                MEMORY_COST_METRIC,
                 *cost.memory.get_value().unwrap_or(&0),
             ));
             metrics.push(BytesCounterMetric::new_metric(
-                "network_cost",
+                NETWORK_COST_METRIC,
                 *cost.network.get_value().unwrap_or(&0),
             ));
             let compute_based_task_count = cost
@@ -285,7 +289,7 @@ async fn gather_runtime_statistics(
     };
 
     new_metrics.push(MaxGaugeMetric::new_metric(
-        "estimated_pct_sampled",
+        ESTIMATED_PCT_SAMPLED_METRIC,
         (estimated_pct_sampled * 100.) as usize,
     ));
 
@@ -299,7 +303,7 @@ async fn gather_runtime_statistics(
     let total_byte_size: usize = per_col_byte_size.iter().sum();
 
     new_metrics.push(BytesCounterMetric::new_metric(
-        "estimated_output_bytes",
+        ESTIMATED_OUTPUT_BYTES_METRIC,
         total_byte_size,
     ));
 

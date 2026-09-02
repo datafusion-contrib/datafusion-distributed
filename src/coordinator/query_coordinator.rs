@@ -5,6 +5,9 @@ use crate::coordinator::MetricsStore;
 use crate::coordinator::latency_metric::LatencyMetric;
 use crate::events::{RouteTasksEvent, RouteTasksHandlers};
 use crate::execution_plans::{ChildrenIsolatorUnionExec, DistributedLeafExec};
+use crate::metrics::{
+    LOCAL_COORDINATOR_CHANNELS_METRIC, PLAN_SEND_LATENCY_METRIC, REMOTE_COORDINATOR_CHANNELS_METRIC,
+};
 use crate::passthrough_headers::get_passthrough_headers;
 use crate::stage::LocalStage;
 use crate::work_unit_feed::WorkUnitFeedRegistry;
@@ -457,12 +460,12 @@ impl CoordinatorToWorkerMetrics {
     pub(super) fn new(metrics: &ExecutionPlanMetricsSet) -> Self {
         Self {
             local_coordinator_channels: MetricBuilder::new(metrics)
-                .global_counter("local_coordinator_channels"),
+                .global_counter(LOCAL_COORDINATOR_CHANNELS_METRIC),
             remote_coordinator_channels: MetricBuilder::new(metrics)
-                .global_counter("remote_coordinator_channels"),
+                .global_counter(REMOTE_COORDINATOR_CHANNELS_METRIC),
             // Latency statistics about the network calls issued to the workers for feeding subplans.
             plan_send_latency: Arc::new(LatencyMetric::new(
-                "plan_send_latency",
+                PLAN_SEND_LATENCY_METRIC,
                 with_task_id_label,
                 metrics,
             )),

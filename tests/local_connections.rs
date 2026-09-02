@@ -6,8 +6,10 @@ mod tests {
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::parquet::register_parquet_tables;
     use datafusion_distributed::{
-        DefaultSessionBuilder, DistributedExt, DistributedMetricsFormat, NetworkBoundaryExt,
-        display_plan_ascii, rewrite_distributed_plan_with_metrics,
+        DefaultSessionBuilder, DistributedExt, DistributedMetricsFormat,
+        LOCAL_CONNECTIONS_USED_METRIC, LOCAL_COORDINATOR_CHANNELS_METRIC, NetworkBoundaryExt,
+        REMOTE_COORDINATOR_CHANNELS_METRIC, display_plan_ascii,
+        rewrite_distributed_plan_with_metrics,
     };
     use std::sync::Arc;
 
@@ -37,7 +39,7 @@ mod tests {
 
             let metrics = plan.metrics().unwrap();
             let local_connections_used = metrics
-                .sum(|v| v.value().name() == "local_connections_used")
+                .sum(|v| v.value().name() == LOCAL_CONNECTIONS_USED_METRIC)
                 .map_or(0, |v| v.as_usize());
             if local_connections_used == 0 {
                 return internal_err!("local_connections_used==0");
@@ -74,8 +76,8 @@ mod tests {
         // - coordinator worker 0 -> stage 0, worker 1 | remote
         // - coordinator worker 0 -> stage 1, worker 0 | local
         // - coordinator worker 0 -> stage 1, worker 1 | remote
-        assert_eq!(metric_value("local_coordinator_channels"), 2);
-        assert_eq!(metric_value("remote_coordinator_channels"), 2);
+        assert_eq!(metric_value(LOCAL_COORDINATOR_CHANNELS_METRIC), 2);
+        assert_eq!(metric_value(REMOTE_COORDINATOR_CHANNELS_METRIC), 2);
 
         Ok(())
     }
@@ -100,7 +102,7 @@ mod tests {
                 local_connections_used += node
                     .metrics()
                     .unwrap_or_default()
-                    .sum(|metric| metric.value().name() == "local_connections_used")
+                    .sum(|metric| metric.value().name() == LOCAL_CONNECTIONS_USED_METRIC)
                     .map_or(0, |metric| metric.as_usize());
             }
             Ok(TreeNodeRecursion::Continue)

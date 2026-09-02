@@ -600,6 +600,7 @@ pub fn metric_proto_to_df(metric: pb::Metric) -> Result<Arc<Metric>, DataFusionE
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::metrics::BYTES_TRANSFERRED_METRIC;
     use datafusion::physical_plan::metrics::CustomMetricValue;
     use datafusion::physical_plan::metrics::{Count, Gauge, Label, MetricsSet, Time, Timestamp};
     use datafusion::physical_plan::metrics::{Metric, MetricValue};
@@ -1320,7 +1321,7 @@ mod tests {
         let mut metrics_set = MetricsSet::new();
         metrics_set.push(Arc::new(Metric::new(
             MetricValue::Custom {
-                name: Cow::Borrowed("bytes_transferred"),
+                name: Cow::Borrowed(BYTES_TRANSFERRED_METRIC),
                 value: Arc::new(BytesCounterMetric::from_value(1_073_741_824)),
             },
             Some(0),
