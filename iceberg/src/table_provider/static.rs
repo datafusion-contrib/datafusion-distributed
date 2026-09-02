@@ -6,6 +6,7 @@ use datafusion::catalog::memory::DataSourceExec;
 use datafusion::catalog::{Session, TableProvider};
 use datafusion::common::{Result, plan_datafusion_err};
 use datafusion::datasource::TableType;
+use datafusion::error::DataFusionError;
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown};
 use datafusion::physical_expr::Partitioning;
 use datafusion::physical_plan::ExecutionPlan;
@@ -73,7 +74,7 @@ impl TableProvider for IcebergStaticTableProvider {
         filters: &[Expr],
         limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        Ok(DataSourceExec::from_data_source(IcebergDataSource::new(
+        let source = IcebergDataSource::new(
             self.table.clone(),
             self.schema.clone(),
             Partitioning::UnknownPartitioning(state.config().target_partitions()),
@@ -84,7 +85,11 @@ impl TableProvider for IcebergStaticTableProvider {
                 fetch: limit,
                 iceberg_runtime: Some(self.iceberg_runtime.clone()),
             },
-        )))
+        )
+        .await
+        .map_err(|e| DataFusionError::External(Box::new(e)))?;
+
+        Ok(DataSourceExec::from_data_source(source))
     }
 
     fn supports_filters_pushdown(
