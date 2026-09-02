@@ -10,7 +10,8 @@ mod tests {
     use datafusion_distributed_iceberg::IcebergDataSource;
     use datafusion_distributed_iceberg::test_utils::{FIXTURE_URI, IcebergTestHarness};
 
-    // Values from testdata/iceberg/taxi/metadata/v1.metadata.json snapshot summary.
+    // Took values from testdata/iceberg/taxi/metadata/v1.metadata.json snapshot summary.
+    // Under `snapshots` key in the JSON
     const TAXI_ROWS: usize = 175_000;
     const TAXI_BYTES: usize = 4_480_382;
     const TAXI_COLUMNS: usize = 13;
