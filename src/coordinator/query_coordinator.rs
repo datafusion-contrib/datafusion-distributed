@@ -272,16 +272,6 @@ impl<'a> StageCoordinator<'a> {
                     }
                 }
             }
-            // The store abstraction relies on one entry being present for each task to mark
-            // completition. Since not all tasks report dynamic filters, add placeholders here.
-            //
-            // Also, note that completed_dynamic_filter_store will be None if collection is
-            // disabled.
-            if let Some(store) = &completed_dynamic_filter_store
-                && store.get(&task_key).is_none()
-            {
-                store.insert(task_key, TaskCompletedDynamicFilters::default());
-            }
         });
         load_info_rx
     }

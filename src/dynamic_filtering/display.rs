@@ -4,7 +4,7 @@ use crate::dynamic_filtering::discover_dynamic_filter_consumers;
 use crate::execution_plans::DistributedLeafExec;
 use crate::{TaskCompletedDynamicFilters, TaskKey};
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
-use datafusion::common::{HashMap, Result};
+use datafusion::common::{HashMap, Result, internal_err};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::expressions::DynamicFilterPhysicalExpr;
 use datafusion::physical_plan::empty::EmptyExec;
@@ -30,10 +30,13 @@ pub async fn rewrite_distributed_plan_with_dynamic_filters(
         return Ok(plan);
     };
 
-    let Some(reports) = distributed_exec.wait_for_dynamic_filters().await? else {
+    if distributed_exec.completed_dynamic_filter_store.is_none() {
         return Ok(plan);
-    };
+    }
     let plan_for_viz = distributed_exec.plan_for_viz()?;
+    let Some(reports) = distributed_exec.wait_for_dynamic_filters().await else {
+        return internal_err!("dynamic filters were enabled but the execution was not prepared");
+    };
     // Avoids mutating the `plan_for_viz` of the incoming DistributedExec.
     let plan_for_viz =
         sever_dynamic_filter_relationships_in_plan_for_display(plan_for_viz, task_ctx)?;

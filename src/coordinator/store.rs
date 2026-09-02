@@ -27,13 +27,6 @@ impl<T> Store<T> {
         });
     }
 
-    pub(crate) fn get(&self, key: &TaskKey) -> Option<T>
-    where
-        T: Clone,
-    {
-        self.rx.borrow().get(key).cloned()
-    }
-
     pub(crate) async fn wait_for(&self, expected_keys: &[TaskKey]) -> StoreMap<T>
     where
         T: Clone,
@@ -45,13 +38,6 @@ impl<T> Store<T> {
                 .await;
         }
         rx.borrow().clone()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn from_entries(entries: impl IntoIterator<Item = (TaskKey, T)>) -> Self {
-        let map: HashMap<_, _> = entries.into_iter().collect();
-        let (tx, rx) = watch::channel(map);
-        Self { tx, rx }
     }
 }
 

@@ -1,5 +1,5 @@
 use crate::common::TreeNodeExt;
-use crate::coordinator::{DistributedExec, Store};
+use crate::coordinator::DistributedExec;
 use crate::distributed_planner::NetworkBoundaryExt;
 use crate::execution_plans::MetricsWrapperExec;
 use crate::metrics::DISTRIBUTED_DATAFUSION_TASK_ID_LABEL;
@@ -49,13 +49,14 @@ pub async fn rewrite_distributed_plan_with_metrics(
         return Ok(plan);
     };
 
-    distributed_exec.wait_for_metrics().await;
-
-    let Some(metrics_collection) = distributed_exec.metrics_store.clone() else {
+    if distributed_exec.metrics_store.is_none() {
         return Ok(plan);
-    };
+    }
 
     let head_stage = distributed_exec.head_stage()?;
+    let Some(metrics_collection) = distributed_exec.wait_for_metrics().await else {
+        return internal_err!("metrics were enabled but the execution was not prepared");
+    };
     let task_metrics = collect_plan_metrics(&head_stage)?;
 
     // Rewrite the DistributedExec's child plan with metrics.
@@ -73,14 +74,13 @@ pub async fn rewrite_distributed_plan_with_metrics(
             };
             // This transform is a bit inefficient because we traverse the plan nodes twice
             // For now, we are okay with trading off performance for simplicity.
-            let plan_with_metrics =
-                stage_metrics_rewriter(stage, Arc::clone(&metrics_collection), format)?;
+            let plan_with_metrics = stage_metrics_rewriter(stage, &metrics_collection, format)?;
             let network_boundary = network_boundary.with_input_stage(Stage::Local(LocalStage {
                 query_id: stage.query_id,
                 num: stage.num,
                 plan: plan_with_metrics,
                 tasks: stage.tasks,
-                metrics_set: stage.metrics_set.clone(),
+                metrics_set: stage_metrics(stage, &metrics_collection)?,
             }))?;
             let network_boundary =
                 MetricsWrapperExec::new(network_boundary, plan.metrics().unwrap_or_default());
@@ -207,7 +207,7 @@ pub fn rewrite_local_plan_with_metrics(
 /// Note: Metrics may be aggregated by name (ex. output_rows) automatically by various datafusion utils.
 pub fn stage_metrics_rewriter(
     stage: &LocalStage,
-    metrics_collection: Arc<Store<TaskMetrics>>,
+    metrics_collection: &HashMap<TaskKey, TaskMetrics>,
     format: DistributedMetricsFormat,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     // Phase 1 — accumulate per-task metrics into a map keyed by node identity.
@@ -283,7 +283,6 @@ pub fn stage_metrics_rewriter(
 #[cfg(test)]
 mod tests {
     use crate::DistributedExt;
-    use crate::coordinator::Store;
     use crate::metrics::DISTRIBUTED_DATAFUSION_TASK_ID_LABEL;
     use crate::metrics::task_metrics_rewriter::MetricsWrapperExec;
     use crate::metrics::task_metrics_rewriter::{
@@ -301,6 +300,7 @@ mod tests {
     use datafusion::arrow::array::{Int32Array, StringArray};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::arrow::record_batch::RecordBatch;
+    use datafusion::common::HashMap;
     use datafusion::execution::SessionStateBuilder;
     use datafusion::physical_plan::empty::EmptyExec;
     use datafusion::physical_plan::metrics::{Count, Label, Metric, MetricValue, MetricsSet};
@@ -449,7 +449,7 @@ mod tests {
         let num_metrics_per_task_per_node = 4;
 
         // Generate metrics for each task and store them in the map.
-        let metrics_collection = Store::from_entries((0..stage.tasks).map(|task_id| {
+        let metrics_collection = HashMap::from_iter((0..stage.tasks).map(|task_id| {
             let task_key = TaskKey {
                 query_id: stage.query_id,
                 stage_id: stage.num,
@@ -469,11 +469,8 @@ mod tests {
             };
             (task_key, task_metrics)
         }));
-        let metrics_collection = Arc::new(metrics_collection);
-
         // Rewrite the plan.
-        let rewritten_plan =
-            stage_metrics_rewriter(&stage, metrics_collection.clone(), format).unwrap();
+        let rewritten_plan = stage_metrics_rewriter(&stage, &metrics_collection, format).unwrap();
 
         // Collect metrics from the plan.
         let mut actual_metrics = vec![];

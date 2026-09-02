@@ -89,31 +89,22 @@ impl DistributedExec {
         self
     }
 
-    /// Waits until all worker tasks have reported their metrics back via the coordinator channel.
-    ///
-    /// Metrics are delivered asynchronously after query execution completes, so callers that need
-    /// complete metrics (e.g. for observability or display) should await this before inspecting
-    /// [`Self::task_metrics`] or calling [`rewrite_distributed_plan_with_metrics`].
-    ///
-    /// [`rewrite_distributed_plan_with_metrics`]: crate::rewrite_distributed_plan_with_metrics
-    pub async fn wait_for_metrics(&self) {
-        let Some(task_metrics) = &self.metrics_store else {
-            return;
-        };
-        let Ok(plan) = self.plan_for_viz() else {
-            return;
-        };
-        task_metrics.wait_for(&task_keys_for_plan(&plan)).await;
+    /// Waits until all worker tasks have reported their metrics back via the coordinator channel
+    /// if metrics collection is enabled.
+    pub async fn wait_for_metrics(&self) -> Option<HashMap<TaskKey, TaskMetrics>> {
+        let task_metrics = self.metrics_store.as_ref()?;
+        let plan = &self.prepared_execution.get()?.plan_for_viz;
+        Some(task_metrics.wait_for(&task_keys_for_plan(plan)).await)
     }
 
+    /// Waits until all worker tasks have reported their completed dynamic filters back via
+    /// the coordinator channel if dynamic filter collection is enabled.
     pub(crate) async fn wait_for_dynamic_filters(
         &self,
-    ) -> Result<Option<HashMap<TaskKey, TaskCompletedDynamicFilters>>> {
-        let Some(store) = &self.completed_dynamic_filter_store else {
-            return Ok(None);
-        };
-        let plan = self.plan_for_viz()?;
-        Ok(Some(store.wait_for(&task_keys_for_plan(&plan)).await))
+    ) -> Option<HashMap<TaskKey, TaskCompletedDynamicFilters>> {
+        let store = self.completed_dynamic_filter_store.as_ref()?;
+        let plan = &self.prepared_execution.get()?.plan_for_viz;
+        Some(store.wait_for(&task_keys_for_plan(plan)).await)
     }
 
     fn prepared_execution(&self) -> Result<PreparedExecution> {
