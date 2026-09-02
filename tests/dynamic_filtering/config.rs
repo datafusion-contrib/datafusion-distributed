@@ -16,6 +16,8 @@ mod tests {
             "#,
         )
         .without_dynamic_filter_collection()
+         // execute() asserts that dynamic filters were not collected for display by asserting
+        // that the plan is not rewritten.
         .execute()
         .await?;
         Ok(())

@@ -133,7 +133,7 @@ fn isolate_sort_dynamic_filters_for_display(
 }
 
 /// Applies successful worker reports only to the matching task-local visualization variants.
-pub(super) fn apply_reports_to_distributed_leaves(
+fn apply_reports_to_distributed_leaves(
     plan: &Arc<dyn ExecutionPlan>,
     reports: &HashMap<TaskKey, TaskCompletedDynamicFilters>,
     task_ctx: &Arc<TaskContext>,
@@ -211,6 +211,7 @@ mod tests {
     use datafusion::physical_plan::filter::FilterExec;
     use datafusion::physical_plan::sorts::sort::SortExec;
     use datafusion::prelude::SessionContext;
+    use insta::assert_snapshot;
     use uuid::Uuid;
 
     #[test]
@@ -266,8 +267,8 @@ mod tests {
         let task_1 = displayable(leaf.variants()[1].as_ref())
             .one_line()
             .to_string();
-        assert!(task_0.contains("DynamicFilter [ a@0 > 10 ]"));
-        assert!(task_1.contains("DynamicFilter [ empty ]"));
+        assert_snapshot!(task_0, @"FilterExec: DynamicFilter [ a@0 > 10 ]");
+        assert_snapshot!(task_1, @"FilterExec: DynamicFilter [ empty ]");
         Ok(())
     }
 
@@ -312,11 +313,9 @@ mod tests {
             isolated.dynamic_expressions_produced()[0].expression_id(),
             expression_id
         );
-        assert!(
-            displayable(isolated.as_ref())
-                .one_line()
-                .to_string()
-                .contains("filter=[a@0 > 10]")
+        assert_snapshot!(
+            displayable(isolated.as_ref()).one_line().to_string(),
+            @"SortExec: TopK(fetch=10), expr=[a@0 ASC], preserve_partitioning=[true], filter=[a@0 > 10]"
         );
 
         dynamic_filter.update(Arc::new(BinaryExpr::new(
@@ -324,17 +323,13 @@ mod tests {
             Operator::Gt,
             lit(20_i32),
         )))?;
-        assert!(
-            displayable(sort.as_ref())
-                .one_line()
-                .to_string()
-                .contains("filter=[a@0 > 20]")
+        assert_snapshot!(
+            displayable(sort.as_ref()).one_line().to_string(),
+            @"SortExec: TopK(fetch=10), expr=[a@0 ASC], preserve_partitioning=[true], filter=[a@0 > 20]"
         );
-        assert!(
-            displayable(isolated.as_ref())
-                .one_line()
-                .to_string()
-                .contains("filter=[a@0 > 10]")
+        assert_snapshot!(
+            displayable(isolated.as_ref()).one_line().to_string(),
+            @"SortExec: TopK(fetch=10), expr=[a@0 ASC], preserve_partitioning=[true], filter=[a@0 > 10]"
         );
         Ok(())
     }
