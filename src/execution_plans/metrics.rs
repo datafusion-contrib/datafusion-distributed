@@ -80,7 +80,7 @@ impl ExecutionPlan for MetricsWrapperExec {
     fn execute(
         &self,
         _partition: usize,
-        _contex: Arc<TaskContext>,
+        _context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
         unimplemented!("MetricsWrapperExec does not implement execute")
     }
