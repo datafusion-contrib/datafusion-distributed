@@ -179,14 +179,8 @@ fn apply_reports_to_distributed_leaves(
                 let Ok(expression) = reported_dynamic_filter.current() else {
                     continue;
                 };
-                let Some(dynamic_filter) = consumer
-                    .expression
-                    .downcast_ref::<DynamicFilterPhysicalExpr>()
-                else {
-                    continue;
-                };
                 if dynamic_filter_proto.generation > 1 {
-                    let _ = dynamic_filter.update(expression);
+                    let _ = consumer.expression.update(expression);
                 }
             }
         }

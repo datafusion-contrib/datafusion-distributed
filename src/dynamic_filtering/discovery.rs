@@ -11,7 +11,7 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub(crate) struct DiscoveredDynamicFilter {
     pub(crate) id: u64,
-    pub(crate) expression: Arc<dyn PhysicalExpr>,
+    pub(crate) expression: Arc<DynamicFilterPhysicalExpr>,
     pub(crate) input_schema: SchemaRef,
 }
 
@@ -43,7 +43,8 @@ pub(crate) fn discover_dynamic_filter_consumers(
 
         node.apply_expressions(&mut |root| {
             root.apply(|expression| {
-                let Some(_) = expression.downcast_ref::<DynamicFilterPhysicalExpr>() else {
+                let expression = Arc::clone(expression);
+                let Ok(expression) = Arc::downcast::<DynamicFilterPhysicalExpr>(expression) else {
                     return Ok(TreeNodeRecursion::Continue);
                 };
 
@@ -58,7 +59,7 @@ pub(crate) fn discover_dynamic_filter_consumers(
                         .entry(id)
                         .or_insert_with(|| DiscoveredDynamicFilter {
                             id,
-                            expression: Arc::clone(expression),
+                            expression,
                             input_schema: Arc::clone(&input_schema),
                         });
                 }
@@ -153,11 +154,7 @@ mod tests {
             .unwrap()
             .mark_complete();
 
-        let current = discovered[0]
-            .expression
-            .downcast_ref::<DynamicFilterPhysicalExpr>()
-            .unwrap()
-            .current()?;
+        let current = discovered[0].expression.current()?;
         assert_eq!(current.to_string(), "a@0 > 10");
         Ok(())
     }

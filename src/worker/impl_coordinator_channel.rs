@@ -173,7 +173,6 @@ impl Worker {
                 .lock()
                 .unwrap()
                 .take();
-            let mut dynamic_filters = None;
             if let Some(Ok(plan)) = task_data.final_plan.get() {
                 let d_ctx = DistributedTaskContext {
                     task_index: key.task_number,
@@ -184,15 +183,12 @@ impl Worker {
                 if let Some(metrics_tx) = metrics_tx {
                     send_metrics_via_channel(metrics_tx, plan, d_ctx, task_data_metrics);
                 }
-                if dynamic_filters_tx.is_some() {
+                if let Some(dynamic_filters_tx) = dynamic_filters_tx {
                     // TODO(#686): handle error
-                    dynamic_filters =
-                        Some(build_task_completed_dynamic_filters(plan).unwrap_or_default());
+                    let dynamic_filters =
+                        build_task_completed_dynamic_filters(plan).unwrap_or_default();
+                    let _ = dynamic_filters_tx.send(dynamic_filters);
                 }
-            }
-            if let Some(dynamic_filters_tx) = dynamic_filters_tx {
-                // TODO(#686): handle error
-                let _ = dynamic_filters_tx.send(dynamic_filters.unwrap_or_default());
             }
             task_data_entries.invalidate(&key).await
         });
