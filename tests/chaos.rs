@@ -1,5 +1,6 @@
 #[cfg(all(feature = "tpch", feature = "chaos-tests", test))]
 mod tests {
+    use arrow::util::pretty::pretty_format_batches;
     use datafusion::common::Result;
     use datafusion::common::runtime::JoinSet;
     use datafusion::error::DataFusionError;
@@ -11,8 +12,11 @@ mod tests {
     };
     use datafusion_distributed_benchmarks::datasets::{register_tables, tpch};
     use moka::future::FutureExt;
+    use rand::SeedableRng;
+    use rand::prelude::{IndexedRandom, Rng, StdRng};
     use std::collections::VecDeque;
     use std::convert::Infallible;
+    use std::env;
     use std::fs;
     use std::future::Future;
     use std::ops::Range;
@@ -34,24 +38,39 @@ mod tests {
     const TOTAL_QUERIES: usize = 100;
     const CONCURRENT_QUERIES_PER_CLIENT_RANDOM_RANGE: Range<usize> = 1..4;
     const CONCURRENT_CLIENTS: usize = 10;
+    const QUERIES: &[&str] = &[
+        "q1", "q2", "q3", "q4", "q5", "q6", "q7", "q8", "q9", "q10", "q11", "q12", "q13", "q14",
+        "q15", "q16", "q17", "q18", "q19", "q20", "q21", "q22",
+    ];
+
+    fn seed() -> u64 {
+        env::var("CHAOS_SEED").map_or_else(
+            |_| rand::random(),
+            |seed| seed.parse().expect("CHAOS_SEED must be a u64"),
+        )
+    }
 
     #[tokio::test(flavor = "multi_thread")]
     #[ignore = "Still no good retrying mechanism that make this test pass"]
     async fn chaos() -> Result<()> {
+        let seed = seed();
+        println!("seed: {seed}");
+        let mut rng = StdRng::seed_from_u64(seed);
         let cfg = ChaosClusterConfig {
             num_workers: NUM_WORKERS,
             max_in_flight: MAX_IN_FLIGHT,
+            seed,
         };
         let (ctx, _guard) = chaos_localhost_cluster(cfg).await;
         let data_dir = ensure_tpch_data().await;
         register_tables(&ctx, &data_dir).await?;
-        let query = tpch::get_query("q20")?;
 
         let mut queries = VecDeque::new();
 
         for _ in 0..TOTAL_QUERIES {
             let mut batch = vec![];
-            for _ in 0..rand::random_range(CONCURRENT_QUERIES_PER_CLIENT_RANDOM_RANGE) {
+            for _ in 0..rng.random_range(CONCURRENT_QUERIES_PER_CLIENT_RANDOM_RANGE) {
+                let query = tpch::get_query(QUERIES.choose(&mut rng).unwrap())?;
                 batch.push(query.clone());
             }
             queries.push_back(batch);
@@ -87,9 +106,9 @@ mod tests {
         }
 
         let first = rx.recv().await.expect("No result returned");
-        let first = arrow::util::pretty::pretty_format_batches(&first)?;
+        let first = pretty_format_batches(&first)?;
         while let Some(next_result) = rx.recv().await {
-            let next_result = arrow::util::pretty::pretty_format_batches(&next_result)?;
+            let next_result = pretty_format_batches(&next_result)?;
             pretty_assertions::assert_eq!(first.to_string(), next_result.to_string());
         }
 
@@ -99,12 +118,14 @@ mod tests {
     #[derive(Clone)]
     struct ChaosLayer {
         in_flight: Arc<Semaphore>,
+        rng: Arc<Mutex<StdRng>>,
     }
 
     impl ChaosLayer {
-        fn new(max_in_flight: usize) -> Self {
+        fn new(max_in_flight: usize, seed: u64) -> Self {
             Self {
                 in_flight: Arc::new(Semaphore::new(max_in_flight)),
+                rng: Arc::new(Mutex::new(StdRng::seed_from_u64(seed))),
             }
         }
     }
@@ -116,6 +137,7 @@ mod tests {
             ChaosService {
                 inner,
                 in_flight: self.in_flight.clone(),
+                rng: self.rng.clone(),
             }
         }
     }
@@ -124,6 +146,7 @@ mod tests {
     struct ChaosService<S> {
         inner: S,
         in_flight: Arc<Semaphore>,
+        rng: Arc<Mutex<StdRng>>,
     }
 
     impl<S> Service<http::Request<Body>> for ChaosService<S>
@@ -150,11 +173,12 @@ mod tests {
                     });
                 }
             };
+            let action = ChaosAction::random(&mut *self.rng.lock().unwrap());
             let response = self.inner.call(request);
 
             Box::pin(async move {
                 let _permit = permit;
-                match ChaosAction::random() {
+                match action {
                     ChaosAction::Pass => response.await,
                     ChaosAction::Delay(duration) => {
                         tokio::time::sleep(duration).await;
@@ -181,9 +205,9 @@ mod tests {
     }
 
     impl ChaosAction {
-        fn random() -> Self {
-            let duration = Duration::from_millis(10 + u64::from(rand::random::<u8>() % 90));
-            match rand::random::<u8>() {
+        fn random(rng: &mut impl Rng) -> Self {
+            let duration = Duration::from_millis(10 + u64::from(rng.random::<u8>() % 90));
+            match rng.random::<u8>() {
                 0..=4 => Self::Delay(duration),
                 5..=7 => Self::Timeout(duration),
                 8..=9 => Self::Unavailable(duration),
@@ -199,9 +223,11 @@ mod tests {
     struct ChaosClusterConfig {
         num_workers: usize,
         max_in_flight: usize,
+        seed: u64,
     }
 
     async fn chaos_localhost_cluster(cfg: ChaosClusterConfig) -> (SessionContext, JoinSet<()>) {
+        let mut layer_rng = StdRng::seed_from_u64(cfg.seed);
         let listeners = futures::future::try_join_all(
             (0..cfg.num_workers)
                 .map(|_| TcpListener::bind("127.0.0.1:0"))
@@ -223,6 +249,7 @@ mod tests {
         let mut join_set = JoinSet::new();
         let mut workers = vec![];
         for listener in listeners {
+            let layer_seed = layer_rng.random();
             let worker = Worker::from_session_builder(chaos_worker_session_builder);
             workers.push(worker.clone());
 
@@ -230,7 +257,7 @@ mod tests {
 
             join_set.spawn(async move {
                 Server::builder()
-                    .layer(ChaosLayer::new(cfg.max_in_flight))
+                    .layer(ChaosLayer::new(cfg.max_in_flight, layer_seed))
                     .add_service(worker.into_worker_server())
                     .serve_with_incoming(incoming)
                     .await
