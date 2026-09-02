@@ -51,8 +51,6 @@ struct PreparedExecution {
     plan_for_viz: Arc<dyn ExecutionPlan>,
     /// The head stage actually executed locally by the coordinator.
     head_stage: Arc<dyn ExecutionPlan>,
-    /// The task context of the [`DistributedExec`]. Useful for decoding protobufs.
-    task_ctx: Arc<TaskContext>,
 }
 
 pub(super) struct PreparedPlan {
@@ -144,10 +142,6 @@ impl DistributedExec {
     /// execution.
     pub(crate) fn head_stage(&self) -> Result<Arc<dyn ExecutionPlan>> {
         Ok(self.prepared_execution()?.head_stage)
-    }
-
-    pub(crate) fn task_ctx(&self) -> Result<Arc<TaskContext>> {
-        Ok(self.prepared_execution()?.task_ctx)
     }
 
     /// Builds a non-executable visualization result while preserving the state needed by a
@@ -275,7 +269,6 @@ impl ExecutionPlan for DistributedExec {
                 .set(PreparedExecution {
                     plan_for_viz,
                     head_stage: Arc::clone(&result.head_stage),
-                    task_ctx: Arc::clone(&context),
                 })
                 .map_err(|_| {
                     internal_datafusion_err!("DistributedExec was already prepared for execution")

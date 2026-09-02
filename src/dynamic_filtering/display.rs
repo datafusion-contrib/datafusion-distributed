@@ -20,8 +20,11 @@ use std::sync::Arc;
 ///
 /// When composing this with [`crate::rewrite_distributed_plan_with_metrics`], dynamic filters must
 /// be rewritten first.
+/// `task_ctx` must have the same session configuration and codecs as the context used to execute
+/// the plan.
 pub async fn rewrite_distributed_plan_with_dynamic_filters(
     plan: Arc<dyn ExecutionPlan>,
+    task_ctx: &Arc<TaskContext>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     let Some(distributed_exec) = plan.downcast_ref::<DistributedExec>() else {
         return Ok(plan);
@@ -31,11 +34,10 @@ pub async fn rewrite_distributed_plan_with_dynamic_filters(
         return Ok(plan);
     };
     let plan_for_viz = distributed_exec.plan_for_viz()?;
-    let task_ctx = distributed_exec.task_ctx()?;
     // Avoids mutating the `plan_for_viz` of the incoming DistributedExec.
     let plan_for_viz =
-        sever_dynamic_filter_relationships_in_plan_for_display(plan_for_viz, &task_ctx)?;
-    apply_reports_to_distributed_leaves(&plan_for_viz, &reports, &task_ctx);
+        sever_dynamic_filter_relationships_in_plan_for_display(plan_for_viz, task_ctx)?;
+    apply_reports_to_distributed_leaves(&plan_for_viz, &reports, task_ctx);
     distributed_exec.with_plan_for_viz(plan_for_viz)
 }
 

@@ -28,9 +28,10 @@ channel, so they are not lost even if the result stream is dropped early (for ex
 
 These functions, all exported from the crate root, do the work:
 
-- `rewrite_distributed_plan_with_dynamic_filters(plan)` — folds the completed dynamic filters
-  reported by each worker task into an isolated copy of the plan. When displaying both dynamic
-  filters and metrics, apply the dynamic-filter rewrite first.
+- `rewrite_distributed_plan_with_dynamic_filters(plan, task_ctx)` — folds the completed dynamic
+  filters reported by each worker task into an isolated copy of the plan. Pass the same task context
+  used to execute the plan. When displaying both dynamic filters and metrics, apply the
+  dynamic-filter rewrite first.
 - `rewrite_distributed_plan_with_metrics(plan, format)` — folds every task's metrics back into the
   coordinator's copy of the plan. It waits for all worker metrics to arrive, so the result is always
   complete. The `format` is a `DistributedMetricsFormat`:
@@ -45,21 +46,23 @@ The order of operations matters: **the plan must be fully executed before its me
 ```rust
 use datafusion::physical_plan::execute_stream;
 use datafusion_distributed::{
-    DistributedMetricsFormat, display_plan_ascii, rewrite_distributed_plan_with_metrics,
+    DistributedMetricsFormat, display_plan_ascii,
+    rewrite_distributed_plan_with_dynamic_filters, rewrite_distributed_plan_with_metrics,
 };
 use futures::TryStreamExt;
 
 // 1. Plan the query.
 let plan = ctx.sql(sql).await?.create_physical_plan().await?;
+let task_ctx = ctx.task_ctx();
 
 // 2. Execute it to completion (collect, or otherwise fully drain the stream).
-execute_stream(plan.clone(), ctx.task_ctx())?
+execute_stream(plan.clone(), task_ctx.clone())?
     .try_collect::<Vec<_>>()
     .await?;
 
 // 3. Fold the completed per-task dynamic filters back into the plan...
 let plan =
-    rewrite_distributed_plan_with_dynamic_filters(plan).await?;
+    rewrite_distributed_plan_with_dynamic_filters(plan, &task_ctx).await?;
 
 // 4. Fold the per-task metrics back into the plan...
 let plan =

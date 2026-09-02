@@ -141,8 +141,9 @@ async fn execute_query_and_display(
     collect_dynamic_filters: bool,
 ) -> Result<String> {
     let plan = ctx.sql(sql).await?.create_physical_plan().await?;
+    let task_ctx = ctx.task_ctx();
 
-    let results = collect(Arc::clone(&plan), ctx.task_ctx()).await?;
+    let results = collect(Arc::clone(&plan), Arc::clone(&task_ctx)).await?;
     assert_eq!(
         results.iter().map(|batch| batch.num_rows()).sum::<usize>(),
         expected_rows
@@ -150,7 +151,7 @@ async fn execute_query_and_display(
 
     let original_display = display_plan_ascii(plan.as_ref(), false);
     let plan_with_dynamic_filters =
-        rewrite_distributed_plan_with_dynamic_filters(Arc::clone(&plan)).await?;
+        rewrite_distributed_plan_with_dynamic_filters(Arc::clone(&plan), &task_ctx).await?;
     assert_eq!(
         Arc::ptr_eq(&plan, &plan_with_dynamic_filters),
         !collect_dynamic_filters
