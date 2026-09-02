@@ -22,6 +22,7 @@ use iceberg::arrow::ArrowReaderBuilder;
 use iceberg::spec::SnapshotRef;
 
 use crate::common::{convert_filters_to_predicate, df_err, iceberg_err};
+use crate::work_unit_wire::FileScanTaskDecoder;
 use crate::{IcebergConfig, IcebergWorkUnitFeed};
 
 /// Snapshot summary keys defined by the Iceberg table spec:
@@ -209,11 +210,12 @@ impl DataSource for IcebergDataSource {
                 .with_row_selection_enabled(config.row_selection_enabled)
                 .build();
 
+        let mut decoder = FileScanTaskDecoder::default();
         let feed = self
             .feed
             .feed(partition, context)?
-            .map(|msg_or_err| match msg_or_err {
-                Ok(msg) => msg.into_task().map_err(iceberg_err),
+            .map(move |msg_or_err| match msg_or_err {
+                Ok(msg) => decoder.decode(msg).map_err(iceberg_err),
                 Err(err) => Err(iceberg_err(err)),
             })
             .boxed();

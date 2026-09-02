@@ -13,7 +13,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::common::df_err;
-use crate::work_unit_wire::FileScanTaskMessage;
+use crate::work_unit_wire::{FileScanTaskEncoder, FileScanTaskMessage};
 
 /// Work unit feed implementation that yields [FileScanTask] messages at execution time.
 ///
@@ -172,12 +172,16 @@ impl WorkUnitFeedProvider for IcebergWorkUnitFeed {
                 // Round robing across output partitions.
                 // TODO: this is fine for Partitioning::UnknownPartitioning, but any other
                 //  partitioning will require smarter routing across output channels.
+                let mut encoders = (0..txs.len())
+                    .map(|_| FileScanTaskEncoder::default())
+                    .collect::<Vec<_>>();
                 let mut i = 0;
                 while let Some(scan_task_or_err) = stream.next().await {
+                    let partition = i % txs.len();
                     let message = scan_task_or_err
                         .map_err(df_err)
-                        .and_then(FileScanTaskMessage::new);
-                    let _ = txs[i % txs.len()].send(message);
+                        .and_then(|task| encoders[partition].encode(task));
+                    let _ = txs[partition].send(message);
                     i += 1;
                 }
             });

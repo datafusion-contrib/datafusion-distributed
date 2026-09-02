@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::ops::Not;
 use std::sync::Arc;
 
@@ -21,7 +22,11 @@ use crate::proto::generated as pb;
 
 #[derive(Debug, Clone)]
 enum FileScanTaskPayload {
-    Native(FileScanTask),
+    Native {
+        task: FileScanTask,
+        context_id: u32,
+        include_context: bool,
+    },
     Proto(pb::FileScanTask),
 }
 
@@ -40,28 +45,94 @@ impl Default for FileScanTaskMessage {
 }
 
 impl FileScanTaskMessage {
-    pub(crate) fn new(task: FileScanTask) -> Result<Self> {
-        validate_task(&task)?;
-        Ok(Self {
-            payload: FileScanTaskPayload::Native(task),
-        })
-    }
-
-    pub(crate) fn into_task(self) -> Result<FileScanTask> {
-        match self.payload {
-            FileScanTaskPayload::Native(task) => Ok(task),
-            FileScanTaskPayload::Proto(proto) => task_from_proto(proto),
+    fn new(task: FileScanTask, context_id: u32, include_context: bool) -> Self {
+        Self {
+            payload: FileScanTaskPayload::Native {
+                task,
+                context_id,
+                include_context,
+            },
         }
     }
 
     fn as_proto(&self) -> Cow<'_, pb::FileScanTask> {
         match &self.payload {
-            FileScanTaskPayload::Native(task) => Cow::Owned(
-                task_to_proto(task)
-                    .expect("FileScanTaskMessage validates native tasks when constructed"),
+            FileScanTaskPayload::Native {
+                task,
+                context_id,
+                include_context,
+            } => Cow::Owned(
+                task_to_proto(task, *context_id, *include_context)
+                    .expect("FileScanTaskEncoder validates native tasks when constructed"),
             ),
             FileScanTaskPayload::Proto(proto) => Cow::Borrowed(proto),
         }
+    }
+}
+
+/// Encodes tasks and reuses identical context within one feed.
+#[derive(Default)]
+pub(crate) struct FileScanTaskEncoder {
+    contexts: Vec<TaskContext>,
+}
+
+impl FileScanTaskEncoder {
+    pub(crate) fn encode(&mut self, task: FileScanTask) -> Result<FileScanTaskMessage> {
+        validate_task(&task)?;
+        let existing = self
+            .contexts
+            .iter()
+            .position(|context| context.matches(&task));
+        let (context_id, include_context) = match existing {
+            Some(index) => (context_id(index)?, false),
+            None => (context_id(self.contexts.len())?, true),
+        };
+        if include_context {
+            self.contexts.push(TaskContext::from_task(&task));
+        }
+        Ok(FileScanTaskMessage::new(task, context_id, include_context))
+    }
+}
+
+/// Decodes one feed while retaining context referenced by later tasks.
+#[derive(Default)]
+pub(crate) struct FileScanTaskDecoder {
+    contexts: HashMap<u32, TaskContext>,
+}
+
+impl FileScanTaskDecoder {
+    pub(crate) fn decode(&mut self, message: FileScanTaskMessage) -> Result<FileScanTask> {
+        let proto = match message.payload {
+            FileScanTaskPayload::Native { task, .. } => return Ok(task),
+            FileScanTaskPayload::Proto(proto) => proto,
+        };
+        if proto.context_id == 0 {
+            return exec_err!("Iceberg work unit context id must be non-zero");
+        }
+        let definition = proto.context.map(context_from_proto).transpose()?;
+        if let (Some(existing), Some(definition)) =
+            (self.contexts.get(&proto.context_id), definition.as_ref())
+            && existing != definition
+        {
+            return exec_err!(
+                "Iceberg work unit context id {} was redefined",
+                proto.context_id
+            );
+        }
+        let Some(context) = definition
+            .as_ref()
+            .or_else(|| self.contexts.get(&proto.context_id))
+        else {
+            return exec_err!(
+                "Iceberg work unit references undefined context id {}",
+                proto.context_id
+            );
+        };
+        let task = body_from_proto(required(proto.task, "task")?, context)?;
+        if let Some(definition) = definition {
+            self.contexts.entry(proto.context_id).or_insert(definition);
+        }
+        Ok(task)
     }
 }
 
@@ -107,10 +178,14 @@ fn validate_task(task: &FileScanTask) -> Result<()> {
     Ok(())
 }
 
-fn task_to_proto(task: &FileScanTask) -> Result<pb::FileScanTask> {
+fn task_to_proto(
+    task: &FileScanTask,
+    context_id: u32,
+    include_context: bool,
+) -> Result<pb::FileScanTask> {
     Ok(pb::FileScanTask {
-        context_id: 1,
-        context: Some(context_to_proto(task)),
+        context_id,
+        context: include_context.then(|| context_to_proto(task)),
         task: Some(pb::FileScanTaskBody {
             file_size_in_bytes: task.file_size_in_bytes,
             start: task.start,
@@ -128,14 +203,6 @@ fn task_to_proto(task: &FileScanTask) -> Result<pb::FileScanTask> {
     })
 }
 
-fn task_from_proto(proto: pb::FileScanTask) -> Result<FileScanTask> {
-    if proto.context_id == 0 {
-        return exec_err!("Iceberg work unit context id must be non-zero");
-    }
-    let context = context_from_proto(required(proto.context, "context")?)?;
-    body_from_proto(required(proto.task, "task")?, &context)
-}
-
 #[derive(Debug, PartialEq)]
 struct TaskContext {
     schema: SchemaRef,
@@ -144,6 +211,35 @@ struct TaskContext {
     partition_spec: Option<Arc<PartitionSpec>>,
     name_mapping: Option<Arc<NameMapping>>,
     case_sensitive: bool,
+}
+
+impl TaskContext {
+    fn from_task(task: &FileScanTask) -> Self {
+        Self {
+            schema: Arc::clone(&task.schema),
+            projected_field_ids: task.project_field_ids.clone(),
+            predicate: task.predicate.clone(),
+            partition_spec: task.partition_spec.clone(),
+            name_mapping: task.name_mapping.clone(),
+            case_sensitive: task.case_sensitive,
+        }
+    }
+
+    fn matches(&self, task: &FileScanTask) -> bool {
+        self.schema == task.schema
+            && self.projected_field_ids == task.project_field_ids
+            && self.predicate == task.predicate
+            && self.partition_spec == task.partition_spec
+            && self.name_mapping == task.name_mapping
+            && self.case_sensitive == task.case_sensitive
+    }
+}
+
+fn context_id(index: usize) -> Result<u32> {
+    u32::try_from(index)
+        .ok()
+        .and_then(|index| index.checked_add(1))
+        .ok_or_else(|| exec_datafusion_err!("too many Iceberg task contexts in one feed"))
 }
 
 fn context_to_proto(task: &FileScanTask) -> pb::FileScanTaskContext {
@@ -1108,7 +1204,8 @@ mod tests {
         let schema = Arc::clone(&task.schema);
         let partition_spec = Arc::clone(task.partition_spec.as_ref().unwrap());
 
-        let decoded = FileScanTaskMessage::new(task).unwrap().into_task().unwrap();
+        let message = FileScanTaskEncoder::default().encode(task).unwrap();
+        let decoded = FileScanTaskDecoder::default().decode(message).unwrap();
 
         assert!(Arc::ptr_eq(&schema, &decoded.schema));
         assert!(Arc::ptr_eq(
@@ -1122,6 +1219,68 @@ mod tests {
         let task = sample_task("file.parquet", 10);
 
         assert_eq!(protobuf_roundtrip(task.clone()).unwrap(), task);
+    }
+
+    #[test]
+    fn reuses_context_within_each_feed() {
+        let mut encoder = FileScanTaskEncoder::default();
+        let first = encoder.encode(sample_task("first.parquet", 10)).unwrap();
+        let second = encoder.encode(sample_task("second.parquet", 20)).unwrap();
+        let mut changed = sample_task("third.parquet", 30);
+        changed.case_sensitive = false;
+        let changed = encoder.encode(changed).unwrap();
+
+        assert_eq!(context_state(&first), (1, true));
+        assert_eq!(context_state(&second), (1, false));
+        assert_eq!(context_state(&changed), (2, true));
+
+        let mut decoder = FileScanTaskDecoder::default();
+        let first = decoder.decode(protobuf_message(first)).unwrap();
+        let second = decoder.decode(protobuf_message(second)).unwrap();
+        assert_eq!(first.data_file_path, "first.parquet");
+        assert_eq!(second.data_file_path, "second.parquet");
+        assert!(Arc::ptr_eq(&first.schema, &second.schema));
+        assert!(
+            !decoder
+                .decode(protobuf_message(changed))
+                .unwrap()
+                .case_sensitive
+        );
+    }
+
+    #[test]
+    fn rejects_undefined_and_redefined_context() {
+        let proto = encoded_proto(sample_task("file.parquet", 10));
+        let mut undefined = proto.clone();
+        undefined.context = None;
+        let error = FileScanTaskDecoder::default()
+            .decode(message_from_proto(undefined))
+            .unwrap_err();
+        assert!(error.to_string().contains("undefined context id 1"));
+
+        let mut decoder = FileScanTaskDecoder::default();
+        decoder.decode(message_from_proto(proto.clone())).unwrap();
+        let mut redefined = proto;
+        redefined.context.as_mut().unwrap().case_sensitive = false;
+        let error = decoder.decode(message_from_proto(redefined)).unwrap_err();
+        assert!(error.to_string().contains("context id 1 was redefined"));
+    }
+
+    #[test]
+    fn failed_task_does_not_define_context() {
+        let mut invalid = encoded_proto(sample_task("file.parquet", 10));
+        let mut reference = invalid.clone();
+        reference.context = None;
+        let task = invalid.task.as_mut().unwrap();
+        task.start = u64::MAX;
+        task.length = 2;
+        task.file_size_in_bytes = u64::MAX;
+        let mut decoder = FileScanTaskDecoder::default();
+
+        assert!(decoder.decode(message_from_proto(invalid)).is_err());
+        let error = decoder.decode(message_from_proto(reference)).unwrap_err();
+
+        assert!(error.to_string().contains("undefined context id 1"));
     }
 
     #[test]
@@ -1144,7 +1303,7 @@ mod tests {
                 .collect(),
         );
 
-        let error = FileScanTaskMessage::new(task).unwrap_err();
+        let error = FileScanTaskEncoder::default().encode(task).unwrap_err();
 
         assert!(error.to_string().contains("not primitive"));
     }
@@ -1236,7 +1395,7 @@ mod tests {
         assert!(error.to_string().contains("non-canonical bytes"), "{error}");
 
         let task = typed_partition_task(PrimitiveType::Fixed(2), Literal::binary([1]));
-        let error = FileScanTaskMessage::new(task).unwrap_err();
+        let error = FileScanTaskEncoder::default().encode(task).unwrap_err();
         assert!(
             error.to_string().contains("1 bytes for fixed[2]"),
             "{error}"
@@ -1248,14 +1407,25 @@ mod tests {
     }
 
     fn encoded_proto(task: FileScanTask) -> pb::FileScanTask {
-        let message = FileScanTaskMessage::new(task).unwrap();
+        let message = FileScanTaskEncoder::default().encode(task).unwrap();
         pb::FileScanTask::decode(message.encode_to_vec().as_slice()).unwrap()
     }
 
     fn decode_proto(proto: pb::FileScanTask) -> Result<FileScanTask> {
-        FileScanTaskMessage::decode(proto.encode_to_vec().as_slice())
-            .unwrap()
-            .into_task()
+        FileScanTaskDecoder::default().decode(message_from_proto(proto))
+    }
+
+    fn message_from_proto(proto: pb::FileScanTask) -> FileScanTaskMessage {
+        FileScanTaskMessage::decode(proto.encode_to_vec().as_slice()).unwrap()
+    }
+
+    fn protobuf_message(message: FileScanTaskMessage) -> FileScanTaskMessage {
+        FileScanTaskMessage::decode(message.encode_to_vec().as_slice()).unwrap()
+    }
+
+    fn context_state(message: &FileScanTaskMessage) -> (u32, bool) {
+        let proto = pb::FileScanTask::decode(message.encode_to_vec().as_slice()).unwrap();
+        (proto.context_id, proto.context.is_some())
     }
 
     #[track_caller]
