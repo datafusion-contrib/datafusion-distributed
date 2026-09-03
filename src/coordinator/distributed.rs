@@ -39,7 +39,7 @@ pub struct DistributedExec {
     /// Post-execution rewrites replace this plan in the returned clone while leaving the original
     /// [`DistributedExec`] unchanged.
     base_plan: Arc<dyn ExecutionPlan>,
-    /// Plan after static or dynamic planning.
+    /// Complete plans produced during static or dynamic preparation.
     prepared_plan: Arc<OnceLock<PreparedPlan>>,
     /// DataFusion metrics.
     metrics: ExecutionPlanMetricsSet,
@@ -54,8 +54,7 @@ pub struct DistributedExec {
 pub(super) struct PreparedPlan {
     /// The coordinator-side plan prepared for execution.
     pub(super) head_stage: Arc<dyn ExecutionPlan>,
-    /// The complete distributed plan reconstructed for visualization. Contains
-    /// all stages.
+    /// The complete distributed plan reconstructed for visualization, including all stages.
     pub(super) plan_for_viz: Arc<dyn ExecutionPlan>,
 }
 
@@ -126,14 +125,13 @@ impl DistributedExec {
             .unwrap_or_else(|| Arc::clone(&self.base_plan))
     }
 
-    /// Returns the head stage which is executed by the [`DistributedExec`]. Does not contain
-    /// any remotely execute plan nodes, (unlike [`Self::plan_for_viz`] which contains the whole
-    /// plan tree with [`Stage::Local`] stages).
+    /// Returns the coordinator-side plan executed by [`DistributedExec`].
     ///
-    /// Also, this does not contain rebuilt [`Arc<dyn ExecutionPlan>`] nodes. This returns the
-    /// original instances  whose metrics were populated during execution.
+    /// Unlike [`Self::plan_for_viz`], this contains [`Stage::Remote`] boundaries instead of the
+    /// remote execution-plan nodes. It also retains the original plan-node instances whose
+    /// metrics were populated during execution.
     ///
-    /// [`Stage::Local`]: crate::stage::Stage::Local
+    /// [`Stage::Remote`]: crate::stage::Stage::Remote
     pub(crate) fn head_stage(&self) -> Result<Arc<dyn ExecutionPlan>> {
         Ok(self.prepared_plan()?.head_stage)
     }
@@ -188,7 +186,7 @@ impl ExecutionPlan for DistributedExec {
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let child = require_one_child(&children)?;
         // Replacing the public child is independent from replacing the visualization plan. A
-        // post-execution rewrite updates the latter explicitly via `with_plan_for_viz`.
+        // post-execution rewrite updates the latter explicitly via `Self::with_plan_for_viz`.
         let prepared_plan = self
             .prepared_plan
             .get()
