@@ -220,12 +220,12 @@ impl ExecutionPlan for DistributedExec {
         let prepared_plan = Arc::clone(&self.prepared_plan);
         let collect_dynamic_filters = self.completed_dynamic_filter_store.is_some();
 
-        let query_coordinator = QueryCoordinator::new(
+        let query_coordinator = Arc::new(QueryCoordinator::new(
             Arc::clone(&context),
             &self.metrics,
             self.metrics_store.clone(),
             self.completed_dynamic_filter_store.clone(),
-        );
+        ));
 
         let mut builder = RecordBatchReceiverStreamBuilder::new(self.schema(), 1);
         let tx = builder.tx();
@@ -246,7 +246,7 @@ impl ExecutionPlan for DistributedExec {
             let d_cfg = DistributedConfig::from_config_options(context.session_config().options())?;
             let mut prepared = match d_cfg.dynamic_task_count {
                 true => prepare_dynamic_plan(&query_coordinator, &base_plan).await?,
-                false => prepare_static_plan(&query_coordinator, &base_plan)?,
+                false => prepare_static_plan(&query_coordinator, &base_plan).await?,
             };
 
             prepared.plan_for_viz = match collect_dynamic_filters {

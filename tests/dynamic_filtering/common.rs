@@ -9,7 +9,7 @@ use datafusion::physical_plan::collect;
 use datafusion::prelude::{SessionContext, col};
 use datafusion_distributed::test_utils::localhost::start_localhost_context;
 use datafusion_distributed::test_utils::parquet::register_parquet_tables;
-use datafusion_distributed::test_utils::routing::url_emitter_route_tasks;
+use datafusion_distributed::test_utils::routing::UrlEmitterRouteTaskHandler;
 use datafusion_distributed::{
     DefaultSessionBuilder, DistributedExt, display_plan_ascii,
     rewrite_distributed_plan_with_dynamic_filters,
@@ -94,7 +94,7 @@ pub(crate) async fn execute_range_partitioned_query(
     let ctx = ctx
         .with_distributed_broadcast_joins(false)?
         .with_distributed_desired_task_count_handler(2usize)
-        .with_distributed_route_tasks_handler(url_emitter_route_tasks);
+        .with_distributed_route_task_handler(UrlEmitterRouteTaskHandler);
     {
         let state = ctx.state_ref();
         let mut state = state.write();
