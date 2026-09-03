@@ -281,12 +281,10 @@ impl DataSource for IcebergDataSource {
         let mut stats = stats_from_snapshot(self.current_snapshot.clone(), &self.schema)?;
 
         if let Some(col_stats) = &self.column_stats {
-            if col_stats.len() == stats.column_statistics.len() {
-                for (i, cs) in col_stats.iter().enumerate() {
-                    stats.column_statistics[i] = cs.clone();
-                }
-            } else {
-                println!("placeholder");
+            // Lengths should always match
+            debug_assert_eq!(col_stats.len(), stats.column_statistics.len());
+            for (i, cs) in col_stats.iter().enumerate() {
+                stats.column_statistics[i] = cs.clone();
             }
         }
 
