@@ -154,7 +154,7 @@ mod tests {
             .set_show_statistics(true)
             .indent(true)
             .to_string();
-        
+
         assert!(display.contains("Col[0]:"));
         assert!(display.contains("vendor_id"));
 
