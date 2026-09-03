@@ -16,12 +16,6 @@ mod tests {
     const TAXI_BYTES: usize = 4_480_382;
     const TAXI_COLUMNS: usize = 13;
 
-    async fn test_harness_with_column_stats() -> Result<IcebergTestHarness> {
-        let mut harness = IcebergTestHarness::new().await?;
-        harness.ctx.set_iceberg_column_stats_enabled(true);
-        Ok(harness)
-    }
-
     #[tokio::test]
     async fn reports_exact_row_count_and_byte_size_for_full_scan() -> Result<()> {
         let harness = IcebergTestHarness::new().await?;
@@ -50,7 +44,8 @@ mod tests {
 
     #[tokio::test]
     async fn reports_exact_row_count_and_byte_size_for_full_scan_w_col_stats() -> Result<()> {
-        let harness = test_harness_with_column_stats().await?;
+        let mut harness = IcebergTestHarness::new().await?;
+        harness.ctx.set_iceberg_column_stats_enabled(true);
         let stats = source_statistics(&harness, "SELECT * FROM taxi").await?;
 
         assert_eq!(stats.num_rows, Precision::Exact(TAXI_ROWS));
@@ -69,7 +64,8 @@ mod tests {
 
     #[tokio::test]
     async fn column_statistics_match_full_schema_w_col_stats() -> Result<()> {
-        let harness = test_harness_with_column_stats().await?;
+        let mut harness = IcebergTestHarness::new().await?;
+        harness.ctx.set_iceberg_column_stats_enabled(true);
         let stats = source_statistics(&harness, "SELECT * FROM taxi").await?;
 
         assert_eq!(stats.column_statistics.len(), TAXI_COLUMNS);
@@ -92,7 +88,8 @@ mod tests {
     async fn column_statistics_match_projected_schema_w_col_stats() -> Result<()> {
         // Regression: a column_statistics vec shorter than the output schema
         // makes DataFusion panic while propagating statistics upstream.
-        let harness = test_harness_with_column_stats().await?;
+        let mut harness = IcebergTestHarness::new().await?;
+        harness.ctx.set_iceberg_column_stats_enabled(true);
         let stats = source_statistics(&harness, "SELECT vendor_id, pickup_date FROM taxi").await?;
 
         assert_eq!(stats.column_statistics.len(), 2);
@@ -145,7 +142,8 @@ mod tests {
 
     #[tokio::test]
     async fn verify_column_stats_in_explain() -> Result<()> {
-        let harness = test_harness_with_column_stats().await?;
+        let mut harness = IcebergTestHarness::new().await?;
+        harness.ctx.set_iceberg_column_stats_enabled(true);
         let plan = harness
             .physical_plan("SELECT vendor_id, pickup_date FROM taxi")
             .await?;
@@ -163,7 +161,8 @@ mod tests {
 
     #[tokio::test]
     async fn explain_shows_statistics_on_the_iceberg_source_w_col_stats() -> Result<()> {
-        let harness = test_harness_with_column_stats().await?;
+        let mut harness = IcebergTestHarness::new().await?;
+        harness.ctx.set_iceberg_column_stats_enabled(true);
         let plan = harness.physical_plan("SELECT vendor_id FROM taxi").await?;
         let display = displayable(plan.as_ref())
             .set_show_statistics(true)
@@ -202,7 +201,8 @@ mod tests {
     async fn exact_row_count_lets_count_star_skip_the_scan_w_col_stats() -> Result<()> {
         // With Precision::Exact(num_rows) the AggregateStatistics optimizer
         // rule answers COUNT(*) from metadata without reading any data file.
-        let harness = test_harness_with_column_stats().await?;
+        let mut harness = IcebergTestHarness::new().await?;
+        harness.ctx.set_iceberg_column_stats_enabled(true);
         let (plan, batches) = harness.query("SELECT count(*) FROM taxi").await?;
 
         insta::assert_snapshot!(plan, @"
