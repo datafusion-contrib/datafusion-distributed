@@ -149,12 +149,10 @@ pub(crate) fn discover_runtime_dynamic_filter_consumers(
 
         node.apply_expressions(&mut |root| {
             root.apply(|expression| {
-                if expression
-                    .downcast_ref::<DynamicFilterPhysicalExpr>()
-                    .is_none()
-                {
+                let expression = Arc::clone(expression);
+                let Ok(expression) = Arc::downcast::<DynamicFilterPhysicalExpr>(expression) else {
                     return Ok(TreeNodeRecursion::Continue);
-                }
+                };
 
                 let Some(id) = expression.expression_id() else {
                     return internal_err!(
@@ -169,7 +167,7 @@ pub(crate) fn discover_runtime_dynamic_filter_consumers(
                     .or_default()
                     .push(DiscoveredDynamicFilter {
                         id,
-                        expression: Arc::clone(expression),
+                        expression,
                         input_schema: Arc::clone(&input_schema),
                     });
                 Ok(TreeNodeRecursion::Continue)
