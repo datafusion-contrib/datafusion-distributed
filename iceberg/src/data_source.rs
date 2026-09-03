@@ -417,7 +417,6 @@ pub async fn compute_column_stats(
 
             for entry in manifest.entries().iter().filter(|e| e.is_alive()) {
                 let df = entry.data_file();
-                println!("data file: {:?}", df);
 
                 for (i, &id) in fields_ids.iter().enumerate() {
                     let cs = &mut col_stats[i];
@@ -431,8 +430,6 @@ pub async fn compute_column_stats(
                     if let Some(scalar) = df.upper_bounds().get(&id).and_then(datum_to_scalar) {
                         cs.max_value = cs.max_value.max(&Precision::Inexact(scalar));
                     }
-
-                    // println!("col stat: {:?}", cs);
                 }
             }
 
