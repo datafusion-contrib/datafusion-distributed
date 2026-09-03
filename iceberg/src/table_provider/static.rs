@@ -6,15 +6,14 @@ use datafusion::catalog::memory::DataSourceExec;
 use datafusion::catalog::{Session, TableProvider};
 use datafusion::common::{Result, plan_datafusion_err};
 use datafusion::datasource::TableType;
-use datafusion::error::DataFusionError;
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown};
 use datafusion::physical_expr::Partitioning;
 use datafusion::physical_plan::ExecutionPlan;
 use iceberg::arrow::schema_to_arrow_schema;
 
-use crate::IcebergDataSource;
 use crate::common::df_err;
 use crate::data_source::IcebergDataSourceOptions;
+use crate::{IcebergConfig, IcebergDataSource};
 
 /// Static, read-only provider for a table or a specific snapshot.
 #[derive(Debug, Clone)]
@@ -74,7 +73,7 @@ impl TableProvider for IcebergStaticTableProvider {
         filters: &[Expr],
         limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        let source = IcebergDataSource::new(
+        let mut data_source = IcebergDataSource::new(
             self.table.clone(),
             self.schema.clone(),
             Partitioning::UnknownPartitioning(state.config().target_partitions()),
@@ -85,11 +84,14 @@ impl TableProvider for IcebergStaticTableProvider {
                 fetch: limit,
                 iceberg_runtime: Some(self.iceberg_runtime.clone()),
             },
-        )
-        .await
-        .map_err(|e| DataFusionError::External(Box::new(e)))?;
-
-        Ok(DataSourceExec::from_data_source(source))
+        );
+        let iceberg_config = IcebergConfig::from_task_context(&state.task_ctx());
+        if iceberg_config.column_stats_enabled {
+            data_source = data_source
+                .with_column_statistics(self.table.clone())
+                .await?;
+        }
+        Ok(DataSourceExec::from_data_source(data_source))
     }
 
     fn supports_filters_pushdown(

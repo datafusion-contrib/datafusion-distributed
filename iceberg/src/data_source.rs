@@ -5,7 +5,7 @@ use datafusion::common::stats::Precision;
 use datafusion::common::{ColumnStatistics, Statistics};
 use datafusion::config::ConfigOptions;
 use datafusion::datasource::source::DataSource;
-use datafusion::error::Result;
+use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::projection::ProjectionExprs;
 use datafusion::physical_expr::{EquivalenceProperties, PhysicalExpr};
@@ -23,12 +23,21 @@ use iceberg::arrow::ArrowReaderBuilder;
 use iceberg::io::FileIO;
 use iceberg::spec::{
     Datum, Manifest, ManifestContentType, ManifestList, PrimitiveLiteral, PrimitiveType,
+    SnapshotRef,
 };
 use iceberg::table::Table;
 
 use crate::common::{convert_filters_to_predicate, df_err, iceberg_err};
 use crate::work_unit_wire::FileScanTaskDecoder;
 use crate::{IcebergConfig, IcebergWorkUnitFeed};
+
+/// Snapshot summary keys defined by the Iceberg table spec:
+/// https://iceberg.apache.org/spec/#optional-snapshot-summary-fields
+///
+/// iceberg-rust defines them privately:
+/// https://github.com/apache/iceberg-rust/blob/4168a0b2950dc5f85588e5cb3ab6796e5228b309/crates/iceberg/src/spec/snapshot_summary.rs#L46-L47
+const TOTAL_RECORDS: &str = "total-records";
+const TOTAL_FILE_SIZE: &str = "total-files-size";
 
 /// Consumes a stream of [iceberg::scan::FileScanTask]s per partition and reads the underlying
 /// files into an Arrow stream.
@@ -123,7 +132,8 @@ pub struct IcebergDataSource {
     pub(crate) partitioning: Partitioning,
     pub(crate) fetch: Option<usize>,
     pub(crate) metrics: ExecutionPlanMetricsSet,
-    pub(crate) table_stats: Arc<Statistics>,
+    pub(crate) column_stats: Option<Arc<Vec<ColumnStatistics>>>,
+    pub(crate) current_snapshot: Option<SnapshotRef>,
     pub(crate) iceberg_file_io: FileIO,
     pub(crate) iceberg_runtime: iceberg::Runtime,
     pub(crate) feed: WorkUnitFeed<IcebergWorkUnitFeed>,
@@ -141,12 +151,12 @@ pub(crate) struct IcebergDataSourceOptions<'a> {
 
 impl IcebergDataSource {
     /// Creates a new [`IcebergDataSource`] object.
-    pub(crate) async fn new(
+    pub(crate) fn new(
         table: iceberg::table::Table,
         schema: SchemaRef,
         partitioning: Partitioning,
         opts: IcebergDataSourceOptions<'_>,
-    ) -> iceberg::Result<Self> {
+    ) -> Self {
         let output_schema = match opts.projection {
             None => schema.clone(),
             Some(projection) => Arc::new(schema.project(projection).unwrap()),
@@ -156,12 +166,11 @@ impl IcebergDataSource {
                 .map(|p| schema.field(*p).name().clone())
                 .collect::<Vec<String>>()
         });
-
-        let table_stats = Arc::new(compute_table_stats(&table).await?.project(opts.projection));
+        let current_snapshot = table.metadata().current_snapshot().cloned();
 
         let predicates = convert_filters_to_predicate(opts.filters);
 
-        Ok(Self {
+        Self {
             schema: output_schema,
             iceberg_file_io: table.file_io().clone(),
             partitioning: partitioning.clone(),
@@ -178,8 +187,18 @@ impl IcebergDataSource {
                 partitioning,
                 sync_manager: Default::default(),
             }),
-            table_stats,
-        })
+            current_snapshot,
+            column_stats: None,
+        }
+    }
+
+    pub(crate) async fn with_column_statistics(
+        mut self,
+        table: Table,
+    ) -> datafusion::common::Result<Self> {
+        let column_stats = compute_column_stats(table).await?;
+        self.column_stats = Some(column_stats);
+        Ok(self)
     }
 }
 
@@ -259,7 +278,19 @@ impl DataSource for IcebergDataSource {
     }
 
     fn partition_statistics(&self, _partition: Option<usize>) -> Result<Arc<Statistics>> {
-        Ok(self.table_stats.clone())
+        let mut stats = stats_from_snapshot(self.current_snapshot.clone(), &self.schema)?;
+
+        if let Some(col_stats) = &self.column_stats {
+            if col_stats.len() == stats.column_statistics.len() {
+                for (i, cs) in col_stats.iter().enumerate() {
+                    stats.column_statistics[i] = cs.clone();
+                }
+            } else {
+                println!("placeholder");
+            }
+        }
+
+        Ok(Arc::new(stats))
     }
 
     fn with_fetch(&self, fetch: Option<usize>) -> Option<Arc<dyn DataSource>> {
@@ -305,97 +336,130 @@ impl DataSource for IcebergDataSource {
     }
 }
 
-/// Reading table statistics from data-files
-pub async fn compute_table_stats(table: &Table) -> iceberg::Result<Statistics> {
+/// Getting stats out of snapshot's additional properties (no I/O overhead)
+fn stats_from_snapshot(snapshot: Option<SnapshotRef>, schema: &SchemaRef) -> Result<Statistics> {
+    let Some(snap) = snapshot else {
+        // A table with no current snapshot has never had a commit. It was created, but zero data files were added
+        return Ok(Statistics {
+            num_rows: Precision::Exact(0),
+            total_byte_size: Precision::Exact(0),
+            column_statistics: vec![ColumnStatistics::new_unknown(); schema.fields().len()],
+        });
+    };
+    let props = &snap.summary().additional_properties;
+
+    let num_rows = props
+        .get(TOTAL_RECORDS)
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let total_byte_size = props
+        .get(TOTAL_FILE_SIZE)
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+
+    Ok(Statistics {
+        num_rows: Precision::Exact(num_rows),
+        total_byte_size: Precision::Exact(total_byte_size),
+        column_statistics: vec![ColumnStatistics::new_unknown(); schema.fields().len()],
+    })
+}
+
+/// Reading table statistics from data-files concurrently
+pub async fn compute_column_stats(
+    table: Table,
+) -> datafusion::common::Result<Arc<Vec<ColumnStatistics>>> {
     let metadata = table.metadata();
     let schema = metadata.current_schema();
     let fields_ids: Vec<i32> = schema.as_struct().fields().iter().map(|f| f.id).collect();
 
-    let mut stats = Statistics {
-        num_rows: Precision::Exact(0),
-        total_byte_size: Precision::Exact(0),
-        column_statistics: vec![ColumnStatistics::new_unknown(); fields_ids.len()],
-    };
-
     // A table with no current snapshot has never had a commit. It was created, but zero data files were added
     let Some(snapshot) = metadata.current_snapshot() else {
-        return Ok(stats);
+        return Ok(Arc::new(vec![
+            ColumnStatistics::new_unknown();
+            fields_ids.len()
+        ]));
     };
     let ml_bytes = table
         .file_io()
-        .new_input(snapshot.manifest_list())?
+        .new_input(snapshot.manifest_list())
+        .map_err(df_err)?
         .read()
-        .await?;
-    let manifest_list = ManifestList::parse_with_version(&ml_bytes, metadata.format_version())?;
+        .await
+        .map_err(df_err)?;
+    let manifest_list = Arc::new(
+        ManifestList::parse_with_version(&ml_bytes, metadata.format_version()).map_err(df_err)?,
+    );
+
     // If a table has delete files (i.e MOR) - we should account for that fact later and change the counts to `inexact`
     let has_deletes = manifest_list
         .entries()
         .iter()
         .any(|f| f.content == ManifestContentType::Deletes);
+    // Collecting all of the needed paths before spawning
+    let manifest_paths: Vec<_> = manifest_list
+        .entries()
+        .iter()
+        .filter(|mf| mf.content == ManifestContentType::Data)
+        .map(|mf| mf.manifest_path.clone())
+        .collect();
+    let mut join_set = tokio::task::JoinSet::new();
+    let fields_ids = Arc::new(fields_ids);
 
-    for manifest_file in manifest_list.entries() {
-        if manifest_file.content != ManifestContentType::Data {
-            continue;
-        }
-        let m_bytes = table
-            .file_io()
-            .new_input(&manifest_file.manifest_path)?
-            .read()
-            .await?;
-        let manifest = Manifest::parse_avro(&m_bytes)?;
+    for path in manifest_paths {
+        // Cheap cloning
+        let table = table.clone();
+        let fields_ids = fields_ids.clone();
 
-        for entry in manifest.entries() {
-            if !entry.is_alive() {
-                continue;
-            }
+        join_set.spawn(async move {
+            let manifest = Manifest::parse_avro(&table.file_io().new_input(&path)?.read().await?)?;
 
-            let data_file = entry.data_file();
+            let mut col_stats = vec![ColumnStatistics::new_unknown(); fields_ids.len()];
 
-            stats.num_rows = stats
-                .num_rows
-                .add(&Precision::Exact(data_file.record_count() as usize));
-            stats.total_byte_size = stats
-                .total_byte_size
-                .add(&Precision::Exact(data_file.file_size_in_bytes() as usize));
+            for entry in manifest.entries().iter().filter(|e| e.is_alive()) {
+                let df = entry.data_file();
+                println!("data file: {:?}", df);
 
-            // We should mat the field-ids to the physical columns of files
-            for (i, id) in fields_ids.iter().enumerate() {
-                let col_stats = &mut stats.column_statistics[i];
+                for (i, &id) in fields_ids.iter().enumerate() {
+                    let cs = &mut col_stats[i];
 
-                if let Some(n) = data_file.null_value_counts().get(id) {
-                    col_stats.null_count = match &col_stats.null_count {
-                        Precision::Absent => Precision::Exact(*n as usize),
-                        cur => cur.add(&Precision::Exact(*n as usize)),
-                    };
-                }
+                    if let Some(&n) = df.null_value_counts().get(&id) {
+                        cs.null_count = cs.null_count.add(&Precision::Exact(n as usize));
+                    }
+                    if let Some(scalar) = df.lower_bounds().get(&id).and_then(datum_to_scalar) {
+                        cs.min_value = cs.min_value.min(&Precision::Inexact(scalar));
+                    }
+                    if let Some(scalar) = df.upper_bounds().get(&id).and_then(datum_to_scalar) {
+                        cs.max_value = cs.max_value.max(&Precision::Inexact(scalar));
+                    }
 
-                if let Some(lb) = data_file.lower_bounds().get(id).and_then(datum_to_scalar) {
-                    col_stats.min_value = match &col_stats.min_value {
-                        Precision::Absent => Precision::Inexact(lb),
-                        cur => cur.min(&Precision::Inexact(lb)),
-                    };
-                }
-
-                if let Some(ub) = data_file.upper_bounds().get(id).and_then(datum_to_scalar) {
-                    col_stats.max_value = match &col_stats.max_value {
-                        Precision::Absent => Precision::Inexact(ub),
-                        cur => cur.max(&Precision::Inexact(ub)),
-                    };
+                    // println!("col stat: {:?}", cs);
                 }
             }
-        }
+
+            Ok::<_, iceberg::Error>(col_stats)
+        });
     }
 
+    let mut merged_col_stats = vec![ColumnStatistics::new_unknown(); fields_ids.len()];
+    while let Some(result) = join_set.join_next().await {
+        let manifest_col_stats = result
+            .map_err(|e| DataFusionError::External(Box::new(e)))?
+            .map_err(|e| DataFusionError::External(Box::new(e)))?;
+        for (i, cs) in manifest_col_stats.into_iter().enumerate() {
+            merged_col_stats[i].null_count = merged_col_stats[i].null_count.add(&cs.null_count);
+            merged_col_stats[i].min_value = merged_col_stats[i].min_value.min(&cs.min_value);
+            merged_col_stats[i].max_value = merged_col_stats[i].max_value.max(&cs.max_value);
+        }
+    }
     // TODO: probably we can do something about the delete files?
     // However it wouldn't be free of cost in terms of performance
     if has_deletes {
-        stats.num_rows = stats.num_rows.to_inexact();
-        for cs in &mut stats.column_statistics {
+        for cs in &mut merged_col_stats {
             cs.null_count = cs.null_count.to_inexact();
         }
     }
 
-    Ok(stats)
+    Ok(Arc::new(merged_col_stats))
 }
 
 /// Convertion function of iceberg's Datum
