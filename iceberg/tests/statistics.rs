@@ -8,7 +8,7 @@ mod tests {
     use datafusion::error::Result;
     use datafusion::physical_plan::{ExecutionPlan, displayable};
     use datafusion_distributed_iceberg::IcebergDataSource;
-    use datafusion_distributed_iceberg::test_utils::IcebergTestHarness;
+    use datafusion_distributed_iceberg::test_utils::{FIXTURE_URI, IcebergTestHarness};
 
     // Values from testdata/iceberg/taxi/metadata/v1.metadata.json snapshot summary.
     const TAXI_ROWS: usize = 175_000;
@@ -22,6 +22,22 @@ mod tests {
 
         assert_eq!(stats.num_rows, Precision::Exact(TAXI_ROWS));
         assert_eq!(stats.total_byte_size, Precision::Exact(TAXI_BYTES));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn missing_snapshot_summary_statistics_are_absent() -> Result<()> {
+        let harness = IcebergTestHarness::new().await?;
+        harness
+            .query(&format!(
+                "CREATE EXTERNAL TABLE taxi_without_stats STORED AS ICEBERG \
+                 LOCATION '{FIXTURE_URI}/metadata/v1.missing-summary-statistics.metadata.json'"
+            ))
+            .await?;
+        let stats = source_statistics(&harness, "SELECT * FROM taxi_without_stats").await?;
+
+        assert_eq!(stats.num_rows, Precision::Absent);
+        assert_eq!(stats.total_byte_size, Precision::Absent);
         Ok(())
     }
 

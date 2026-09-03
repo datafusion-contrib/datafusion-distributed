@@ -326,16 +326,18 @@ fn stats_from_snapshot(
 
     let num_rows = props
         .get(TOTAL_RECORDS)
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0);
+        .and_then(|value| value.parse().ok())
+        .map(Precision::Exact)
+        .unwrap_or(Precision::Absent);
     let total_byte_size = props
         .get(TOTAL_FILE_SIZE)
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0);
+        .and_then(|value| value.parse().ok())
+        .map(Precision::Exact)
+        .unwrap_or(Precision::Absent);
 
     Ok(Arc::new(Statistics {
-        num_rows: Precision::Exact(num_rows),
-        total_byte_size: Precision::Exact(total_byte_size),
+        num_rows,
+        total_byte_size,
         column_statistics: vec![ColumnStatistics::new_unknown(); schema.fields().len()],
     }))
 }
