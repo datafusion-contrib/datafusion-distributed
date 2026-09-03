@@ -28,7 +28,7 @@ use tonic::async_trait;
 use crate::{
     DesiredTaskCountEvent, DesiredTaskCountEventResponse, DistributedLeafExec,
     DistributedTaskContext, LocalWorkerContext, RouteTasksEvent, RouteTasksEventResponse,
-    ScaleUpLeafNodeEvent, ScaleUpLeafNodeEventResponse, WorkerResolver,
+    ScaleUpLeafNodeEvent, ScaleUpLeafNodeEventResponse, WorkerResolver, ok_or_some_err,
 };
 
 use crate::distributed_ext::DistributedGetterExt;
@@ -285,12 +285,11 @@ pub fn url_emitter_scale_up_leaf_node(
         })
         .collect();
 
-    Some(Ok(ScaleUpLeafNodeEventResponse::new(
-        match DistributedLeafExec::try_new(template as _, per_task) {
-            Ok(exec) => Arc::new(exec),
-            Err(err) => return Some(Err(err)),
-        },
-    )))
+    let distributed_leaf = ok_or_some_err!(DistributedLeafExec::try_new(template as _, per_task));
+
+    Some(Ok(ScaleUpLeafNodeEventResponse::new(Arc::new(
+        distributed_leaf,
+    ))))
 }
 
 pub fn url_emitter_route_tasks(ev: RouteTasksEvent) -> Option<Result<RouteTasksEventResponse>> {

@@ -1,6 +1,6 @@
 use crate::{
     DistributedGetterExt, LocalWorkerContext, NetworkBoundaryExt, RouteTasksEvent,
-    RouteTasksEventResponse, Stage, WorkerResolver,
+    RouteTasksEventResponse, Stage, WorkerResolver, ok_or_some_err,
 };
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::common::{Result, exec_err};
@@ -8,20 +8,17 @@ use rand::Rng;
 
 /// Randomly chooses `ev.task_count` urls from the registered URLs.
 pub(crate) fn random_routing(ev: RouteTasksEvent) -> Option<Result<RouteTasksEventResponse>> {
-    let worker_resolver = match ev
-        .task_ctx
-        .session_config()
-        .get_distributed_worker_resolver()
-    {
-        Ok(r) => r,
-        Err(err) => return Some(Err(err)),
-    };
+    let worker_resolver = ok_or_some_err!(
+        ev.task_ctx
+            .session_config()
+            .get_distributed_worker_resolver()
+    );
 
-    let available_urls = match worker_resolver.get_urls() {
-        Ok(urls) if !urls.is_empty() => urls,
-        Ok(_) => return Some(exec_err!("0 URLs available during routing")),
-        Err(err) => return Some(Err(err)),
-    };
+    let available_urls = ok_or_some_err!(worker_resolver.get_urls());
+
+    if available_urls.is_empty() {
+        return Some(exec_err!("0 URLs available during routing"));
+    }
 
     let start_idx = rand::rng().random_range(0..available_urls.len());
     let urls = (0..ev.task_count)
