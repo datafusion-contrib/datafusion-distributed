@@ -1,3 +1,1 @@
-pub(crate) mod generated {
-    include!("generated/iceberg.rs");
-}
+pub(crate) mod generated;

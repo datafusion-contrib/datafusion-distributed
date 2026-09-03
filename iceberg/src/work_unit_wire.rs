@@ -12,13 +12,13 @@ use iceberg::expr::{
 use iceberg::scan::{FileScanTask, FileScanTaskDeleteFile};
 use iceberg::spec::{
     DataContentType, DataFileFormat, Datum, ListType, Literal, Map, MapType, MappedField,
-    NameMapping, NestedField, PartitionSpec, PrimitiveLiteral, PrimitiveType, Schema, SchemaRef,
-    Struct, StructType, Transform, Type, UnboundPartitionField, UnboundPartitionSpec,
+    NameMapping, NestedField, PartitionSpec, PrimitiveLiteral, PrimitiveType, Schema, Struct,
+    StructType, Transform, Type, UnboundPartitionField, UnboundPartitionSpec,
 };
 use prost::encoding::{DecodeContext, WireType};
 use prost::{DecodeError, Message};
 
-use crate::proto::generated as pb;
+use crate::proto::generated::iceberg as pb;
 
 #[derive(Debug, Clone)]
 enum FileScanTaskPayload {
@@ -73,7 +73,7 @@ impl FileScanTaskMessage {
 /// Encodes tasks and reuses identical context within one feed.
 #[derive(Default)]
 pub(crate) struct FileScanTaskEncoder {
-    contexts: Vec<TaskContext>,
+    contexts: Vec<FileScanTaskContext>,
 }
 
 impl FileScanTaskEncoder {
@@ -88,7 +88,7 @@ impl FileScanTaskEncoder {
             None => (context_id(self.contexts.len())?, true),
         };
         if include_context {
-            self.contexts.push(TaskContext::from_task(&task));
+            self.contexts.push(FileScanTaskContext::from_task(&task));
         }
         Ok(FileScanTaskMessage::new(task, context_id, include_context))
     }
@@ -97,7 +97,7 @@ impl FileScanTaskEncoder {
 /// Decodes one feed while retaining context referenced by later tasks.
 #[derive(Default)]
 pub(crate) struct FileScanTaskDecoder {
-    contexts: HashMap<u32, TaskContext>,
+    contexts: HashMap<u32, FileScanTaskContext>,
 }
 
 impl FileScanTaskDecoder {
@@ -148,12 +148,11 @@ impl Message for FileScanTaskMessage {
         buf: &mut impl Buf,
         ctx: DecodeContext,
     ) -> std::result::Result<(), DecodeError> {
+        if let FileScanTaskPayload::Native { .. } = &self.payload {
+            self.payload = FileScanTaskPayload::Proto(self.as_proto().into_owned());
+        }
         let FileScanTaskPayload::Proto(proto) = &mut self.payload else {
-            self.payload = FileScanTaskPayload::Proto(pb::FileScanTask::default());
-            let FileScanTaskPayload::Proto(proto) = &mut self.payload else {
-                unreachable!()
-            };
-            return proto.merge_field(tag, wire_type, buf, ctx);
+            unreachable!()
         };
         proto.merge_field(tag, wire_type, buf, ctx)
     }
@@ -204,8 +203,8 @@ fn task_to_proto(
 }
 
 #[derive(Debug, PartialEq)]
-struct TaskContext {
-    schema: SchemaRef,
+struct FileScanTaskContext {
+    schema: iceberg::spec::SchemaRef,
     projected_field_ids: Vec<i32>,
     predicate: Option<BoundPredicate>,
     partition_spec: Option<Arc<PartitionSpec>>,
@@ -213,7 +212,7 @@ struct TaskContext {
     case_sensitive: bool,
 }
 
-impl TaskContext {
+impl FileScanTaskContext {
     fn from_task(task: &FileScanTask) -> Self {
         Self {
             schema: Arc::clone(&task.schema),
@@ -253,7 +252,7 @@ fn context_to_proto(task: &FileScanTask) -> pb::FileScanTaskContext {
     }
 }
 
-fn context_from_proto(proto: pb::FileScanTaskContext) -> Result<TaskContext> {
+fn context_from_proto(proto: pb::FileScanTaskContext) -> Result<FileScanTaskContext> {
     let schema = Arc::new(schema_from_proto(required(
         proto.schema,
         "context.schema",
@@ -267,7 +266,7 @@ fn context_from_proto(proto: pb::FileScanTaskContext) -> Result<TaskContext> {
         .predicate
         .map(|predicate| predicate_from_proto(predicate, Arc::clone(&schema), proto.case_sensitive))
         .transpose()?;
-    Ok(TaskContext {
+    Ok(FileScanTaskContext {
         schema,
         projected_field_ids: proto.projected_field_ids,
         predicate,
@@ -280,7 +279,10 @@ fn context_from_proto(proto: pb::FileScanTaskContext) -> Result<TaskContext> {
     })
 }
 
-fn body_from_proto(body: pb::FileScanTaskBody, context: &TaskContext) -> Result<FileScanTask> {
+fn body_from_proto(
+    body: pb::FileScanTaskBody,
+    context: &FileScanTaskContext,
+) -> Result<FileScanTask> {
     validate_file_range(body.file_size_in_bytes, body.start, body.length)?;
     Ok(FileScanTask {
         file_size_in_bytes: body.file_size_in_bytes,
@@ -850,7 +852,7 @@ fn predicate_to_proto(predicate: &BoundPredicate) -> pb::BoundPredicate {
 
 fn predicate_from_proto(
     predicate: pb::BoundPredicate,
-    schema: SchemaRef,
+    schema: iceberg::spec::SchemaRef,
     case_sensitive: bool,
 ) -> Result<BoundPredicate> {
     let predicate = unbound_predicate_from_proto(predicate, &schema, case_sensitive)?;
@@ -1052,7 +1054,10 @@ fn partition_spec_to_proto(spec: &PartitionSpec) -> pb::PartitionSpec {
     }
 }
 
-fn partition_spec_from_proto(proto: pb::PartitionSpec, schema: SchemaRef) -> Result<PartitionSpec> {
+fn partition_spec_from_proto(
+    proto: pb::PartitionSpec,
+    schema: iceberg::spec::SchemaRef,
+) -> Result<PartitionSpec> {
     let fields = proto
         .fields
         .into_iter()
@@ -1212,6 +1217,28 @@ mod tests {
             &partition_spec,
             decoded.partition_spec.as_ref().unwrap()
         ));
+    }
+
+    #[test]
+    fn merges_protobuf_into_native_task_without_discarding_it() {
+        let task = sample_task("file.parquet", 10);
+        let mut message = FileScanTaskEncoder::default().encode(task.clone()).unwrap();
+        let encoded = pb::FileScanTask {
+            context_id: 2,
+            ..Default::default()
+        }
+        .encode_to_vec();
+
+        message.merge(encoded.as_slice()).unwrap();
+
+        let proto = pb::FileScanTask::decode(message.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(proto.context_id, 2);
+        assert!(proto.context.is_some());
+        assert!(proto.task.is_some());
+        assert_eq!(
+            FileScanTaskDecoder::default().decode(message).unwrap(),
+            task
+        );
     }
 
     #[test]
@@ -1509,7 +1536,7 @@ mod tests {
         }
     }
 
-    fn test_schema(data_type: PrimitiveType) -> SchemaRef {
+    fn test_schema(data_type: PrimitiveType) -> iceberg::spec::SchemaRef {
         Arc::new(
             Schema::builder()
                 .with_schema_id(3)
