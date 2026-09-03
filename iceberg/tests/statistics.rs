@@ -144,6 +144,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn verify_column_stats_in_explain() -> Result<()> {
+        let harness = test_harness_with_column_stats().await?;
+        let plan = harness
+            .physical_plan("SELECT vendor_id, pickup_date FROM taxi")
+            .await?;
+
+        let display = displayable(plan.as_ref())
+            .set_show_statistics(true)
+            .indent(true)
+            .to_string();
+        
+        assert!(display.contains("Col[0]:"));
+        assert!(display.contains("vendor_id"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn explain_shows_statistics_on_the_iceberg_source_w_col_stats() -> Result<()> {
         let harness = test_harness_with_column_stats().await?;
         let plan = harness.physical_plan("SELECT vendor_id FROM taxi").await?;
