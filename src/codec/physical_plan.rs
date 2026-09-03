@@ -107,13 +107,14 @@ pub(crate) fn decode_physical_expr(
 /// `key > 123` to `phone_number > 123` and store this in the shared state. Consumer 2 would be
 /// unable to apply this filter now.
 pub(crate) fn dynamic_filter_update_target(
-    consumer: &Arc<dyn PhysicalExpr>,
+    consumer: &Arc<DynamicFilterPhysicalExpr>,
     input_schema: &Schema,
     task_ctx: &TaskContext,
 ) -> Result<Arc<DynamicFilterPhysicalExpr>> {
     // Since consumer.children() returns the remapped children, we use the proto as a workaround to get the
     // original children from the producer.
-    let proto = encode_physical_expr(consumer, task_ctx)?;
+    let consumer: Arc<dyn PhysicalExpr> = consumer.clone();
+    let proto = encode_physical_expr(&consumer, task_ctx)?;
     let Some(ExprType::DynamicFilter(dynamic_filter)) = proto.expr_type else {
         return internal_err!("expected a dynamic filter expression");
     };
