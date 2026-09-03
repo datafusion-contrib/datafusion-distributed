@@ -9,8 +9,8 @@ mod tests {
         test_utils::{
             in_memory_channel_resolver::start_in_memory_context,
             routing::{
-                URLEmitterExtensionCodec, URLEmitterFunction, url_emitter_desired_task_count,
-                url_emitter_route_tasks, url_emitter_scale_up_leaf_node,
+                URLEmitterExtensionCodec, URLEmitterFunction, UrlEmitterRouteTaskHandler,
+                url_emitter_desired_task_count, url_emitter_scale_up_leaf_node,
             },
         },
     };
@@ -387,7 +387,7 @@ mod tests {
         let mut ctx = start_in_memory_context(NUM_WORKERS, build_state).await;
         ctx.set_distributed_desired_task_count_handler(url_emitter_desired_task_count);
         ctx.set_distributed_scale_up_leaf_node_handler(url_emitter_scale_up_leaf_node);
-        ctx.set_distributed_route_tasks_handler(url_emitter_route_tasks);
+        ctx.set_distributed_route_task_handler(UrlEmitterRouteTaskHandler);
         ctx.set_distributed_user_codec(URLEmitterExtensionCodec);
         ctx.register_udtf("url_emitter", Arc::new(URLEmitterFunction));
         ctx.state_ref()

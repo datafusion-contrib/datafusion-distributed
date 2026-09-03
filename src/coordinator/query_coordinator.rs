@@ -3,22 +3,25 @@ use crate::common::{TreeNodeExt, now_ns, task_ctx_with_extension};
 use crate::config_extension_ext::get_config_extension_propagation_headers;
 use crate::coordinator::MetricsStore;
 use crate::coordinator::latency_metric::LatencyMetric;
-use crate::events::{RouteTasksEvent, RouteTasksHandlers};
+use crate::events::{
+    RouteTaskEvent, RouteTaskEventResponse, RouteTaskHandlers, new_coordinator_to_worker_dialer,
+};
 use crate::execution_plans::{ChildrenIsolatorUnionExec, DistributedLeafExec};
 use crate::passthrough_headers::get_passthrough_headers;
 use crate::stage::LocalStage;
 use crate::work_unit_feed::WorkUnitFeedRegistry;
 use crate::work_unit_feed::{build_work_unit_batch_msg, set_work_unit_send_time};
 use crate::{
-    CoordinatorToWorkerMsg, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedTaskContext,
-    DistributedWorkUnitFeedContext, LoadInfo, LocalWorkerContext, MaybeEncoded, SetPlanRequest,
-    TaskKey, WorkUnitFeedDeclaration, WorkerToCoordinatorMsg, get_distributed_channel_resolver,
+    CoordinatorToWorkerMsg, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedGetterExt,
+    DistributedTaskContext, DistributedWorkUnitFeedContext, LoadInfo, LocalWorkerContext,
+    MaybeEncoded, SetPlanRequest, TaskKey, WorkUnitFeedDeclaration, WorkerToCoordinatorMsg,
+    get_distributed_channel_resolver,
 };
-use datafusion::common::DataFusionError;
+use datafusion::common::Result;
 use datafusion::common::instant::Instant;
 use datafusion::common::runtime::JoinSet;
 use datafusion::common::tree_node::{Transformed, TreeNodeRecursion};
-use datafusion::common::{Result, exec_err};
+use datafusion::common::{DataFusionError, internal_err};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr_common::metrics::{ExecutionPlanMetricsSet, Label, MetricBuilder};
 use datafusion::physical_plan::ExecutionPlan;
@@ -99,7 +102,7 @@ impl QueryCoordinator {
 
     /// Blocks until all background tasks have finished (e.g., sending WorkUnit feeds, or collecting
     /// metrics)
-    pub(super) async fn drain_pending_tasks(self) -> Result<()> {
+    pub(super) async fn drain_pending_tasks(self: Arc<Self>) -> Result<()> {
         let join_set = std::mem::take(self.join_set.lock().unwrap().deref_mut());
         for res in join_set.join_all().await {
             res?;
@@ -133,11 +136,11 @@ impl<'a> StageCoordinator<'a> {
     /// Sends a serialized plan to a specific worker and sets up the bidirectional gRPC stream.
     /// Returns the sender for outbound coordinator-to-worker messages and the receiver for
     /// inbound worker-to-coordinator messages.
-    pub(super) fn send_plan_task(
-        &mut self,
+    pub(super) async fn send_plan_task(
+        &self,
         task_i: usize,
-        url: Url,
     ) -> Result<(
+        Url,
         UnboundedSender<CoordinatorToWorkerMsg>,
         UnboundedReceiver<WorkerToCoordinatorMsg>,
     )> {
@@ -151,66 +154,101 @@ impl<'a> StageCoordinator<'a> {
             task_number: task_i,
         };
 
-        let set_plan_request = SetPlanRequest {
-            task_key,
-            task_count: self.task_count,
-            plan: MaybeEncoded::Decoded(specialized),
-            work_unit_feed_declarations,
-            target_worker_url: url.clone(),
-            query_start_time_ns: self.metrics.instantiation_time,
-        };
-
-        let (coordinator_to_worker_tx, coordinator_to_worker_rx) =
-            tokio::sync::mpsc::unbounded_channel();
-        let (worker_to_coordinator_tx, worker_to_coordinator_rx) =
-            tokio::sync::mpsc::unbounded_channel();
-
         let mut headers = get_config_extension_propagation_headers(session_config)?;
         headers.extend(get_passthrough_headers(session_config));
 
-        let coordinator_to_worker_stream = UnboundedReceiverStream::new(coordinator_to_worker_rx)
-            .map(set_work_unit_send_time)
-            // Keep the request side of the channel open until the query ends: this tail emits
-            // no messages and only completes, once the `Notify` fires. Workers interpret this
-            // EOS of this stream as a query finished/aborted signal. The flow looks like this:
-            // 1. The query ends normally, as all Arrow RecordBatches are already streamed.
-            // 2. The end stream notifier guard is dropped in `DistributedExec::execute()`.
-            // 3. Here, `end_stream_notifier` fires and the coordinator->worker channel is
-            //    gracefully ended.
-            // 4. The coordinator->worker channel EOS is received in `impl_coordinator_channel.rs`.
-            // 5. The metrics are send back in the worker->coordinator channel, and then that
-            //    channel is closed.
-            .chain(keep_stream_alive(Arc::clone(self.end_stream_notifier)))
-            .boxed();
-
         let metrics = self.metrics.clone();
         let metrics_set = self.metrics_set.clone();
-        let task_ctx = Arc::clone(self.task_ctx);
+        let coordinator_to_worker_tx_slot = Mutex::new(None);
 
+        let dialer = new_coordinator_to_worker_dialer(|url| {
+            let (coordinator_to_worker_tx, coordinator_to_worker_rx) =
+                tokio::sync::mpsc::unbounded_channel();
+            coordinator_to_worker_tx_slot
+                .lock()
+                .unwrap()
+                .replace(coordinator_to_worker_tx);
+
+            let coordinator_to_worker_stream =
+                UnboundedReceiverStream::new(coordinator_to_worker_rx)
+                    .map(set_work_unit_send_time)
+                    // Keep the request side of the channel open until the query ends: this tail emits
+                    // no messages and only completes, once the `Notify` fires. Workers interpret this
+                    // EOS of this stream as a query finished/aborted signal. The flow looks like this:
+                    // 1. The query ends normally, as all Arrow RecordBatches are already streamed.
+                    // 2. The end stream notifier guard is dropped in `DistributedExec::execute()`.
+                    // 3. Here, `end_stream_notifier` fires and the coordinator->worker channel is
+                    //    gracefully ended.
+                    // 4. The coordinator->worker channel EOS is received in `impl_coordinator_channel.rs`.
+                    // 5. The metrics are send back in the worker->coordinator channel, and then that
+                    //    channel is closed.
+                    .chain(keep_stream_alive(Arc::clone(self.end_stream_notifier)))
+                    .boxed();
+
+            let set_plan_request = SetPlanRequest {
+                task_key,
+                task_count: self.task_count,
+                plan: MaybeEncoded::Decoded(Arc::clone(&specialized)),
+                work_unit_feed_declarations: work_unit_feed_declarations.clone(),
+                target_worker_url: url.clone(),
+                query_start_time_ns: self.metrics.instantiation_time,
+            };
+            let task_ctx = Arc::clone(self.task_ctx);
+            let headers = headers.clone();
+            let metrics = metrics.clone();
+            let metrics_set = metrics_set.clone();
+
+            async move {
+                let mut client = match LocalWorkerContext::from_ctx(&task_ctx) {
+                    Some(lw) if lw.self_url == url => {
+                        metrics.local_coordinator_channels.add(1);
+                        Ok(lw.to_worker_channel())
+                    }
+                    _ => {
+                        metrics.remote_coordinator_channels.add(1);
+                        let ch_resolver = get_distributed_channel_resolver(task_ctx.as_ref());
+                        ch_resolver.get_worker_client_for_url(&url).await
+                    }
+                }?;
+                let worker_to_coordinator_stream = client
+                    .coordinator_channel(
+                        headers,
+                        set_plan_request,
+                        coordinator_to_worker_stream,
+                        metrics_set,
+                        &task_ctx,
+                    )
+                    .await?;
+
+                Ok::<_, DataFusionError>(RouteTaskEventResponse {
+                    url,
+                    worker_to_coordinator_stream,
+                })
+            }
+        });
+
+        let worker_resolver = session_config.get_distributed_worker_resolver()?;
+
+        let ev = RouteTaskEvent {
+            task_ctx: self.task_ctx,
+            worker_resolver: worker_resolver.as_ref(),
+            task_specialized_plan: &specialized,
+            task_key,
+            task_count: self.task_count,
+            dialer: &dialer,
+        };
+
+        let start = Instant::now();
+        let Some(response) = RouteTaskHandlers::handle(ev).await.transpose()? else {
+            return internal_err!("No RouteTaskHandler returned a response");
+        };
+        metrics.plan_send_latency.record(&start);
+
+        let (worker_to_coordinator_tx, worker_to_coordinator_rx) =
+            tokio::sync::mpsc::unbounded_channel();
+
+        let mut worker_to_coordinator_stream = response.worker_to_coordinator_stream;
         self.join_set.lock().unwrap().spawn(async move {
-            let start = Instant::now();
-
-            let mut client = match LocalWorkerContext::from_ctx(&task_ctx) {
-                Some(lw) if lw.self_url == url => {
-                    metrics.local_coordinator_channels.add(1);
-                    Ok(lw.to_worker_channel())
-                }
-                _ => {
-                    metrics.remote_coordinator_channels.add(1);
-                    let ch_resolver = get_distributed_channel_resolver(task_ctx.as_ref());
-                    ch_resolver.get_worker_client_for_url(&url).await
-                }
-            }?;
-            let mut worker_to_coordinator_stream = client
-                .coordinator_channel(
-                    headers,
-                    set_plan_request,
-                    coordinator_to_worker_stream,
-                    metrics_set,
-                    &task_ctx,
-                )
-                .await?;
-            metrics.plan_send_latency.record(&start);
             while let Some(msg) = worker_to_coordinator_stream.try_next().await? {
                 if worker_to_coordinator_tx.send(msg).is_err() {
                     break; // receiver dropped
@@ -219,7 +257,16 @@ impl<'a> StageCoordinator<'a> {
             Ok::<_, DataFusionError>(())
         });
 
-        Ok((coordinator_to_worker_tx, worker_to_coordinator_rx))
+        let Some(coordinator_to_worker_tx) = coordinator_to_worker_tx_slot.lock().unwrap().take()
+        else {
+            return internal_err!("Missing coordinator_to_worker_tx");
+        };
+
+        Ok((
+            response.url,
+            coordinator_to_worker_tx,
+            worker_to_coordinator_rx,
+        ))
     }
 
     /// Spawns a background task in charge of collecting messages sent by a worker. Some things that
@@ -388,31 +435,6 @@ impl<'a> StageCoordinator<'a> {
             Ok(Transformed::no(plan))
         })?;
         Ok((transformed.data, work_unit_feed_declarations))
-    }
-
-    /// Returns as many URLs as the task count for the stage this [StageCoordinator]
-    /// is managing. These URLs can be:
-    /// - assigned randomly, if the user did not provide any custom routing.
-    /// - chosen by the user, if they provided an implementation for the
-    ///   [RouteTasksHandler::route_tasks] method.
-    pub(super) fn routed_urls(&self) -> Result<Vec<Url>> {
-        let ev = RouteTasksEvent {
-            task_ctx: Arc::clone(self.task_ctx),
-            plan: self.plan,
-            task_count: self.task_count,
-        };
-        let Some(routed) = RouteTasksHandlers::handle(ev).transpose()? else {
-            return exec_err!("No task routing handler was able to resolve URLs for stage");
-        };
-
-        if routed.urls.len() != self.task_count {
-            return exec_err!(
-                "number of tasks ({}) was not equal to number of urls ({}) at execution time",
-                self.task_count,
-                routed.urls.len()
-            );
-        }
-        Ok(routed.urls)
     }
 }
 

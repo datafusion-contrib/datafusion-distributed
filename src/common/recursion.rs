@@ -30,7 +30,6 @@ pub(crate) trait TreeNodeExt {
     /// Note that every child subtree is polled concurrently with no fan-out limit, so an `f`
     /// that performs I/O will issue up to one request per node of the widest tree level at a
     /// time.
-    #[allow(dead_code)]
     async fn transform_up_async<F, Fut>(self, f: F) -> Result<Transformed<Self>>
     where
         Self: Sized,
