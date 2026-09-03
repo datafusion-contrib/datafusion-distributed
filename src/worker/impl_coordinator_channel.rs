@@ -1,7 +1,8 @@
-use crate::codec::encode_physical_expr;
+use crate::codec::{decode_physical_expr, dynamic_filter_update_target, encode_physical_expr};
 use crate::common::TreeNodeExt;
 use crate::dynamic_filtering::{
-    discover_dynamic_filter_consumers, discover_dynamic_filter_producers,
+    DiscoveredDynamicFilter, discover_dynamic_filter_consumers, discover_dynamic_filter_producers,
+    discover_runtime_dynamic_filter_consumers,
 };
 use crate::events::{WorkerPlanRewriteEvent, WorkerPlanRewriteHandlers};
 use crate::execution_plans::SamplerExec;
@@ -9,12 +10,13 @@ use crate::protocol::LocalWorkerContext;
 use crate::work_unit_feed::{RemoteWorkUnitFeedRegistry, set_work_unit_received_time};
 use crate::worker::task_data::TaskDataMetrics;
 use crate::{
-    CoordinatorToWorkerMsg, DistributedConfig, DistributedExt, DistributedTaskContext,
-    MaybeEncoded, ProducedDynamicFilter, SetPlanRequest, TaskCompletedDynamicFilters, TaskData,
-    TaskDynamicFilter, TaskMetrics, Worker, WorkerQueryContext, WorkerToCoordinatorMsg,
+    ApplyDynamicFilter, CoordinatorToWorkerMsg, DistributedConfig, DistributedExt,
+    DistributedTaskContext, MaybeEncoded, ProducedDynamicFilter, SetPlanRequest,
+    TaskCompletedDynamicFilters, TaskData, TaskDynamicFilter, TaskMetrics, Worker,
+    WorkerQueryContext, WorkerToCoordinatorMsg,
 };
 use datafusion::common::tree_node::TreeNodeRecursion;
-use datafusion::common::{DataFusionError, HashSet, Result, exec_datafusion_err};
+use datafusion::common::{DataFusionError, HashMap, HashSet, Result, exec_datafusion_err};
 use datafusion::execution::{SessionStateBuilder, TaskContext};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr::expressions::DynamicFilterPhysicalExpr;
@@ -127,6 +129,8 @@ impl Worker {
         let producer_filters = discover_dynamic_filter_producers(&task_data.base_plan)?
             .into_iter()
             .filter(|producer| dynamic_filter_remote_producer_ids.contains(&producer.id));
+        let dynamic_filter_consumers =
+            discover_runtime_dynamic_filter_consumers(&task_data.base_plan)?;
         let (producer_cancel_tx, producer_cancel_rx) = watch::channel(false);
         let producer_task_ctx = Arc::clone(&task_data.task_ctx);
 
@@ -149,6 +153,7 @@ impl Worker {
         #[allow(clippy::disallowed_methods)]
         tokio::spawn(async move {
             let mut stream = stream.map_ok(set_work_unit_received_time);
+            let mut applied_dynamic_filters = HashSet::new();
             while let Some(Ok(msg)) = stream.next().await {
                 match msg {
                     CoordinatorToWorkerMsg::WorkUnitBatch(work_unit_batch) => {
@@ -179,9 +184,16 @@ impl Worker {
                         // messages of different nature in that stream.
                         let _ = work_unit_senders.take();
                     }
-                    CoordinatorToWorkerMsg::ApplyDynamicFilter(_) => {
-                        // Runtime application is introduced independently from the routing
-                        // protocol. Until then, accepting the message is intentionally a no-op.
+                    CoordinatorToWorkerMsg::ApplyDynamicFilter(filter) => {
+                        if applied_dynamic_filters.insert(filter.expression_id) {
+                            // Dynamic filtering is an optimization. Unknown IDs, unsupported
+                            // predicates, and decode/update failures leave execution unfiltered.
+                            let _ = apply_merged_dynamic_filter(
+                                *filter,
+                                &dynamic_filter_consumers,
+                                &task_data.task_ctx,
+                            );
+                        }
                     }
                 }
             }
@@ -319,6 +331,30 @@ fn produced_dynamic_filter_stream(
     .boxed()
 }
 
+fn apply_merged_dynamic_filter(
+    filter: ApplyDynamicFilter,
+    consumers: &HashMap<u64, Vec<DiscoveredDynamicFilter>>,
+    task_ctx: &Arc<datafusion::execution::TaskContext>,
+) -> Result<()> {
+    let Some(consumers) = consumers.get(&filter.expression_id) else {
+        return Ok(());
+    };
+    // Since all consumers with the same id have a shared state, we only need to update one.
+    let Some(consumer) = consumers.first() else {
+        return Ok(());
+    };
+    let predicate =
+        decode_physical_expr(&filter.predicate, consumer.input_schema.as_ref(), task_ctx)?;
+    let dynamic_filter = dynamic_filter_update_target(
+        &consumer.expression,
+        consumer.input_schema.as_ref(),
+        task_ctx,
+    )?;
+    dynamic_filter.update(predicate)?;
+    dynamic_filter.mark_complete();
+    Ok(())
+}
+
 /// Finds all consumed dynamic filters for the completed task report.
 ///
 /// Note that it's possible that a dynamic filter is consumed by the leaf, updated by
@@ -364,7 +400,12 @@ fn send_metrics_via_channel(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use datafusion::physical_expr::expressions::{Column, lit};
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::logical_expr::Operator;
+    use datafusion::physical_expr::PhysicalExpr;
+    use datafusion::physical_expr::expressions::{
+        BinaryExpr, Column, DynamicFilterPhysicalExpr, lit,
+    };
     use datafusion::prelude::SessionContext;
 
     #[tokio::test]
@@ -434,5 +475,62 @@ mod tests {
             panic!("expected produced dynamic filter");
         };
         filter
+    }
+
+    #[test]
+    fn applies_and_completes_a_merged_filter_for_every_consumer() -> Result<()> {
+        let source_schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
+        let expression = Arc::new(DynamicFilterPhysicalExpr::new(
+            vec![Arc::new(Column::new("key", 0))],
+            lit(true),
+        )) as Arc<dyn PhysicalExpr>;
+        let id = expression.expression_id().unwrap();
+        let first = Arc::clone(&expression)
+            .with_new_children(vec![Arc::new(Column::new("first_key", 1))])?;
+        let second = Arc::clone(&expression)
+            .with_new_children(vec![Arc::new(Column::new("second_key", 2))])?;
+        let consumers = HashMap::from([(
+            id,
+            vec![
+                DiscoveredDynamicFilter {
+                    id,
+                    expression: Arc::clone(&first),
+                    input_schema: Arc::clone(&source_schema),
+                },
+                DiscoveredDynamicFilter {
+                    id,
+                    expression: Arc::clone(&second),
+                    input_schema: Arc::clone(&source_schema),
+                },
+            ],
+        )]);
+        let task_ctx = SessionContext::new().task_ctx();
+        let predicate = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("key", 0)),
+            Operator::Gt,
+            lit(10_i32),
+        )) as Arc<dyn PhysicalExpr>;
+
+        apply_merged_dynamic_filter(
+            ApplyDynamicFilter {
+                expression_id: id,
+                predicate: encode_physical_expr(&predicate, &task_ctx)?,
+            },
+            &consumers,
+            &task_ctx,
+        )?;
+
+        for (consumer, expected) in [(&first, "first_key@1 > 10"), (&second, "second_key@2 > 10")] {
+            let dynamic_filter = consumer
+                .downcast_ref::<DynamicFilterPhysicalExpr>()
+                .unwrap();
+            assert_eq!(dynamic_filter.current()?.to_string(), expected);
+            let serialized = encode_physical_expr(consumer, &task_ctx)?;
+            let Some(ExprType::DynamicFilter(serialized)) = serialized.expr_type else {
+                panic!("expected dynamic filter");
+            };
+            assert!(serialized.is_complete);
+        }
+        Ok(())
     }
 }
