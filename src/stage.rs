@@ -267,7 +267,7 @@ const HORIZONTAL: &str = "─"; // Horizontal line
 pub fn display_plan_ascii(plan: &dyn ExecutionPlan, show_metrics: bool) -> String {
     if let Some(plan) = plan.downcast_ref::<DistributedExec>() {
         let mut f = String::new();
-        display_ascii(plan, Either::Left(plan), 0, show_metrics, &mut f).unwrap();
+        display_ascii(Either::Left(plan), 0, show_metrics, &mut f).unwrap();
         f
     } else {
         match show_metrics {
@@ -280,7 +280,6 @@ pub fn display_plan_ascii(plan: &dyn ExecutionPlan, show_metrics: bool) -> Strin
 }
 
 fn display_ascii(
-    root: &DistributedExec,
     stage: Either<&DistributedExec, &Stage>,
     depth: usize,
     show_metrics: bool,
@@ -354,7 +353,7 @@ fn display_ascii(
         HORIZONTAL.repeat(50)
     )?;
     for input_stage in find_input_stages(plan.as_ref()) {
-        display_ascii(root, Either::Right(input_stage), depth + 1, show_metrics, f)?;
+        display_ascii(Either::Right(input_stage), depth + 1, show_metrics, f)?;
     }
     Ok(())
 }

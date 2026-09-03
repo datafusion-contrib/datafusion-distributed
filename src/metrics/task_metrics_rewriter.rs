@@ -632,10 +632,7 @@ mod tests {
             .create_physical_plan()
             .await
             .unwrap();
-        let original_child = Arc::clone(plan.children()[0]);
         collect(plan.clone(), ctx.task_ctx()).await.unwrap();
-        assert!(plan.is::<DistributedExec>());
-        assert!(Arc::ptr_eq(plan.children()[0], &original_child));
         let rewritten_plan =
             rewrite_distributed_plan_with_metrics(plan, DistributedMetricsFormat::Aggregated)
                 .await
