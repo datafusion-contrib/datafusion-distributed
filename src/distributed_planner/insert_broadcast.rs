@@ -134,18 +134,20 @@ pub(super) fn insert_broadcast_execs(
             return Ok(Transformed::no(node));
         };
 
-        let broadcast_input = build_child
+        let new_build_child: Arc<dyn ExecutionPlan> = if let Some(coalesce) = build_child
             .downcast_ref::<CoalescePartitionsExec>()
             .filter(|coalesce| coalesce.fetch().is_none())
-            .map_or_else(
-                || Arc::clone(build_child),
-                |coalesce| Arc::clone(coalesce.input()),
-            );
-
-        // consumer_task_count=1 is a placeholder and will be corrected during optimizer rule.
-        let broadcast: Arc<dyn ExecutionPlan> = Arc::new(BroadcastExec::new(broadcast_input, 1));
-        let new_build_child: Arc<dyn ExecutionPlan> =
-            Arc::new(CoalescePartitionsExec::new(broadcast));
+        {
+            if coalesce.input().downcast_ref::<BroadcastExec>().is_some() {
+                return Ok(Transformed::no(node));
+            }
+            coalesced_broadcast(Arc::clone(coalesce.input()))
+        } else if build_child.downcast_ref::<BroadcastExec>().is_some() {
+            Arc::new(CoalescePartitionsExec::new(Arc::clone(build_child)))
+        } else {
+            // A fetch-bearing coalesce remains below the broadcast so the limit is global.
+            coalesced_broadcast(Arc::clone(build_child))
+        };
 
         let mut new_children: Vec<Arc<dyn ExecutionPlan>> = children.into_iter().cloned().collect();
         new_children[0] = new_build_child;
@@ -155,6 +157,12 @@ pub(super) fn insert_broadcast_execs(
         )?))
     })
     .map(|transformed| transformed.data)
+}
+
+fn coalesced_broadcast(input: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+    // consumer_task_count=1 is a placeholder and will be corrected during optimizer rule.
+    let broadcast: Arc<dyn ExecutionPlan> = Arc::new(BroadcastExec::new(input, 1));
+    Arc::new(CoalescePartitionsExec::new(broadcast))
 }
 
 fn can_broadcast_left_input(plan: &dyn ExecutionPlan) -> bool {
@@ -329,6 +337,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_insert_broadcast_is_idempotent_for_supported_joins() {
+        let queries = [
+            r#"
+            SELECT a."MinTemp", b."MaxTemp"
+            FROM weather a INNER JOIN weather b
+            ON a."RainToday" = b."RainToday"
+            "#,
+            r#"
+            SELECT a."MinTemp", b."MaxTemp"
+            FROM weather a JOIN weather b ON a."MinTemp" > b."MaxTemp"
+            "#,
+            r#"
+            SELECT a."MinTemp", b."MaxTemp"
+            FROM weather a CROSS JOIN weather b
+            "#,
+        ];
+
+        for query in queries {
+            let once = sql_to_plan_with_broadcast_applications(query, true, 4, 1).await;
+            let twice = sql_to_plan_with_broadcast_applications(query, true, 4, 2).await;
+
+            assert_eq!(once, twice);
+            assert_eq!(once.matches("BroadcastExec").count(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_insert_broadcast_wraps_direct_broadcast_without_nesting() {
+        let query = r#"
+        SELECT a."MinTemp", b."MaxTemp"
+        FROM weather a INNER JOIN weather b
+        ON a."RainToday" = b."RainToday"
+        "#;
+
+        let plan = sql_to_plan_with_direct_broadcast(query).await;
+
+        assert_eq!(plan.matches("BroadcastExec").count(), 1);
+        assert_snapshot!(plan, @"
+        HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
+          CoalescePartitionsExec
+            BroadcastExec: input_partitions=1, consumer_tasks=1, output_partitions=1
+              DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
+          DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
+        ");
+    }
+
+    #[tokio::test]
     async fn test_no_broadcast_nested_loop_left_join() {
         let query = r#"
         SELECT a."MinTemp", b."MaxTemp"
@@ -348,15 +403,48 @@ mod tests {
         broadcast_enabled: bool,
         target_partitions: usize,
     ) -> String {
+        sql_to_plan_with_broadcast_applications(query, broadcast_enabled, target_partitions, 1)
+            .await
+    }
+
+    async fn sql_to_plan_with_broadcast_applications(
+        query: &str,
+        broadcast_enabled: bool,
+        target_partitions: usize,
+        applications: usize,
+    ) -> String {
         let test_plan = TestPlanBuilder::new()
             .target_partitions(target_partitions)
             .broadcast_joins(broadcast_enabled)
             .build()
             .await;
         let ctx = test_plan.get_ctx();
+        let mut plan = test_plan.physical_plan(query).await;
+        for _ in 0..applications {
+            plan = insert_broadcast_execs(plan, ctx.state_ref().read().config_options().as_ref())
+                .expect("failed to insert broadcasts");
+        }
+        format!("{}", displayable(plan.as_ref()).indent(true))
+    }
+
+    async fn sql_to_plan_with_direct_broadcast(query: &str) -> String {
+        let test_plan = TestPlanBuilder::new()
+            .target_partitions(1)
+            .broadcast_joins(true)
+            .build()
+            .await;
+        let ctx = test_plan.get_ctx();
         let plan = test_plan.physical_plan(query).await;
+        let mut children: Vec<_> = plan.children().into_iter().cloned().collect();
+        children[0] = Arc::new(BroadcastExec::new(Arc::clone(&children[0]), 1));
+        let plan = plan
+            .replace_children(
+                children,
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            )
+            .expect("failed to create a direct broadcast build");
         let plan = insert_broadcast_execs(plan, ctx.state_ref().read().config_options().as_ref())
-            .expect("failed to insert broadcasts");
+            .expect("failed to normalize a direct broadcast build");
         format!("{}", displayable(plan.as_ref()).indent(true))
     }
 }
