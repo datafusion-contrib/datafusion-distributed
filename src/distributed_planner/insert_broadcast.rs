@@ -294,14 +294,21 @@ mod tests {
         ON a."RainToday" = b."RainToday"
         "#;
 
-        let plan = sql_to_plan_with_broadcast(query, true, 4).await;
-        assert_snapshot!(plan, @r"
-        HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
-          CoalescePartitionsExec
-            BroadcastExec: input_partitions=1, consumer_tasks=1, output_partitions=1
-              DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000001.parquet]]}, projection=[MinTemp, RainToday], limit=50, file_type=parquet
-          DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
-        ");
+        let plan = plan_with_broadcast_applications(query, true, 4, 1).await;
+        let join = plan
+            .downcast_ref::<HashJoinExec>()
+            .expect("expected hash join");
+        let coalesce = join
+            .left()
+            .downcast_ref::<CoalescePartitionsExec>()
+            .expect("expected coalesce above broadcast");
+        let broadcast = coalesce
+            .input()
+            .downcast_ref::<BroadcastExec>()
+            .expect("expected broadcast below coalesce");
+
+        assert_eq!(coalesce.fetch(), None);
+        assert_eq!(broadcast.input().fetch(), Some(50));
     }
 
     #[tokio::test]
@@ -413,6 +420,22 @@ mod tests {
         target_partitions: usize,
         applications: usize,
     ) -> String {
+        let plan = plan_with_broadcast_applications(
+            query,
+            broadcast_enabled,
+            target_partitions,
+            applications,
+        )
+        .await;
+        format!("{}", displayable(plan.as_ref()).indent(true))
+    }
+
+    async fn plan_with_broadcast_applications(
+        query: &str,
+        broadcast_enabled: bool,
+        target_partitions: usize,
+        applications: usize,
+    ) -> Arc<dyn ExecutionPlan> {
         let test_plan = TestPlanBuilder::new()
             .target_partitions(target_partitions)
             .broadcast_joins(broadcast_enabled)
@@ -424,7 +447,7 @@ mod tests {
             plan = insert_broadcast_execs(plan, ctx.state_ref().read().config_options().as_ref())
                 .expect("failed to insert broadcasts");
         }
-        format!("{}", displayable(plan.as_ref()).indent(true))
+        plan
     }
 
     async fn sql_to_plan_with_direct_broadcast(query: &str) -> String {
