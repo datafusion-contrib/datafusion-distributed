@@ -71,7 +71,6 @@ impl TableProvider for IcebergCatalogTableProvider {
             .load_table(&self.table_ident)
             .await
             .map_err(df_err)?;
-
         let mut data_source = IcebergDataSource::new(
             table.clone(),
             self.schema.clone(),

@@ -12,6 +12,7 @@ mod tests {
 
     // Took values from testdata/iceberg/taxi/metadata/v1.metadata.json snapshot summary.
     // Under `snapshots` key in the JSON
+    const TAXI_SNAPSHOT_ID: i64 = 3_167_948_105_555_765_929;
     const TAXI_ROWS: usize = 175_000;
     const TAXI_BYTES: usize = 4_480_382;
     const TAXI_COLUMNS: usize = 13;
@@ -219,6 +220,23 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn reports_statistics_for_the_selected_snapshot() -> Result<()> {
+        let harness = IcebergTestHarness::new().await?;
+        harness
+            .query(&format!(
+                "CREATE EXTERNAL TABLE taxi_snapshot STORED AS ICEBERG \
+                 LOCATION '{FIXTURE_URI}/metadata/v1.metadata.json' \
+                 OPTIONS ('iceberg.snapshot_id' '{TAXI_SNAPSHOT_ID}')"
+            ))
+            .await?;
+        let stats = source_statistics(&harness, "SELECT * FROM taxi_snapshot").await?;
+
+        assert_eq!(stats.num_rows, Precision::Exact(TAXI_ROWS));
+        assert_eq!(stats.total_byte_size, Precision::Exact(TAXI_BYTES));
+        Ok(())
+    }
+
     /// Finds the single Iceberg `DataSourceExec` in the plan and returns the
     /// statistics reported by the `IcebergDataSource` itself.
     async fn source_statistics(harness: &IcebergTestHarness, sql: &str) -> Result<Statistics> {
@@ -228,14 +246,13 @@ mod tests {
     }
 
     fn find_iceberg_exec(plan: &Arc<dyn ExecutionPlan>) -> Option<Arc<DataSourceExec>> {
-        if let Some(exec) = plan.downcast_ref::<DataSourceExec>() {
-            if exec
+        if let Some(exec) = plan.downcast_ref::<DataSourceExec>()
+            && exec
                 .data_source()
                 .downcast_ref::<IcebergDataSource>()
                 .is_some()
-            {
-                return Some(Arc::new(exec.clone()));
-            }
+        {
+            return Some(Arc::new(exec.clone()));
         }
         plan.children().into_iter().find_map(find_iceberg_exec)
     }

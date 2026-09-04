@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::memory::DataSourceExec;
 use datafusion::catalog::{Session, TableProvider};
-use datafusion::common::{Result, plan_datafusion_err};
+use datafusion::common::{Result, exec_datafusion_err, plan_datafusion_err};
 use datafusion::datasource::TableType;
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown};
 use datafusion::physical_expr::Partitioning;
@@ -73,6 +73,14 @@ impl TableProvider for IcebergStaticTableProvider {
         filters: &[Expr],
         limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
+        // Guard for invalid snapshot id's
+        if let Some(id) = self.snapshot_id
+            && self.table.metadata().snapshot_by_id(id).is_none()
+        {
+            return Err(exec_datafusion_err!(
+                "Snapshot {id} not found in table's metadata"
+            ));
+        }
         let mut data_source = IcebergDataSource::new(
             self.table.clone(),
             self.schema.clone(),
