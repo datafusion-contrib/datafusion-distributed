@@ -24,7 +24,7 @@ use datafusion::common::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
 use datafusion::execution::memory_pool::MemoryConsumer;
 use datafusion::physical_expr_common::metrics::{Count, Label, MetricBuilder, MetricValue, Time};
-use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
+use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, Gauge};
 use futures::stream::BoxStream;
 use futures::{FutureExt, Stream, StreamExt, TryStreamExt};
 use http::{Extensions, HeaderMap};
@@ -104,7 +104,11 @@ impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSy
 
         // Track the maximum memory used to buffer recieved messages.
         let mut curr_max_mem = 0;
-        let max_mem_used = MetricBuilder::new(&metrics).global_gauge("max_mem_used");
+        let max_mem_used = Gauge::new();
+        MetricBuilder::new(&metrics).build(MetricValue::PeakMemoryUsage {
+            name: "max_mem_used".into(),
+            gauge: max_mem_used.clone(),
+        });
         // Track the total encoded size of all recieved messages.
         let bytes_transferred = MetricBuilder::new(&metrics).bytes_counter("bytes_transferred");
         let msg_count = MetricBuilder::new(&metrics).global_counter("msg_count");
