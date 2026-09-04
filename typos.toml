@@ -1,0 +1,27 @@
+[default.extend-words]
+# ASCII art diagram in work_unit_feed.rs truncates "RemotWorkUnitFeed" to fit a narrow box
+Remot = "Remot"
+# ratatui is the Rust crate name for the terminal UI library used by the console (https://ratatui.rs/)
+ratatui = "ratatui"
+# NDV (Number of Distinct Values) is a standard database statistics abbreviation;
+# typos sees "ND" when tokenising the compound identifier "NDVs".
+# "ND" also appears verbatim as a TPC-DS SQL token in plan test assertions.
+ND = "ND"
+# ClickBench dataset schema uses these column names verbatim; they appear in plan test assertions
+Trafic = "Trafic"
+Artifical = "Artifical"
+# TPC-DS q44 uses "asceding" as a column alias; appears verbatim in plan test assertions
+asceding = "asceding"
+
+[files]
+extend-exclude = [
+    "*.lock",
+    # External TPC-DS benchmark queries with spec-defined identifiers we don't control
+    "testdata/tpcds/",
+    # External ClickBench benchmark queries with dataset-defined identifiers we don't control
+    "testdata/clickbench/",
+    # Generated protobuf / gRPC code
+    "src/protocol/grpc/generated/",
+    # Code generator crate (operates on external schemas)
+    "codegen/",
+]

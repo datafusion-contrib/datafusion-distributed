@@ -820,7 +820,7 @@ fn display_plan(
 }
 
 /// We want to display a single plan as a three row table with the top and bottom being
-/// graphvis ports.
+/// graphviz ports.
 ///
 /// We accept an index to make the node name unique in the graphviz output within
 /// a plan at the same depth
