@@ -14,6 +14,7 @@ use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr_common::metrics::{Gauge, MetricValue, MetricsSet};
+use datafusion::physical_plan::metrics::MetricValue::PeakMemoryUsage;
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricBuilder, Time};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
@@ -82,7 +83,14 @@ impl SamplerExecMetrics {
             kick_off_to_execution_p50: bdr().p50_latency("kick_off_to_execution_p50"),
             kick_off_to_execution_max: bdr().max_latency("kick_off_to_execution_max"),
             max_batches_peeked: bdr().max_gauge("max_batches_peeked"),
-            max_mem_used: bdr().global_gauge("max_mem_used"),
+            max_mem_used: {
+                let gauge = Gauge::new();
+                bdr().build(PeakMemoryUsage {
+                    name: "max_mem_used".into(),
+                    gauge: gauge.clone(),
+                });
+                gauge
+            },
             bytes_ready: bdr().bytes_counter("bytes_ready"),
             elapsed_compute: {
                 let time = Time::new();
