@@ -1,3 +1,4 @@
+use datafusion::physical_plan::ReplaceChildrenOptions;
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use datafusion::arrow::array::UInt8Array;
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
@@ -146,6 +147,14 @@ impl ExecutionPlan for SyntheticExec {
         _children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         unimplemented!()
+    }
+
+    fn replace_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+        _options: ReplaceChildrenOptions,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        self.with_new_children(children)
     }
 
     fn execute(

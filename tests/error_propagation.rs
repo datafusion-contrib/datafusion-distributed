@@ -1,3 +1,4 @@
+use datafusion::physical_plan::ReplaceChildrenOptions;
 #[cfg(all(feature = "integration", test))]
 mod tests {
     use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
@@ -127,6 +128,14 @@ mod tests {
                 children[0].clone(),
                 &self.msg,
             )))
+        }
+
+        fn replace_children(
+            self: Arc<Self>,
+            children: Vec<Arc<dyn ExecutionPlan>>,
+            _options: ReplaceChildrenOptions,
+        ) -> Result<Arc<dyn ExecutionPlan>> {
+            self.with_new_children(children)
         }
 
         fn execute(
