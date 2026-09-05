@@ -9,6 +9,8 @@ use datafusion::error::Result;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_plan::{ExecutionPlan, displayable};
 use datafusion::prelude::{SessionConfig, SessionContext};
+use datafusion_distributed::DistributedCodec;
+use datafusion_proto::physical_plan::AsExecutionPlan;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use iceberg::io::{
@@ -61,6 +63,14 @@ impl IcebergTestHarness {
 
     pub async fn physical_plan(&self, sql: &str) -> Result<Arc<dyn ExecutionPlan>> {
         self.ctx.sql(sql).await?.create_physical_plan().await
+    }
+
+    pub fn roundtrip_plan(&self, plan: Arc<dyn ExecutionPlan>) -> Result<Arc<dyn ExecutionPlan>> {
+        let task_ctx = self.ctx.task_ctx();
+        let codec = DistributedCodec::new_combined_with_user(task_ctx.session_config());
+        let proto =
+            datafusion_proto::protobuf::PhysicalPlanNode::try_from_physical_plan(plan, &codec)?;
+        proto.try_into_physical_plan(&task_ctx, &codec)
     }
 }
 

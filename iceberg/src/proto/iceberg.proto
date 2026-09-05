@@ -1,6 +1,22 @@
 syntax = "proto3";
 package iceberg;
 
+message IcebergDataSource {
+  DataFusionSchema schema = 1;
+  WorkUnitFeed feed = 2;
+  DataFusionPartitioning partitioning = 3;
+  optional uint64 fetch = 4;
+  map<string, string> storage_properties = 5;
+}
+
+message WorkUnitFeed {
+  bytes id = 1;
+}
+
+// The generated Rust fields use DataFusion's canonical protobuf types.
+message DataFusionSchema {}
+message DataFusionPartitioning {}
+
 message FileScanTask {
   uint32 context_id = 1;
   FileScanTaskContext context = 2;

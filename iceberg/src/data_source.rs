@@ -19,6 +19,7 @@ use datafusion::prelude::Expr;
 use datafusion_distributed::WorkUnitFeed;
 use futures::{StreamExt, TryStreamExt};
 use iceberg::arrow::ArrowReaderBuilder;
+use iceberg::io::FileIO;
 use iceberg::spec::SnapshotRef;
 
 use crate::common::{convert_filters_to_predicate, df_err, iceberg_err};
@@ -122,14 +123,13 @@ const TOTAL_FILE_SIZE: &str = "total-files-size";
 /// This distributed mechanism is transparent to this [DataSource].
 #[derive(Debug, Clone)]
 pub struct IcebergDataSource {
-    schema: SchemaRef,
-    partitioning: Partitioning,
-    fetch: Option<usize>,
-    metrics: ExecutionPlanMetricsSet,
-    current_snapshot: Option<SnapshotRef>,
-    iceberg_file_io: iceberg::io::FileIO,
-    iceberg_runtime: iceberg::Runtime,
-    feed: WorkUnitFeed<IcebergWorkUnitFeed>,
+    pub(crate) schema: SchemaRef,
+    pub(crate) partitioning: Partitioning,
+    pub(crate) fetch: Option<usize>,
+    pub(crate) metrics: ExecutionPlanMetricsSet,
+    pub(crate) iceberg_file_io: FileIO,
+    pub(crate) iceberg_runtime: iceberg::Runtime,
+    pub(crate) feed: WorkUnitFeed<IcebergWorkUnitFeed>,
 }
 
 /// Optional fields for building an [IcebergDataSource].
@@ -160,8 +160,6 @@ impl IcebergDataSource {
                 .collect::<Vec<String>>()
         });
 
-        let current_snapshot = table.metadata().current_snapshot().cloned();
-
         let predicates = convert_filters_to_predicate(opts.filters);
 
         Self {
@@ -181,7 +179,6 @@ impl IcebergDataSource {
                 partitioning,
                 sync_manager: Default::default(),
             }),
-            current_snapshot,
         }
     }
 }
@@ -262,7 +259,13 @@ impl DataSource for IcebergDataSource {
     }
 
     fn partition_statistics(&self, _partition: Option<usize>) -> Result<Arc<Statistics>> {
-        stats_from_snapshot(self.current_snapshot.as_ref(), &self.schema)
+        let Some(feed) = self.feed.inner() else {
+            return Ok(Arc::new(Statistics::new_unknown(&self.schema)));
+        };
+        stats_from_snapshot(
+            feed.iceberg_table.metadata().current_snapshot(),
+            &self.schema,
+        )
     }
 
     fn with_fetch(&self, fetch: Option<usize>) -> Option<Arc<dyn DataSource>> {
