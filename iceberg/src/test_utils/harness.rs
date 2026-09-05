@@ -26,7 +26,7 @@ pub const FIXTURE_URI: &str = "s3://iceberg-test/warehouse/taxi";
 const WAREHOUSE_URI: &str = "s3://iceberg-test/warehouse/";
 
 pub struct IcebergTestHarness {
-    ctx: SessionContext,
+    pub ctx: SessionContext,
 }
 
 impl IcebergTestHarness {

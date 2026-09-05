@@ -7,10 +7,12 @@ mod tests {
     use datafusion::datasource::source::DataSourceExec;
     use datafusion::error::Result;
     use datafusion::physical_plan::{ExecutionPlan, displayable};
-    use datafusion_distributed_iceberg::IcebergDataSource;
     use datafusion_distributed_iceberg::test_utils::{FIXTURE_URI, IcebergTestHarness};
+    use datafusion_distributed_iceberg::{IcebergDataSource, IcebergExt};
 
-    // Values from testdata/iceberg/taxi/metadata/v1.metadata.json snapshot summary.
+    // Took values from testdata/iceberg/taxi/metadata/v1.metadata.json snapshot summary.
+    // Under `snapshots` key in the JSON
+    const TAXI_SNAPSHOT_ID: i64 = 3_167_948_105_555_765_929;
     const TAXI_ROWS: usize = 175_000;
     const TAXI_BYTES: usize = 4_480_382;
     const TAXI_COLUMNS: usize = 13;
@@ -42,8 +44,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reports_exact_row_count_and_byte_size_for_full_scan_w_col_stats() -> Result<()> {
+        let mut harness = IcebergTestHarness::new().await?;
+        harness.ctx.set_iceberg_column_stats_enabled(true);
+        let stats = source_statistics(&harness, "SELECT * FROM taxi").await?;
+
+        assert_eq!(stats.num_rows, Precision::Exact(TAXI_ROWS));
+        assert_eq!(stats.total_byte_size, Precision::Exact(TAXI_BYTES));
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn column_statistics_match_full_schema() -> Result<()> {
         let harness = IcebergTestHarness::new().await?;
+        let stats = source_statistics(&harness, "SELECT * FROM taxi").await?;
+
+        assert_eq!(stats.column_statistics.len(), TAXI_COLUMNS);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn column_statistics_match_full_schema_w_col_stats() -> Result<()> {
+        let mut harness = IcebergTestHarness::new().await?;
+        harness.ctx.set_iceberg_column_stats_enabled(true);
         let stats = source_statistics(&harness, "SELECT * FROM taxi").await?;
 
         assert_eq!(stats.column_statistics.len(), TAXI_COLUMNS);
@@ -55,6 +78,19 @@ mod tests {
         // Regression: a column_statistics vec shorter than the output schema
         // makes DataFusion panic while propagating statistics upstream.
         let harness = IcebergTestHarness::new().await?;
+        let stats = source_statistics(&harness, "SELECT vendor_id, pickup_date FROM taxi").await?;
+
+        assert_eq!(stats.column_statistics.len(), 2);
+        assert_eq!(stats.num_rows, Precision::Exact(TAXI_ROWS));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn column_statistics_match_projected_schema_w_col_stats() -> Result<()> {
+        // Regression: a column_statistics vec shorter than the output schema
+        // makes DataFusion panic while propagating statistics upstream.
+        let mut harness = IcebergTestHarness::new().await?;
+        harness.ctx.set_iceberg_column_stats_enabled(true);
         let stats = source_statistics(&harness, "SELECT vendor_id, pickup_date FROM taxi").await?;
 
         assert_eq!(stats.column_statistics.len(), 2);
@@ -106,6 +142,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn verify_column_stats_in_explain() -> Result<()> {
+        let mut harness = IcebergTestHarness::new().await?;
+        harness.ctx.set_iceberg_column_stats_enabled(true);
+        let plan = harness
+            .physical_plan("SELECT vendor_id, pickup_date FROM taxi")
+            .await?;
+
+        let display = displayable(plan.as_ref())
+            .set_show_statistics(true)
+            .indent(true)
+            .to_string();
+
+        assert!(display.contains("Col[0]:"));
+        assert!(display.contains("vendor_id"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn explain_shows_statistics_on_the_iceberg_source_w_col_stats() -> Result<()> {
+        let mut harness = IcebergTestHarness::new().await?;
+        harness.ctx.set_iceberg_column_stats_enabled(true);
+        let plan = harness.physical_plan("SELECT vendor_id FROM taxi").await?;
+        let display = displayable(plan.as_ref())
+            .set_show_statistics(true)
+            .indent(true)
+            .to_string();
+
+        insta::assert_snapshot!(display, @"
+        CooperativeExec, statistics=[Rows=Exact(175000), Bytes=Exact(4480382), [(Col[0]:)]]
+          DataSourceExec: format=iceberg, projection=[vendor_id], statistics=[Rows=Exact(175000), Bytes=Exact(4480382), [(Col[0]:)]]
+        ");
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn exact_row_count_lets_count_star_skip_the_scan() -> Result<()> {
         // With Precision::Exact(num_rows) the AggregateStatistics optimizer
         // rule answers COUNT(*) from metadata without reading any data file.
@@ -126,6 +198,45 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn exact_row_count_lets_count_star_skip_the_scan_w_col_stats() -> Result<()> {
+        // With Precision::Exact(num_rows) the AggregateStatistics optimizer
+        // rule answers COUNT(*) from metadata without reading any data file.
+        let mut harness = IcebergTestHarness::new().await?;
+        harness.ctx.set_iceberg_column_stats_enabled(true);
+        let (plan, batches) = harness.query("SELECT count(*) FROM taxi").await?;
+
+        insta::assert_snapshot!(plan, @"
+        ProjectionExec: expr=[175000 as count(*)]
+          PlaceholderRowExec
+        ");
+        insta::assert_snapshot!(batches, @"
+        +----------+
+        | count(*) |
+        +----------+
+        | 175000   |
+        +----------+
+        ");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reports_statistics_for_the_selected_snapshot() -> Result<()> {
+        let harness = IcebergTestHarness::new().await?;
+        harness
+            .query(&format!(
+                "CREATE EXTERNAL TABLE taxi_snapshot STORED AS ICEBERG \
+                 LOCATION '{FIXTURE_URI}/metadata/v1.metadata.json' \
+                 OPTIONS ('iceberg.snapshot_id' '{TAXI_SNAPSHOT_ID}')"
+            ))
+            .await?;
+        let stats = source_statistics(&harness, "SELECT * FROM taxi_snapshot").await?;
+
+        assert_eq!(stats.num_rows, Precision::Exact(TAXI_ROWS));
+        assert_eq!(stats.total_byte_size, Precision::Exact(TAXI_BYTES));
+        Ok(())
+    }
+
     /// Finds the single Iceberg `DataSourceExec` in the plan and returns the
     /// statistics reported by the `IcebergDataSource` itself.
     async fn source_statistics(harness: &IcebergTestHarness, sql: &str) -> Result<Statistics> {
@@ -135,14 +246,13 @@ mod tests {
     }
 
     fn find_iceberg_exec(plan: &Arc<dyn ExecutionPlan>) -> Option<Arc<DataSourceExec>> {
-        if let Some(exec) = plan.downcast_ref::<DataSourceExec>() {
-            if exec
+        if let Some(exec) = plan.downcast_ref::<DataSourceExec>()
+            && exec
                 .data_source()
                 .downcast_ref::<IcebergDataSource>()
                 .is_some()
-            {
-                return Some(Arc::new(exec.clone()));
-            }
+        {
+            return Some(Arc::new(exec.clone()));
         }
         plan.children().into_iter().find_map(find_iceberg_exec)
     }

@@ -14,6 +14,8 @@ extensions_options! {
         pub row_group_filtering_enabled: bool, default = true
         /// Whether to apply row-level selections while reading Parquet files.
         pub row_selection_enabled: bool, default = false
+        /// Whether to include column statistics read during planning
+        pub column_stats_enabled: bool, default = false
     }
 }
 

@@ -95,6 +95,8 @@ impl PhysicalExtensionCodec for IcebergCodec {
             partitioning,
             fetch,
             metrics: Default::default(),
+            column_stats: None,
+            table_snapshot: None,
             iceberg_file_io,
             iceberg_runtime: self.iceberg_runtime.clone(),
             feed,
