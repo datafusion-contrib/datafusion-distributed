@@ -42,6 +42,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reports_statistics_for_the_selected_snapshot() -> Result<()> {
+        let harness = IcebergTestHarness::builder()
+            .with_table_metadata(historical_taxi_metadata())
+            .with_table_option("iceberg.snapshot_id", "42")
+            .build()
+            .await?;
+        let stats = source_statistics(&harness, "SELECT * FROM taxi").await?;
+
+        // TODO(#687): Make statistics use the selected snapshot.
+        assert_eq!(stats.num_rows, Precision::Exact(42));
+        assert_eq!(stats.total_byte_size, Precision::Exact(4_242));
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn column_statistics_match_full_schema() -> Result<()> {
         let harness = IcebergTestHarness::new().await?;
         let stats = source_statistics(&harness, "SELECT * FROM taxi").await?;
@@ -164,6 +179,37 @@ mod tests {
             .build();
         taxi_metadata_builder()
             .set_branch_snapshot(snapshot, "main")
+            .expect("taxi snapshot can be added")
+            .build()
+            .expect("taxi metadata is valid")
+            .metadata
+    }
+
+    fn historical_taxi_metadata() -> TableMetadata {
+        let metadata = taxi_metadata();
+        let current = metadata.current_snapshot().expect("taxi has a snapshot");
+        // The summary totals are synthetic; the manifest still describes the full taxi data.
+        // This fixture is for statistics planning, not executing a 42-row scan.
+        let historical = Snapshot::builder()
+            .with_snapshot_id(42)
+            .with_sequence_number(current.sequence_number() - 1)
+            .with_timestamp_ms(current.timestamp_ms() - 1)
+            .with_manifest_list(current.manifest_list())
+            .schema_id_opt(current.schema_id())
+            .with_summary(Summary {
+                operation: Operation::Append,
+                additional_properties: [
+                    ("total-records".to_string(), "42".to_string()),
+                    ("total-files-size".to_string(), "4242".to_string()),
+                ]
+                .into_iter()
+                .collect(),
+            })
+            .build();
+        taxi_metadata_builder()
+            .add_snapshot(historical)
+            .expect("historical snapshot can be added")
+            .set_branch_snapshot(current.as_ref().clone(), "main")
             .expect("taxi snapshot can be added")
             .build()
             .expect("taxi metadata is valid")
