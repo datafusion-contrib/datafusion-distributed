@@ -1,3 +1,5 @@
+use std::collections::{BTreeMap, HashMap};
+use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -5,7 +7,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::dataframe::DataFrame;
-use datafusion::error::Result;
+use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_plan::{ExecutionPlan, displayable};
 use datafusion::prelude::{SessionConfig, SessionContext};
@@ -17,36 +19,62 @@ use iceberg::io::{
     FileMetadata, FileRead, FileWrite, InputFile, LocalFsStorage, OutputFile, Storage,
     StorageConfig, StorageFactory,
 };
+use iceberg::spec::TableMetadata;
 use iceberg::{Error, ErrorKind, Result as IcebergResult};
 use serde::{Deserialize, Serialize};
 
+use super::taxi_metadata;
 use crate::{IcebergExt, IcebergIntegrationOptions};
 
 pub const FIXTURE_URI: &str = "s3://iceberg-test/warehouse/taxi";
 const WAREHOUSE_URI: &str = "s3://iceberg-test/warehouse/";
+const FIXTURE_METADATA_URI: &str = "s3://iceberg-test/warehouse/taxi/metadata/v1.metadata.json";
 
 pub struct IcebergTestHarness {
     ctx: SessionContext,
 }
 
 impl IcebergTestHarness {
+    pub fn builder() -> IcebergTestHarnessBuilder {
+        IcebergTestHarnessBuilder::default()
+    }
+
     pub async fn new() -> Result<Self> {
+        Self::builder().build().await
+    }
+
+    async fn create(
+        storage_factory: FixtureStorageFactory,
+        table_options: BTreeMap<String, String>,
+    ) -> Result<Self> {
         let state = SessionStateBuilder::new()
             .with_default_features()
             .with_config(SessionConfig::new().with_target_partitions(4))
             .with_iceberg_integration(IcebergIntegrationOptions {
-                storage_factory: Arc::new(FixtureStorageFactory::default()),
+                storage_factory: Arc::new(storage_factory),
                 iceberg_runtime: iceberg::Runtime::current(),
             })
             .build();
         let ctx = SessionContext::new_with_state(state);
-        ctx.sql(&format!(
+        let mut statement = format!(
             "CREATE EXTERNAL TABLE taxi STORED AS ICEBERG \
-         LOCATION '{FIXTURE_URI}/metadata/v1.metadata.json'"
-        ))
-        .await?
-        .collect()
-        .await?;
+             LOCATION '{FIXTURE_METADATA_URI}'"
+        );
+        if !table_options.is_empty() {
+            let options = table_options
+                .into_iter()
+                .map(|(key, value)| {
+                    format!(
+                        "'{}' '{}'",
+                        key.replace('\'', "''"),
+                        value.replace('\'', "''")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            statement.push_str(&format!(" OPTIONS ({options})"));
+        }
+        ctx.sql(&statement).await?.collect().await?;
         Ok(Self { ctx })
     }
 
@@ -74,15 +102,61 @@ impl IcebergTestHarness {
     }
 }
 
+pub struct IcebergTestHarnessBuilder {
+    metadata: TableMetadata,
+    table_options: BTreeMap<String, String>,
+}
+
+impl Default for IcebergTestHarnessBuilder {
+    fn default() -> Self {
+        Self {
+            metadata: taxi_metadata(),
+            table_options: BTreeMap::new(),
+        }
+    }
+}
+
+impl IcebergTestHarnessBuilder {
+    /// Serves the supplied metadata while reading data files from the taxi fixture.
+    pub fn with_table_metadata(mut self, metadata: TableMetadata) -> Self {
+        self.metadata = metadata;
+        self
+    }
+
+    /// Sets a table option; later values replace earlier ones for the same key.
+    pub fn with_table_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.table_options.insert(key.into(), value.into());
+        self
+    }
+
+    pub async fn build(self) -> Result<IcebergTestHarness> {
+        let metadata = serde_json::to_vec(&self.metadata)
+            .map_err(|error| DataFusionError::External(Box::new(error)))?;
+        let storage_factory = FixtureStorageFactory::with_file(FIXTURE_METADATA_URI, metadata);
+        IcebergTestHarness::create(storage_factory, self.table_options).await
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct FixtureStorageFactory {
     root: PathBuf,
+    files: HashMap<String, Vec<u8>>,
 }
 
 impl Default for FixtureStorageFactory {
     fn default() -> Self {
         Self {
             root: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../testdata/iceberg"),
+            files: HashMap::new(),
+        }
+    }
+}
+
+impl FixtureStorageFactory {
+    fn with_file(path: &str, bytes: Vec<u8>) -> Self {
+        Self {
+            files: HashMap::from([(path.to_string(), bytes)]),
+            ..Self::default()
         }
     }
 }
@@ -92,6 +166,7 @@ impl StorageFactory for FixtureStorageFactory {
     fn build(&self, _config: &StorageConfig) -> IcebergResult<Arc<dyn Storage>> {
         Ok(Arc::new(FixtureStorage {
             root: self.root.clone(),
+            files: self.files.clone(),
         }))
     }
 }
@@ -99,9 +174,19 @@ impl StorageFactory for FixtureStorageFactory {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct FixtureStorage {
     root: PathBuf,
+    files: HashMap<String, Vec<u8>>,
 }
 
 impl FixtureStorage {
+    fn input(&self, path: &str) -> IcebergResult<FixtureInput<'_>> {
+        match self.files.get(path) {
+            Some(bytes) => Ok(FixtureInput::Memory(bytes)),
+            None => Ok(FixtureInput::Local(
+                self.local().new_input(&self.local_path(path)?)?,
+            )),
+        }
+    }
+
     fn local_path(&self, path: &str) -> IcebergResult<String> {
         let relative = path.strip_prefix(WAREHOUSE_URI).ok_or_else(|| {
             Error::new(
@@ -121,19 +206,19 @@ impl FixtureStorage {
 #[typetag::serde]
 impl Storage for FixtureStorage {
     async fn exists(&self, path: &str) -> IcebergResult<bool> {
-        self.local().exists(&self.local_path(path)?).await
+        self.input(path)?.exists().await
     }
 
     async fn metadata(&self, path: &str) -> IcebergResult<FileMetadata> {
-        self.local().metadata(&self.local_path(path)?).await
+        self.input(path)?.metadata().await
     }
 
     async fn read(&self, path: &str) -> IcebergResult<Bytes> {
-        self.local().read(&self.local_path(path)?).await
+        self.input(path)?.read().await
     }
 
     async fn reader(&self, path: &str) -> IcebergResult<Box<dyn FileRead>> {
-        self.local().reader(&self.local_path(path)?).await
+        self.input(path)?.reader().await
     }
 
     async fn write(&self, path: &str, bytes: Bytes) -> IcebergResult<()> {
@@ -166,5 +251,63 @@ impl Storage for FixtureStorage {
 
     fn new_output(&self, path: &str) -> IcebergResult<OutputFile> {
         Ok(OutputFile::new(Arc::new(self.clone()), path.to_string()))
+    }
+}
+
+enum FixtureInput<'a> {
+    Memory(&'a [u8]),
+    Local(InputFile),
+}
+
+impl FixtureInput<'_> {
+    async fn exists(self) -> IcebergResult<bool> {
+        match self {
+            Self::Memory(_) => Ok(true),
+            Self::Local(input) => input.exists().await,
+        }
+    }
+
+    async fn metadata(self) -> IcebergResult<FileMetadata> {
+        match self {
+            Self::Memory(bytes) => Ok(FileMetadata {
+                size: bytes.len() as u64,
+            }),
+            Self::Local(input) => input.metadata().await,
+        }
+    }
+
+    async fn read(self) -> IcebergResult<Bytes> {
+        match self {
+            Self::Memory(bytes) => Ok(Bytes::copy_from_slice(bytes)),
+            Self::Local(input) => input.read().await,
+        }
+    }
+
+    async fn reader(self) -> IcebergResult<Box<dyn FileRead>> {
+        match self {
+            Self::Memory(bytes) => Ok(Box::new(FixtureFileRead(Bytes::copy_from_slice(bytes)))),
+            Self::Local(input) => input.reader().await,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct FixtureFileRead(Bytes);
+
+#[async_trait]
+impl FileRead for FixtureFileRead {
+    async fn read(&self, range: Range<u64>) -> IcebergResult<Bytes> {
+        let start = range.start as usize;
+        let end = range.end as usize;
+        if start > end || end > self.0.len() {
+            return Err(Error::new(
+                ErrorKind::DataInvalid,
+                format!(
+                    "range {start}..{end} is out of bounds for fixture with length {}",
+                    self.0.len()
+                ),
+            ));
+        }
+        Ok(self.0.slice(start..end))
     }
 }
