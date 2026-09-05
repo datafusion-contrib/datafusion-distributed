@@ -344,7 +344,6 @@ mod tests {
     use datafusion::physical_expr::PhysicalExpr;
     use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
-    use datafusion::physical_plan::displayable;
     use datafusion::physical_plan::empty::EmptyExec;
     use datafusion::physical_plan::joins::PartitionMode;
     use datafusion::physical_plan::union::UnionExec;
@@ -357,275 +356,163 @@ mod tests {
     // ── transform_up_async ───────────────────────────────────────────────────
 
     #[tokio::test]
-    async fn transform_up_async_bottom_up_order() {
-        assert_snapshot!(trace_async_up(single(leaf())).await, @r"
-        Leaf
-        Single
-        ");
-    }
-
-    #[tokio::test]
-    async fn transform_up_async_rewrites_children() {
-        assert_snapshot!(trace_async_up_rewrite(single(leaf())).await, @r"
-        Single
-        Single
-        Leaf
-        ");
-    }
-
-    #[tokio::test]
-    async fn transform_up_async_processes_siblings_concurrently() {
-        let plan = union(vec![leaf(), leaf()]);
-        assert_snapshot!(trace_async_up_concurrently(plan, 2).await, @r"
-        Leaf
-        Leaf
-        Union
-        ");
-    }
-
-    #[tokio::test]
-    async fn transform_up_async_jump_skips_parent() {
-        let child = leaf();
-        let plan = single(Arc::clone(&child));
-        assert_snapshot!(trace_async_up_with(plan, |p| {
-            if Arc::ptr_eq(p, &child) { TreeNodeRecursion::Jump } else { TreeNodeRecursion::Continue }
-        }).await, @"Leaf [->jump]");
-    }
-
-    #[tokio::test]
-    async fn transform_up_async_stop_skips_parent() {
+    async fn transform_up_async_continue() {
         assert_snapshot!(
-            trace_async_up_with(single(leaf()), |_| TreeNodeRecursion::Stop).await,
-            @"Leaf [->stop]",
+            trace_transform_up_async_with(
+                single(union(vec![leaf(), single(leaf())])),
+                |plan| async move {
+                    if plan.is::<EmptyExec>() {
+                        Ok(Transformed::yes(single(plan)))
+                    } else {
+                        Ok(Transformed::no(plan))
+                    }
+                },
+            )
+            .await,
+            @r"
+        Leaf transformed=true
+        Leaf transformed=true
+        Single transformed=false
+        Union transformed=false
+        Single transformed=false
+        === Result ===
+        transformed=true tnr=Continue
+        Single
+          Union
+            Single
+              Leaf
+            Single
+              Single
+                Leaf
+        ",
         );
     }
 
     #[tokio::test]
-    async fn transform_up_async_deep_bottom_up_order() {
-        assert_snapshot!(trace_async_up(single(single(single(leaf())))).await, @r"
-        Leaf
+    async fn transform_up_async_jump() {
+        let jumper = leaf();
+        assert_snapshot!(
+            trace_transform_up_async_with(
+                union(vec![single(Arc::clone(&jumper)), single(leaf())]),
+                move |plan| {
+                    let jumper = Arc::clone(&jumper);
+                    async move {
+                        let tnr = if Arc::ptr_eq(&plan, &jumper) {
+                            TreeNodeRecursion::Jump
+                        } else {
+                            TreeNodeRecursion::Continue
+                        };
+                        Ok(Transformed::new(single(plan), true, tnr))
+                    }
+                },
+            )
+            .await,
+            // If the jump, did not kick-in, we would be seeing two "Single" tags here.
+            @r"
+        Leaf [->jump] transformed=true
+        Leaf transformed=true
+        Single transformed=true
+        Union transformed=true
+        === Result ===
+        transformed=true tnr=Continue
         Single
-        Single
-        Single
-        ");
+          Union
+            Single
+              Single
+                Leaf
+            Single
+              Single
+                Single
+                  Leaf
+        ",
+        );
     }
 
     #[tokio::test]
-    async fn transform_up_async_jump_skips_every_ancestor() {
-        // `Jump` returned bottom-up prunes the whole ancestor chain, not just the
-        // immediate parent, matching `TreeNode::transform_up`.
-        let child = leaf();
-        let plan = single(single(Arc::clone(&child)));
-        assert_snapshot!(trace_async_up_with(plan, |p| {
-            if Arc::ptr_eq(p, &child) {
-                TreeNodeRecursion::Jump
-            } else {
-                TreeNodeRecursion::Continue
-            }
-        })
-        .await, @"Leaf [->jump]");
-    }
-
-    #[tokio::test]
-    async fn transform_up_async_sees_rewritten_children() {
-        // `f` must observe the children that its own recursive invocations produced.
-        let observed = Mutex::new(vec![]);
-        single(leaf())
-            .transform_up_async(async |plan| {
-                observed.lock().unwrap().push(format!(
-                    "{} <- [{}]",
-                    plan_label(&plan),
-                    plan.children()
-                        .iter()
-                        .map(|c| plan_label(c))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ));
-                if plan.is::<EmptyExec>() {
-                    Ok(Transformed::yes(union(vec![Arc::clone(&plan), plan])))
-                } else {
-                    Ok(Transformed::no(plan))
-                }
-            })
-            .await
-            .unwrap();
-        assert_snapshot!(observed.into_inner().unwrap().join("\n"), @r"
-        Leaf <- []
-        Single <- [Union]
-        ");
-    }
-
-    #[tokio::test]
-    async fn transform_up_async_propagates_children_transformed_flag() {
-        // The root's `f` reports no change, but a descendant did change, so the
-        // overall result must still be flagged as transformed.
-        let transformed = single(leaf())
-            .transform_up_async(async |plan| {
-                if plan.is::<EmptyExec>() {
-                    Ok(Transformed::yes(single(plan)))
-                } else {
-                    Ok(Transformed::no(plan))
-                }
-            })
-            .await
-            .unwrap();
-        assert!(transformed.transformed);
-    }
-
-    #[tokio::test]
-    async fn transform_up_async_no_change_keeps_flag_unset() {
-        let transformed = single(union(vec![leaf(), leaf()]))
-            .transform_up_async(async |plan| Ok(Transformed::no(plan)))
-            .await
-            .unwrap();
-        assert!(!transformed.transformed);
+    async fn transform_up_async_stop() {
+        let stopper = leaf();
+        assert_snapshot!(
+            trace_transform_up_async_with(
+                union(vec![single(Arc::clone(&stopper)), single(leaf())]),
+                move |plan| {
+                    let stopper = Arc::clone(&stopper);
+                    async move {
+                        let tnr = if Arc::ptr_eq(&plan, &stopper) {
+                            TreeNodeRecursion::Stop
+                        } else {
+                            TreeNodeRecursion::Continue
+                        };
+                        Ok(Transformed::new(single(plan), true, tnr))
+                    }
+                },
+            )
+            .await,
+            // The "Single" we see here belongs to the right branch of the UNION, that
+            // executes concurrently with the left branch and does not get to see the Stop
+            // signal.
+            @r"
+        Leaf [->stop] transformed=true
+        Leaf transformed=true
+        Single transformed=true
+        === Result ===
+        transformed=true tnr=Stop
+        Union
+          Single
+            Single
+              Leaf
+          Single
+            Leaf
+        ",
+        );
     }
 
     #[tokio::test]
     async fn transform_up_async_propagates_error() {
-        let err = single(leaf())
-            .transform_up_async(async |plan| {
+        assert_snapshot!(
+            trace_transform_up_async_with(single(leaf()), |plan| async move {
                 if plan.is::<EmptyExec>() {
-                    return exec_err!("boom");
+                    exec_err!("boom")
+                } else {
+                    Ok(Transformed::no(plan))
                 }
-                Ok(Transformed::no(plan))
             })
+            .await,
+            @r"
+        Leaf err=Execution error: boom
+        === Result ===
+        err=Execution error: boom
+        ",
+        );
+    }
+
+    #[tokio::test]
+    async fn transform_up_async_processes_siblings_concurrently() {
+        let barrier = Arc::new(Barrier::new(2));
+        assert_snapshot!(
+            timeout(
+                Duration::from_secs(1),
+                trace_transform_up_async_with(union(vec![leaf(), leaf()]), move |plan| {
+                    let barrier = Arc::clone(&barrier);
+                    async move {
+                        if plan.is::<EmptyExec>() {
+                            barrier.wait().await;
+                        }
+                        Ok(Transformed::no(plan))
+                    }
+                }),
+            )
             .await
-            .unwrap_err();
-        assert_snapshot!(err.strip_backtrace(), @"Execution error: boom");
-    }
-
-    #[tokio::test]
-    async fn transform_up_async_error_in_one_sibling_aborts() {
-        // A failing subtree must surface its error rather than hang waiting on the
-        // sibling subtrees that are running concurrently.
-        let err = timeout(
-            Duration::from_secs(5),
-            union(vec![leaf(), single(leaf())]).transform_up_async(async |plan| {
-                if plan.is::<UnionExec>() {
-                    panic!("the root must not be reached when a child fails");
-                }
-                if plan.is::<EmptyExec>() {
-                    return exec_err!("boom");
-                }
-                Ok(Transformed::no(plan))
-            }),
-        )
-        .await
-        .expect("a failing subtree should not hang the traversal")
-        .unwrap_err();
-        assert_snapshot!(err.strip_backtrace(), @"Execution error: boom");
-    }
-
-    #[tokio::test]
-    async fn transform_up_async_stop_does_not_prune_concurrent_siblings() {
-        // Documents the one divergence from `TreeNode::transform_up`: siblings run
-        // concurrently, so a `Stop` cannot suppress `f` on the sibling subtrees. Only their
-        // rewrites are discarded (see `transform_up_async_matches_sync_when_a_sibling_stops`).
-        let stopper = leaf();
-        let plan = union(vec![Arc::clone(&stopper), single(leaf())]);
-        let mut visited = trace_async_up_with(plan, move |p| {
-            if Arc::ptr_eq(p, &stopper) {
-                TreeNodeRecursion::Stop
-            } else {
-                TreeNodeRecursion::Continue
-            }
-        })
-        .await
-        .lines()
-        .map(str::to_string)
-        .collect::<Vec<_>>();
-        // Concurrent siblings complete in a non-deterministic order.
-        visited.sort();
-        assert_snapshot!(visited.join("\n"), @r"
-        Leaf
-        Leaf [->stop]
-        Single
-        ");
-    }
-
-    #[tokio::test]
-    async fn transform_up_async_matches_sync_continue() {
-        assert_snapshot!(
-            assert_matches_sync(
-                single(union(vec![leaf(), single(leaf())])),
-                Box::new(|_| TreeNodeRecursion::Continue),
-            )
-            .await,
+            .expect("sibling callbacks should reach the barrier concurrently"),
             @r"
-        transformed=true tnr=Continue
-        CoalescePartitionsExec
-          CoalescePartitionsExec
-            CoalescePartitionsExec
-              UnionExec
-                CoalescePartitionsExec
-                  EmptyExec
-                CoalescePartitionsExec
-                  CoalescePartitionsExec
-                    CoalescePartitionsExec
-                      EmptyExec
-        "
-        );
-    }
-
-    #[tokio::test]
-    async fn transform_up_async_matches_sync_when_a_sibling_stops() {
-        // The first branch stops, so the second branch's rewrite must be discarded and
-        // the ancestors left untouched, exactly as `TreeNode::transform_up` does.
-        let stopper = leaf();
-        let plan = union(vec![single(Arc::clone(&stopper)), single(leaf())]);
-        assert_snapshot!(
-            assert_matches_sync(
-                plan,
-                Box::new(move |p| {
-                    if Arc::ptr_eq(p, &stopper) {
-                        TreeNodeRecursion::Stop
-                    } else {
-                        TreeNodeRecursion::Continue
-                    }
-                }),
-            )
-            .await,
-            @r"
-        transformed=true tnr=Stop
-        UnionExec
-          CoalescePartitionsExec
-            CoalescePartitionsExec
-              EmptyExec
-          CoalescePartitionsExec
-            EmptyExec
-        "
-        );
-    }
-
-    #[tokio::test]
-    async fn transform_up_async_matches_sync_when_a_sibling_jumps() {
-        let jumper = leaf();
-        let plan = union(vec![single(Arc::clone(&jumper)), single(leaf())]);
-        assert_snapshot!(
-            assert_matches_sync(
-                plan,
-                Box::new(move |p| {
-                    if Arc::ptr_eq(p, &jumper) {
-                        TreeNodeRecursion::Jump
-                    } else {
-                        TreeNodeRecursion::Continue
-                    }
-                }),
-            )
-            .await,
-            @r"
-        transformed=true tnr=Continue
-        CoalescePartitionsExec
-          UnionExec
-            CoalescePartitionsExec
-              CoalescePartitionsExec
-                EmptyExec
-            CoalescePartitionsExec
-              CoalescePartitionsExec
-                CoalescePartitionsExec
-                  EmptyExec
-        "
+        Leaf transformed=false
+        Leaf transformed=false
+        Union transformed=false
+        === Result ===
+        transformed=false tnr=Continue
+        Union
+          Leaf
+          Leaf
+        ",
         );
     }
 
@@ -1176,119 +1063,64 @@ mod tests {
         }
     }
 
-    async fn trace_async_up(root: Arc<dyn ExecutionPlan>) -> String {
-        trace_async_up_with(root, |_| TreeNodeRecursion::Continue).await
-    }
+    async fn trace_transform_up_async_with<F, Fut>(root: Arc<dyn ExecutionPlan>, f: F) -> String
+    where
+        F: Fn(Arc<dyn ExecutionPlan>) -> Fut + Send + Sync,
+        Fut: Future<Output = Result<Transformed<Arc<dyn ExecutionPlan>>>> + Send,
+    {
+        let lines = Mutex::new(vec![]);
+        let result = root
+            .transform_up_async(|p| {
+                let lines = &lines;
+                let label = plan_label(&p);
+                let future = f(p);
+                async move {
+                    let result = future.await;
+                    let mut line = label.to_string();
+                    line += match result.as_ref().map(|v| v.tnr) {
+                        Ok(TreeNodeRecursion::Continue) => "",
+                        Ok(TreeNodeRecursion::Jump) => " [->jump]",
+                        Ok(TreeNodeRecursion::Stop) => " [->stop]",
+                        _ => "",
+                    };
 
-    async fn trace_async_up_rewrite(root: Arc<dyn ExecutionPlan>) -> String {
-        let transformed = root
-            .transform_up_async(async |plan| {
-                if plan.is::<EmptyExec>() {
-                    Ok(Transformed::yes(single(plan)))
-                } else {
-                    Ok(Transformed::no(plan))
+                    line += match result.as_ref().map(|v| v.transformed) {
+                        Ok(true) => " transformed=true",
+                        Ok(false) => " transformed=false",
+                        _ => "",
+                    };
+
+                    line += &match result.as_ref().map(|v| v.transformed) {
+                        Err(err) => format!(" err={err}"),
+                        _ => "".to_string(),
+                    };
+                    lines.lock().unwrap().push(line);
+                    result
                 }
             })
-            .await
-            .unwrap();
-        let mut visited = vec![];
-        transformed
-            .data
-            .apply(|plan| {
-                visited.push(plan_label(plan));
-                Ok(TreeNodeRecursion::Continue)
-            })
-            .unwrap();
-        visited.join("\n")
-    }
-
-    async fn trace_async_up_concurrently(
-        root: Arc<dyn ExecutionPlan>,
-        concurrent_leaves: usize,
-    ) -> String {
-        let barrier = Barrier::new(concurrent_leaves);
-        let visited = Mutex::new(vec![]);
-        timeout(
-            Duration::from_secs(1),
-            root.transform_up_async(async |plan| {
-                if plan.is::<EmptyExec>() {
-                    barrier.wait().await;
+            .await;
+        let mut lines = lines.into_inner().unwrap();
+        lines.push("=== Result ===".to_string());
+        match result {
+            Err(err) => lines.push(format!("err={err}")),
+            Ok(result) => {
+                lines.push(format!(
+                    "transformed={} tnr={:?}",
+                    result.transformed, result.tnr
+                ));
+                let mut stack = vec![(&result.data, 0)];
+                while let Some((plan, depth)) = stack.pop() {
+                    lines.push(format!("{}{}", "  ".repeat(depth), plan_label(plan)));
+                    stack.extend(
+                        plan.children()
+                            .into_iter()
+                            .rev()
+                            .map(|child| (child, depth + 1)),
+                    );
                 }
-                visited.lock().unwrap().push(plan_label(&plan));
-                Ok(Transformed::no(plan))
-            }),
-        )
-        .await
-        .expect("sibling callbacks should reach the barrier concurrently")
-        .unwrap();
-        visited.into_inner().unwrap().join("\n")
-    }
-
-    async fn trace_async_up_with<
-        F: Fn(&Arc<dyn ExecutionPlan>) -> TreeNodeRecursion + Send + Sync,
-    >(
-        root: Arc<dyn ExecutionPlan>,
-        decide: F,
-    ) -> String {
-        let visited = Mutex::new(vec![]);
-        root.transform_up_async(async |plan| {
-            tokio::task::yield_now().await;
-            let rec = decide(&plan);
-            let suffix = match rec {
-                TreeNodeRecursion::Continue => "",
-                TreeNodeRecursion::Jump => " [->jump]",
-                TreeNodeRecursion::Stop => " [->stop]",
-            };
-            visited
-                .lock()
-                .unwrap()
-                .push(format!("{}{suffix}", plan_label(&plan)));
-            Ok(Transformed::new(plan, false, rec))
-        })
-        .await
-        .unwrap();
-        visited.into_inner().unwrap().join("\n")
-    }
-
-    type Decide = Box<dyn Fn(&Arc<dyn ExecutionPlan>) -> TreeNodeRecursion + Send + Sync>;
-
-    /// Runs `transform_up_async` and `TreeNode::transform_up` with the same rewrite over the
-    /// same plan and asserts that both produce the same plan, `transformed` flag and
-    /// [`TreeNodeRecursion`], returning that rendering for snapshotting.
-    async fn assert_matches_sync(root: Arc<dyn ExecutionPlan>, decide: Decide) -> String {
-        let expected = Arc::clone(&root)
-            .transform_up(|plan| Ok(rewrite_and_decide(plan, &*decide)))
-            .map(render_transformed)
-            .unwrap();
-        let actual = root
-            .transform_up_async(async |plan| Ok(rewrite_and_decide(plan, &*decide)))
-            .await
-            .map(render_transformed)
-            .unwrap();
-        assert_eq!(
-            expected, actual,
-            "transform_up_async diverged from TreeNode::transform_up"
-        );
-        actual
-    }
-
-    /// Wraps every visited node in a [`CoalescePartitionsExec`] so that a discarded rewrite is
-    /// visible in the rendered plan, and returns the [`TreeNodeRecursion`] `decide` asks for.
-    fn rewrite_and_decide<F: Fn(&Arc<dyn ExecutionPlan>) -> TreeNodeRecursion + ?Sized>(
-        plan: Arc<dyn ExecutionPlan>,
-        decide: &F,
-    ) -> Transformed<Arc<dyn ExecutionPlan>> {
-        let tnr = decide(&plan);
-        Transformed::new(single(plan), true, tnr)
-    }
-
-    fn render_transformed(transformed: Transformed<Arc<dyn ExecutionPlan>>) -> String {
-        format!(
-            "transformed={} tnr={:?}\n{}",
-            transformed.transformed,
-            transformed.tnr,
-            displayable(transformed.data.as_ref()).indent(false),
-        )
+            }
+        }
+        lines.join("\n")
     }
 
     fn trace_apply(root: &Arc<dyn ExecutionPlan>, dt_ctx: DistributedTaskContext) -> String {
