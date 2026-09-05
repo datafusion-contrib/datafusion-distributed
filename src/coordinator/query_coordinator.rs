@@ -1,8 +1,9 @@
-use crate::codec::{decode_execution_plan, encode_execution_plan};
+use crate::codec::roundtrip_pb;
 use crate::common::{TreeNodeExt, now_ns, task_ctx_with_extension};
 use crate::config_extension_ext::get_config_extension_propagation_headers;
-use crate::coordinator::MetricsStore;
+use crate::coordinator::Store;
 use crate::coordinator::latency_metric::LatencyMetric;
+use crate::dynamic_filtering::maybe_roundtrip_plan_to_sever_in_memory_dynamic_filter_relationships;
 use crate::events::{RouteTasksEvent, RouteTasksHandlers};
 use crate::execution_plans::{ChildrenIsolatorUnionExec, DistributedLeafExec};
 use crate::passthrough_headers::get_passthrough_headers;
@@ -12,7 +13,8 @@ use crate::work_unit_feed::{build_work_unit_batch_msg, set_work_unit_send_time};
 use crate::{
     CoordinatorToWorkerMsg, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedTaskContext,
     DistributedWorkUnitFeedContext, LoadInfo, LocalWorkerContext, MaybeEncoded, SetPlanRequest,
-    TaskKey, WorkUnitFeedDeclaration, WorkerToCoordinatorMsg, get_distributed_channel_resolver,
+    TaskCompletedDynamicFilters, TaskKey, TaskMetrics, WorkUnitFeedDeclaration,
+    WorkerToCoordinatorMsg, get_distributed_channel_resolver,
 };
 use datafusion::common::DataFusionError;
 use datafusion::common::instant::Instant;
@@ -46,7 +48,8 @@ pub(super) struct QueryCoordinator {
     task_ctx: Arc<TaskContext>,
     metrics: ExecutionPlanMetricsSet,
     coordinator_to_worker_metrics: CoordinatorToWorkerMetrics,
-    metrics_store: Option<Arc<MetricsStore>>,
+    metrics_store: Option<Arc<Store<TaskMetrics>>>,
+    completed_dynamic_filter_store: Option<Arc<Store<TaskCompletedDynamicFilters>>>,
     end_stream_notifier: Arc<Notify>,
     join_set: Mutex<JoinSet<Result<()>>>,
 }
@@ -56,12 +59,14 @@ impl QueryCoordinator {
     pub(super) fn new(
         task_ctx: Arc<TaskContext>,
         metrics_set: &ExecutionPlanMetricsSet,
-        metrics_store: Option<Arc<MetricsStore>>,
+        metrics_store: Option<Arc<Store<TaskMetrics>>>,
+        completed_dynamic_filter_store: Option<Arc<Store<TaskCompletedDynamicFilters>>>,
     ) -> Self {
         Self {
             task_ctx,
             metrics: metrics_set.clone(),
             metrics_store,
+            completed_dynamic_filter_store,
             coordinator_to_worker_metrics: CoordinatorToWorkerMetrics::new(metrics_set),
             end_stream_notifier: Arc::new(Notify::new()),
             join_set: Mutex::new(JoinSet::new()),
@@ -80,6 +85,7 @@ impl QueryCoordinator {
             metrics_set: &self.metrics,
             metrics: &self.coordinator_to_worker_metrics,
             metrics_store: &self.metrics_store,
+            completed_dynamic_filter_store: &self.completed_dynamic_filter_store,
             end_stream_notifier: &self.end_stream_notifier,
             join_set: &self.join_set,
         }
@@ -124,7 +130,8 @@ pub(super) struct StageCoordinator<'a> {
     task_ctx: &'a Arc<TaskContext>,
     metrics_set: &'a ExecutionPlanMetricsSet,
     metrics: &'a CoordinatorToWorkerMetrics,
-    metrics_store: &'a Option<Arc<MetricsStore>>,
+    metrics_store: &'a Option<Arc<Store<TaskMetrics>>>,
+    completed_dynamic_filter_store: &'a Option<Arc<Store<TaskCompletedDynamicFilters>>>,
     end_stream_notifier: &'a Arc<Notify>,
     join_set: &'a Mutex<JoinSet<Result<()>>>,
 }
@@ -150,7 +157,6 @@ impl<'a> StageCoordinator<'a> {
             stage_id: self.stage_id,
             task_number: task_i,
         };
-
         let set_plan_request = SetPlanRequest {
             task_key,
             task_count: self.task_count,
@@ -178,8 +184,8 @@ impl<'a> StageCoordinator<'a> {
             // 3. Here, `end_stream_notifier` fires and the coordinator->worker channel is
             //    gracefully ended.
             // 4. The coordinator->worker channel EOS is received in `impl_coordinator_channel.rs`.
-            // 5. The metrics are send back in the worker->coordinator channel, and then that
-            //    channel is closed.
+            // 5. The metrics and final dynamic filters are sent back in the
+            //    worker->coordinator channel, and then that channel is closed.
             .chain(keep_stream_alive(Arc::clone(self.end_stream_notifier)))
             .boxed();
 
@@ -236,6 +242,7 @@ impl<'a> StageCoordinator<'a> {
             task_number: task_i,
         };
         let task_metrics = self.metrics_store.clone();
+        let completed_dynamic_filter_store = self.completed_dynamic_filter_store.clone();
         let (load_info_tx, load_info_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut load_info_tx_opt = Some(load_info_tx);
 
@@ -257,6 +264,11 @@ impl<'a> StageCoordinator<'a> {
                     }
                     WorkerToCoordinatorMsg::LoadInfoEos => {
                         let _ = load_info_tx_opt.take();
+                    }
+                    WorkerToCoordinatorMsg::TaskCompletedDynamicFilters(filters) => {
+                        if let Some(store) = &completed_dynamic_filter_store {
+                            store.insert(task_key, filters);
+                        }
                     }
                 }
             }
@@ -368,9 +380,8 @@ impl<'a> StageCoordinator<'a> {
                 // Right now, there's no other way for a WorkUnitFeed to be transitioned to
                 // remote mode so that it can pull WorkUnits over the WorkerChannel.
                 //
-                // Doing this roundtrip here is not super clean, but it actually does the trick in
-                // very few LOC, and performance overhead is negligible, as the roundtrip does not
-                // even imply serialization.
+                // Doing this roundtrip here is not super clean, but it transitions the feed with
+                // very little specialized code.
                 let plan = roundtrip_pb(plan, self.task_ctx)?;
                 return Ok(Transformed::yes(plan));
             };
@@ -387,7 +398,11 @@ impl<'a> StageCoordinator<'a> {
 
             Ok(Transformed::no(plan))
         })?;
-        Ok((transformed.data, work_unit_feed_declarations))
+        let plan = maybe_roundtrip_plan_to_sever_in_memory_dynamic_filter_relationships(
+            Arc::clone(&transformed.data),
+            self.task_ctx,
+        )?;
+        Ok((plan, work_unit_feed_declarations))
     }
 
     /// Returns as many URLs as the task count for the stage this [StageCoordinator]
@@ -414,15 +429,6 @@ impl<'a> StageCoordinator<'a> {
         }
         Ok(routed.urls)
     }
-}
-
-/// Round-trips a plan converting it to a protobuf message and back to an [ExecutionPlan].
-fn roundtrip_pb(
-    plan: Arc<dyn ExecutionPlan>,
-    ctx: &Arc<TaskContext>,
-) -> Result<Arc<dyn ExecutionPlan>> {
-    let encoded = encode_execution_plan(plan, ctx)?;
-    decode_execution_plan(&encoded, ctx)
 }
 
 fn keep_stream_alive<T: 'static>(notify: Arc<Notify>) -> impl Stream<Item = T> + 'static {

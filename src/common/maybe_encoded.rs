@@ -1,17 +1,21 @@
 use crate::codec::{
-    decode_execution_plan, decode_partitioning, encode_execution_plan, encode_partitioning,
+    decode_execution_plan, decode_partitioning, decode_physical_expr, encode_execution_plan,
+    encode_partitioning, encode_physical_expr,
 };
-use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::datatypes::{Schema, SchemaRef};
 use datafusion::common::{Result, internal_err};
 use datafusion::execution::TaskContext;
-use datafusion::physical_expr::Partitioning;
+use datafusion::physical_expr::{Partitioning, PhysicalExpr};
 use datafusion::physical_plan::ExecutionPlan;
+use datafusion_proto::protobuf::PhysicalExprNode;
+use datafusion_proto::protobuf::proto_error;
+use prost::Message;
 use std::sync::Arc;
 
 /// A value that a transport may either leave encoded or materialize in memory.
 /// Users are free to pass [MaybeEncoded::Encoded] or [MaybeEncoded::Decoded] at any
 /// moment and Distributed DataFusion's code will internally know how to handle it.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum MaybeEncoded<T> {
     Encoded(Vec<u8>),
     Decoded(T),
@@ -79,6 +83,44 @@ impl MaybeEncoded<Partitioning> {
     /// - If in `Encoded` state, it decodes it using the codecs registered in the [TaskContext].
     pub fn decode(self, schema: SchemaRef, task_ctx: &TaskContext) -> Result<Partitioning> {
         self.decode_with(|encoded| decode_partitioning(&encoded, schema, task_ctx))
+    }
+}
+
+impl MaybeEncoded<Arc<dyn PhysicalExpr>> {
+    /// Returns the encoded [`PhysicalExpr`] as protobuf bytes:
+    /// - If in `Decoded` state, it encodes it using the codecs registered in the [`TaskContext`].
+    /// - If in `Encoded` state, it passes through the existing bytes.
+    pub fn encode(self, ctx: &Arc<TaskContext>) -> Result<Vec<u8>> {
+        match self {
+            Self::Encoded(encoded) => Ok(encoded),
+            Self::Decoded(expression) => {
+                Ok(encode_physical_expr(&expression, ctx)?.encode_to_vec())
+            }
+        }
+    }
+
+    /// Returns the decoded [`PhysicalExpr`].
+    /// - If in `Decoded` state, it passes through the expression.
+    /// - If in `Encoded` state, it decodes it using the provided schema and task context.
+    pub fn decode(
+        self,
+        input_schema: &Schema,
+        task_ctx: &TaskContext,
+    ) -> Result<Arc<dyn PhysicalExpr>> {
+        self.decode_with(|encoded| {
+            let proto = PhysicalExprNode::decode(encoded.as_slice())
+                .map_err(|error| proto_error(error.to_string()))?;
+            decode_physical_expr(&proto, input_schema, task_ctx)
+        })
+    }
+
+    /// Materializes the expression's protobuf representation without changing the stored form.
+    pub(crate) fn to_proto(&self, task_ctx: &TaskContext) -> Result<PhysicalExprNode> {
+        match self {
+            Self::Encoded(encoded) => PhysicalExprNode::decode(encoded.as_slice())
+                .map_err(|error| proto_error(error.to_string())),
+            Self::Decoded(expression) => encode_physical_expr(expression, task_ctx),
+        }
     }
 }
 

@@ -6,6 +6,7 @@ mod config_extension_ext;
 mod coordinator;
 mod distributed_ext;
 mod distributed_planner;
+mod dynamic_filtering;
 mod execution_plans;
 mod explain_analyze;
 mod metrics;
@@ -23,6 +24,7 @@ pub use distributed_ext::{DistributedExt, DistributedGetterExt};
 pub use distributed_planner::{
     DistributedConfig, NetworkBoundary, NetworkBoundaryExt, ProducerHead, SessionStateBuilderExt,
 };
+pub use dynamic_filtering::rewrite_distributed_plan_with_dynamic_filters;
 pub use events::{
     DesiredTaskCountEvent, DesiredTaskCountEventResponse, DesiredTaskCountHandler, RouteTasksEvent,
     RouteTasksEventResponse, RouteTasksHandler, ScaleUpLeafNodeEvent, ScaleUpLeafNodeEventResponse,
@@ -54,9 +56,9 @@ pub use worker_resolver::{WorkerResolver, get_distributed_worker_resolver};
 
 pub use protocol::{
     ChannelResolver, CoordinatorToWorkerMsg, ExecuteTaskRequest, GetWorkerInfoRequest,
-    GetWorkerInfoResponse, LoadInfo, SetPlanRequest, TaskKey, TaskMetrics, WorkUnitBatch,
-    WorkUnitFeedDeclaration, WorkUnitMsg, WorkerChannel, WorkerToCoordinatorMsg,
-    get_distributed_channel_resolver,
+    GetWorkerInfoResponse, LoadInfo, SetPlanRequest, TaskCompletedDynamicFilters,
+    TaskDynamicFilter, TaskKey, TaskMetrics, WorkUnitBatch, WorkUnitFeedDeclaration, WorkUnitMsg,
+    WorkerChannel, WorkerToCoordinatorMsg, get_distributed_channel_resolver,
 };
 pub use stage::{
     DistributedTaskContext, Stage, display_plan_ascii, display_plan_graphviz, explain_analyze,

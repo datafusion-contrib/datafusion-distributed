@@ -9,9 +9,9 @@ use crate::{
     BytesMetricExt, CoordinatorToWorkerMsg, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL,
     DistributedConfig, ExecuteTaskRequest, FirstLatencyMetric, GetWorkerInfoRequest,
     GetWorkerInfoResponse, LatencyMetricExt, LoadInfo, MaxLatencyMetric, MaybeEncoded,
-    MinLatencyMetric, P50LatencyMetric, P95LatencyMetric, ProducerHead, SetPlanRequest, TaskKey,
-    TaskMetrics, WorkUnitBatch, WorkUnitFeedDeclaration, WorkUnitMsg, WorkerChannel,
-    WorkerToCoordinatorMsg,
+    MinLatencyMetric, P50LatencyMetric, P95LatencyMetric, ProducerHead, SetPlanRequest,
+    TaskCompletedDynamicFilters, TaskDynamicFilter, TaskKey, TaskMetrics, WorkUnitBatch,
+    WorkUnitFeedDeclaration, WorkUnitMsg, WorkerChannel, WorkerToCoordinatorMsg,
 };
 use arrow_flight::FlightData;
 use arrow_flight::decode::FlightRecordBatchStream;
@@ -508,8 +508,28 @@ fn decode_worker_to_coordinator_msg(
             pb::worker_to_coordinator_msg::Inner::LoadInfoEos(_) => {
                 WorkerToCoordinatorMsg::LoadInfoEos
             }
+            pb::worker_to_coordinator_msg::Inner::TaskCompletedDynamicFilters(filters) => {
+                WorkerToCoordinatorMsg::TaskCompletedDynamicFilters(
+                    decode_task_completed_dynamic_filters(filters)?,
+                )
+            }
         },
     )
+}
+
+fn decode_task_completed_dynamic_filters(
+    filters: pb::TaskCompletedDynamicFilters,
+) -> Result<TaskCompletedDynamicFilters> {
+    Ok(TaskCompletedDynamicFilters {
+        filters: filters
+            .filters
+            .into_iter()
+            .map(|filter| TaskDynamicFilter {
+                expression_id: filter.expression_id,
+                expression: MaybeEncoded::Encoded(filter.expression_proto),
+            })
+            .collect(),
+    })
 }
 
 fn decode_task_metrics(task_metrics: pb::TaskMetrics) -> Result<TaskMetrics> {
