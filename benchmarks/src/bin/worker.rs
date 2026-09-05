@@ -76,10 +76,6 @@ struct Cmd {
         default_value = "datafusion-workers.benchmark-datafusion.svc.cluster.local"
     )]
     worker_dns_name: String,
-
-    // Turns broadcast joins on.
-    #[structopt(long)]
-    broadcast_joins: bool,
 }
 
 #[tokio::main]
@@ -126,7 +122,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .with_distributed_local_worker_context(worker.to_local_worker_context(self_url))
         .with_distributed_worker_resolver(DnsWorkerResolver::new(cmd.worker_dns_name.clone()))
         .with_distributed_planner()
-        .with_distributed_broadcast_joins(cmd.broadcast_joins)?
         // Uncomment for enabling WorkUnitFileScans.
         // .with_physical_optimizer_rule(Arc::new(WorkUnitFileScanRule))
         .with_distributed_user_codec(WorkUnitFileScanCodec)
