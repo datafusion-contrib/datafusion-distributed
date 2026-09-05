@@ -9,9 +9,9 @@ mod tests {
     use datafusion::physical_plan::{ExecutionPlan, displayable};
     use datafusion_distributed_iceberg::IcebergDataSource;
     use datafusion_distributed_iceberg::test_utils::{
-        IcebergTestHarness, taxi_metadata_builder, taxi_snapshot,
+        IcebergTestHarness, taxi_metadata, taxi_metadata_builder,
     };
-    use iceberg::spec::{Operation, Summary, TableMetadata};
+    use iceberg::spec::{Operation, Snapshot, Summary, TableMetadata};
 
     // Values from testdata/iceberg/taxi/metadata/v1.metadata.json snapshot summary.
     const TAXI_ROWS: usize = 175_000;
@@ -148,10 +148,20 @@ mod tests {
     }
 
     fn metadata_without_summary_statistics() -> TableMetadata {
-        let snapshot = taxi_snapshot(Summary {
-            operation: Operation::Append,
-            additional_properties: Default::default(),
-        });
+        let metadata = taxi_metadata();
+        let current = metadata.current_snapshot().expect("taxi has a snapshot");
+        let snapshot = Snapshot::builder()
+            .with_snapshot_id(current.snapshot_id())
+            .with_parent_snapshot_id(current.parent_snapshot_id())
+            .with_sequence_number(current.sequence_number())
+            .with_timestamp_ms(current.timestamp_ms())
+            .with_manifest_list(current.manifest_list())
+            .schema_id_opt(current.schema_id())
+            .with_summary(Summary {
+                operation: Operation::Append,
+                additional_properties: Default::default(),
+            })
+            .build();
         taxi_metadata_builder()
             .set_branch_snapshot(snapshot, "main")
             .expect("taxi snapshot can be added")
