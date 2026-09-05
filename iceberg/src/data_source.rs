@@ -262,12 +262,10 @@ impl DataSource for IcebergDataSource {
         let Some(feed) = self.feed.inner() else {
             return Ok(Arc::new(Statistics::new_unknown(&self.schema)));
         };
-        let metadata = feed.iceberg_table.metadata();
-        let snapshot = match feed.snapshot_id {
-            Some(snapshot_id) => metadata.snapshot_by_id(snapshot_id),
-            None => metadata.current_snapshot(),
-        };
-        Ok(stats_from_snapshot(snapshot, &self.schema))
+        stats_from_snapshot(
+            feed.iceberg_table.metadata().current_snapshot(),
+            &self.schema,
+        )
     }
 
     fn with_fetch(&self, fetch: Option<usize>) -> Option<Arc<dyn DataSource>> {
@@ -314,14 +312,17 @@ impl DataSource for IcebergDataSource {
 }
 
 /// Getting statistics from the provided snapshot.
-fn stats_from_snapshot(snapshot: Option<&SnapshotRef>, schema: &SchemaRef) -> Arc<Statistics> {
+fn stats_from_snapshot(
+    snapshot: Option<&SnapshotRef>,
+    schema: &SchemaRef,
+) -> Result<Arc<Statistics>> {
     let Some(snap) = snapshot else {
         // A table with no current snapshot has never had a commit. It was created, but zero data files were added
-        return Arc::new(Statistics {
+        return Ok(Arc::new(Statistics {
             num_rows: Precision::Exact(0),
             total_byte_size: Precision::Exact(0),
             column_statistics: vec![ColumnStatistics::new_unknown(); schema.fields().len()],
-        });
+        }));
     };
     let props = &snap.summary().additional_properties;
 
@@ -336,9 +337,9 @@ fn stats_from_snapshot(snapshot: Option<&SnapshotRef>, schema: &SchemaRef) -> Ar
         .map(Precision::Exact)
         .unwrap_or(Precision::Absent);
 
-    Arc::new(Statistics {
+    Ok(Arc::new(Statistics {
         num_rows,
         total_byte_size,
         column_statistics: vec![ColumnStatistics::new_unknown(); schema.fields().len()],
-    })
+    }))
 }
