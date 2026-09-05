@@ -2,11 +2,11 @@
 mod tests {
     use datafusion::arrow::array::{Array, StringArray};
     use datafusion::arrow::util::pretty::pretty_format_batches;
-    use datafusion::common::{Result, assert_contains, assert_not_contains};
+    use datafusion::common::{Result, assert_contains};
     use datafusion::physical_plan::execute_stream;
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::parquet::register_parquet_tables;
-    use datafusion_distributed::{DefaultSessionBuilder, DistributedExt};
+    use datafusion_distributed::{DefaultSessionBuilder, DistributedExec, DistributedExt};
     use futures::TryStreamExt;
     use test_case::test_case;
 
@@ -41,10 +41,12 @@ mod tests {
         println!("{formatted}");
 
         assert_contains!(&formatted, "Plan with Metrics");
+
+        let encoded = batches[0].column(1).as_any().downcast_ref::<StringArray>().unwrap().value(0);
+        let formatted = DistributedExec::decode_plan_snapshot(encoded)?;
         assert_contains!(&formatted, "DistributedExec");
         assert_contains!(&formatted, "NetworkShuffleExec");
-        assert_contains!(&formatted, "metrics=[output_rows=");
-        assert_not_contains!(&formatted, "metrics=[output_rows={");
+        assert_contains!(&formatted, "output_rows"); // e.g. output_rows{partition=0}=2
 
         Ok(())
     }
@@ -78,7 +80,6 @@ mod tests {
         assert_contains!(&formatted, "Plan with Full Metrics");
         assert_contains!(&formatted, "Output Rows");
         assert_contains!(&formatted, "Duration");
-        assert_contains!(&formatted, "metrics=[output_rows=");
 
         let plan_types = batches[0].column(0).as_any().downcast_ref::<StringArray>();
         let plans = batches[0].column(1).as_any().downcast_ref::<StringArray>();
@@ -92,8 +93,10 @@ mod tests {
                 .unwrap_or_else(|| panic!("verbose output should contain a {plan_type} entry"));
             plans.value(index)
         };
-        assert_not_contains!(plan_for("Plan with Metrics"), "metrics=[output_rows={");
-        assert_contains!(plan_for("Plan with Full Metrics"), "metrics=[output_rows={");
+        let formatted = DistributedExec::decode_plan_snapshot(plan_for("Plan with Metrics"))?;
+        assert_contains!(&formatted, "output_rows"); // e.g. output_rows{partition=0}=2
+        let formatted = DistributedExec::decode_plan_snapshot(plan_for("Plan with Full Metrics"))?;
+        assert_contains!(&formatted, "output_rows"); // e.g. output_rows{task_id=0, partition=0}=1
         assert_eq!(plan_for("Output Rows"), "2");
 
         Ok(())

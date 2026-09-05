@@ -6,6 +6,7 @@ mod worker;
 
 use app::App;
 use crossterm::event::{self, Event};
+use datafusion_distributed::DistributedExec;
 use ratatui::DefaultTerminal;
 use std::time::{Duration, Instant};
 use structopt::StructOpt;
@@ -24,6 +25,10 @@ struct Args {
     /// Polling interval in milliseconds
     #[structopt(long = "poll-interval", default_value = "100")]
     poll_interval: u64,
+
+    /// Decode and print a base64-encoded plan string produced by explain_analyze.
+    #[structopt(long = "encoded-plan")]
+    encoded_plan: Option<String>,
 }
 
 #[tokio::main]
@@ -31,6 +36,12 @@ async fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
 
     let args = Args::from_args();
+
+    if let Some(encoded) = args.encoded_plan {
+        let decoded = DistributedExec::decode_plan_snapshot(&encoded).unwrap_or_else(|_| encoded);
+        println!("{decoded}");
+        return Ok(());
+    }
 
     let seed_url = Url::parse(&format!("http://localhost:{}", args.port)).expect("valid URL");
 

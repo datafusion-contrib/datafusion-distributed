@@ -1,6 +1,8 @@
 use crate::coordinator::{DistributedExec, MetricsStore};
 use crate::execution_plans::{DistributedLeafExec, NetworkCoalesceExec};
 use crate::metrics::DISTRIBUTED_DATAFUSION_TASK_ID_LABEL;
+#[cfg(feature = "grpc")]
+use crate::protocol::grpc::plan_snapshot;
 use datafusion::common::{HashMap, Statistics, config_err};
 use datafusion::common::{exec_err, plan_err};
 use datafusion::error::Result;
@@ -256,7 +258,10 @@ pub async fn explain_analyze(
             .to_string()),
         Some(_) => {
             let executed = rewrite_distributed_plan_with_metrics(executed.clone(), format).await?;
-            Ok(display_plan_ascii(executed.as_ref(), true))
+            #[cfg(feature = "grpc")]
+            return plan_snapshot::encode(executed.as_ref());
+            #[cfg(not(feature = "grpc"))]
+            return Ok(display_plan_ascii(executed.as_ref(), true));
         }
     }
 }
