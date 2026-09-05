@@ -5,21 +5,11 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::dataframe::DataFrame;
-#[cfg(feature = "integration")]
-use datafusion::datasource::source::DataSourceExec;
 use datafusion::error::Result;
-#[cfg(feature = "integration")]
-use datafusion::execution::SessionState;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_plan::{ExecutionPlan, displayable};
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_distributed::DistributedCodec;
-#[cfg(feature = "integration")]
-use datafusion_distributed::test_utils::localhost::start_localhost_context;
-#[cfg(feature = "integration")]
-use datafusion_distributed::{
-    DesiredTaskCountEvent, DesiredTaskCountEventResponse, DistributedExt, WorkerQueryContext,
-};
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use futures::StreamExt;
 use futures::stream::BoxStream;
@@ -37,8 +27,6 @@ const WAREHOUSE_URI: &str = "s3://iceberg-test/warehouse/";
 
 pub struct IcebergTestHarness {
     ctx: SessionContext,
-    #[cfg(feature = "integration")]
-    _worker_guard: Option<datafusion::common::runtime::JoinSet<()>>,
 }
 
 impl IcebergTestHarness {
@@ -46,22 +34,12 @@ impl IcebergTestHarness {
         let state = SessionStateBuilder::new()
             .with_default_features()
             .with_config(SessionConfig::new().with_target_partitions(4))
-            .with_iceberg_integration(integration_options())
+            .with_iceberg_integration(IcebergIntegrationOptions {
+                storage_factory: Arc::new(FixtureStorageFactory::default()),
+                iceberg_runtime: iceberg::Runtime::current(),
+            })
             .build();
-        Self::from_context(SessionContext::new_with_state(state)).await
-    }
-
-    #[cfg(feature = "integration")]
-    pub async fn new_distributed() -> Result<Self> {
-        let (mut ctx, worker_guard, _) = start_localhost_context(2, build_worker_state).await;
-        ctx.set_iceberg_integration(integration_options());
-        ctx.set_distributed_desired_task_count_handler(iceberg_test_task_count);
-        let mut harness = Self::from_context(ctx).await?;
-        harness._worker_guard = Some(worker_guard);
-        Ok(harness)
-    }
-
-    async fn from_context(ctx: SessionContext) -> Result<Self> {
+        let ctx = SessionContext::new_with_state(state);
         ctx.sql(&format!(
             "CREATE EXTERNAL TABLE taxi STORED AS ICEBERG \
              LOCATION '{FIXTURE_URI}/metadata/v1.metadata.json' \
@@ -70,11 +48,7 @@ impl IcebergTestHarness {
         .await?
         .collect()
         .await?;
-        Ok(Self {
-            ctx,
-            #[cfg(feature = "integration")]
-            _worker_guard: None,
-        })
+        Ok(Self { ctx })
     }
 
     pub async fn query(&self, sql: &str) -> Result<(String, String)> {
@@ -99,33 +73,6 @@ impl IcebergTestHarness {
             datafusion_proto::protobuf::PhysicalPlanNode::try_from_physical_plan(plan, &codec)?;
         proto.try_into_physical_plan(&task_ctx, &codec)
     }
-}
-
-fn integration_options() -> IcebergIntegrationOptions {
-    IcebergIntegrationOptions {
-        storage_factory: Arc::new(FixtureStorageFactory::default()),
-        iceberg_runtime: iceberg::Runtime::current(),
-    }
-}
-
-#[cfg(feature = "integration")]
-fn iceberg_test_task_count(
-    event: DesiredTaskCountEvent,
-) -> Option<Result<DesiredTaskCountEventResponse>> {
-    event
-        .plan
-        .downcast_ref::<DataSourceExec>()?
-        .data_source()
-        .downcast_ref::<crate::IcebergDataSource>()?;
-    Some(Ok(DesiredTaskCountEventResponse::desired(2)))
-}
-
-#[cfg(feature = "integration")]
-async fn build_worker_state(ctx: WorkerQueryContext) -> Result<SessionState> {
-    Ok(ctx
-        .builder
-        .with_iceberg_integration(integration_options())
-        .build())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
