@@ -2,9 +2,7 @@
 
 Demonstrates **custom task routing** for **cache affinity**: consistently routing each parquet file
 to the *same* worker so that worker can serve it from an in-memory cache on repeat queries. This is
-the
-[`TaskEstimator::route_tasks`](../docs/source/advanced/06-worker-routing.md)
-API.
+the [`RouteTaskHandler`](../docs/source/advanced/06-worker-routing.md) API.
 
 ## Scenario
 
@@ -24,8 +22,8 @@ Routing is a two-step pipeline:
 - `scale_up_leaf_node` flattens all files, hashes each file's path to a slot
   (`hash(path) % task_count`), and builds one `DataSourceExec(CachedFileScanConfig)` variant per
   slot. The same file always hashes to the same slot.
-- `route_tasks` sorts the available worker URLs and maps slot `i` to `sorted_urls[i % n_workers]`.
-  Each slot therefore always reaches the same worker.
+- `CachedFileScanRouteTaskHandler` sorts the available worker URLs and assigns slot `i` to
+  `sorted_urls[i % n_workers]`. Each slot therefore always reaches the same worker.
 
 Together these guarantee that each worker consistently reads the same set of files and its cache
 stays warm across queries.
@@ -40,8 +38,8 @@ cache is warm on the second query even though the plan is serialised and sent fr
 worker's session extension cache first; on a miss it reads via the inner config and populates the
 cache asynchronously through a `RecordBatchReceiverStreamBuilder`.
 
-**`CachedFileScanConfigTaskEstimator`** — the `TaskEstimator`. `scale_up_leaf_node` produces one
-variant per task slot; `route_tasks` pins each slot to a worker by sorted-URL index.
+**`CachedFileScanRouteTaskHandler`** — the assignment handler. The scale-up handler produces one
+variant per task slot; the assignment handler pins each slot to a worker by sorted-URL index.
 
 **`CachedFileScanCodec`** — a `PhysicalExtensionCodec` that round-trips `CachedFileScanConfig` by
 encoding the inner `FileScanConfig` as a plain `DataSourceExec` using DataFusion's default codec,

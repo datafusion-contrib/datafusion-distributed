@@ -128,8 +128,8 @@ impl DistributedLeafExec {
     }
 
     /// The per-task variants, in task order: `variants()[i]` is the plan sent to task `i`. Useful
-    /// for inspecting per-task information (e.g. data locality) when routing tasks to workers via
-    /// [crate::TaskEstimator::route_tasks].
+    /// for inspecting per-task information (e.g. data locality) when assigning tasks to workers
+    /// via [crate::RouteTaskHandler].
     pub fn variants(&self) -> &[Arc<dyn ExecutionPlan>] {
         &self.variants
     }

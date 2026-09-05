@@ -27,11 +27,10 @@ use tonic::async_trait;
 
 use crate::{
     DesiredTaskCountEvent, DesiredTaskCountEventResponse, DistributedLeafExec,
-    DistributedTaskContext, LocalWorkerContext, RouteTasksEvent, RouteTasksEventResponse,
-    ScaleUpLeafNodeEvent, ScaleUpLeafNodeEventResponse, WorkerResolver, ok_or_some_err,
+    DistributedTaskContext, LocalWorkerContext, RouteTaskEvent, RouteTaskEventResponse,
+    RouteTaskHandler, ScaleUpLeafNodeEvent, ScaleUpLeafNodeEventResponse, ok_or_some_err,
 };
 
-use crate::distributed_ext::DistributedGetterExt;
 // Table function that creates a `URLEmitterExec` for testing task routing.
 #[derive(Debug)]
 pub struct URLEmitterFunction;
@@ -292,19 +291,18 @@ pub fn url_emitter_scale_up_leaf_node(
     ))))
 }
 
-pub fn url_emitter_route_tasks(ev: RouteTasksEvent) -> Option<Result<RouteTasksEventResponse>> {
-    Some((|| {
-        let mut routed_urls = ev
-            .task_ctx
-            .session_config()
-            .get_distributed_worker_resolver()?
-            .get_urls()?;
+pub struct UrlEmitterRouteTaskHandler;
+
+#[async_trait]
+impl RouteTaskHandler for UrlEmitterRouteTaskHandler {
+    async fn handle(&self, ev: RouteTaskEvent<'_>) -> Option<Result<RouteTaskEventResponse>> {
+        let mut urls = ok_or_some_err!(ev.worker_resolver.get_urls());
 
         // Trivial routing policy: Assign tasks to URLs in reverse order.
-        routed_urls.reverse();
-        routed_urls.truncate(ev.task_count);
-        Ok(RouteTasksEventResponse::new(routed_urls))
-    })())
+        urls.reverse();
+        let url = urls.into_iter().nth(ev.task_key.task_number)?;
+        Some(ev.dialer.dial(url).await)
+    }
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]

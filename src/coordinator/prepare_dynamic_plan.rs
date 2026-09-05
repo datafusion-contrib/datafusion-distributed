@@ -26,7 +26,7 @@ use std::sync::Arc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 pub(super) async fn prepare_dynamic_plan(
-    query_coordinator: &QueryCoordinator,
+    query_coordinator: &Arc<QueryCoordinator>,
     base_plan: &Arc<dyn ExecutionPlan>,
 ) -> Result<PreparedPlan> {
     let plans_for_viz = Arc::new(PlanReconstructor::default());
@@ -80,27 +80,30 @@ pub(super) async fn prepare_dynamic_plan(
             // is injected to gather runtime statistics.
             input_stage.plan = ProducerHead::insert_sampler(input_stage.plan)?;
 
-            let mut stage_coordinator = query_coordinator.stage_coordinator(&input_stage);
-
-            let mut workers = Vec::with_capacity(input_stage.tasks);
             let mut load_info_rxs = Vec::with_capacity(input_stage.tasks);
 
-            let routed_urls = stage_coordinator.routed_urls()?;
-
-            for (i, routed_url) in routed_urls.into_iter().enumerate() {
-                workers.push(routed_url.clone());
-                // Spawns the task that feeds this subplan to this worker. There will be as
-                // many as this spawned tasks as workers.
-                let (worker_tx, worker_rx) = stage_coordinator.send_plan_task(i, routed_url)?;
-                load_info_rxs.push({
-                    let rx = stage_coordinator.worker_to_coordinator_task(i, worker_rx);
-                    UnboundedReceiverStream::new(rx)
-                });
-                stage_coordinator.coordinator_to_worker_task(i, worker_tx)?;
-            }
-
+            let query_coordinator = Arc::clone(query_coordinator);
             let plans_for_viz = Arc::clone(&plans_for_viz);
+
             Ok(async move {
+                let mut stage_coordinator = query_coordinator.stage_coordinator(&input_stage);
+
+                let mut futures = Vec::with_capacity(input_stage.tasks);
+                for task_i in 0..input_stage.tasks {
+                    futures.push(Box::pin(stage_coordinator.send_plan_task(task_i)));
+                }
+                let results = futures::future::try_join_all(futures).await?;
+
+                let mut workers = Vec::with_capacity(input_stage.tasks);
+                for (task_i, (url, worker_tx, worker_rx)) in results.into_iter().enumerate() {
+                    workers.push(url);
+                    load_info_rxs.push({
+                        let rx = stage_coordinator.worker_to_coordinator_task(task_i, worker_rx);
+                        UnboundedReceiverStream::new(rx)
+                    });
+                    stage_coordinator.coordinator_to_worker_task(task_i, worker_tx)?;
+                }
+
                 let (stats, consumer_tc) = if nb_type == TypeId::of::<NetworkCoalesceExec>() {
                     (None, Maximum(1))
                 } else {

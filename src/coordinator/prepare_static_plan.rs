@@ -1,15 +1,16 @@
+use crate::common::TreeNodeExt;
 use crate::coordinator::distributed::PreparedPlan;
 use crate::coordinator::query_coordinator::QueryCoordinator;
 use crate::stage::RemoteStage;
 use crate::{NetworkBoundaryExt, Stage};
-use datafusion::common::tree_node::{Transformed, TreeNode};
+use datafusion::common::tree_node::Transformed;
 use datafusion::common::{Result, exec_err};
 use datafusion::physical_plan::ExecutionPlan;
 use std::sync::Arc;
 
 /// Prepares the distributed plan for execution, which implies:
 /// 1. Perform some worker URL assignation, choosing either:
-///    - The URLs set by the user with [crate::RouteTasksHandler].
+///    - The workers selected by the user's [crate::RouteTaskHandler].
 ///    - Randomly otherwise
 /// 2. Sending the sliced subplans to the assigned URLs. For each URL assigned to a task, a
 ///    network call feeding the subplan is necessary.
@@ -17,11 +18,11 @@ use std::sync::Arc;
 ///    become nodes without children and traversing them will not go further down in.
 /// 4. Spawn a background task per worker that waits for the worker to finish and collects
 ///    its metrics into [DistributedExec::task_metrics] via the coordinator channel.
-pub(super) fn prepare_static_plan(
+pub(super) async fn prepare_static_plan(
     query_coordinator: &QueryCoordinator,
     base_plan: &Arc<dyn ExecutionPlan>,
 ) -> Result<PreparedPlan> {
-    let prepared = Arc::clone(base_plan).transform_up(|plan| {
+    let prepared = Arc::clone(base_plan).transform_up_async(async |plan| {
         // The following logic is just applied on network boundaries.
         let Some(plan) = plan.as_network_boundary() else {
             return Ok(Transformed::no(plan));
@@ -32,17 +33,17 @@ pub(super) fn prepare_static_plan(
         };
 
         let mut stage_coordinator = query_coordinator.stage_coordinator(stage);
-
-        let routed_urls = stage_coordinator.routed_urls()?;
+        let mut futures = Vec::with_capacity(stage.tasks);
+        for task_i in 0..stage.tasks {
+            futures.push(Box::pin(stage_coordinator.send_plan_task(task_i)));
+        }
+        let results = futures::future::try_join_all(futures).await?;
 
         let mut workers = Vec::with_capacity(stage.tasks);
-        for (i, routed_url) in routed_urls.into_iter().enumerate() {
-            workers.push(routed_url.clone());
-            // Spawn a task that sends the subplan to the chosen URL.
-            // There will be as many spawned tasks as workers.
-            let (worker_tx, worker_rx) = stage_coordinator.send_plan_task(i, routed_url)?;
-            stage_coordinator.worker_to_coordinator_task(i, worker_rx);
-            stage_coordinator.coordinator_to_worker_task(i, worker_tx)?;
+        for (task_i, (url, worker_tx, worker_rx)) in results.into_iter().enumerate() {
+            workers.push(url);
+            stage_coordinator.worker_to_coordinator_task(task_i, worker_rx);
+            stage_coordinator.coordinator_to_worker_task(task_i, worker_tx)?;
         }
 
         Ok(Transformed::yes(plan.with_input_stage(Stage::Remote(
@@ -53,9 +54,9 @@ pub(super) fn prepare_static_plan(
                 runtime_stats: None,
             },
         ))?))
-    })?;
+    });
     Ok(PreparedPlan {
-        head_stage: prepared.data,
+        head_stage: prepared.await?.data,
         // If the plan was statically planned, the base plan is the same one that will be used for
         // visualization.
         plan_for_viz: Arc::clone(base_plan),

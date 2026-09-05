@@ -8,7 +8,7 @@
 //! Routing is a two-step pipeline:
 //! - `cached_file_scan_scale_up_leaf_node_handler` assigns each file to a task slot by
 //!   hashing its path (mod task_count), so the same file always lands in the same slot.
-//! - `cached_file_scan_route_tasks_handler` maps slot `i` to `sorted_urls[i % n]`,
+//! - `CachedFileScanRouteTaskHandler` maps slot `i` to `sorted_urls[i % n]`,
 //!   so each slot always reaches the same worker URL.
 //!
 //! Together these guarantee that each worker consistently reads the same set of files and its
@@ -22,6 +22,7 @@
 //!     --show-distributed-plan
 //! ```
 
+use async_trait::async_trait;
 use dashmap::DashMap;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::util::pretty::pretty_format_batches;
@@ -42,8 +43,8 @@ use datafusion_distributed::test_utils::localhost::{
     LocalHostWorkerResolver, spawn_worker_service,
 };
 use datafusion_distributed::{
-    DesiredTaskCountEvent, DesiredTaskCountEventResponse, DistributedExt, DistributedGetterExt,
-    DistributedLeafExec, RouteTasksEvent, RouteTasksEventResponse, ScaleUpLeafNodeEvent,
+    DesiredTaskCountEvent, DesiredTaskCountEventResponse, DistributedExt, DistributedLeafExec,
+    RouteTaskEvent, RouteTaskEventResponse, RouteTaskHandler, ScaleUpLeafNodeEvent,
     ScaleUpLeafNodeEventResponse, SessionStateBuilderExt, WorkerQueryContext, display_plan_ascii,
 };
 use datafusion_proto::physical_plan::{PhysicalExtensionCodec, PhysicalProtoConverterExtension};
@@ -211,36 +212,38 @@ fn cached_file_scan_scale_up_leaf_node_handler(
     )
 }
 
-fn cached_file_scan_route_tasks_handler(
-    ctx: RouteTasksEvent,
-) -> Option<Result<RouteTasksEventResponse>> {
-    (|| -> Result<Option<RouteTasksEventResponse>> {
-        let available_urls = ctx
-            .task_ctx
-            .session_config()
-            .get_distributed_worker_resolver()?
-            .get_urls()?;
+struct CachedFileScanRouteTaskHandler;
 
-        let mut routed = None;
-        ctx.plan.apply(|node| {
-            if let Some(leaf) = node.downcast_ref::<DistributedLeafExec>()
-                && leaf.original().downcast_ref::<CacheExec>().is_some()
-            {
-                // Sort URLs so the slot→worker mapping is deterministic across planning passes.
-                let mut urls = available_urls.to_vec();
-                urls.sort();
-                routed = Some(
-                    (0..ctx.task_count)
-                        .map(|i| urls[i % urls.len()].clone())
-                        .collect(),
-                );
-                return Ok(TreeNodeRecursion::Stop);
-            }
-            Ok(TreeNodeRecursion::Continue)
-        })?;
-        Ok(routed.map(RouteTasksEventResponse::new))
-    })()
-    .transpose()
+#[async_trait]
+impl RouteTaskHandler for CachedFileScanRouteTaskHandler {
+    async fn handle(&self, ev: RouteTaskEvent<'_>) -> Option<Result<RouteTaskEventResponse>> {
+        let mut has_cached_file_scan = false;
+        ev.task_specialized_plan
+            .apply(|node| {
+                if node.downcast_ref::<CacheExec>().is_some() {
+                    has_cached_file_scan = true;
+                    return Ok(TreeNodeRecursion::Stop);
+                }
+                Ok(TreeNodeRecursion::Continue)
+            })
+            .expect("Cannot fail");
+        if !has_cached_file_scan {
+            return None;
+        }
+
+        let mut available_urls = match ev.worker_resolver.get_urls() {
+            Ok(urls) => urls,
+            Err(err) => return Some(Err(err)),
+        };
+        if available_urls.is_empty() {
+            return Some(internal_err!("WorkerResolver returned 0 URLs"));
+        }
+
+        // Sort URLs so the task-to-worker mapping is deterministic across planning passes.
+        available_urls.sort();
+        let url = available_urls[ev.task_key.task_number % available_urls.len()].clone();
+        Some(ev.dialer.dial(url).await)
+    }
 }
 
 /// Codec for [`CacheExec`]. The child (`DataSourceExec(FileScanConfig)`) is encoded by the
@@ -359,7 +362,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .with_distributed_user_codec(CachedFileScanCodec)
         .with_distributed_desired_task_count_handler(cached_file_scan_desired_task_count_handler)
         .with_distributed_scale_up_leaf_node_handler(cached_file_scan_scale_up_leaf_node_handler)
-        .with_distributed_route_tasks_handler(cached_file_scan_route_tasks_handler)
+        .with_distributed_route_task_handler(CachedFileScanRouteTaskHandler)
         .build();
     state
         .config_mut()

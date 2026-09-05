@@ -1,79 +1,102 @@
-use super::common::EventHandlerChain;
-use datafusion::error::Result;
+use crate::events::common::EventHandlerChain;
+use crate::{TaskKey, WorkerResolver, WorkerToCoordinatorMsg};
+use async_trait::async_trait;
+use datafusion::common::Result;
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
+use futures::stream::BoxStream;
 use std::sync::Arc;
 use url::Url;
 
-/// Information supplied when the coordinator assigns a stage's tasks to workers.
-///
-/// A routing response contains one worker URL per task, in task-index order. The coordinator
-/// validates that a response has exactly [`Self::handle`] URLs before it starts the stage.
-#[derive(Clone)]
-pub struct RouteTasksEvent<'a> {
+/// Information supplied when the coordinator assigns one distributed task to a worker.
+#[derive(Clone, Copy)]
+pub struct RouteTaskEvent<'a> {
     /// The task context active for the query being coordinated.
-    pub task_ctx: Arc<TaskContext>,
-    /// The head execution plan of the stage whose tasks are being routed.
-    /// WARNING: this is never going to be a custom leaf node, this is the head node of the fragment
-    ///  of the plan that contains the custom leaf node.
-    pub plan: &'a Arc<dyn ExecutionPlan>,
-    /// The number of task slots that need a worker assignment.
+    pub task_ctx: &'a TaskContext,
+    /// [WorkerResolver] in scope.
+    pub worker_resolver: &'a dyn WorkerResolver,
+    /// Identifier of the task that is getting assigned.
+    pub task_key: TaskKey,
+    /// Number of tasks of the stage to which the assigned task belongs.
     pub task_count: usize,
+    /// The exact plan variant that will be sent for this task.
+    pub task_specialized_plan: &'a Arc<dyn ExecutionPlan>,
+    /// Establishes a coordinator-to-worker connection for a candidate URL.
+    pub dialer: &'a dyn CoordinatorToWorkerDialer,
 }
 
-/// Worker assignments returned by a [`RouteTasksHandler`].
-pub struct RouteTasksEventResponse {
-    /// One worker URL per task, ordered by task index.
-    pub urls: Vec<Url>,
+/// A worker connection selected by a [`RouteTaskHandler`].
+pub struct RouteTaskEventResponse {
+    /// The URL of the selected worker.
+    pub url: Url,
+    /// Messages streamed from the selected worker to the coordinator.
+    pub worker_to_coordinator_stream: BoxStream<'static, Result<WorkerToCoordinatorMsg>>,
 }
 
-impl RouteTasksEventResponse {
-    /// Returns a response assigning tasks to `urls` in order.
-    ///
-    /// The coordinator rejects the response unless `urls.len()` equals
-    /// [`RouteTasksEvent::handle`].
-    pub fn new(urls: Vec<Url>) -> Self {
-        Self { urls }
-    }
-}
-
-/// Optionally assigns a stage's task slots to worker URLs.
+/// Assigns a distributed task to a worker and establishes its connection.
 ///
-/// Handlers are evaluated in reverse registration order. Return `Some(Ok(_))` to select a
-/// complete routing response and stop dispatch, or `None` to defer to earlier handlers. If every
-/// handler returns `None`, the coordinator assigns the tasks round-robin, from a randomized worker
-/// offset. Returning `Some(Err(_))` aborts execution before tasks are submitted.
-pub trait RouteTasksHandler: Send + Sync + 'static {
-    /// Optionally assigns the tasks described by `ev` to specific worker URLs.
-    ///
-    /// Return `None` when this handler does not apply. A successful response must provide exactly
-    /// one URL for every task, in task-index order.
-    fn handle(&self, ev: RouteTasksEvent) -> Option<Result<RouteTasksEventResponse>>;
+/// Handlers are evaluated in registration order, with custom handlers before built-ins. Return
+/// `None` to defer to the next handler. To implement retries or failover, call
+/// [`RouteTaskEvent::dialer`] multiple times and return the successful response.
+#[async_trait]
+pub trait RouteTaskHandler: Send + Sync + 'static {
+    /// Attempts to assign the task described by the event to a worker.
+    async fn handle(&self, ev: RouteTaskEvent<'_>) -> Option<Result<RouteTaskEventResponse>>;
 }
 
-impl<F> RouteTasksHandler for F
-where
-    F: Send + Sync + 'static,
-    F: for<'a> Fn(RouteTasksEvent<'a>) -> Option<Result<RouteTasksEventResponse>>,
-{
-    fn handle(&self, ev: RouteTasksEvent) -> Option<Result<RouteTasksEventResponse>> {
-        self(ev)
+#[async_trait]
+impl RouteTaskHandler for Arc<dyn RouteTaskHandler> {
+    async fn handle(&self, ev: RouteTaskEvent<'_>) -> Option<Result<RouteTaskEventResponse>> {
+        self.as_ref().handle(ev).await
     }
 }
 
-impl RouteTasksHandler for Arc<dyn RouteTasksHandler> {
-    fn handle(&self, ev: RouteTasksEvent) -> Option<Result<RouteTasksEventResponse>> {
-        self.as_ref().handle(ev)
-    }
-}
+pub(crate) type RouteTaskHandlers = EventHandlerChain<dyn RouteTaskHandler>;
 
-pub(crate) type RouteTasksHandlers = EventHandlerChain<dyn RouteTasksHandler>;
-
-impl RouteTasksHandlers {
-    pub(crate) fn handle(ev: RouteTasksEvent) -> Option<Result<RouteTasksEventResponse>> {
-        ev.task_ctx
+impl RouteTaskHandlers {
+    pub(crate) async fn handle(ev: RouteTaskEvent<'_>) -> Option<Result<RouteTaskEventResponse>> {
+        let handlers = ev
+            .task_ctx
             .session_config()
-            .get_extension::<RouteTasksHandlers>()?
-            .find_map(|handler| handler.handle(ev.clone()))
+            .get_extension::<RouteTaskHandlers>()?;
+        for handler in handlers.iter() {
+            if let Some(response) = handler.handle(ev).await {
+                return Some(response);
+            }
+        }
+        None
     }
+}
+
+// === CoordinatorToWorkerDialer ===
+
+/// Establishes coordinator-to-worker connections for assignment candidates.
+///
+/// Each call represents an independent connection attempt. A handler may call `dial` multiple
+/// times, sequentially or concurrently, when implementing retries or failover.
+#[async_trait]
+pub trait CoordinatorToWorkerDialer: Send + Sync {
+    /// Attempts to connect the task to `url`.
+    async fn dial(&self, url: Url) -> Result<RouteTaskEventResponse>;
+}
+
+pub(crate) fn new_coordinator_to_worker_dialer<F, Fut>(f: F) -> impl CoordinatorToWorkerDialer
+where
+    F: Fn(Url) -> Fut + Send + Sync,
+    Fut: Future<Output = Result<RouteTaskEventResponse>> + Send,
+{
+    struct S<F>(F);
+
+    #[async_trait]
+    impl<F, Fut> CoordinatorToWorkerDialer for S<F>
+    where
+        F: Fn(Url) -> Fut + Send + Sync,
+        Fut: Future<Output = Result<RouteTaskEventResponse>> + Send,
+    {
+        async fn dial(&self, url: Url) -> Result<RouteTaskEventResponse> {
+            self.0(url).await
+        }
+    }
+
+    S(f)
 }
