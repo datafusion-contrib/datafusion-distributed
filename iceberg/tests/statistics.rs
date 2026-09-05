@@ -8,9 +8,6 @@ mod tests {
     use datafusion::error::Result;
     use datafusion::physical_plan::{ExecutionPlan, displayable};
     use datafusion_distributed_iceberg::IcebergDataSource;
-    use datafusion_distributed_iceberg::iceberg::spec::{
-        Snapshot, TableMetadata, TableMetadataBuilder,
-    };
     use datafusion_distributed_iceberg::test_utils::IcebergTestHarness;
 
     // Values from testdata/iceberg/taxi/metadata/v1.metadata.json snapshot summary.
@@ -30,8 +27,14 @@ mod tests {
 
     #[tokio::test]
     async fn missing_snapshot_summary_statistics_are_absent() -> Result<()> {
-        let metadata = metadata_without_snapshot_statistics();
-        let harness = IcebergTestHarness::with_table_metadata(metadata).await?;
+        let harness = IcebergTestHarness::builder()
+            .edit_current_snapshot_summary(|summary| {
+                for key in ["total-records", "total-files-size"] {
+                    assert!(summary.additional_properties.remove(key).is_some());
+                }
+            })
+            .build()
+            .await?;
         let stats = source_statistics(&harness, "SELECT * FROM taxi").await?;
 
         assert_eq!(stats.num_rows, Precision::Absent);
@@ -143,58 +146,5 @@ mod tests {
             }
         }
         plan.children().into_iter().find_map(find_iceberg_exec)
-    }
-
-    fn metadata_without_snapshot_statistics() -> Vec<u8> {
-        let metadata: TableMetadata = serde_json::from_str(include_str!(
-            "../../testdata/iceberg/taxi/metadata/v1.metadata.json"
-        ))
-        .expect("taxi metadata is valid JSON");
-        let current = metadata
-            .current_snapshot()
-            .expect("taxi metadata has a current snapshot");
-        let snapshot_id = current.snapshot_id();
-        let mut summary = current.summary().clone();
-        assert!(
-            summary
-                .additional_properties
-                .remove("total-records")
-                .is_some()
-        );
-        assert!(
-            summary
-                .additional_properties
-                .remove("total-files-size")
-                .is_some()
-        );
-        let snapshot = Snapshot::builder()
-            .with_snapshot_id(snapshot_id)
-            .with_parent_snapshot_id(current.parent_snapshot_id())
-            .with_sequence_number(current.sequence_number())
-            .with_timestamp_ms(current.timestamp_ms())
-            .with_manifest_list(current.manifest_list())
-            .with_summary(summary)
-            .with_schema_id(current.schema_id().expect("taxi snapshot has a schema ID"))
-            .build();
-        let metadata = TableMetadataBuilder::new(
-            metadata.current_schema().as_ref().clone(),
-            metadata
-                .default_partition_spec()
-                .as_ref()
-                .clone()
-                .into_unbound(),
-            metadata.default_sort_order().as_ref().clone(),
-            metadata.location().to_string(),
-            metadata.format_version(),
-            metadata.properties().clone(),
-        )
-        .expect("taxi metadata can be rebuilt")
-        .assign_uuid(metadata.uuid())
-        .set_branch_snapshot(snapshot, "main")
-        .expect("taxi snapshot can be added")
-        .build()
-        .expect("taxi metadata remains valid")
-        .metadata;
-        serde_json::to_vec(&metadata).expect("taxi metadata serializes")
     }
 }

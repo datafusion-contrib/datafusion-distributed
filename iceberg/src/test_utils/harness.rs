@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::dataframe::DataFrame;
-use datafusion::error::Result;
+use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_plan::{ExecutionPlan, displayable};
 use datafusion::prelude::{SessionConfig, SessionContext};
@@ -19,6 +19,7 @@ use iceberg::io::{
     FileMetadata, FileRead, FileWrite, InputFile, LocalFsStorage, OutputFile, Storage,
     StorageConfig, StorageFactory,
 };
+use iceberg::spec::{Snapshot, Summary, TableMetadata, TableMetadataBuilder};
 use iceberg::{Error, ErrorKind, Result as IcebergResult};
 use serde::{Deserialize, Serialize};
 
@@ -33,6 +34,10 @@ pub struct IcebergTestHarness {
 }
 
 impl IcebergTestHarness {
+    pub fn builder() -> IcebergTestHarnessBuilder {
+        IcebergTestHarnessBuilder::default()
+    }
+
     pub async fn new() -> Result<Self> {
         Self::create(FixtureStorageFactory::default()).await
     }
@@ -86,6 +91,75 @@ impl IcebergTestHarness {
             datafusion_proto::protobuf::PhysicalPlanNode::try_from_physical_plan(plan, &codec)?;
         proto.try_into_physical_plan(&task_ctx, &codec)
     }
+}
+
+pub struct IcebergTestHarnessBuilder {
+    metadata: TableMetadata,
+}
+
+impl Default for IcebergTestHarnessBuilder {
+    fn default() -> Self {
+        let metadata = serde_json::from_str(include_str!(
+            "../../../testdata/iceberg/taxi/metadata/v1.metadata.json"
+        ))
+        .expect("taxi metadata is valid JSON");
+        Self { metadata }
+    }
+}
+
+impl IcebergTestHarnessBuilder {
+    pub fn edit_current_snapshot_summary(self, edit: impl FnOnce(&mut Summary)) -> Self {
+        Self {
+            metadata: rebuild_with_current_snapshot_summary(self.metadata, edit),
+        }
+    }
+
+    pub async fn build(self) -> Result<IcebergTestHarness> {
+        let metadata = serde_json::to_vec(&self.metadata)
+            .map_err(|error| DataFusionError::External(Box::new(error)))?;
+        IcebergTestHarness::with_table_metadata(metadata).await
+    }
+}
+
+fn rebuild_with_current_snapshot_summary(
+    metadata: TableMetadata,
+    edit: impl FnOnce(&mut Summary),
+) -> TableMetadata {
+    let current = metadata
+        .current_snapshot()
+        .expect("taxi metadata has a current snapshot");
+    let mut summary = current.summary().clone();
+    edit(&mut summary);
+
+    let snapshot = Snapshot::builder()
+        .with_snapshot_id(current.snapshot_id())
+        .with_parent_snapshot_id(current.parent_snapshot_id())
+        .with_sequence_number(current.sequence_number())
+        .with_timestamp_ms(current.timestamp_ms())
+        .with_manifest_list(current.manifest_list())
+        .with_summary(summary)
+        .with_schema_id(current.schema_id().expect("taxi snapshot has a schema ID"))
+        .build();
+
+    TableMetadataBuilder::new(
+        metadata.current_schema().as_ref().clone(),
+        metadata
+            .default_partition_spec()
+            .as_ref()
+            .clone()
+            .into_unbound(),
+        metadata.default_sort_order().as_ref().clone(),
+        metadata.location().to_string(),
+        metadata.format_version(),
+        metadata.properties().clone(),
+    )
+    .expect("taxi metadata can be rebuilt")
+    .assign_uuid(metadata.uuid())
+    .set_branch_snapshot(snapshot, "main")
+    .expect("taxi snapshot can be added")
+    .build()
+    .expect("taxi metadata remains valid")
+    .metadata
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
