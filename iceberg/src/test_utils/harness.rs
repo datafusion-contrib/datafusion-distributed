@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -19,10 +19,11 @@ use iceberg::io::{
     FileMetadata, FileRead, FileWrite, InputFile, LocalFsStorage, OutputFile, Storage,
     StorageConfig, StorageFactory,
 };
-use iceberg::spec::{Snapshot, Summary, TableMetadata, TableMetadataBuilder};
+use iceberg::spec::TableMetadata;
 use iceberg::{Error, ErrorKind, Result as IcebergResult};
 use serde::{Deserialize, Serialize};
 
+use super::taxi_metadata;
 use crate::{IcebergExt, IcebergIntegrationOptions};
 
 pub const FIXTURE_URI: &str = "s3://iceberg-test/warehouse/taxi";
@@ -39,17 +40,13 @@ impl IcebergTestHarness {
     }
 
     pub async fn new() -> Result<Self> {
-        Self::create(FixtureStorageFactory::default()).await
+        Self::builder().build().await
     }
 
-    /// Builds a harness with in-memory table metadata and the checked-in data files.
-    pub async fn with_table_metadata(metadata: impl AsRef<[u8]>) -> Result<Self> {
-        let storage_factory =
-            FixtureStorageFactory::with_file(FIXTURE_METADATA_URI, metadata.as_ref().to_vec());
-        Self::create(storage_factory).await
-    }
-
-    async fn create(storage_factory: FixtureStorageFactory) -> Result<Self> {
+    async fn create(
+        storage_factory: FixtureStorageFactory,
+        table_options: BTreeMap<String, String>,
+    ) -> Result<Self> {
         let state = SessionStateBuilder::new()
             .with_default_features()
             .with_config(SessionConfig::new().with_target_partitions(4))
@@ -59,13 +56,25 @@ impl IcebergTestHarness {
             })
             .build();
         let ctx = SessionContext::new_with_state(state);
-        ctx.sql(&format!(
+        let mut statement = format!(
             "CREATE EXTERNAL TABLE taxi STORED AS ICEBERG \
              LOCATION '{FIXTURE_METADATA_URI}'"
-        ))
-        .await?
-        .collect()
-        .await?;
+        );
+        if !table_options.is_empty() {
+            let options = table_options
+                .into_iter()
+                .map(|(key, value)| {
+                    format!(
+                        "'{}' '{}'",
+                        key.replace('\'', "''"),
+                        value.replace('\'', "''")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            statement.push_str(&format!(" OPTIONS ({options})"));
+        }
+        ctx.sql(&statement).await?.collect().await?;
         Ok(Self { ctx })
     }
 
@@ -95,71 +104,37 @@ impl IcebergTestHarness {
 
 pub struct IcebergTestHarnessBuilder {
     metadata: TableMetadata,
+    table_options: BTreeMap<String, String>,
 }
 
 impl Default for IcebergTestHarnessBuilder {
     fn default() -> Self {
-        let metadata = serde_json::from_str(include_str!(
-            "../../../testdata/iceberg/taxi/metadata/v1.metadata.json"
-        ))
-        .expect("taxi metadata is valid JSON");
-        Self { metadata }
+        Self {
+            metadata: taxi_metadata(),
+            table_options: BTreeMap::new(),
+        }
     }
 }
 
 impl IcebergTestHarnessBuilder {
-    pub fn edit_current_snapshot_summary(self, edit: impl FnOnce(&mut Summary)) -> Self {
-        Self {
-            metadata: rebuild_with_current_snapshot_summary(self.metadata, edit),
-        }
+    /// Serves the supplied metadata while reading data files from the taxi fixture.
+    pub fn with_table_metadata(mut self, metadata: TableMetadata) -> Self {
+        self.metadata = metadata;
+        self
+    }
+
+    /// Sets a table option; later values replace earlier ones for the same key.
+    pub fn with_table_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.table_options.insert(key.into(), value.into());
+        self
     }
 
     pub async fn build(self) -> Result<IcebergTestHarness> {
         let metadata = serde_json::to_vec(&self.metadata)
             .map_err(|error| DataFusionError::External(Box::new(error)))?;
-        IcebergTestHarness::with_table_metadata(metadata).await
+        let storage_factory = FixtureStorageFactory::with_file(FIXTURE_METADATA_URI, metadata);
+        IcebergTestHarness::create(storage_factory, self.table_options).await
     }
-}
-
-fn rebuild_with_current_snapshot_summary(
-    metadata: TableMetadata,
-    edit: impl FnOnce(&mut Summary),
-) -> TableMetadata {
-    let current = metadata
-        .current_snapshot()
-        .expect("taxi metadata has a current snapshot");
-    let mut summary = current.summary().clone();
-    edit(&mut summary);
-
-    let snapshot = Snapshot::builder()
-        .with_snapshot_id(current.snapshot_id())
-        .with_parent_snapshot_id(current.parent_snapshot_id())
-        .with_sequence_number(current.sequence_number())
-        .with_timestamp_ms(current.timestamp_ms())
-        .with_manifest_list(current.manifest_list())
-        .with_summary(summary)
-        .with_schema_id(current.schema_id().expect("taxi snapshot has a schema ID"))
-        .build();
-
-    TableMetadataBuilder::new(
-        metadata.current_schema().as_ref().clone(),
-        metadata
-            .default_partition_spec()
-            .as_ref()
-            .clone()
-            .into_unbound(),
-        metadata.default_sort_order().as_ref().clone(),
-        metadata.location().to_string(),
-        metadata.format_version(),
-        metadata.properties().clone(),
-    )
-    .expect("taxi metadata can be rebuilt")
-    .assign_uuid(metadata.uuid())
-    .set_branch_snapshot(snapshot, "main")
-    .expect("taxi snapshot can be added")
-    .build()
-    .expect("taxi metadata remains valid")
-    .metadata
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
