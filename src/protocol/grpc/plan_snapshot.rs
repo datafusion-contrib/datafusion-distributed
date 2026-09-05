@@ -73,12 +73,12 @@ pub fn decode(b64: &str) -> Result<String> {
             .map(|m| {
                 let parts: Vec<String> = m
                     .iter()
-                    .map(|metric| format!("{}", metric.value()))
+                    .map(|metric| format!("{metric}"))
                     .collect();
                 if parts.is_empty() {
                     String::new()
                 } else {
-                    format!(" [{}]", parts.join(", "))
+                    format!(" metrics=[{}]", parts.join(", "))
                 }
             })
             .unwrap_or_default();
