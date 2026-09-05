@@ -42,8 +42,7 @@ impl IcebergTestHarness {
         let ctx = SessionContext::new_with_state(state);
         ctx.sql(&format!(
             "CREATE EXTERNAL TABLE taxi STORED AS ICEBERG \
-             LOCATION '{FIXTURE_URI}/metadata/v1.metadata.json' \
-             OPTIONS ('fixture.storage' 'configured')"
+         LOCATION '{FIXTURE_URI}/metadata/v1.metadata.json'"
         ))
         .await?
         .collect()

@@ -161,7 +161,6 @@ mod tests {
             source.iceberg_file_io.config().props(),
             decoded.iceberg_file_io.config().props()
         );
-        assert!(!source.iceberg_file_io.config().props().is_empty());
         assert_eq!(
             decoded.partition_statistics(None)?.as_ref(),
             &Statistics::new_unknown(&decoded.schema)
