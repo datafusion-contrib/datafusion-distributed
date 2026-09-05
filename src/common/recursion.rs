@@ -4,10 +4,39 @@ use datafusion::common::Result;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeIterator, TreeNodeRecursion};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::joins::{CrossJoinExec, HashJoinExec, NestedLoopJoinExec};
+use futures::future::{BoxFuture, try_join_all};
 use std::cell::RefCell;
+use std::future::Future;
 use std::sync::Arc;
 
 pub(crate) trait TreeNodeExt {
+    /// Recursively rewrite the node using `f` in a bottom-up (post-order)
+    /// fashion, awaiting `f` for each node.
+    ///
+    /// `f` is applied to the node's children first, and then to the node itself.
+    /// Sibling subtrees are transformed concurrently.
+    ///
+    /// The returned [`TreeNodeRecursion`] steers the traversal as in
+    /// [`TreeNode::transform_up`]: both [`TreeNodeRecursion::Jump`] and
+    /// [`TreeNodeRecursion::Stop`] prevent `f` from being applied to *any* ancestor of the
+    /// node that returned them.
+    ///
+    /// Because sibling subtrees run concurrently, [`TreeNodeRecursion::Stop`] cannot prune
+    /// them: unlike [`TreeNode::transform_up`], `f` has already been applied to the sibling
+    /// subtrees by the time the stop is observed, and their rewrites are then discarded. The
+    /// resulting plan is identical to [`TreeNode::transform_up`]'s, but `f` must not rely on
+    /// `Stop` to suppress its own side effects.
+    ///
+    /// Note that every child subtree is polled concurrently with no fan-out limit, so an `f`
+    /// that performs I/O will issue up to one request per node of the widest tree level at a
+    /// time.
+    #[allow(dead_code)]
+    async fn transform_up_async<F, Fut>(self, f: F) -> Result<Transformed<Self>>
+    where
+        Self: Sized,
+        F: Fn(Self) -> Fut + Send + Sync,
+        Fut: Future<Output = Result<Transformed<Self>>> + Send;
+
     /// Applies `f` to the node then each of its children, recursively (a
     /// top-down, pre-order traversal), propagating the [DistributedTaskContext] correctly
     /// across nodes that mutate this context, and ignoring nodes that do not belong to
@@ -102,6 +131,48 @@ pub(crate) trait TreeNodeExt {
 }
 
 impl TreeNodeExt for Arc<dyn ExecutionPlan> {
+    async fn transform_up_async<F, Fut>(self, f: F) -> Result<Transformed<Self>>
+    where
+        F: Fn(Self) -> Fut + Send + Sync,
+        Fut: Future<Output = Result<Transformed<Self>>> + Send,
+    {
+        fn transform_up_async_impl<'a, F, Fut>(
+            node: Arc<dyn ExecutionPlan>,
+            f: &'a F,
+        ) -> BoxFuture<'a, Result<Transformed<Arc<dyn ExecutionPlan>>>>
+        where
+            F: Fn(Arc<dyn ExecutionPlan>) -> Fut + Send + Sync + 'a,
+            Fut: Future<Output = Result<Transformed<Arc<dyn ExecutionPlan>>>> + Send + 'a,
+        {
+            Box::pin(async move {
+                let children = try_join_all(
+                    node.children()
+                        .into_iter()
+                        .map(|child| transform_up_async_impl(Arc::clone(child), f)),
+                )
+                .await?;
+                let mut children = children.into_iter();
+                let transformed = node.map_children(|_| {
+                    Ok(children
+                        .next()
+                        .expect("each child has a transformation result"))
+                })?;
+
+                match transformed.tnr {
+                    TreeNodeRecursion::Continue => {
+                        let children_transformed = transformed.transformed;
+                        let mut transformed = f(transformed.data).await?;
+                        transformed.transformed |= children_transformed;
+                        Ok(transformed)
+                    }
+                    TreeNodeRecursion::Jump | TreeNodeRecursion::Stop => Ok(transformed),
+                }
+            })
+        }
+
+        transform_up_async_impl(self, &f).await
+    }
+
     fn apply_with_dt_ctx<F: FnMut(&Self, DistributedTaskContext) -> Result<TreeNodeRecursion>>(
         &self,
         ctx: DistributedTaskContext,
@@ -269,7 +340,7 @@ mod tests {
     use crate::stage::RemoteStage;
     use crate::{NetworkCoalesceExec, Stage};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::common::{JoinType, NullEquality};
+    use datafusion::common::{JoinType, NullEquality, exec_err};
     use datafusion::physical_expr::PhysicalExpr;
     use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
@@ -277,6 +348,174 @@ mod tests {
     use datafusion::physical_plan::joins::PartitionMode;
     use datafusion::physical_plan::union::UnionExec;
     use insta::assert_snapshot;
+    use std::sync::Mutex;
+    use std::time::Duration;
+    use tokio::sync::Barrier;
+    use tokio::time::timeout;
+
+    // ── transform_up_async ───────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn transform_up_async_continue() {
+        assert_snapshot!(
+            trace_transform_up_async_with(
+                single(union(vec![leaf(), single(leaf())])),
+                |plan| async move {
+                    if plan.is::<EmptyExec>() {
+                        Ok(Transformed::yes(single(plan)))
+                    } else {
+                        Ok(Transformed::no(plan))
+                    }
+                },
+            )
+            .await,
+            @r"
+        Leaf transformed=true
+        Leaf transformed=true
+        Single transformed=false
+        Union transformed=false
+        Single transformed=false
+        === Result ===
+        transformed=true tnr=Continue
+        Single
+          Union
+            Single
+              Leaf
+            Single
+              Single
+                Leaf
+        ",
+        );
+    }
+
+    #[tokio::test]
+    async fn transform_up_async_jump() {
+        let jumper = leaf();
+        assert_snapshot!(
+            trace_transform_up_async_with(
+                union(vec![single(Arc::clone(&jumper)), single(leaf())]),
+                move |plan| {
+                    let jumper = Arc::clone(&jumper);
+                    async move {
+                        let tnr = if Arc::ptr_eq(&plan, &jumper) {
+                            TreeNodeRecursion::Jump
+                        } else {
+                            TreeNodeRecursion::Continue
+                        };
+                        Ok(Transformed::new(single(plan), true, tnr))
+                    }
+                },
+            )
+            .await,
+            // If the jump, did not kick-in, we would be seeing two "Single" tags here.
+            @r"
+        Leaf [->jump] transformed=true
+        Leaf transformed=true
+        Single transformed=true
+        Union transformed=true
+        === Result ===
+        transformed=true tnr=Continue
+        Single
+          Union
+            Single
+              Single
+                Leaf
+            Single
+              Single
+                Single
+                  Leaf
+        ",
+        );
+    }
+
+    #[tokio::test]
+    async fn transform_up_async_stop() {
+        let stopper = leaf();
+        assert_snapshot!(
+            trace_transform_up_async_with(
+                union(vec![single(Arc::clone(&stopper)), single(leaf())]),
+                move |plan| {
+                    let stopper = Arc::clone(&stopper);
+                    async move {
+                        let tnr = if Arc::ptr_eq(&plan, &stopper) {
+                            TreeNodeRecursion::Stop
+                        } else {
+                            TreeNodeRecursion::Continue
+                        };
+                        Ok(Transformed::new(single(plan), true, tnr))
+                    }
+                },
+            )
+            .await,
+            // The "Single" we see here belongs to the right branch of the UNION, that
+            // executes concurrently with the left branch and does not get to see the Stop
+            // signal.
+            @r"
+        Leaf [->stop] transformed=true
+        Leaf transformed=true
+        Single transformed=true
+        === Result ===
+        transformed=true tnr=Stop
+        Union
+          Single
+            Single
+              Leaf
+          Single
+            Leaf
+        ",
+        );
+    }
+
+    #[tokio::test]
+    async fn transform_up_async_propagates_error() {
+        assert_snapshot!(
+            trace_transform_up_async_with(single(leaf()), |plan| async move {
+                if plan.is::<EmptyExec>() {
+                    exec_err!("boom")
+                } else {
+                    Ok(Transformed::no(plan))
+                }
+            })
+            .await,
+            @r"
+        Leaf err=Execution error: boom
+        === Result ===
+        err=Execution error: boom
+        ",
+        );
+    }
+
+    #[tokio::test]
+    async fn transform_up_async_processes_siblings_concurrently() {
+        let barrier = Arc::new(Barrier::new(2));
+        assert_snapshot!(
+            timeout(
+                Duration::from_secs(1),
+                trace_transform_up_async_with(union(vec![leaf(), leaf()]), move |plan| {
+                    let barrier = Arc::clone(&barrier);
+                    async move {
+                        if plan.is::<EmptyExec>() {
+                            barrier.wait().await;
+                        }
+                        Ok(Transformed::no(plan))
+                    }
+                }),
+            )
+            .await
+            .expect("sibling callbacks should reach the barrier concurrently"),
+            @r"
+        Leaf transformed=false
+        Leaf transformed=false
+        Union transformed=false
+        === Result ===
+        transformed=false tnr=Continue
+        Union
+          Leaf
+          Leaf
+        ",
+        );
+    }
+
     // ── apply_with_dt_ctx ────────────────────────────────────────────────────────
 
     #[test]
@@ -822,6 +1061,66 @@ mod tests {
         } else {
             "?"
         }
+    }
+
+    async fn trace_transform_up_async_with<F, Fut>(root: Arc<dyn ExecutionPlan>, f: F) -> String
+    where
+        F: Fn(Arc<dyn ExecutionPlan>) -> Fut + Send + Sync,
+        Fut: Future<Output = Result<Transformed<Arc<dyn ExecutionPlan>>>> + Send,
+    {
+        let lines = Mutex::new(vec![]);
+        let result = root
+            .transform_up_async(|p| {
+                let lines = &lines;
+                let label = plan_label(&p);
+                let future = f(p);
+                async move {
+                    let result = future.await;
+                    let mut line = label.to_string();
+                    line += match result.as_ref().map(|v| v.tnr) {
+                        Ok(TreeNodeRecursion::Continue) => "",
+                        Ok(TreeNodeRecursion::Jump) => " [->jump]",
+                        Ok(TreeNodeRecursion::Stop) => " [->stop]",
+                        _ => "",
+                    };
+
+                    line += match result.as_ref().map(|v| v.transformed) {
+                        Ok(true) => " transformed=true",
+                        Ok(false) => " transformed=false",
+                        _ => "",
+                    };
+
+                    line += &match result.as_ref().map(|v| v.transformed) {
+                        Err(err) => format!(" err={err}"),
+                        _ => "".to_string(),
+                    };
+                    lines.lock().unwrap().push(line);
+                    result
+                }
+            })
+            .await;
+        let mut lines = lines.into_inner().unwrap();
+        lines.push("=== Result ===".to_string());
+        match result {
+            Err(err) => lines.push(format!("err={err}")),
+            Ok(result) => {
+                lines.push(format!(
+                    "transformed={} tnr={:?}",
+                    result.transformed, result.tnr
+                ));
+                let mut stack = vec![(&result.data, 0)];
+                while let Some((plan, depth)) = stack.pop() {
+                    lines.push(format!("{}{}", "  ".repeat(depth), plan_label(plan)));
+                    stack.extend(
+                        plan.children()
+                            .into_iter()
+                            .rev()
+                            .map(|child| (child, depth + 1)),
+                    );
+                }
+            }
+        }
+        lines.join("\n")
     }
 
     fn trace_apply(root: &Arc<dyn ExecutionPlan>, dt_ctx: DistributedTaskContext) -> String {
