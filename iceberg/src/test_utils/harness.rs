@@ -103,23 +103,28 @@ impl IcebergTestHarnessBuilder {
         self
     }
 
-    pub async fn build(mut self) -> Result<IcebergTestHarness> {
+    /// Builds fixture-backed options for configuring coordinator and worker sessions.
+    pub fn integration_options(&self) -> Result<IcebergIntegrationOptions> {
         let metadata = serde_json::to_vec(&self.metadata)
             .map_err(|error| DataFusionError::External(Box::new(error)))?;
-        self.files
+        let mut files = self.files.clone();
+        files
             .entry(FIXTURE_METADATA_URI.to_string())
             .or_insert(metadata);
-        let storage_factory = FixtureStorageFactory {
-            files: self.files,
-            ..FixtureStorageFactory::default()
-        };
+        Ok(IcebergIntegrationOptions {
+            storage_factory: Arc::new(FixtureStorageFactory {
+                files,
+                ..FixtureStorageFactory::default()
+            }),
+            iceberg_runtime: iceberg::Runtime::current(),
+        })
+    }
+
+    pub async fn build(self) -> Result<IcebergTestHarness> {
         let state = SessionStateBuilder::new()
             .with_default_features()
             .with_config(SessionConfig::new().with_target_partitions(4))
-            .with_iceberg_integration(IcebergIntegrationOptions {
-                storage_factory: Arc::new(storage_factory),
-                iceberg_runtime: iceberg::Runtime::current(),
-            })
+            .with_iceberg_integration(self.integration_options()?)
             .build();
         let ctx = SessionContext::new_with_state(state);
         let mut statement = format!(

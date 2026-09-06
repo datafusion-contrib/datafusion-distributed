@@ -13,6 +13,7 @@ use crate::distributed_desired_task_count_handler::iceberg_desired_task_count;
 use crate::{IcebergConfig, IcebergDataSource, IcebergTableProviderFactory};
 
 /// Configuration required to register the Iceberg SQL integration.
+#[derive(Clone)]
 pub struct IcebergIntegrationOptions {
     /// Builds storage implementations for table metadata and data files.
     pub storage_factory: Arc<dyn StorageFactory>,
