@@ -6,12 +6,16 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::arrow::util::pretty::pretty_format_batches;
-use datafusion::dataframe::DataFrame;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::SessionStateBuilder;
-use datafusion::physical_plan::{ExecutionPlan, displayable};
+use datafusion::physical_plan::{ExecutionPlan, collect};
 use datafusion::prelude::{SessionConfig, SessionContext};
-use datafusion_distributed::DistributedCodec;
+use datafusion_distributed::{DistributedCodec, display_plan_ascii};
+#[cfg(feature = "integration")]
+use datafusion_distributed::{
+    DistributedExt, SessionStateBuilderExt, WorkerQueryContext,
+    test_utils::in_memory_channel_resolver::{InMemoryChannelResolver, InMemoryWorkerResolver},
+};
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use futures::StreamExt;
 use futures::stream::BoxStream;
@@ -44,14 +48,11 @@ impl IcebergTestHarness {
     }
 
     pub async fn query(&self, sql: &str) -> Result<(String, String)> {
-        let dataframe: DataFrame = self.ctx.sql(sql).await?;
-        let plan = dataframe.create_physical_plan().await?;
-        let batches = dataframe.collect().await?;
+        let plan = self.physical_plan(sql).await?;
+        let display = display_plan_ascii(plan.as_ref(), false);
+        let batches = collect(plan, self.ctx.task_ctx()).await?;
 
-        Ok((
-            displayable(plan.as_ref()).indent(true).to_string(),
-            pretty_format_batches(&batches)?.to_string(),
-        ))
+        Ok((display, pretty_format_batches(&batches)?.to_string()))
     }
 
     pub async fn physical_plan(&self, sql: &str) -> Result<Arc<dyn ExecutionPlan>> {
@@ -71,6 +72,8 @@ pub struct IcebergTestHarnessBuilder {
     metadata: TableMetadata,
     table_options: BTreeMap<String, String>,
     files: HashMap<String, Vec<u8>>,
+    #[cfg(feature = "integration")]
+    workers: Option<usize>,
 }
 
 impl Default for IcebergTestHarnessBuilder {
@@ -79,6 +82,8 @@ impl Default for IcebergTestHarnessBuilder {
             metadata: taxi_metadata(),
             table_options: BTreeMap::new(),
             files: HashMap::new(),
+            #[cfg(feature = "integration")]
+            workers: None,
         }
     }
 }
@@ -103,30 +108,49 @@ impl IcebergTestHarnessBuilder {
         self
     }
 
-    /// Builds fixture-backed options for configuring coordinator and worker sessions.
-    pub fn integration_options(&self) -> Result<IcebergIntegrationOptions> {
-        let metadata = serde_json::to_vec(&self.metadata)
-            .map_err(|error| DataFusionError::External(Box::new(error)))?;
-        let mut files = self.files.clone();
-        files
-            .entry(FIXTURE_METADATA_URI.to_string())
-            .or_insert(metadata);
-        Ok(IcebergIntegrationOptions {
-            storage_factory: Arc::new(FixtureStorageFactory {
-                files,
-                ..FixtureStorageFactory::default()
-            }),
-            iceberg_runtime: iceberg::Runtime::current(),
-        })
+    /// Enables distributed planning with logical workers backed by in-memory gRPC.
+    #[cfg(feature = "integration")]
+    pub fn with_workers(mut self, workers: usize) -> Self {
+        self.workers = Some(workers);
+        self
     }
 
-    pub async fn build(self) -> Result<IcebergTestHarness> {
+    pub async fn build(mut self) -> Result<IcebergTestHarness> {
+        let metadata = serde_json::to_vec(&self.metadata)
+            .map_err(|error| DataFusionError::External(Box::new(error)))?;
+        self.files
+            .entry(FIXTURE_METADATA_URI.to_string())
+            .or_insert(metadata);
+        let storage_factory = FixtureStorageFactory {
+            files: self.files,
+            ..FixtureStorageFactory::default()
+        };
+        let options = IcebergIntegrationOptions {
+            storage_factory: Arc::new(storage_factory),
+            iceberg_runtime: iceberg::Runtime::current(),
+        };
         let state = SessionStateBuilder::new()
             .with_default_features()
             .with_config(SessionConfig::new().with_target_partitions(4))
-            .with_iceberg_integration(self.integration_options()?)
-            .build();
-        let ctx = SessionContext::new_with_state(state);
+            .with_iceberg_integration(options.clone());
+        #[cfg(feature = "integration")]
+        let state = if let Some(workers) = self.workers {
+            let resolver =
+                InMemoryChannelResolver::from_session_builder(move |ctx: WorkerQueryContext| {
+                    let state = ctx
+                        .builder
+                        .with_iceberg_integration(options.clone())
+                        .build();
+                    async move { Ok(state) }
+                });
+            state
+                .with_distributed_planner()
+                .with_distributed_worker_resolver(InMemoryWorkerResolver::new(workers))
+                .with_distributed_channel_resolver(resolver)
+        } else {
+            state
+        };
+        let ctx = SessionContext::new_with_state(state.build());
         let mut statement = format!(
             "CREATE EXTERNAL TABLE taxi STORED AS ICEBERG \
              LOCATION '{FIXTURE_METADATA_URI}'"

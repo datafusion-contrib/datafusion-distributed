@@ -2,25 +2,38 @@
 mod tests {
     use std::sync::Arc;
 
-    use datafusion::arrow::util::pretty::pretty_format_batches;
     use datafusion::common::Result;
-    use datafusion::physical_plan::{ExecutionPlan, collect};
+    use datafusion::physical_plan::ExecutionPlan;
     use datafusion::prelude::SessionConfig;
-    use datafusion_distributed::test_utils::in_memory_channel_resolver::start_in_memory_context;
-    use datafusion_distributed::{
-        DesiredTaskCountEvent, DistributedConfig, DistributedExt, WorkerQueryContext,
-        display_plan_ascii,
-    };
+    use datafusion_distributed::{DesiredTaskCountEvent, DistributedConfig, DistributedExt};
+    use datafusion_distributed_iceberg::iceberg_desired_task_count;
     use datafusion_distributed_iceberg::test_utils::{
         IcebergTestHarness, taxi_metadata, taxi_metadata_builder,
     };
-    use datafusion_distributed_iceberg::{IcebergExt, iceberg_desired_task_count};
     use iceberg::spec::{Snapshot, TableMetadata};
     use test_case::test_case;
 
+    #[cfg(feature = "integration")]
     #[tokio::test]
     async fn executes_with_estimated_scan_tasks() -> Result<()> {
-        let (plan, results) = run_distributed_query().await?;
+        let mut harness = IcebergTestHarness::builder()
+            .with_workers(4)
+            .build()
+            .await?;
+        harness
+            .query("SET datafusion.execution.target_partitions = 2")
+            .await?;
+        // 4,480,382 bytes / 1 MB / 2 partitions rounds up to 3 tasks, not all 4 workers.
+        harness
+            .ctx
+            .set_distributed_file_scan_config_bytes_per_partition(1_000_000)?;
+        // Grouping prevents COUNT(*) from being answered from snapshot metadata alone.
+        let (plan, results) = harness
+            .query(
+                "SELECT pickup_date, COUNT(*) AS trips FROM taxi \
+             GROUP BY pickup_date ORDER BY pickup_date",
+            )
+            .await?;
         insta::assert_snapshot!(plan + &results, @"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [pickup_date@0 ASC NULLS LAST]
@@ -80,45 +93,6 @@ mod tests {
         let plan = harness.roundtrip_plan(scan(&harness).await?)?;
         assert_eq!(estimate(&plan)?, None);
         Ok(())
-    }
-
-    async fn run_distributed_query() -> Result<(String, String)> {
-        let fixture = IcebergTestHarness::builder();
-        let options = fixture.integration_options()?;
-        let harness = fixture.build().await?;
-        let worker_options = options.clone();
-        let mut ctx = start_in_memory_context(4, move |ctx: WorkerQueryContext| {
-            let state = ctx
-                .builder
-                .with_iceberg_integration(worker_options.clone())
-                .build();
-            async move { Ok(state) }
-        })
-        .await;
-        ctx.set_iceberg_integration(options);
-        ctx.register_table("taxi", harness.ctx.table_provider("taxi").await?)?;
-        ctx.state_ref()
-            .write()
-            .config_mut()
-            .options_mut()
-            .execution
-            .target_partitions = 2;
-        ctx.set_distributed_dynamic_task_count(false)?;
-        // 4,480,382 bytes / 1 MB / 2 partitions rounds up to 3 tasks, not all 4 workers.
-        ctx.set_distributed_file_scan_config_bytes_per_partition(1_000_000)?;
-
-        // Grouping prevents COUNT(*) from being answered from snapshot metadata alone.
-        let plan = ctx
-            .sql(
-                "SELECT pickup_date, COUNT(*) AS trips FROM taxi \
-                 GROUP BY pickup_date ORDER BY pickup_date",
-            )
-            .await?
-            .create_physical_plan()
-            .await?;
-        let display = display_plan_ascii(plan.as_ref(), false);
-        let batches = collect(plan, ctx.task_ctx()).await?;
-        Ok((display, pretty_format_batches(&batches)?.to_string()))
     }
 
     async fn scan(harness: &IcebergTestHarness) -> Result<Arc<dyn ExecutionPlan>> {

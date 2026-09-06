@@ -7,6 +7,10 @@ description = "Read-only Apache Iceberg table providers for DataFusion Distribut
 license = "Apache-2.0"
 repository = "https://github.com/datafusion-contrib/datafusion-distributed"
 
+[features]
+# Distributed worker support for the test harness.
+integration = ["datafusion-distributed/integration"]
+
 [dependencies]
 async-trait = "0.1"
 bytes = "1"
@@ -25,7 +29,6 @@ tokio = { version = "1.48", features = ["full"] }
 tokio-stream = "0.1"
 
 [dev-dependencies]
-datafusion-distributed = { path = "..", features = ["integration"] }
 insta = "1"
 parquet = "58"
 test-case = "3.3.1"
