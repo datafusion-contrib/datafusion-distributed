@@ -1,6 +1,8 @@
 use crate::coordinator::{DistributedExec, MetricsStore};
 use crate::execution_plans::{DistributedLeafExec, NetworkCoalesceExec};
 use crate::metrics::DISTRIBUTED_DATAFUSION_TASK_ID_LABEL;
+#[cfg(feature = "grpc")]
+use crate::protocol::grpc::plan_snapshot;
 use datafusion::common::{HashMap, Statistics, config_err};
 use datafusion::common::{exec_err, plan_err};
 use datafusion::error::Result;
@@ -256,7 +258,10 @@ pub async fn explain_analyze(
             .to_string()),
         Some(_) => {
             let executed = rewrite_distributed_plan_with_metrics(executed.clone(), format).await?;
-            Ok(display_plan_ascii(executed.as_ref(), true))
+            #[cfg(feature = "grpc")]
+            return plan_snapshot::encode(executed.as_ref());
+            #[cfg(not(feature = "grpc"))]
+            return Ok(display_plan_ascii(executed.as_ref(), true));
         }
     }
 }
@@ -545,7 +550,7 @@ fn sorted_for_display_by_task_id(metrics: MetricsSet) -> MetricsSet {
 ///
 /// See
 /// https://github.com/apache/datafusion/blob/b463a9f9e3c9603eb2db7113125fea3a1b7f5455/datafusion/physical-plan/src/display.rs#L421.
-fn format_metrics_by_task(metrics: &MetricsSet) -> String {
+pub(crate) fn format_metrics_by_task(metrics: &MetricsSet) -> String {
     let aggregated = aggregate_by_task_id(metrics);
     let sorted = sorted_for_display_by_task_id(aggregated).timestamps_removed();
 

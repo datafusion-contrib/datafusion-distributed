@@ -82,3 +82,30 @@ runtime metrics, including network-level metrics on the boundaries:
 
 > If `plan` is not a distributed plan (its root is not a `DistributedExec`),
 > `rewrite_distributed_plan_with_metrics` returns it unchanged, so it is always safe to call.
+
+## Using EXPLAIN ANALYZE
+
+When you run `EXPLAIN ANALYZE` through a `SessionContext` backed by this library the `plan` column in
+the result batch contains a **base64-encoded plan snapshot** rather than rendered text.  The snapshot
+bundles each node's display name and its runtime metrics into a compact protobuf that can be shipped
+from a worker to a client without losing any information.
+
+Decode it in Rust with `DistributedExec::decode_plan_snapshot`:
+
+```rust
+use datafusion_distributed::DistributedExec;
+
+let batches = ctx.sql("EXPLAIN ANALYZE SELECT ...").await?.collect().await?;
+// The plan column value is a base64 string.
+let encoded: &str = /* extract from batch */;
+let text = DistributedExec::decode_plan_snapshot(encoded)?;
+println!("{text}");
+```
+
+Or use the bundled console tool for one-off inspection:
+
+```bash
+datafusion-distributed-console --encoded-plan <base64-string>
+```
+
+The console exits with a non-zero status if the payload is invalid or truncated.

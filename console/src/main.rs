@@ -6,6 +6,7 @@ mod worker;
 
 use app::App;
 use crossterm::event::{self, Event};
+use datafusion_distributed::DistributedExec;
 use ratatui::DefaultTerminal;
 use std::time::{Duration, Instant};
 use structopt::StructOpt;
@@ -19,11 +20,16 @@ use url::Url;
 struct Args {
     /// Port of a worker to connect to for auto-discovery.
     /// The console calls GetClusterWorkers on this worker to discover the full cluster.
-    port: u16,
+    /// Required when not using --encoded-plan.
+    port: Option<u16>,
 
     /// Polling interval in milliseconds
     #[structopt(long = "poll-interval", default_value = "100")]
     poll_interval: u64,
+
+    /// Decode and print a base64-encoded plan string produced by explain_analyze.
+    #[structopt(long = "encoded-plan")]
+    encoded_plan: Option<String>,
 }
 
 #[tokio::main]
@@ -32,7 +38,17 @@ async fn main() -> color_eyre::Result<()> {
 
     let args = Args::from_args();
 
-    let seed_url = Url::parse(&format!("http://localhost:{}", args.port)).expect("valid URL");
+    if let Some(encoded) = args.encoded_plan {
+        let decoded = DistributedExec::decode_plan_snapshot(&encoded)
+            .map_err(|e| color_eyre::eyre::eyre!("failed to decode plan: {e}"))?;
+        println!("{decoded}");
+        return Ok(());
+    }
+
+    let port = args.port.ok_or_else(|| {
+        color_eyre::eyre::eyre!("<port> is required when not using --encoded-plan")
+    })?;
+    let seed_url = Url::parse(&format!("http://localhost:{port}")).expect("valid URL");
 
     let poll_interval = Duration::from_millis(args.poll_interval);
     let mut app = App::new(seed_url);

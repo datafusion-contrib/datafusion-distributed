@@ -4,6 +4,7 @@ mod generated;
 mod metrics_proto;
 mod observability;
 mod on_drop_stream;
+pub(crate) mod plan_snapshot;
 mod spawn_select_all;
 mod worker_client;
 mod worker_service;

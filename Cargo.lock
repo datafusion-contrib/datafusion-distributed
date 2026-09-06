@@ -2134,6 +2134,7 @@ dependencies = [
  "arrow-ipc",
  "arrow-select",
  "async-trait",
+ "base64 0.23.1",
  "bincode",
  "bytes",
  "chrono",
