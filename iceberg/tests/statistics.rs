@@ -204,8 +204,8 @@ mod tests {
             file.file_path(format!("{FIXTURE_URI}/data/metrics-first.parquet"))
                 .null_value_counts([(1, 2), (4, 4)].into())
                 .column_sizes([(1, 100), (4, 200)].into())
-                .lower_bounds([(1, Datum::int(1)), (4, Datum::long(10))].into())
-                .upper_bounds([(1, Datum::int(5)), (4, Datum::long(20))].into())
+                .lower_bounds([(1, Datum::int(2)), (4, Datum::long(10))].into())
+                .upper_bounds([(1, Datum::int(9)), (4, Datum::long(20))].into())
                 .build()?,
             snapshot.sequence_number(),
         )?;
@@ -213,8 +213,8 @@ mod tests {
             file.file_path(format!("{FIXTURE_URI}/data/metrics-second.parquet"))
                 .null_value_counts([(1, 3)].into())
                 .column_sizes([(1, 300), (4, 400)].into())
-                .lower_bounds([(1, Datum::int(2)), (4, Datum::long(30))].into())
-                .upper_bounds([(1, Datum::int(9)), (4, Datum::long(40))].into())
+                .lower_bounds([(1, Datum::int(1)), (4, Datum::long(30))].into())
+                .upper_bounds([(1, Datum::int(5)), (4, Datum::long(40))].into())
                 .build()?,
             snapshot.sequence_number(),
         )?;
