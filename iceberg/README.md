@@ -32,3 +32,5 @@ The default storage factory resolves `file://`, S3 (`s3://`, `s3a://`,
 ```bash
 cargo test -p datafusion-distributed-iceberg
 ```
+
+Local TPC-H Iceberg benchmarks use the [DataFusion Distributed benchmark runner](../benchmarks/README.md#iceberg-benchmarks).

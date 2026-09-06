@@ -75,7 +75,13 @@ pub async fn register_tables(
 ) -> Result<(), DataFusionError> {
     for entry in fs::read_dir(data_path)? {
         let path = entry?.path();
-        if path.is_dir() {
+        if path.is_dir()
+            && !path
+                .file_name()
+                .unwrap()
+                .as_encoded_bytes()
+                .starts_with(b".")
+        {
             let table_name = path.file_name().unwrap().to_str().unwrap();
             let _ = ctx
                 .register_parquet(

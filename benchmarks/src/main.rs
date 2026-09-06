@@ -1,6 +1,8 @@
 //! DataFusion Distributed benchmark runner
 mod compare;
+mod format;
 mod prepare_clickbench;
+mod prepare_iceberg;
 mod prepare_tpcds;
 mod prepare_tpch;
 mod results;
@@ -17,6 +19,7 @@ enum Options {
     Run(run::RunOpt),
     Compare(compare::CompareOpt),
     PrepareTpch(prepare_tpch::PrepareTpchOpt),
+    PrepareIceberg(prepare_iceberg::PrepareIcebergOpt),
     PrepareTpcds(prepare_tpcds::PrepareTpcdsOpt),
     PrepareClickbench(prepare_clickbench::PrepareClickBenchOpt),
 }
@@ -29,6 +32,10 @@ pub fn main() -> Result<()> {
         Options::Run(opt) => opt.run(),
         Options::Compare(opt) => opt.run(),
         Options::PrepareTpch(opt) => opt.run(),
+        Options::PrepareIceberg(opt) => {
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(opt.run())
+        }
         Options::PrepareTpcds(opt) => {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(async { opt.run().await })

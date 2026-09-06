@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::format::BenchmarkFormat;
 use crate::results::{BenchResult, BenchmarkRun, QueryIter, dataset_path};
 use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::record_batch::RecordBatch;
@@ -36,11 +37,12 @@ use datafusion_distributed::{
     DistributedExt, DistributedMetricsFormat, NetworkBoundaryExt, SessionStateBuilderExt, Worker,
     display_plan_ascii, rewrite_distributed_plan_with_metrics,
 };
-use datafusion_distributed_benchmarks::datasets::{clickbench, register_tables, tpcds, tpch};
+use datafusion_distributed_benchmarks::datasets::{clickbench, tpcds, tpch};
 use datafusion_distributed_benchmarks::stats::stats_estimation_q_error;
+use datafusion_distributed_iceberg::{IcebergExt, IcebergIntegrationOptions};
 use std::error::Error;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use structopt::StructOpt;
@@ -67,6 +69,10 @@ pub struct RunOpt {
     /// Path to data files
     #[structopt(long)]
     dataset: String,
+
+    /// Run the Iceberg representation prepared inside the dataset directory.
+    #[structopt(long)]
+    iceberg: bool,
 
     /// Spawns a worker in the specified port.
     #[structopt(long)]
@@ -118,6 +124,10 @@ pub struct RunOpt {
     #[structopt(short = "s", long = "batch-size")]
     batch_size: Option<usize>,
 
+    /// Load Iceberg manifest column statistics during planning.
+    #[structopt(long)]
+    iceberg_column_stats: bool,
+
     /// Activate debug mode to see more details
     #[structopt(short, long)]
     debug: bool,
@@ -165,6 +175,7 @@ impl RunOpt {
             .build()?;
 
         if let Some(port) = self.spawn {
+            let iceberg_column_stats = self.iceberg_column_stats;
             rt.block_on(async move {
                 let listener = TcpListener::bind(format!("127.0.0.1:{port}")).await?;
                 println!("Listening on {}...", listener.local_addr().unwrap());
@@ -173,10 +184,12 @@ impl RunOpt {
                 // node when the feature is on. The codec is registered via a
                 // session builder so it is installed on every worker session.
                 let worker = Worker::from_session_builder(
-                    |ctx: datafusion_distributed::WorkerQueryContext| async move {
+                    move |ctx: datafusion_distributed::WorkerQueryContext| async move {
                         Ok(ctx
                             .builder
                             .with_distributed_user_codec(WorkUnitFileScanCodec)
+                            .with_iceberg_integration(IcebergIntegrationOptions::default())
+                            .with_iceberg_column_stats_enabled(iceberg_column_stats)
                             .build())
                     },
                 );
@@ -233,9 +246,26 @@ impl RunOpt {
             builder = builder.with_physical_optimizer_rule(Arc::new(WorkUnitFileScanRule))
         }
 
-        let state = builder.build();
+        let state = builder
+            .with_iceberg_integration(IcebergIntegrationOptions::default())
+            .with_iceberg_column_stats_enabled(self.iceberg_column_stats)
+            .build();
         let ctx = SessionContext::new_with_state(state);
-        register_tables(&ctx, &self.get_path()?).await?;
+        let format = BenchmarkFormat::new(self.iceberg);
+        let data_dir = (format.directory)(&self.get_path()?);
+        (format.register)(&ctx, &data_dir).await?;
+        let dataset_suite = if Path::new(&self.dataset).is_absolute() {
+            // Absolute paths follow the same <suite>/<variant> convention.
+            Path::new(&self.dataset)
+                .parent()
+                .and_then(Path::file_name)
+                .and_then(|name| name.to_str())
+                .unwrap_or("")
+        } else {
+            self.dataset
+                .split_once('/')
+                .map_or(self.dataset.as_str(), |(suite, _)| suite)
+        };
 
         println!("Running benchmarks with the following options: {self:?}");
         let mut benchmark_run = BenchmarkRun::new(
@@ -244,10 +274,6 @@ impl RunOpt {
             self.threads.unwrap_or(get_available_parallelism()),
         );
 
-        let dataset_suite = self
-            .dataset
-            .split_once('/')
-            .map_or(self.dataset.as_str(), |(suite, _)| suite);
         for (id, sql) in queries_for_dataset(dataset_suite)? {
             if !self.query.is_empty() && !self.query.contains(&id.to_string()) {
                 continue;
@@ -260,8 +286,8 @@ impl RunOpt {
             benchmark_run.results.push(query_run?);
         }
 
-        benchmark_run.compare_with_previous()?;
-        benchmark_run.store()?;
+        benchmark_run.compare_with_previous(&data_dir)?;
+        benchmark_run.store(&data_dir)?;
         Ok(())
     }
 
