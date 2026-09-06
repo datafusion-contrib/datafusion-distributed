@@ -1,7 +1,12 @@
+mod common;
+
 #[cfg(test)]
 mod tests {
     use datafusion::error::Result;
+    use datafusion::physical_plan::displayable;
     use datafusion_distributed_iceberg::test_utils::IcebergTestHarness;
+
+    use crate::common::assert_scalar_result;
 
     #[tokio::test]
     async fn projects_only_columns_required_by_the_query() -> Result<()> {
@@ -78,14 +83,14 @@ mod tests {
     async fn projects_source_columns_for_computed_expressions() -> Result<()> {
         let harness = IcebergTestHarness::new().await?;
         let (plan, batches) = harness
-            .query(
+            .query_raw(
                 r"SELECT MAX(trip_distance * fare_amount) AS max_weighted_fare
                    FROM taxi
                    WHERE pickup_date = DATE '2024-01-10'",
             )
             .await?;
 
-        insta::assert_snapshot!(plan, @r"
+        insta::assert_snapshot!(displayable(plan.as_ref()).indent(true), @r"
     ProjectionExec: expr=[max(taxi.trip_distance * taxi.fare_amount)@0 as max_weighted_fare]
       AggregateExec: mode=Final, gby=[], aggr=[max(taxi.trip_distance * taxi.fare_amount)]
         CoalescePartitionsExec
@@ -93,15 +98,7 @@ mod tests {
             FilterExec: pickup_date@2 = 2024-01-10, projection=[trip_distance@0, fare_amount@1]
               DataSourceExec: format=iceberg, projection=[trip_distance, fare_amount, pickup_date], predicate=pickup_date = 2024-01-10
     ");
-        insta::assert_snapshot!(batches, @r"
-    +-------------------+
-    | max_weighted_fare |
-    +-------------------+
-    | 207508.9584       |
-    +-------------------+
-    ");
-
-        Ok(())
+        assert_scalar_result(&batches, "max_weighted_fare", 207_508.958_4_f64.into())
     }
 
     #[tokio::test]

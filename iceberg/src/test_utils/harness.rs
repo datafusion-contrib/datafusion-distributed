@@ -5,11 +5,12 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::dataframe::DataFrame;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::SessionStateBuilder;
-use datafusion::physical_plan::{ExecutionPlan, displayable};
+use datafusion::physical_plan::{ExecutionPlan, collect, displayable};
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_distributed::DistributedCodec;
 use datafusion_proto::physical_plan::AsExecutionPlan;
@@ -78,15 +79,21 @@ impl IcebergTestHarness {
         Ok(Self { ctx })
     }
 
+    /// Executes SQL and returns the executed physical plan and unformatted result batches.
+    pub async fn query_raw(&self, sql: &str) -> Result<(Arc<dyn ExecutionPlan>, Vec<RecordBatch>)> {
+        let dataframe: DataFrame = self.ctx.sql(sql).await?;
+        let plan = dataframe.create_physical_plan().await?;
+        let batches = collect(Arc::clone(&plan), Arc::new(dataframe.task_ctx())).await?;
+        Ok((plan, batches))
+    }
+
+    /// Returns the pre-execution plan display and formatted results of executing that plan.
     pub async fn query(&self, sql: &str) -> Result<(String, String)> {
         let dataframe: DataFrame = self.ctx.sql(sql).await?;
         let plan = dataframe.create_physical_plan().await?;
-        let batches = dataframe.collect().await?;
-
-        Ok((
-            displayable(plan.as_ref()).indent(true).to_string(),
-            pretty_format_batches(&batches)?.to_string(),
-        ))
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+        let batches = collect(plan, Arc::new(dataframe.task_ctx())).await?;
+        Ok((display, pretty_format_batches(&batches)?.to_string()))
     }
 
     pub async fn physical_plan(&self, sql: &str) -> Result<Arc<dyn ExecutionPlan>> {

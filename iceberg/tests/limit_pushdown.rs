@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod tests {
+    use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::error::Result;
     use datafusion_distributed_iceberg::test_utils::IcebergTestHarness;
 
@@ -88,16 +89,11 @@ mod tests {
     async fn avoids_scanning_for_limit_zero() -> Result<()> {
         let harness = IcebergTestHarness::new().await?;
         let (plan, batches) = harness
-            .query("SELECT vendor_id FROM taxi WHERE pickup_date = DATE '2024-01-10' LIMIT 0")
+            .query_raw("SELECT vendor_id FROM taxi WHERE pickup_date = DATE '2024-01-10' LIMIT 0")
             .await?;
 
-        insta::assert_snapshot!(plan, @r"
-    EmptyExec
-    ");
-        insta::assert_snapshot!(batches, @r"
-    ++
-    ++
-    ");
+        assert_eq!(plan.name(), "EmptyExec");
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 0);
 
         Ok(())
     }
