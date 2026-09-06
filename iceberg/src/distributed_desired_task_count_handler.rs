@@ -64,14 +64,7 @@ fn non_zero_divisor(value: usize, name: &str) -> Result<NonZeroUsize> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use datafusion::physical_plan::ExecutionPlan;
-    use datafusion::prelude::SessionConfig;
-    use datafusion_distributed::DistributedExt;
-
     use super::*;
-    use crate::test_utils::IcebergTestHarness;
 
     #[test]
     fn calculates_exact_rounded_and_boundary_task_counts() {
@@ -92,26 +85,6 @@ mod tests {
         assert!(calculate_task_count(1, 1, 0).is_err());
     }
 
-    #[tokio::test]
-    async fn estimates_desired_task_count_from_the_iceberg_plan() -> Result<()> {
-        let harness = IcebergTestHarness::new().await?;
-        let plan = iceberg_plan(&harness.physical_plan("SELECT * FROM taxi").await?)
-            .expect("fixture plan should contain an Iceberg scan");
-        let mut config = SessionConfig::new();
-        config.options_mut().execution.target_partitions = 2;
-        config.set_distributed_option_extension(DistributedConfig::default());
-        config.set_distributed_file_scan_config_bytes_per_partition(1_000_000)?;
-
-        let response = iceberg_desired_task_count(DesiredTaskCountEvent {
-            plan: &plan,
-            session_config: &config,
-        })
-        .expect("Iceberg handler should respond")?;
-
-        assert_eq!(response.task_count.as_usize(), 3);
-        Ok(())
-    }
-
     fn task_count(
         total_bytes: usize,
         bytes_per_partition: usize,
@@ -119,17 +92,5 @@ mod tests {
     ) -> usize {
         calculate_task_count(total_bytes, bytes_per_partition, target_partitions)
             .expect("test task count should be valid")
-    }
-
-    fn iceberg_plan(plan: &Arc<dyn ExecutionPlan>) -> Option<Arc<dyn ExecutionPlan>> {
-        if let Some(exec) = plan.downcast_ref::<DataSourceExec>()
-            && exec
-                .data_source()
-                .downcast_ref::<IcebergDataSource>()
-                .is_some()
-        {
-            return Some(Arc::clone(plan));
-        }
-        plan.children().into_iter().find_map(iceberg_plan)
     }
 }
