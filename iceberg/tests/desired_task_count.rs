@@ -11,63 +11,27 @@ mod tests {
         IcebergTestHarness, taxi_metadata, taxi_metadata_builder,
     };
     use iceberg::spec::{Snapshot, TableMetadata};
+    use test_case::test_case;
 
+    #[test_case(metadata_with_file_size(Some("24000000")), None, Some(12); "current snapshot")]
+    #[test_case(metadata_with_file_size(Some("24000000")), taxi_metadata().current_snapshot_id(), Some(3); "selected snapshot")]
+    #[test_case(empty_metadata(), None, Some(0); "empty table")]
+    #[test_case(metadata_with_file_size(None), None, None; "missing size")]
+    #[test_case(metadata_with_file_size(Some("invalid")), None, None; "malformed size")]
+    #[test_case(metadata_with_file_size(Some("-1")), None, None; "negative size")]
+    #[test_case(metadata_with_file_size(Some("18446744073709551616")), None, None; "overflowing size")]
     #[tokio::test]
-    async fn estimates_current_snapshot() -> Result<()> {
-        let harness = IcebergTestHarness::new().await?;
-        assert_eq!(estimate(&scan(&harness).await?)?, Some(3));
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn estimates_selected_snapshot_instead_of_current() -> Result<()> {
-        let metadata = metadata_with_file_size(Some("24000000"));
-        let selected_id = taxi_metadata()
-            .current_snapshot_id()
-            .expect("taxi has a snapshot");
-        let current = IcebergTestHarness::builder()
-            .with_table_metadata(metadata.clone())
-            .build()
-            .await?;
-        let selected = IcebergTestHarness::builder()
-            .with_table_metadata(metadata)
-            .with_table_option("iceberg.snapshot_id", selected_id.to_string())
-            .build()
-            .await?;
-
-        assert_eq!(estimate(&scan(&current).await?)?, Some(12));
-        assert_eq!(estimate(&scan(&selected).await?)?, Some(3));
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn declines_missing_or_invalid_file_size() -> Result<()> {
-        for size in [
-            None,
-            Some("invalid"),
-            Some("-1"),
-            Some("18446744073709551616"),
-        ] {
-            let harness = IcebergTestHarness::builder()
-                .with_table_metadata(metadata_with_file_size(size))
-                .build()
-                .await?;
-            assert_eq!(estimate(&scan(&harness).await?)?, None, "size: {size:?}");
+    async fn estimates_file_size(
+        metadata: TableMetadata,
+        snapshot_id: Option<i64>,
+        expected: Option<usize>,
+    ) -> Result<()> {
+        let mut builder = IcebergTestHarness::builder().with_table_metadata(metadata);
+        if let Some(id) = snapshot_id {
+            builder = builder.with_table_option("iceberg.snapshot_id", id.to_string());
         }
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn empty_table_has_zero_scan_work() -> Result<()> {
-        let metadata = taxi_metadata_builder()
-            .build()
-            .expect("empty taxi metadata is valid")
-            .metadata;
-        let harness = IcebergTestHarness::builder()
-            .with_table_metadata(metadata)
-            .build()
-            .await?;
-        assert_eq!(estimate(&scan(&harness).await?)?, Some(0));
+        let harness = builder.build().await?;
+        assert_eq!(estimate(&scan(&harness).await?)?, expected);
         Ok(())
     }
 
@@ -99,6 +63,13 @@ mod tests {
         })
         .transpose()
         .map(|response| response.map(|response| response.task_count.as_usize()))
+    }
+
+    fn empty_metadata() -> TableMetadata {
+        taxi_metadata_builder()
+            .build()
+            .expect("empty taxi metadata is valid")
+            .metadata
     }
 
     fn metadata_with_file_size(size: Option<&str>) -> TableMetadata {

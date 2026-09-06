@@ -2499,6 +2499,7 @@ dependencies = [
  "prost",
  "serde",
  "serde_json",
+ "test-case",
  "tokio",
  "tokio-stream",
  "typetag",
