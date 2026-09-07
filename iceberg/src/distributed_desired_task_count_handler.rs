@@ -1,7 +1,7 @@
 use std::num::NonZeroUsize;
 
 use datafusion::common::{Result, config_datafusion_err};
-use datafusion::datasource::source::DataSourceExec;
+use datafusion::datasource::source::{DataSource, DataSourceExec};
 use datafusion_distributed::{
     DesiredTaskCountEvent, DesiredTaskCountEventResponse, DistributedConfig,
 };
@@ -17,21 +17,11 @@ pub fn iceberg_desired_task_count(
         .downcast_ref::<DataSourceExec>()?
         .data_source()
         .downcast_ref::<IcebergDataSource>()?;
-    let feed = node.feed().inner()?;
-    let metadata = feed.iceberg_table.metadata();
-    let snapshot = match feed.snapshot_id {
-        Some(id) => Some(metadata.snapshot_by_id(id)?),
-        None => metadata.current_snapshot(),
+    let statistics = match node.partition_statistics(None) {
+        Ok(statistics) => statistics,
+        Err(error) => return Some(Err(error)),
     };
-    let total_bytes = match snapshot {
-        Some(snapshot) => snapshot
-            .summary()
-            .additional_properties
-            .get("total-files-size")?
-            .parse()
-            .ok()?,
-        None => 0,
-    };
+    let total_bytes = *statistics.total_byte_size.get_value()?;
     let config = DistributedConfig::from_session_config(ev.session_config).ok()?;
 
     Some(
