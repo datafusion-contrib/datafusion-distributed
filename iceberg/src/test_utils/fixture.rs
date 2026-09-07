@@ -9,7 +9,7 @@ pub fn taxi_metadata() -> TableMetadata {
 }
 
 /// Starts a fixture history with the original schema and partition IDs and no snapshots.
-pub fn taxi_metadata_builder() -> TableMetadataBuilder {
+pub fn empty_taxi_metadata_builder() -> TableMetadataBuilder {
     let metadata = serde_json::from_str(include_str!(
         "../../../testdata/iceberg/taxi/metadata/00000-00a113a6-47e0-4c4b-9522-4a7c44d74036.metadata.json"
     ))

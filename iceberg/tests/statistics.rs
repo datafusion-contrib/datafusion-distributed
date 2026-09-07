@@ -8,7 +8,7 @@ mod tests {
     use datafusion::error::Result;
     use datafusion::physical_plan::{ExecutionPlan, displayable};
     use datafusion_distributed_iceberg::test_utils::{
-        FIXTURE_URI, IcebergTestHarness, taxi_metadata, taxi_metadata_builder,
+        FIXTURE_URI, IcebergTestHarness, empty_taxi_metadata_builder, taxi_metadata,
     };
     use datafusion_distributed_iceberg::{IcebergDataSource, IcebergExt};
     use iceberg::spec::{Operation, Snapshot, Summary, TableMetadata};
@@ -272,7 +272,7 @@ mod tests {
                 additional_properties: Default::default(),
             })
             .build();
-        taxi_metadata_builder()
+        empty_taxi_metadata_builder()
             .set_branch_snapshot(snapshot, "main")
             .expect("taxi snapshot can be added")
             .build()
