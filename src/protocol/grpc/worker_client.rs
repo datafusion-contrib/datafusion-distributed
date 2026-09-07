@@ -102,10 +102,10 @@ impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSy
             Arc::new(MemoryConsumer::new("WorkerConnection").register(ctx.memory_pool()));
         let memory_reservation_clone = Arc::clone(&memory_reservation);
 
-        // Track the maximum memory used to buffer recieved messages.
+        // Track the maximum memory used to buffer received messages.
         let mut curr_max_mem = 0;
         let max_mem_used = MetricBuilder::new(&metrics).global_gauge("max_mem_used");
-        // Track the total encoded size of all recieved messages.
+        // Track the total encoded size of all received messages.
         let bytes_transferred = MetricBuilder::new(&metrics).bytes_counter("bytes_transferred");
         let msg_count = MetricBuilder::new(&metrics).global_counter("msg_count");
         // Track end-to-end network latency distribution for messages that actually arrive.

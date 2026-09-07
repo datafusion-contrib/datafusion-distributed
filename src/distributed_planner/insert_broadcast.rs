@@ -193,7 +193,7 @@ pub(super) fn is_left_broadcast_safe(join_type: &JoinType) -> bool {
 mod tests {
     use super::*;
     use crate::assert_snapshot;
-    use crate::test_utils::plans::TestPlanBuilder;
+    use crate::test_utils::plans::{TestPlan, TestPlanBuilder};
     use datafusion::physical_plan::displayable;
 
     #[tokio::test]
@@ -216,7 +216,13 @@ mod tests {
                   DistributedLeafExec: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
               DistributedLeafExec: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
         ");
-        let plan = sql_to_plan_with_broadcast(query, true, 4).await;
+        let test_plan = TestPlanBuilder::new()
+            .target_partitions(4)
+            .broadcast_joins(true)
+            .build()
+            .await;
+        let plan = apply_broadcasts(&test_plan, query, 1).await;
+        let plan = displayable(plan.as_ref()).indent(true).to_string();
         assert_snapshot!(plan, @"
         HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
           CoalescePartitionsExec
@@ -243,7 +249,13 @@ mod tests {
           DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
           DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
         ");
-        let plan = sql_to_plan_with_broadcast(query, true, 1).await;
+        let test_plan = TestPlanBuilder::new()
+            .target_partitions(1)
+            .broadcast_joins(true)
+            .build()
+            .await;
+        let plan = apply_broadcasts(&test_plan, query, 1).await;
+        let plan = displayable(plan.as_ref()).indent(true).to_string();
         assert_snapshot!(plan, @"
         HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
           CoalescePartitionsExec
@@ -260,7 +272,13 @@ mod tests {
         FROM weather a LEFT JOIN weather b
         ON a."RainToday" = b."RainToday"
         "#;
-        let plan = sql_to_plan_with_broadcast(query, true, 4).await;
+        let test_plan = TestPlanBuilder::new()
+            .target_partitions(4)
+            .broadcast_joins(true)
+            .build()
+            .await;
+        let plan = apply_broadcasts(&test_plan, query, 1).await;
+        let plan = displayable(plan.as_ref()).indent(true).to_string();
         assert_snapshot!(plan, @"
         HashJoinExec: mode=CollectLeft, join_type=Left, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
           CoalescePartitionsExec
@@ -276,7 +294,13 @@ mod tests {
         FROM weather a INNER JOIN weather b
         ON a."RainToday" = b."RainToday"
         "#;
-        let plan = sql_to_plan_with_broadcast(query, false, 4).await;
+        let test_plan = TestPlanBuilder::new()
+            .target_partitions(4)
+            .broadcast_joins(false)
+            .build()
+            .await;
+        let plan = apply_broadcasts(&test_plan, query, 1).await;
+        let plan = displayable(plan.as_ref()).indent(true).to_string();
         assert_snapshot!(plan, @"
         HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
           CoalescePartitionsExec
@@ -294,21 +318,20 @@ mod tests {
         ON a."RainToday" = b."RainToday"
         "#;
 
-        let plan = plan_with_broadcast_applications(query, true, 4, 1).await;
-        let join = plan
-            .downcast_ref::<HashJoinExec>()
-            .expect("expected hash join");
-        let coalesce = join
-            .left()
-            .downcast_ref::<CoalescePartitionsExec>()
-            .expect("expected coalesce above broadcast");
-        let broadcast = coalesce
-            .input()
-            .downcast_ref::<BroadcastExec>()
-            .expect("expected broadcast below coalesce");
-
-        assert_eq!(coalesce.fetch(), None);
-        assert_eq!(broadcast.input().fetch(), Some(50));
+        let test_plan = TestPlanBuilder::new()
+            .target_partitions(4)
+            .broadcast_joins(true)
+            .build()
+            .await;
+        let plan = apply_broadcasts(&test_plan, query, 1).await;
+        let plan = displayable(plan.as_ref()).indent(true).to_string();
+        assert_snapshot!(plan, @r"
+        HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
+          CoalescePartitionsExec
+            BroadcastExec: input_partitions=1, consumer_tasks=1, output_partitions=1
+              DataSourceExec: file_groups={1 group: [[/testdata/weather/result-<shard>.parquet]]}, projection=[MinTemp, RainToday], limit=50, file_type=parquet
+          DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
+        ");
     }
 
     #[tokio::test]
@@ -317,7 +340,13 @@ mod tests {
         SELECT a."MinTemp", b."MaxTemp"
         FROM weather a CROSS JOIN weather b
         "#;
-        let plan = sql_to_plan_with_broadcast(query, true, 4).await;
+        let test_plan = TestPlanBuilder::new()
+            .target_partitions(4)
+            .broadcast_joins(true)
+            .build()
+            .await;
+        let plan = apply_broadcasts(&test_plan, query, 1).await;
+        let plan = displayable(plan.as_ref()).indent(true).to_string();
         assert_snapshot!(plan, @"
         CrossJoinExec
           CoalescePartitionsExec
@@ -333,7 +362,13 @@ mod tests {
         SELECT a."MinTemp", b."MaxTemp"
         FROM weather a JOIN weather b ON a."MinTemp" > b."MaxTemp"
         "#;
-        let plan = sql_to_plan_with_broadcast(query, true, 4).await;
+        let test_plan = TestPlanBuilder::new()
+            .target_partitions(4)
+            .broadcast_joins(true)
+            .build()
+            .await;
+        let plan = apply_broadcasts(&test_plan, query, 1).await;
+        let plan = displayable(plan.as_ref()).indent(true).to_string();
         assert_snapshot!(plan, @"
         NestedLoopJoinExec: join_type=Inner, filter=MinTemp@0 > MaxTemp@1
           CoalescePartitionsExec
@@ -361,9 +396,17 @@ mod tests {
             "#,
         ];
 
+        let test_plan = TestPlanBuilder::new()
+            .target_partitions(4)
+            .broadcast_joins(true)
+            .build()
+            .await;
+
         for query in queries {
-            let once = sql_to_plan_with_broadcast_applications(query, true, 4, 1).await;
-            let twice = sql_to_plan_with_broadcast_applications(query, true, 4, 2).await;
+            let once = apply_broadcasts(&test_plan, query, 1).await;
+            let twice = apply_broadcasts(&test_plan, query, 2).await;
+            let once = displayable(once.as_ref()).indent(true).to_string();
+            let twice = displayable(twice.as_ref()).indent(true).to_string();
 
             assert_eq!(once, twice);
             assert_eq!(once.matches("BroadcastExec").count(), 1);
@@ -378,79 +421,6 @@ mod tests {
         ON a."RainToday" = b."RainToday"
         "#;
 
-        let plan = sql_to_plan_with_direct_broadcast(query).await;
-
-        assert_eq!(plan.matches("BroadcastExec").count(), 1);
-        assert_snapshot!(plan, @"
-        HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
-          CoalescePartitionsExec
-            BroadcastExec: input_partitions=1, consumer_tasks=1, output_partitions=1
-              DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
-          DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
-        ");
-    }
-
-    #[tokio::test]
-    async fn test_no_broadcast_nested_loop_left_join() {
-        let query = r#"
-        SELECT a."MinTemp", b."MaxTemp"
-        FROM weather a LEFT JOIN weather b ON a."MinTemp" > b."MaxTemp"
-        "#;
-        let plan = sql_to_plan_with_broadcast(query, true, 4).await;
-        assert_snapshot!(plan, @"
-        NestedLoopJoinExec: join_type=Left, filter=MinTemp@0 > MaxTemp@1
-          CoalescePartitionsExec
-            DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp], file_type=parquet
-          DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp], file_type=parquet
-        ");
-    }
-
-    async fn sql_to_plan_with_broadcast(
-        query: &str,
-        broadcast_enabled: bool,
-        target_partitions: usize,
-    ) -> String {
-        sql_to_plan_with_broadcast_applications(query, broadcast_enabled, target_partitions, 1)
-            .await
-    }
-
-    async fn sql_to_plan_with_broadcast_applications(
-        query: &str,
-        broadcast_enabled: bool,
-        target_partitions: usize,
-        applications: usize,
-    ) -> String {
-        let plan = plan_with_broadcast_applications(
-            query,
-            broadcast_enabled,
-            target_partitions,
-            applications,
-        )
-        .await;
-        format!("{}", displayable(plan.as_ref()).indent(true))
-    }
-
-    async fn plan_with_broadcast_applications(
-        query: &str,
-        broadcast_enabled: bool,
-        target_partitions: usize,
-        applications: usize,
-    ) -> Arc<dyn ExecutionPlan> {
-        let test_plan = TestPlanBuilder::new()
-            .target_partitions(target_partitions)
-            .broadcast_joins(broadcast_enabled)
-            .build()
-            .await;
-        let ctx = test_plan.get_ctx();
-        let mut plan = test_plan.physical_plan(query).await;
-        for _ in 0..applications {
-            plan = insert_broadcast_execs(plan, ctx.state_ref().read().config_options().as_ref())
-                .expect("failed to insert broadcasts");
-        }
-        plan
-    }
-
-    async fn sql_to_plan_with_direct_broadcast(query: &str) -> String {
         let test_plan = TestPlanBuilder::new()
             .target_partitions(1)
             .broadcast_joins(true)
@@ -468,6 +438,50 @@ mod tests {
             .expect("failed to create a direct broadcast build");
         let plan = insert_broadcast_execs(plan, ctx.state_ref().read().config_options().as_ref())
             .expect("failed to normalize a direct broadcast build");
-        format!("{}", displayable(plan.as_ref()).indent(true))
+        let plan = displayable(plan.as_ref()).indent(true).to_string();
+
+        assert_eq!(plan.matches("BroadcastExec").count(), 1);
+        assert_snapshot!(plan, @"
+        HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
+          CoalescePartitionsExec
+            BroadcastExec: input_partitions=1, consumer_tasks=1, output_partitions=1
+              DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
+          DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
+        ");
+    }
+
+    #[tokio::test]
+    async fn test_no_broadcast_nested_loop_left_join() {
+        let query = r#"
+        SELECT a."MinTemp", b."MaxTemp"
+        FROM weather a LEFT JOIN weather b ON a."MinTemp" > b."MaxTemp"
+        "#;
+        let test_plan = TestPlanBuilder::new()
+            .target_partitions(4)
+            .broadcast_joins(true)
+            .build()
+            .await;
+        let plan = apply_broadcasts(&test_plan, query, 1).await;
+        let plan = displayable(plan.as_ref()).indent(true).to_string();
+        assert_snapshot!(plan, @"
+        NestedLoopJoinExec: join_type=Left, filter=MinTemp@0 > MaxTemp@1
+          CoalescePartitionsExec
+            DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp], file_type=parquet
+          DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp], file_type=parquet
+        ");
+    }
+
+    async fn apply_broadcasts(
+        test_plan: &TestPlan,
+        query: &str,
+        applications: usize,
+    ) -> Arc<dyn ExecutionPlan> {
+        let ctx = test_plan.get_ctx();
+        let mut plan = test_plan.physical_plan(query).await;
+        for _ in 0..applications {
+            plan = insert_broadcast_execs(plan, ctx.state_ref().read().config_options().as_ref())
+                .expect("failed to insert broadcasts");
+        }
+        plan
     }
 }

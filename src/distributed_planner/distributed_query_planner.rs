@@ -110,7 +110,7 @@ fn create_distributed_plan(
         // The plan already contains network boundaries set by the user. Just ensure they have nice
         // unique identifiers for each stage, and move forward with it.
         if original_plan.exists(|plan| Ok(plan.is_network_boundary()))? {
-            // Ensure the leafs are appropriately scaled up.
+            // Ensure the leaves are appropriately scaled up.
             let scaled = original_plan.transform_down_with_task_count(1, |plan, task_count| {
                 if !plan.children().is_empty() {
                     return Ok(Transformed::no(plan));

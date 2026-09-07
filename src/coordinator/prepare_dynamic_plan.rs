@@ -207,7 +207,7 @@ async fn gather_runtime_statistics(
 
     let mut new_metrics = MetricsSet::new();
     let Some(sampler) = find_sampler(plan) else {
-        return plan_err!("Mising SamplerExec while gathering load report");
+        return plan_err!("Missing SamplerExec while gathering load report");
     };
     let n_cols = sampler.schema().fields.len();
 
@@ -223,7 +223,7 @@ async fn gather_runtime_statistics(
     let mut partitions_done = 0;
     let mut partitions_reached_eos = 0;
     let mut rows_ready = 0;
-    let mut rows_pulled_from_leafs = 0;
+    let mut rows_pulled_from_leaves = 0;
     let mut per_col_bytes_ready = vec![0usize; n_cols];
 
     let mut ndv_pct = vec![];
@@ -232,7 +232,7 @@ async fn gather_runtime_statistics(
     let mut load_info_stream = futures::stream::select_all(per_task_load_info_stream);
     while let Some(load_info) = load_info_stream.next().await {
         rows_ready += load_info.rows_ready;
-        rows_pulled_from_leafs += load_info.rows_pulled_from_leaf;
+        rows_pulled_from_leaves += load_info.rows_pulled_from_leaf;
         per_col_bytes_ready =
             element_wise_sum(per_col_bytes_ready, &load_info.per_column_bytes_ready)?;
         ndv_pct.push(load_info.per_column_ndv_percentage);
@@ -265,19 +265,19 @@ async fn gather_runtime_statistics(
         partitions_done,
     );
     let rows_ready = rows_ready * total_partitions / partitions_done;
-    let rows_pulled_from_leafs = rows_pulled_from_leafs * total_partitions / partitions_done;
+    let rows_pulled_from_leaves = rows_pulled_from_leaves * total_partitions / partitions_done;
 
     let estimated_pct_sampled = if partitions_reached_eos == partitions_done {
         // Every sampled partition's stream reached end-of-stream, so `rows_ready` /
         // `per_col_bytes_ready` are the partitions' final output rather than a partial snapshot —
         // the stage is fully sampled. This is the reliable "done" signal, and it correctly covers
-        // legitimately-empty stages (which would otherwise report `rows_pulled_from_leafs == 0` and
+        // legitimately-empty stages (which would otherwise report `rows_pulled_from_leaves == 0` and
         // make the completion fraction 0, blowing up the `ready / fraction` extrapolation below).
         1.0
     } else if let Some(estimated_driver_path_leaf_rows) = estimated_driver_path_leaf_rows(plan) {
         // The stage is still producing. Estimate how far along it is from the fraction of the
         // driver-path leaf rows consumed so far.
-        (rows_pulled_from_leafs as f32 / estimated_driver_path_leaf_rows as f32).min(1.0)
+        (rows_pulled_from_leaves as f32 / estimated_driver_path_leaf_rows as f32).min(1.0)
     } else {
         // We can't measure progress (no leaf-row estimate, or nothing pulled from the leaves
         // yet even though we're not at EOS): fall back rather than dividing by ~0.

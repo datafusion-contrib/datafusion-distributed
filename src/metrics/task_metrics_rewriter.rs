@@ -110,7 +110,7 @@ impl RewriteCtx {
     }
 
     /// Rewrites the [MetricsSet] depending on the context.
-    pub(crate) fn maybe_rewrite_node_metics(&self, node_metrics: MetricsSet) -> MetricsSet {
+    pub(crate) fn maybe_rewrite_node_metrics(&self, node_metrics: MetricsSet) -> MetricsSet {
         if let Some(task_id) = self.task_id {
             return annotate_metrics_set_with_task_id(node_metrics, task_id);
         }
@@ -168,7 +168,7 @@ pub fn rewrite_local_plan_with_metrics(
             }
             let mut node_metrics = metrics[idx].clone();
 
-            node_metrics = ctx.maybe_rewrite_node_metics(node_metrics);
+            node_metrics = ctx.maybe_rewrite_node_metrics(node_metrics);
 
             idx += 1;
             Ok(Transformed::new(
@@ -252,7 +252,7 @@ pub fn stage_metrics_rewriter(
 
             let mut node_metrics = task_metrics.pre_order_plan_metrics[per_task_counter].clone();
             let rewrite_ctx = format.to_rewrite_ctx(task_id as u64);
-            node_metrics = rewrite_ctx.maybe_rewrite_node_metics(node_metrics);
+            node_metrics = rewrite_ctx.maybe_rewrite_node_metrics(node_metrics);
 
             let id = Arc::as_ptr(node) as *const () as usize;
             let entry = node_metrics_map.entry(id).or_default();

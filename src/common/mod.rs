@@ -1,4 +1,5 @@
 mod children_helpers;
+mod macros;
 mod maybe_encoded;
 mod once_lock;
 mod recursion;

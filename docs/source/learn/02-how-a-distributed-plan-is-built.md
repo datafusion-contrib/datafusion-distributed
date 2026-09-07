@@ -27,6 +27,7 @@ And we issue the following query:
 ```sql
 SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)
 ```
+
 [DataFusion fiddle link](https://datafusion-fiddle.vercel.app?q=eyJzdGF0ZW1lbnQiOiJTRUxFQ1QgY291bnQoKiksIFwiUmFpblRvZGF5XCIgRlJPTSB3ZWF0aGVyIEdST1VQIEJZIFwiUmFpblRvZGF5XCIgT1JERVIgQlkgY291bnQoKikifQ==)
 
 The resulting physical plan will look like this:
@@ -86,7 +87,7 @@ The key differences are:
 
 ### Reading the output
 
-- `┌───── Stage 1 ── tasks=2, partitions=4` — a stage running on **3 tasks**,
+- `┌───── Stage 1 ── tasks=2, partitions=4` — a stage running on **2 tasks**,
   each on a different worker, together spanning **8 partitions**. Tasks are
   machines; partitions are the threads within a task.
 - `[Stage 1] => NetworkShuffleExec: output_partitions=2, input_tasks=2` — a
