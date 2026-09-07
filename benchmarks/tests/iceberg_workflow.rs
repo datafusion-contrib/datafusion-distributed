@@ -37,8 +37,11 @@ mod tests {
         assert!(success(&[run.as_slice(), &["--iceberg"]].concat()).contains("Comparing"));
         assert_eq!(saved_run(&dataset), parquet);
         let comparison = success(&["compare", "--dataset", path(&dataset), "--compare-iceberg"]);
-        assert!(comparison.contains("(parquet) [prev]"));
-        assert!(comparison.contains("(iceberg) [new]"));
+        assert!(comparison.contains(&format!(
+            "Comparing {} results from branch",
+            dataset.display()
+        )));
+        assert!(comparison.contains(&format!("with {} results from branch", iceberg.display())));
         assert!(comparison.contains("q6: prev="));
 
         assert!(!command(&prepare).status.success());
