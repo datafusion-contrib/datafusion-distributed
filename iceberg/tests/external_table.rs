@@ -51,18 +51,11 @@ mod tests {
 
     #[tokio::test]
     async fn registers_a_table_at_a_specific_snapshot() -> Result<()> {
-        let harness = IcebergTestHarness::new().await?;
-        harness
-            .query(&format!(
-                "CREATE EXTERNAL TABLE taxi_snapshot STORED AS ICEBERG \
-                 LOCATION '{FIXTURE_URI}/metadata/v1.metadata.json' \
-                 OPTIONS ('iceberg.snapshot_id' '3167948105555765929')"
-            ))
+        let harness = IcebergTestHarness::builder()
+            .with_table_option("iceberg.snapshot_id", "3167948105555765929")
+            .build()
             .await?;
-
-        let (_, batches) = harness
-            .query("SELECT COUNT(*) AS trips FROM taxi_snapshot")
-            .await?;
+        let (_, batches) = harness.query("SELECT COUNT(*) AS trips FROM taxi").await?;
 
         insta::assert_snapshot!(batches, @r"
     +--------+
@@ -77,15 +70,12 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_an_invalid_snapshot_id() -> Result<()> {
-        let harness = IcebergTestHarness::new().await?;
-        let error = harness
-            .query(&format!(
-                "CREATE EXTERNAL TABLE invalid_snapshot STORED AS ICEBERG \
-                 LOCATION '{FIXTURE_URI}/metadata/v1.metadata.json' \
-                 OPTIONS ('iceberg.snapshot_id' 'not-a-snapshot-id')"
-            ))
+        let error = IcebergTestHarness::builder()
+            .with_table_option("iceberg.snapshot_id", "not-a-snapshot-id")
+            .build()
             .await
-            .unwrap_err();
+            .err()
+            .expect("an invalid snapshot ID must be rejected");
 
         insta::assert_snapshot!(error.to_string(), @r"
     Error during planning: iceberg.snapshot_id must be a valid Iceberg snapshot ID: invalid digit found in string

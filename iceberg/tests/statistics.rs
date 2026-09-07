@@ -7,8 +7,11 @@ mod tests {
     use datafusion::datasource::source::DataSourceExec;
     use datafusion::error::Result;
     use datafusion::physical_plan::{ExecutionPlan, displayable};
-    use datafusion_distributed_iceberg::test_utils::{FIXTURE_URI, IcebergTestHarness};
+    use datafusion_distributed_iceberg::test_utils::{
+        FIXTURE_URI, IcebergTestHarness, empty_taxi_metadata_builder, taxi_metadata,
+    };
     use datafusion_distributed_iceberg::{IcebergDataSource, IcebergExt};
+    use iceberg::spec::{Operation, Snapshot, Summary, TableMetadata};
 
     // Took values from testdata/iceberg/taxi/metadata/v1.metadata.json snapshot summary.
     // Under `snapshots` key in the JSON
@@ -29,14 +32,11 @@ mod tests {
 
     #[tokio::test]
     async fn missing_snapshot_summary_statistics_are_absent() -> Result<()> {
-        let harness = IcebergTestHarness::new().await?;
-        harness
-            .query(&format!(
-                "CREATE EXTERNAL TABLE taxi_without_stats STORED AS ICEBERG \
-                 LOCATION '{FIXTURE_URI}/metadata/v1.missing-summary-statistics.metadata.json'"
-            ))
+        let harness = IcebergTestHarness::builder()
+            .with_table_metadata(metadata_without_summary_statistics())
+            .build()
             .await?;
-        let stats = source_statistics(&harness, "SELECT * FROM taxi_without_stats").await?;
+        let stats = source_statistics(&harness, "SELECT * FROM taxi").await?;
 
         assert_eq!(stats.num_rows, Precision::Absent);
         assert_eq!(stats.total_byte_size, Precision::Absent);
@@ -255,5 +255,28 @@ mod tests {
             return Some(Arc::new(exec.clone()));
         }
         plan.children().into_iter().find_map(find_iceberg_exec)
+    }
+
+    fn metadata_without_summary_statistics() -> TableMetadata {
+        let metadata = taxi_metadata();
+        let current = metadata.current_snapshot().expect("taxi has a snapshot");
+        let snapshot = Snapshot::builder()
+            .with_snapshot_id(current.snapshot_id())
+            .with_parent_snapshot_id(current.parent_snapshot_id())
+            .with_sequence_number(current.sequence_number())
+            .with_timestamp_ms(current.timestamp_ms())
+            .with_manifest_list(current.manifest_list())
+            .schema_id_opt(current.schema_id())
+            .with_summary(Summary {
+                operation: Operation::Append,
+                additional_properties: Default::default(),
+            })
+            .build();
+        empty_taxi_metadata_builder()
+            .set_branch_snapshot(snapshot, "main")
+            .expect("taxi snapshot can be added")
+            .build()
+            .expect("taxi metadata is valid")
+            .metadata
     }
 }
