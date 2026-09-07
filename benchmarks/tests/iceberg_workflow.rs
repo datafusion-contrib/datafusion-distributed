@@ -36,7 +36,7 @@ mod tests {
         saved_run(&iceberg);
         assert!(success(&[run.as_slice(), &["--iceberg"]].concat()).contains("Comparing"));
         assert_eq!(saved_run(&dataset), parquet);
-        let comparison = success(&["compare", "--dataset", path(&dataset), "--compare-iceberg"]);
+        let comparison = success(&["compare", path(&dataset), path(&iceberg)]);
         assert!(comparison.contains(&format!(
             "Comparing {} results from branch",
             dataset.display()
@@ -52,26 +52,33 @@ mod tests {
     }
 
     #[test]
-    fn compares_selected_formats_and_reads_legacy_results() {
+    fn compares_explicit_states_and_reads_legacy_results() {
         let temp = TempDir::new().unwrap();
         let dataset = temp.path().join("sf1");
         write_comparison_results(&dataset);
-        let compare = ["compare", "base", "candidate", "--dataset", path(&dataset)];
-        for (flags, expected) in [
-            (vec![], "prev= 100 ms, new= 200 ms"),
-            (vec!["--iceberg"], "prev=  10 ms, new=  20 ms"),
+        let legacy = success(&["compare", "base", "candidate", "--dataset", path(&dataset)]);
+        assert!(legacy.contains("prev= 100 ms, new= 200 ms"));
+        for (base, new, expected) in [
+            ("sf1@base", "sf1@candidate", "prev= 100 ms, new= 200 ms"),
+            (
+                "sf1-iceberg@base",
+                "sf1-iceberg@candidate",
+                "prev=  10 ms, new=  20 ms",
+            ),
+            ("sf1@base", "sf1-iceberg@base", "prev= 100 ms, new=  10 ms"),
+            (
+                "sf1@base",
+                "sf1-iceberg@candidate",
+                "prev= 100 ms, new=  20 ms",
+            ),
         ] {
-            let output = success(&[compare.as_slice(), flags.as_slice()].concat());
+            let output = success(&[
+                "compare",
+                path(&temp.path().join(base)),
+                path(&temp.path().join(new)),
+            ]);
             assert!(output.contains(expected), "{output}");
         }
-        let output = success(&[
-            "compare",
-            "base",
-            "--dataset",
-            path(&dataset),
-            "--compare-iceberg",
-        ]);
-        assert!(output.contains("prev= 100 ms, new=  10 ms"));
     }
 
     #[test]
@@ -81,22 +88,25 @@ mod tests {
         // Preserve the existing empty-result behavior for ordinary branch comparisons.
         success(&[compare.as_slice(), &["base", "candidate"]].concat());
         for (args, message) in [
+            (vec![], "Exactly two states"),
+            (vec!["tpch/sf1"], "Exactly two states"),
+            (vec!["one", "two", "three"], "Exactly two states"),
             (
-                vec!["base", "candidate", "--compare-iceberg"],
-                "at most one branch",
+                vec!["@base", "tpch/sf1@candidate"],
+                "Dataset and branch must not be empty",
             ),
             (
-                vec!["base", "--iceberg", "--compare-iceberg"],
-                "cannot be used with",
+                vec!["tpch/sf1@", "tpch/sf1@candidate"],
+                "Dataset and branch must not be empty",
             ),
-            (vec![], "Exactly two branches"),
-            (vec!["base", "--iceberg"], "Exactly two branches"),
+            (vec!["--iceberg"], "wasn't expected"),
+            (vec!["--compare-iceberg"], "wasn't expected"),
             (
-                vec!["base", "--compare-iceberg"],
+                vec![path(temp.path()), "missing-dataset"],
                 "Missing saved benchmark results",
             ),
         ] {
-            let output = command(&[compare.as_slice(), args.as_slice()].concat());
+            let output = command(&[&["compare"], args.as_slice()].concat());
             assert!(!output.status.success());
             assert!(
                 String::from_utf8_lossy(&output.stderr).contains(message),

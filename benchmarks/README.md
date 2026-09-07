@@ -79,23 +79,26 @@ rolling. Manifests contain per-file metrics; snapshots contain aggregate record/
 Each table's committed metadata is saved as `<output>/<table>/metadata.json`; `_SUCCESS` is written
 last. The output directory must be empty. Interrupted conversion is not resumable and cannot be run.
 
-Use the same dataset name for either format (`dfbench` is `target/release/dfbench`):
+Run either representation and compare saved states (`dfbench` is `target/release/dfbench`):
 
 ```shell
 dfbench run --dataset tpch/sf1
 dfbench run --dataset tpch/sf1 --iceberg
-dfbench compare --dataset tpch/sf1 --compare-iceberg
-dfbench compare base candidate --dataset tpch/sf1 --iceberg
+dfbench compare tpch/sf1 tpch/sf1-iceberg
+dfbench compare tpch/sf1@base tpch/sf1-iceberg@candidate
+dfbench compare base candidate --dataset tpch/sf1
 
 WORKERS=2 ./benchmarks/run.sh --dataset tpch/sf1 --iceberg --threads 2 --partitions 2 \
   --file-scan-config-bytes-per-partition 16777216
 ```
 
-- `--iceberg` resolves `<dataset>` to `<dataset>-iceberg` before execution or on both sides of a
-  two-branch timing comparison. Continue passing the base dataset name to this flag.
-- `--compare-iceberg` compares saved Parquet timings [prev] against Iceberg timings [new] on the
-  current branch, or one explicitly named branch. Two branches are rejected: formats are never
-  compared across different branches. Combining the two flags is also rejected.
+- `run --iceberg` resolves `<dataset>` to `<dataset>-iceberg` before execution. Continue passing
+  the base dataset name to this flag.
+- `compare` takes exactly two `dataset[@branch]` states, [prev] then [new]. An omitted branch
+  defaults to the current branch; the final `@` separates an explicit branch from its dataset.
+  Each state independently selects its dataset and branch, without format-specific flags.
+- With `compare --dataset`, both positional arguments are literal branch names, preserving the
+  existing two-branch shorthand. This also works with an Iceberg dataset such as `tpch/sf1-iceberg`.
 - Each dataset uses the existing `.results/<branch>/` and `previous.json` layout. Iceberg results
   live under `sf1-iceberg/`, separate from the Parquet results under `sf1/`. Parquet result storage,
   saved JSON and branch naming are unchanged.

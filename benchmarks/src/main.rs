@@ -19,22 +19,14 @@ enum Options {
     Run(run::RunOpt),
     /// Compare two saved benchmark states.
     Compare {
-        /// Two branches to compare. With --compare-iceberg, accepts at most one branch,
-        /// defaulting to the current branch.
-        #[structopt(name = "BRANCHES")]
-        branches: Vec<String>,
+        /// Two dataset[@branch] states; omitted branches default to the current branch.
+        /// With --dataset, both arguments are branch names instead.
+        #[structopt(name = "STATES")]
+        states: Vec<String>,
 
-        /// Path to data files
+        /// Shared dataset for the existing two-branch comparison shorthand.
         #[structopt(long)]
-        dataset: String,
-
-        /// Use Iceberg results on both branches.
-        #[structopt(long, conflicts_with = "compare-iceberg")]
-        iceberg: bool,
-
-        /// Compare Parquet [prev] against Iceberg [new].
-        #[structopt(long, conflicts_with = "iceberg")]
-        compare_iceberg: bool,
+        dataset: Option<String>,
     },
     PrepareTpch(prepare_tpch::PrepareTpchOpt),
     PrepareIceberg(prepare_iceberg::PrepareIcebergOpt),
@@ -43,34 +35,28 @@ enum Options {
 }
 
 fn comparison_states(
-    branches: Vec<String>,
-    dataset: String,
-    iceberg: bool,
-    compare_iceberg: bool,
+    states: Vec<String>,
+    dataset: Option<String>,
 ) -> Result<[compare::BenchmarkState; 2]> {
-    let [base, new] = match (branches.as_slice(), compare_iceberg) {
-        ([], true) => {
-            let branch = results::get_current_branch();
-            [branch.clone(), branch]
+    let [base, new]: [String; 2] = states.try_into().map_err(|states| {
+        datafusion::common::internal_datafusion_err!(
+            "Exactly two states must be specified, got: {states:?}"
+        )
+    })?;
+    let state = |value: String| {
+        let (dataset, branch) = match &dataset {
+            Some(dataset) => (dataset.clone(), value),
+            None => match value.rsplit_once('@') {
+                Some((dataset, branch)) => (dataset.to_owned(), branch.to_owned()),
+                None => (value, results::get_current_branch()),
+            },
+        };
+        if dataset.is_empty() || branch.is_empty() {
+            return datafusion::common::internal_err!("Dataset and branch must not be empty");
         }
-        ([branch], true) => [branch.clone(), branch.clone()],
-        ([base, new], false) => [base.clone(), new.clone()],
-        (_, true) => {
-            return datafusion::common::internal_err!(
-                "--compare-iceberg accepts at most one branch; comparing formats across branches is not supported"
-            );
-        }
-        (rest, false) => {
-            return datafusion::common::internal_err!(
-                "Exactly two branches must be specified, got: {rest:?}"
-            );
-        }
+        Ok(compare::BenchmarkState { dataset, branch })
     };
-    let state = |iceberg, branch| compare::BenchmarkState {
-        dataset: (format::BenchmarkFormat::new(iceberg).dataset)(&dataset),
-        branch,
-    };
-    Ok([state(iceberg, base), state(iceberg || compare_iceberg, new)])
+    Ok([state(base)?, state(new)?])
 }
 
 // Main benchmark runner entrypoint
@@ -79,17 +65,7 @@ pub fn main() -> Result<()> {
 
     match Options::from_args() {
         Options::Run(opt) => opt.run(),
-        Options::Compare {
-            branches,
-            dataset,
-            iceberg,
-            compare_iceberg,
-        } => compare::run(comparison_states(
-            branches,
-            dataset,
-            iceberg,
-            compare_iceberg,
-        )?),
+        Options::Compare { states, dataset } => compare::run(comparison_states(states, dataset)?),
         Options::PrepareTpch(opt) => opt.run(),
         Options::PrepareIceberg(opt) => {
             let rt = tokio::runtime::Runtime::new()?;
