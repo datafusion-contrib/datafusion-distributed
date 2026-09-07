@@ -325,7 +325,7 @@ pub fn row_generator_desired_task_count_handler(
     let exec = ev.plan.downcast_ref::<RowGeneratorExec>()?;
     let provider = exec.feed.clone().try_into_inner().ok()?;
     Some(Ok(DesiredTaskCountEventResponse::desired(
-        provider.task_count,
+        provider.task_count as f64,
     )))
 }
 
