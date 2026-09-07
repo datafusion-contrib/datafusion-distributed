@@ -154,18 +154,18 @@ mod tests {
         .await?;
 
         assert_snapshot!(plan + &results,
-            @"
+            @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [tag@2 ASC NULLS LAST, task_index@1 ASC NULLS LAST]
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=12, input_tasks=4
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=15, input_tasks=5
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── tasks=4, partitions=3
+          ┌───── Stage 2 ── tasks=5, partitions=3
           │ SortExec: expr=[tag@2 ASC NULLS LAST, task_index@1 ASC NULLS LAST], preserve_partitioning=[true]
           │   AggregateExec: mode=FinalPartitioned, gby=[task_count@0 as task_count, task_index@1 as task_index, tag@2 as tag, worker_url@3 as worker_url], aggr=[]
           │     [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=5
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── tasks=5, partitions=12
-            │ RepartitionExec: partitioning=Hash([task_count@0, task_index@1, tag@2, worker_url@3], 12), input_partitions=3
+            ┌───── Stage 1 ── tasks=5, partitions=15
+            │ RepartitionExec: partitioning=Hash([task_count@0, task_index@1, tag@2, worker_url@3], 15), input_partitions=3
             │   AggregateExec: mode=Partial, gby=[task_count@0 as task_count, task_index@1 as task_index, tag@2 as tag, worker_url@3 as worker_url], aggr=[]
             │     DistributedUnionExec: t0:[c0(0/3)] t1:[c0(1/3)] t2:[c0(2/3)] t3:[c1(0/2)] t4:[c1(1/2)]
             │       DistributedLeafExec:
@@ -205,18 +205,18 @@ mod tests {
         .await?;
 
         assert_snapshot!(plan + &results,
-            @"
+            @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [tag@2 ASC NULLS LAST, task_index@1 ASC NULLS LAST]
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=12, input_tasks=4
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=15, input_tasks=5
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── tasks=4, partitions=3
+          ┌───── Stage 2 ── tasks=5, partitions=3
           │ SortExec: expr=[tag@2 ASC NULLS LAST, task_index@1 ASC NULLS LAST], preserve_partitioning=[true]
           │   AggregateExec: mode=FinalPartitioned, gby=[task_count@0 as task_count, task_index@1 as task_index, tag@2 as tag, worker_url@3 as worker_url], aggr=[]
           │     [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=5
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── tasks=5, partitions=12
-            │ RepartitionExec: partitioning=Hash([task_count@0, task_index@1, tag@2, worker_url@3], 12), input_partitions=4
+            ┌───── Stage 1 ── tasks=5, partitions=15
+            │ RepartitionExec: partitioning=Hash([task_count@0, task_index@1, tag@2, worker_url@3], 15), input_partitions=4
             │   AggregateExec: mode=Partial, gby=[task_count@0 as task_count, task_index@1 as task_index, tag@2 as tag, worker_url@3 as worker_url], aggr=[]
             │     DistributedUnionExec: t0:[c0(0/4)] t1:[c0(1/4)] t2:[c0(2/4)] t3:[c0(3/4)] t4:[c1]
             │       DistributedLeafExec:

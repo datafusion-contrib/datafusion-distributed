@@ -114,6 +114,7 @@ mod tests {
         let query = r#"SELECT "RainToday", COUNT(*) FROM weather GROUP BY "RainToday""#;
         let physical_plan_ascii = TestPlanBuilder::default()
             .distributed_partial_reduce(true)
+            .distributed_cardinality_effect_task_scale_factor(1.5)
             .physical_plan_as_ascii(query, false)
             .await;
         assert_snapshot!(physical_plan_ascii, @r"

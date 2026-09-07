@@ -715,6 +715,7 @@ mod tests {
         let test_plan_builder = TestPlanBuilder::new()
             .target_partitions(4)
             .num_workers(4)
+            .distributed_cardinality_effect_task_scale_factor(1.5)
             // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
             .broadcast_joins(false);
@@ -783,6 +784,7 @@ mod tests {
         let test_plan_builder = TestPlanBuilder::new()
             .target_partitions(4)
             .num_workers(4)
+            .distributed_cardinality_effect_task_scale_factor(1.5)
             // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
             .broadcast_joins(false);
@@ -843,6 +845,7 @@ mod tests {
         let test_plan_builder = TestPlanBuilder::new()
             .target_partitions(4)
             .num_workers(4)
+            .distributed_cardinality_effect_task_scale_factor(1.5)
             // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
             .broadcast_joins(false);
