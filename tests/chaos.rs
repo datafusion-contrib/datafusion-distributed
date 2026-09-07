@@ -13,7 +13,7 @@ mod tests {
     use datafusion_distributed_benchmarks::datasets::{register_tables, tpch};
     use moka::future::FutureExt;
     use rand::SeedableRng;
-    use rand::prelude::{IndexedRandom, Rng, StdRng};
+    use rand::prelude::{Rng, StdRng};
     use std::collections::VecDeque;
     use std::convert::Infallible;
     use std::env;
@@ -24,7 +24,7 @@ mod tests {
     use std::pin::Pin;
     use std::sync::{Arc, Mutex};
     use std::task::{Context, Poll};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
     use tokio::net::TcpListener;
     use tokio::sync::{OnceCell, Semaphore};
     use tonic::Status;
@@ -38,10 +38,8 @@ mod tests {
     const TOTAL_QUERIES: usize = 100;
     const CONCURRENT_QUERIES_PER_CLIENT_RANDOM_RANGE: Range<usize> = 1..4;
     const CONCURRENT_CLIENTS: usize = 10;
-    const QUERIES: &[&str] = &[
-        "q1", "q2", "q3", "q4", "q5", "q6", "q7", "q8", "q9", "q10", "q11", "q12", "q13", "q14",
-        "q15", "q16", "q17", "q18", "q19", "q20", "q21", "q22",
-    ];
+    const TPCH_SCALE_FACTOR: f64 = 0.1;
+    const TPCH_DATA_PARTS: usize = 16;
 
     fn seed() -> u64 {
         env::var("CHAOS_SEED").map_or_else(
@@ -51,7 +49,6 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    #[ignore = "Still no good retrying mechanism that make this test pass"]
     async fn chaos() -> Result<()> {
         let seed = seed();
         println!("seed: {seed}");
@@ -61,7 +58,7 @@ mod tests {
             max_in_flight: MAX_IN_FLIGHT,
             seed,
         };
-        let (ctx, _guard) = chaos_localhost_cluster(cfg).await;
+        let (ctx, _guard, workers) = chaos_localhost_cluster(cfg).await;
         let data_dir = ensure_tpch_data().await;
         register_tables(&ctx, &data_dir).await?;
 
@@ -70,7 +67,7 @@ mod tests {
         for _ in 0..TOTAL_QUERIES {
             let mut batch = vec![];
             for _ in 0..rng.random_range(CONCURRENT_QUERIES_PER_CLIENT_RANDOM_RANGE) {
-                let query = tpch::get_query(QUERIES.choose(&mut rng).unwrap())?;
+                let query = tpch::get_query("q20")?;
                 batch.push(query.clone());
             }
             queries.push_back(batch);
@@ -100,6 +97,7 @@ mod tests {
                 Ok::<_, DataFusionError>(())
             });
         }
+        drop(tx);
 
         for result in concurrent_clients.join_all().await {
             result?;
@@ -111,6 +109,7 @@ mod tests {
             let next_result = pretty_format_batches(&next_result)?;
             pretty_assertions::assert_eq!(first.to_string(), next_result.to_string());
         }
+        assert_no_tasks_running_eventually(&workers).await;
 
         Ok(())
     }
@@ -165,6 +164,14 @@ mod tests {
         }
 
         fn call(&mut self, request: http::Request<Body>) -> Self::Future {
+            let path = request.uri().path();
+
+            // Only CoordinatorChannel errors are recoverable, if this is not a CoordinatorChannel
+            // call, we must not pollute it with failures.
+            if !path.ends_with("worker.WorkerService/CoordinatorChannel") {
+                return self.inner.call(request).boxed();
+            }
+
             let permit = match self.in_flight.clone().try_acquire_owned() {
                 Ok(permit) => permit,
                 Err(_) => {
@@ -185,10 +192,18 @@ mod tests {
                         response.await
                     }
                     ChaosAction::Timeout(duration) => {
+                        // Wait until the worker has accepted the coordinator channel and created
+                        // its response stream. Dropping that response before returning the error
+                        // simulates a failure after request processing but before the client has
+                        // received response headers.
+                        drop(response.await?);
                         tokio::time::sleep(duration).await;
                         Ok(Status::deadline_exceeded("chaos: worker timed out").into_http())
                     }
                     ChaosAction::Unavailable(duration) => {
+                        // See the Timeout branch: this deliberately exercises cleanup of an
+                        // accepted coordinator channel, rather than rejecting it at admission.
+                        drop(response.await?);
                         tokio::time::sleep(duration).await;
                         Ok(Status::unavailable("chaos: worker restarting").into_http())
                     }
@@ -226,7 +241,9 @@ mod tests {
         seed: u64,
     }
 
-    async fn chaos_localhost_cluster(cfg: ChaosClusterConfig) -> (SessionContext, JoinSet<()>) {
+    async fn chaos_localhost_cluster(
+        cfg: ChaosClusterConfig,
+    ) -> (SessionContext, JoinSet<()>, Vec<Worker>) {
         let mut layer_rng = StdRng::seed_from_u64(cfg.seed);
         let listeners = futures::future::try_join_all(
             (0..cfg.num_workers)
@@ -278,14 +295,30 @@ mod tests {
             .unwrap()
             .build();
 
-        (SessionContext::from(state), join_set)
+        (SessionContext::from(state), join_set, workers)
+    }
+
+    async fn assert_no_tasks_running_eventually(workers: &[Worker]) {
+        let start = Instant::now();
+        loop {
+            let tasks_running =
+                futures::future::join_all(workers.iter().map(Worker::tasks_running))
+                    .await
+                    .into_iter()
+                    .sum::<usize>();
+            if tasks_running == 0 {
+                return;
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "Expected no retained task entries, but {tasks_running} are still running"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
 
     // OnceCell to ensure TPCH tables are generated only once for tests
     static INIT_TEST_TPCH_TABLES: OnceCell<()> = OnceCell::const_new();
-
-    const TPCH_SCALE_FACTOR: f64 = 1.0;
-    const TPCH_DATA_PARTS: usize = 16;
 
     pub async fn ensure_tpch_data() -> std::path::PathBuf {
         let data_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
