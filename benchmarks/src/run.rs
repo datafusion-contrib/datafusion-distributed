@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::format::BenchmarkFormat;
+use crate::backend::BenchmarkBackend;
 use crate::results::{BenchResult, BenchmarkRun, QueryIter, dataset_path};
 use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::record_batch::RecordBatch;
@@ -39,7 +39,6 @@ use datafusion_distributed::{
 };
 use datafusion_distributed_benchmarks::datasets::{clickbench, tpcds, tpch};
 use datafusion_distributed_benchmarks::stats::stats_estimation_q_error;
-use datafusion_distributed_iceberg::{IcebergExt, IcebergIntegrationOptions};
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -69,10 +68,6 @@ pub struct RunOpt {
     /// Path to data files
     #[structopt(long)]
     dataset: String,
-
-    /// Run the sibling <dataset>-iceberg representation.
-    #[structopt(long)]
-    iceberg: bool,
 
     /// Spawns a worker in the specified port.
     #[structopt(long)]
@@ -124,10 +119,6 @@ pub struct RunOpt {
     #[structopt(short = "s", long = "batch-size")]
     batch_size: Option<usize>,
 
-    /// Load Iceberg manifest column statistics during planning.
-    #[structopt(long)]
-    iceberg_column_stats: bool,
-
     /// Activate debug mode to see more details
     #[structopt(short, long)]
     debug: bool,
@@ -168,14 +159,13 @@ impl RunOpt {
         })
     }
 
-    pub fn run(self) -> Result<()> {
+    pub fn run(self, backend: BenchmarkBackend) -> Result<()> {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(self.threads.unwrap_or(get_available_parallelism()))
             .enable_all()
             .build()?;
 
         if let Some(port) = self.spawn {
-            let iceberg_column_stats = self.iceberg_column_stats;
             rt.block_on(async move {
                 let listener = TcpListener::bind(format!("127.0.0.1:{port}")).await?;
                 println!("Listening on {}...", listener.local_addr().unwrap());
@@ -184,13 +174,12 @@ impl RunOpt {
                 // node when the feature is on. The codec is registered via a
                 // session builder so it is installed on every worker session.
                 let worker = Worker::from_session_builder(
-                    move |ctx: datafusion_distributed::WorkerQueryContext| async move {
-                        Ok(ctx
-                            .builder
-                            .with_distributed_user_codec(WorkUnitFileScanCodec)
-                            .with_iceberg_integration(IcebergIntegrationOptions::default())
-                            .with_iceberg_column_stats_enabled(iceberg_column_stats)
-                            .build())
+                    move |ctx: datafusion_distributed::WorkerQueryContext| {
+                        let builder = (backend.configure)(
+                            ctx.builder
+                                .with_distributed_user_codec(WorkUnitFileScanCodec),
+                        );
+                        async move { Ok(builder.build()) }
                     },
                 );
                 Ok::<_, Box<dyn Error + Send + Sync>>(
@@ -201,14 +190,12 @@ impl RunOpt {
                 )
             })?;
         } else {
-            rt.block_on(self.run_local())?;
+            rt.block_on(self.run_local(backend))?;
         }
         Ok(())
     }
 
-    async fn run_local(mut self) -> Result<()> {
-        let format = BenchmarkFormat::new(self.iceberg);
-        self.dataset = (format.dataset)(&self.dataset);
+    async fn run_local(self, backend: BenchmarkBackend) -> Result<()> {
         let mut builder = SessionStateBuilder::new()
             .with_default_features()
             .with_config(self.config()?)
@@ -248,12 +235,9 @@ impl RunOpt {
             builder = builder.with_physical_optimizer_rule(Arc::new(WorkUnitFileScanRule))
         }
 
-        let state = builder
-            .with_iceberg_integration(IcebergIntegrationOptions::default())
-            .with_iceberg_column_stats_enabled(self.iceberg_column_stats)
-            .build();
+        let state = (backend.configure)(builder).build();
         let ctx = SessionContext::new_with_state(state);
-        (format.register)(&ctx, &self.get_path()?).await?;
+        (backend.register)(&ctx, &self.get_path()?).await?;
         let dataset_suite = if Path::new(&self.dataset).is_absolute() {
             // Absolute paths follow the same <suite>/<variant> convention.
             Path::new(&self.dataset)

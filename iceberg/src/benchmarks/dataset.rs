@@ -32,7 +32,7 @@ use parquet::file::properties::WriterProperties;
 type CatalogProperties = std::collections::HashMap<String, String>;
 
 /// The sibling dataset directory used for the Iceberg representation.
-pub fn output_path(input: &Path) -> PathBuf {
+pub(super) fn output_path(input: &Path) -> PathBuf {
     let mut name = input.file_name().unwrap_or_default().to_os_string();
     name.push("-iceberg");
     input.with_file_name(name)
@@ -40,7 +40,7 @@ pub fn output_path(input: &Path) -> PathBuf {
 
 /// Converts prepared local Parquet tables, independently of their query suite.
 /// Data is streamed one input file at a time; completion is marked last.
-pub async fn convert_parquet_to_iceberg(
+pub(super) async fn convert_parquet_to_iceberg(
     source_dir: &Path,
     output_dir: &Path,
     target_file_size: usize,
@@ -189,6 +189,7 @@ async fn write_table(
     Ok(())
 }
 
+/// Register immutable local benchmark tables written by `prepare-iceberg`.
 pub async fn register_tables(
     ctx: &SessionContext,
     data_path: &Path,
@@ -290,12 +291,12 @@ fn file_uri(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
 mod tests {
     use std::fs::File;
 
+    use crate::{IcebergExt, IcebergIntegrationOptions};
     use datafusion::arrow::array::{Int64Array, StringArray};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::common::ScalarValue;
     use datafusion::execution::SessionStateBuilder;
-    use datafusion_distributed_iceberg::{IcebergExt, IcebergIntegrationOptions};
     use parquet::arrow::ArrowWriter;
     use tempfile::TempDir;
 

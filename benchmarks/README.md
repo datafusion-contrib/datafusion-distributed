@@ -83,17 +83,17 @@ Run either representation and compare saved states (`dfbench` is `target/release
 
 ```shell
 dfbench run --dataset tpch/sf1
-dfbench run --dataset tpch/sf1 --iceberg
+dfbench run --dataset tpch/sf1-iceberg --format iceberg
 dfbench compare tpch/sf1 tpch/sf1-iceberg
 dfbench compare tpch/sf1@base tpch/sf1-iceberg@candidate
 dfbench compare base candidate --dataset tpch/sf1
 
-WORKERS=2 ./benchmarks/run.sh --dataset tpch/sf1 --iceberg --threads 2 --partitions 2 \
+WORKERS=2 ./benchmarks/run.sh --dataset tpch/sf1-iceberg --format iceberg --threads 2 --partitions 2 \
   --file-scan-config-bytes-per-partition 16777216
 ```
 
-- `run --iceberg` resolves `<dataset>` to `<dataset>-iceberg` before execution. Continue passing
-  the base dataset name to this flag.
+- `run --format` selects the table backend, defaulting to Parquet. Pass the actual dataset
+  directory name; running a benchmark never rewrites it.
 - `compare` takes exactly two `dataset[@branch]` states, [prev] then [new]. An omitted branch
   defaults to the current branch; the final `@` separates an explicit branch from its dataset.
   Each state independently selects its dataset and branch, without format-specific flags.
@@ -105,7 +105,9 @@ WORKERS=2 ./benchmarks/run.sh --dataset tpch/sf1 --iceberg --threads 2 --partiti
 - Timing calculations are unchanged; comparisons do not execute queries or check correctness.
 
 Absolute dataset paths are supported when they follow the same `<suite>/<variant>` convention.
-`--iceberg-column-stats` loads manifest column statistics during planning.
+With `--format iceberg`, `--iceberg-column-stats` loads manifest column statistics during planning.
+Iceberg preparation, table registration, and session options live behind the Iceberg crate's
+`benchmarks` feature, enabled by this runner. The execution loop only receives backend callbacks.
 
 For SF10, SF100, etc., change the generation scale and paths; increase generation `--partitions`
 to avoid oversized source files. Conversion is sequential and retains both representations.

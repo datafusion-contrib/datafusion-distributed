@@ -1,22 +1,37 @@
 //! DataFusion Distributed benchmark runner
+mod backend;
 mod compare;
-mod format;
 mod prepare_clickbench;
-mod prepare_iceberg;
 mod prepare_tpcds;
 mod prepare_tpch;
 mod results;
 mod run;
 
+use backend::BenchmarkBackend;
 use datafusion::error::Result;
-use structopt::StructOpt;
+use datafusion_distributed_iceberg::benchmarks::{IcebergBenchmarkOptions, PrepareIcebergOpt};
+use structopt::{StructOpt, clap::arg_enum};
+
+arg_enum! {
+    #[derive(Debug)]
+    enum Format { Parquet, Iceberg }
+}
 
 pub(crate) const RESULTS_DIR: &str = ".results";
 
 #[derive(Debug, StructOpt)]
 #[structopt(about = "benchmark command")]
 enum Options {
-    Run(run::RunOpt),
+    /// Run benchmarks using the selected table backend.
+    Run {
+        #[structopt(flatten)]
+        options: run::RunOpt,
+        /// Table format of the dataset directory.
+        #[structopt(long, default_value = "parquet", possible_values = &Format::variants(), case_insensitive = true)]
+        format: Format,
+        #[structopt(flatten)]
+        iceberg: IcebergBenchmarkOptions,
+    },
     /// Compare two saved benchmark states.
     Compare {
         /// Two dataset[@branch] states; omitted branches default to the current branch.
@@ -29,7 +44,7 @@ enum Options {
         dataset: Option<String>,
     },
     PrepareTpch(prepare_tpch::PrepareTpchOpt),
-    PrepareIceberg(prepare_iceberg::PrepareIcebergOpt),
+    PrepareIceberg(PrepareIcebergOpt),
     PrepareTpcds(prepare_tpcds::PrepareTpcdsOpt),
     PrepareClickbench(prepare_clickbench::PrepareClickBenchOpt),
 }
@@ -64,7 +79,14 @@ pub fn main() -> Result<()> {
     env_logger::init();
 
     match Options::from_args() {
-        Options::Run(opt) => opt.run(),
+        Options::Run {
+            options,
+            format,
+            iceberg,
+        } => options.run(match format {
+            Format::Parquet => BenchmarkBackend::parquet(),
+            Format::Iceberg => BenchmarkBackend::iceberg(iceberg),
+        }),
         Options::Compare { states, dataset } => compare::run(comparison_states(states, dataset)?),
         Options::PrepareTpch(opt) => opt.run(),
         Options::PrepareIceberg(opt) => {

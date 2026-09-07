@@ -2440,7 +2440,6 @@ dependencies = [
  "datafusion-distributed-iceberg",
  "env_logger",
  "futures",
- "iceberg",
  "log",
  "mimalloc",
  "object_store",
@@ -2512,9 +2511,12 @@ dependencies = [
  "prost",
  "serde",
  "serde_json",
+ "structopt",
+ "tempfile",
  "tokio",
  "tokio-stream",
  "typetag",
+ "url",
 ]
 
 [[package]]

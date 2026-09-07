@@ -1,9 +1,7 @@
 use std::path::PathBuf;
 
+use super::dataset::{convert_parquet_to_iceberg, output_path};
 use datafusion::error::{DataFusionError, Result};
-use datafusion_distributed_benchmarks::datasets::iceberg::{
-    convert_parquet_to_iceberg, output_path,
-};
 use structopt::StructOpt;
 
 /// Convert local Parquet tables into a sibling <input>-iceberg dataset.

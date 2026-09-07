@@ -19,22 +19,21 @@ mod tests {
         success(&prepare);
         assert!(!dataset.join("dataset.json").exists());
 
-        let run = [
-            "run",
-            "--dataset",
-            path(&dataset),
-            "--query",
-            "q6",
-            "--iterations",
-            "1",
-            "--threads",
-            "2",
-        ];
+        let options = ["--query", "q6", "--iterations", "1", "--threads", "2"];
+        let run = [&["run", "--dataset", path(&dataset)][..], &options].concat();
+        let iceberg_run = [
+            &["run", "--dataset", path(&iceberg), "--format", "iceberg"][..],
+            &options,
+        ]
+        .concat();
         assert!(success(&run).contains("branch 'legacy' [prev]"));
         let parquet = saved_run(&dataset);
-        success(&[run.as_slice(), &["--iceberg"]].concat());
+        success(&iceberg_run);
         saved_run(&iceberg);
-        assert!(success(&[run.as_slice(), &["--iceberg"]].concat()).contains("Comparing"));
+        assert!(
+            success(&[iceberg_run.as_slice(), &["--iceberg-column-stats"]].concat())
+                .contains("Comparing")
+        );
         assert_eq!(saved_run(&dataset), parquet);
         let comparison = success(&["compare", path(&dataset), path(&iceberg)]);
         assert!(comparison.contains(&format!(
@@ -46,9 +45,24 @@ mod tests {
 
         assert!(!command(&prepare).status.success());
         fs::remove_file(iceberg.join("_SUCCESS")).unwrap();
-        let incomplete = command(&[run.as_slice(), &["--iceberg"]].concat());
+        let incomplete = command(&iceberg_run);
         assert!(!incomplete.status.success());
         assert!(String::from_utf8_lossy(&incomplete.stderr).contains("missing or incomplete"));
+    }
+
+    #[test]
+    fn rejects_unknown_backends_and_the_retired_run_flag() {
+        for (flags, message) in [
+            (vec!["--format", "csv"], "isn't a valid value"),
+            (vec!["--iceberg"], "wasn't expected"),
+        ] {
+            let output = command(&[&["run", "--dataset", "unused"][..], &flags].concat());
+            assert!(!output.status.success());
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains(message),
+                "{output:?}"
+            );
+        }
     }
 
     #[test]

@@ -1,6 +1,5 @@
 pub mod clickbench;
 mod common;
-pub mod iceberg;
 pub mod tpcds;
 pub mod tpch;
 

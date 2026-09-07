@@ -10,6 +10,8 @@ repository = "https://github.com/datafusion-contrib/datafusion-distributed"
 [features]
 # Distributed worker support for the test harness.
 integration = ["datafusion-distributed/integration"]
+# Local dataset conversion and runner hooks; not part of the read-only integration.
+benchmarks = ["datafusion/parquet", "dep:parquet", "dep:structopt", "dep:url"]
 
 [dependencies]
 async-trait = "0.1"
@@ -27,8 +29,12 @@ delegate = "0.13"
 prost = "0.14.1"
 tokio = { version = "1.48", features = ["full"] }
 tokio-stream = "0.1"
+parquet = { version = "59", optional = true }
+structopt = { version = "0.3.26", optional = true }
+url = { version = "2.5.7", optional = true }
 
 [dev-dependencies]
+tempfile = "3"
 insta = "1"
 parquet = "59"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

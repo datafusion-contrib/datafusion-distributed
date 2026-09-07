@@ -12,8 +12,7 @@ datafusion-distributed = { path = "..", features = [
   "integration",
   "system-metrics",
 ] }
-datafusion-distributed-iceberg = { path = "../iceberg" }
-iceberg = "0.10.0"
+datafusion-distributed-iceberg = { path = "../iceberg", features = ["benchmarks"] }
 tokio = { version = "1.48", features = ["full"] }
 url = "2.5.7"
 parquet = { version = "59" }
