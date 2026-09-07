@@ -2,7 +2,8 @@ use super::channel_resolver::BoxCloneSyncChannel;
 use super::errors::{map_flight_to_datafusion_error, map_status_to_datafusion_error};
 use super::generated::worker as pb;
 use super::metrics_proto::metrics_set_proto_to_df;
-use crate::common::serialize_uuid;
+use crate::common::{RetryOutcome, serialize_uuid};
+use crate::grpc::errors::tonic_status_to_datafusion_error;
 use crate::grpc::generated::worker::FlightAppMetadata;
 use crate::grpc::on_drop_stream::on_drop_stream;
 use crate::{
@@ -41,7 +42,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_util::sync::CancellationToken;
 use tonic::metadata::MetadataMap;
-use tonic::{Request, Status};
+use tonic::{Code, Request, Status};
 
 #[async_trait]
 impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSyncChannel> {
@@ -72,7 +73,40 @@ impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSy
             ))
             .boxed()
             .await
-            .map_err(map_status_to_datafusion_error)?
+            .map_err(|err| {
+                if let Some(err) = tonic_status_to_datafusion_error(&err) {
+                    return err;
+                }
+                let code = err.code();
+                let err = DataFusionError::External(Box::new(err));
+                match code {
+                    // https://grpc.io/docs/guides/status-codes/#deadline-exceeded
+                    // The worker may be slow or wedged, so retry a different URL.
+                    Code::DeadlineExceeded => RetryOutcome::OtherUrl.tag(err),
+                    // https://grpc.io/docs/guides/status-codes/#resource-exhausted
+                    // Admission pressure is local to this worker, so retry a different URL.
+                    Code::ResourceExhausted => RetryOutcome::OtherUrl.tag(err),
+                    // https://grpc.io/docs/guides/status-codes/#aborted
+                    // Routing retries this task setup at the higher level on the same URL.
+                    Code::Aborted => RetryOutcome::SameUrl.tag(err),
+                    // https://grpc.io/docs/guides/status-codes/#unavailable
+                    // This is a transient failure; retry the task setup on the same URL.
+                    Code::Unavailable => RetryOutcome::SameUrl.tag(err),
+                    Code::Ok => err,
+                    Code::Cancelled => err,
+                    Code::Unknown => err,
+                    Code::InvalidArgument => err,
+                    Code::NotFound => err,
+                    Code::AlreadyExists => err,
+                    Code::PermissionDenied => err,
+                    Code::FailedPrecondition => err,
+                    Code::OutOfRange => err,
+                    Code::Unimplemented => err,
+                    Code::Internal => err,
+                    Code::DataLoss => err,
+                    Code::Unauthenticated => err,
+                }
+            })?
             .into_inner()
             .map_err(map_status_to_datafusion_error)
             .map(|msg| decode_worker_to_coordinator_msg(msg?))
