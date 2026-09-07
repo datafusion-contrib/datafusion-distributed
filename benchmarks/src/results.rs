@@ -5,7 +5,7 @@ use datafusion_distributed_benchmarks::stats::median;
 use serde::ser::SerializeSeq;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, SystemTime};
 
@@ -67,8 +67,8 @@ impl BenchmarkRun {
         }
     }
 
-    pub fn load_previous(results_dir: &Path) -> Option<Self> {
-        let path = results_dir.join("previous.json");
+    pub fn load_previous(dataset: &str) -> Option<Self> {
+        let path = dataset_path(dataset).join("previous.json");
         let Ok(prev) = fs::read(path) else {
             return None;
         };
@@ -77,28 +77,26 @@ impl BenchmarkRun {
             return None;
         };
 
-        prev_output.results =
-            BenchResult::load_many(&branch_results_path(results_dir, &prev_output.branch));
+        prev_output.results = BenchResult::load_many(&prev_output.dataset, &prev_output.branch);
         Some(prev_output)
     }
 
     /// Write data as json into output path if it exists.
-    pub fn store(&self, results_dir: &Path) -> Result<()> {
-        let path = results_dir.join("previous.json");
+    pub fn store(&self) -> Result<()> {
+        let path = dataset_path(&self.dataset).join("previous.json");
         let json = serde_json::to_string_pretty(&self).unwrap();
 
         let _ = fs::create_dir_all(path.parent().unwrap());
 
         fs::write(path, json)?;
-        let branch_dir = branch_results_path(results_dir, &self.branch);
         for result in &self.results {
-            result.store(&branch_dir)?;
+            result.store()?;
         }
         Ok(())
     }
 
-    pub fn compare_with_previous(&self, results_dir: &Path) -> Result<()> {
-        let Some(previous) = Self::load_previous(results_dir) else {
+    pub fn compare_with_previous(&self) -> Result<()> {
+        let Some(previous) = Self::load_previous(&self.dataset) else {
             return Ok(());
         };
 
@@ -136,10 +134,6 @@ pub(crate) fn dataset_path(dataset: &str) -> PathBuf {
         .join("testdata")
         .join(suite)
         .join(variant)
-}
-
-pub(crate) fn branch_results_path(results_dir: &Path, branch: &str) -> PathBuf {
-    results_dir.join(RESULTS_DIR).join(branch)
 }
 
 pub(crate) fn get_current_branch() -> String {
@@ -189,8 +183,11 @@ impl BenchResult {
         Some(self.p50())
     }
 
-    pub fn store(&self, dir: &Path) -> Result<()> {
-        let path = dir.join(format!("{}.json", self.id));
+    pub fn store(&self) -> Result<()> {
+        let path = dataset_path(&self.dataset)
+            .join(RESULTS_DIR)
+            .join(get_current_branch())
+            .join(format!("{}.json", self.id));
 
         let _ = fs::create_dir_all(path.parent().unwrap());
 
@@ -201,7 +198,9 @@ impl BenchResult {
         Ok(())
     }
 
-    pub fn load_many(dir: &Path) -> Vec<Self> {
+    pub fn load_many(dataset: &str, branch: &str) -> Vec<Self> {
+        let dir = dataset_path(dataset).join(RESULTS_DIR).join(branch);
+
         let Ok(dir) = fs::read_dir(dir) else {
             return vec![];
         };
@@ -210,10 +209,12 @@ impl BenchResult {
         for file in dir {
             let Ok(file) = file else { continue };
             let file_name = file.file_name().to_string_lossy().to_string();
-            if !file_name.ends_with(".json") {
+            let id = if file_name.ends_with(".json") {
+                file_name.trim_end_matches(".json")
+            } else {
                 continue;
-            }
-            let Ok(result) = BenchResult::load(&file.path()) else {
+            };
+            let Ok(result) = BenchResult::load(dataset, branch, id) else {
                 continue;
             };
             results.push(result);
@@ -237,7 +238,12 @@ impl BenchResult {
         results
     }
 
-    pub fn load(path: &Path) -> Result<Self> {
+    pub fn load(dataset: &str, branch: &str, id: &str) -> Result<Self> {
+        let path = dataset_path(dataset)
+            .join(RESULTS_DIR)
+            .join(branch)
+            .join(format!("{id}.json"));
+
         let read = fs::read(path)?;
         let read =
             serde_json::from_slice(&read).map_err(|err| internal_datafusion_err!("{err}"))?;

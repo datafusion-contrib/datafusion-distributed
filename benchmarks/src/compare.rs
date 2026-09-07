@@ -1,7 +1,5 @@
 use crate::format::BenchmarkFormat;
-use crate::results::{
-    BenchResult, branch_results_path, dataset_path, get_current_branch, print_comparison_total,
-};
+use crate::results::{BenchResult, get_current_branch, print_comparison_total};
 use datafusion::common::{Result, internal_err};
 use structopt::StructOpt;
 
@@ -58,11 +56,10 @@ impl CompareOpt {
         }
         let base_format = BenchmarkFormat::new(self.iceberg);
         let new_format = BenchmarkFormat::new(self.iceberg || self.compare_iceberg);
-        let data_dir = dataset_path(&self.dataset);
-        let base_dir = (base_format.directory)(&data_dir);
-        let new_dir = (new_format.directory)(&data_dir);
-        let base = BenchResult::load_many(&branch_results_path(&base_dir, base));
-        let new = BenchResult::load_many(&branch_results_path(&new_dir, new));
+        let base_dataset = (base_format.dataset)(&self.dataset);
+        let new_dataset = (new_format.dataset)(&self.dataset);
+        let base = BenchResult::load_many(&base_dataset, base);
+        let new = BenchResult::load_many(&new_dataset, new);
         if self.compare_iceberg && (base.is_empty() || new.is_empty()) {
             return internal_err!(
                 "Missing saved benchmark results; run both sides before comparing"

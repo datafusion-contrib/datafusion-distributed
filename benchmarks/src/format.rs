@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use datafusion::error::Result;
 use datafusion::prelude::SessionContext;
@@ -7,9 +7,9 @@ use futures::future::BoxFuture;
 
 type RegisterTables = for<'a> fn(&'a SessionContext, &'a Path) -> BoxFuture<'a, Result<()>>;
 
-/// Select format-specific behavior once; execution and results share the same directory.
+/// Resolve the dataset name and registration once, before entering the benchmark runner.
 pub(crate) struct BenchmarkFormat {
-    pub directory: fn(&Path) -> PathBuf,
+    pub dataset: fn(&str) -> String,
     pub register: RegisterTables,
 }
 
@@ -17,12 +17,16 @@ impl BenchmarkFormat {
     pub fn new(iceberg: bool) -> Self {
         if iceberg {
             Self {
-                directory: |path| path.join(iceberg::ICEBERG_DIR),
+                dataset: |name| {
+                    iceberg::output_path(Path::new(name))
+                        .to_string_lossy()
+                        .into_owned()
+                },
                 register: |ctx, path| Box::pin(iceberg::register_tables(ctx, path)),
             }
         } else {
             Self {
-                directory: Path::to_path_buf,
+                dataset: str::to_owned,
                 register: |ctx, path| Box::pin(register_tables(ctx, path)),
             }
         }

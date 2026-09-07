@@ -2,11 +2,11 @@ use std::path::PathBuf;
 
 use datafusion::error::{DataFusionError, Result};
 use datafusion_distributed_benchmarks::datasets::iceberg::{
-    ICEBERG_DIR, convert_parquet_to_iceberg,
+    convert_parquet_to_iceberg, output_path,
 };
 use structopt::StructOpt;
 
-/// Convert prepared local Parquet tables into Iceberg tables.
+/// Convert local Parquet tables into a sibling <input>-iceberg dataset.
 #[derive(Debug, StructOpt)]
 pub struct PrepareIcebergOpt {
     /// Existing Parquet dataset directory.
@@ -20,8 +20,9 @@ pub struct PrepareIcebergOpt {
 
 impl PrepareIcebergOpt {
     pub async fn run(self) -> Result<()> {
-        let output_path = self.input_path.join(ICEBERG_DIR);
-        convert_parquet_to_iceberg(&self.input_path, &output_path, self.target_file_size)
+        let input_path = std::path::absolute(&self.input_path)?;
+        let output_path = output_path(&input_path);
+        convert_parquet_to_iceberg(&input_path, &output_path, self.target_file_size)
             .await
             .map_err(|error| DataFusionError::Execution(error.to_string()))?;
         println!("Iceberg dataset prepared in {}", output_path.display());

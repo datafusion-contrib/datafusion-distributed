@@ -70,7 +70,7 @@ pub struct RunOpt {
     #[structopt(long)]
     dataset: String,
 
-    /// Run the Iceberg representation prepared inside the dataset directory.
+    /// Run the sibling <dataset>-iceberg representation.
     #[structopt(long)]
     iceberg: bool,
 
@@ -206,7 +206,9 @@ impl RunOpt {
         Ok(())
     }
 
-    async fn run_local(self) -> Result<()> {
+    async fn run_local(mut self) -> Result<()> {
+        let format = BenchmarkFormat::new(self.iceberg);
+        self.dataset = (format.dataset)(&self.dataset);
         let mut builder = SessionStateBuilder::new()
             .with_default_features()
             .with_config(self.config()?)
@@ -251,9 +253,7 @@ impl RunOpt {
             .with_iceberg_column_stats_enabled(self.iceberg_column_stats)
             .build();
         let ctx = SessionContext::new_with_state(state);
-        let format = BenchmarkFormat::new(self.iceberg);
-        let data_dir = (format.directory)(&self.get_path()?);
-        (format.register)(&ctx, &data_dir).await?;
+        (format.register)(&ctx, &self.get_path()?).await?;
         let dataset_suite = if Path::new(&self.dataset).is_absolute() {
             // Absolute paths follow the same <suite>/<variant> convention.
             Path::new(&self.dataset)
@@ -286,8 +286,8 @@ impl RunOpt {
             benchmark_run.results.push(query_run?);
         }
 
-        benchmark_run.compare_with_previous(&data_dir)?;
-        benchmark_run.store(&data_dir)?;
+        benchmark_run.compare_with_previous()?;
+        benchmark_run.store()?;
         Ok(())
     }
 

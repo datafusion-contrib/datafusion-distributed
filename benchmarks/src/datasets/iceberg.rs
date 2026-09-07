@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use datafusion::arrow::compute::cast;
@@ -31,7 +31,12 @@ use parquet::file::properties::WriterProperties;
 )]
 type CatalogProperties = std::collections::HashMap<String, String>;
 
-pub const ICEBERG_DIR: &str = ".iceberg";
+/// The sibling dataset directory used for the Iceberg representation.
+pub fn output_path(input: &Path) -> PathBuf {
+    let mut name = input.file_name().unwrap_or_default().to_os_string();
+    name.push("-iceberg");
+    input.with_file_name(name)
+}
 
 /// Converts prepared local Parquet tables, independently of their query suite.
 /// Data is streamed one input file at a time; completion is marked last.
