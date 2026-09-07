@@ -1,14 +1,8 @@
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use datafusion::common::Result;
-    use datafusion::physical_plan::ExecutionPlan;
-    use datafusion::prelude::SessionConfig;
-    use datafusion_distributed::{DesiredTaskCountEvent, DistributedConfig, DistributedExt};
-    use datafusion_distributed_iceberg::iceberg_desired_task_count;
     use datafusion_distributed_iceberg::test_utils::{
-        IcebergTestHarness, taxi_metadata, taxi_metadata_builder,
+        IcebergTestHarness, empty_taxi_metadata_builder, taxi_metadata,
     };
     use iceberg::spec::{Snapshot, TableMetadata};
     use test_case::test_case;
@@ -16,17 +10,13 @@ mod tests {
     #[cfg(feature = "integration")]
     #[tokio::test]
     async fn executes_with_estimated_scan_tasks() -> Result<()> {
-        let mut harness = IcebergTestHarness::builder()
+        // 4,480,382 bytes / 1 MB / 2 partitions rounds up to 3 tasks, not all 4 workers.
+        let harness = IcebergTestHarness::builder()
             .with_workers(4)
+            .with_target_partitions(2)
+            .with_scan_bytes_per_partition(1_000_000)
             .build()
             .await?;
-        harness
-            .query("SET datafusion.execution.target_partitions = 2")
-            .await?;
-        // 4,480,382 bytes / 1 MB / 2 partitions rounds up to 3 tasks, not all 4 workers.
-        harness
-            .ctx
-            .set_distributed_file_scan_config_bytes_per_partition(1_000_000)?;
         // Grouping prevents COUNT(*) from being answered from snapshot metadata alone.
         let (plan, results) = harness
             .query(
@@ -78,47 +68,31 @@ mod tests {
         snapshot_id: Option<i64>,
         expected: Option<usize>,
     ) -> Result<()> {
-        let mut builder = IcebergTestHarness::builder().with_table_metadata(metadata);
+        let mut builder = IcebergTestHarness::builder()
+            .with_table_metadata(metadata)
+            .with_target_partitions(2)
+            .with_scan_bytes_per_partition(1_000_000);
         if let Some(id) = snapshot_id {
             builder = builder.with_table_option("iceberg.snapshot_id", id.to_string());
         }
         let harness = builder.build().await?;
-        assert_eq!(estimate(&scan(&harness).await?)?, expected);
+        assert_eq!(
+            harness.estimate_task_count(&harness.scan().await?)?,
+            expected
+        );
         Ok(())
     }
 
     #[tokio::test]
     async fn remote_feed_does_not_estimate_again() -> Result<()> {
         let harness = IcebergTestHarness::new().await?;
-        let plan = harness.roundtrip_plan(scan(&harness).await?)?;
-        assert_eq!(estimate(&plan)?, None);
+        let plan = harness.roundtrip_plan(harness.scan().await?)?;
+        assert_eq!(harness.estimate_task_count(&plan)?, None);
         Ok(())
     }
 
-    async fn scan(harness: &IcebergTestHarness) -> Result<Arc<dyn ExecutionPlan>> {
-        // Call the public table provider so empty-table optimization cannot remove the scan.
-        harness
-            .ctx
-            .table_provider("taxi")
-            .await?
-            .scan(&harness.ctx.state(), None, &[], None)
-            .await
-    }
-
-    fn estimate(plan: &Arc<dyn ExecutionPlan>) -> Result<Option<usize>> {
-        let mut config = SessionConfig::new().with_target_partitions(2);
-        config.set_distributed_option_extension(DistributedConfig::default());
-        config.set_distributed_file_scan_config_bytes_per_partition(1_000_000)?;
-        iceberg_desired_task_count(DesiredTaskCountEvent {
-            plan,
-            session_config: &config,
-        })
-        .transpose()
-        .map(|response| response.map(|response| response.task_count.as_usize()))
-    }
-
     fn empty_metadata() -> TableMetadata {
-        taxi_metadata_builder()
+        empty_taxi_metadata_builder()
             .build()
             .expect("empty taxi metadata is valid")
             .metadata

@@ -10,10 +10,12 @@ use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_plan::{ExecutionPlan, collect};
 use datafusion::prelude::{SessionConfig, SessionContext};
-use datafusion_distributed::{DistributedCodec, display_plan_ascii};
+use datafusion_distributed::{
+    DesiredTaskCountEvent, DistributedCodec, DistributedConfig, DistributedExt, display_plan_ascii,
+};
 #[cfg(feature = "integration")]
 use datafusion_distributed::{
-    DistributedExt, SessionStateBuilderExt, WorkerQueryContext,
+    SessionStateBuilderExt, WorkerQueryContext,
     test_utils::in_memory_channel_resolver::{InMemoryChannelResolver, InMemoryWorkerResolver},
 };
 use datafusion_proto::physical_plan::AsExecutionPlan;
@@ -28,14 +30,14 @@ use iceberg::{Error, ErrorKind, Result as IcebergResult};
 use serde::{Deserialize, Serialize};
 
 use super::taxi_metadata;
-use crate::{IcebergExt, IcebergIntegrationOptions};
+use crate::{IcebergExt, IcebergIntegrationOptions, iceberg_desired_task_count};
 
 pub const FIXTURE_URI: &str = "s3://iceberg-test/warehouse/taxi";
 const WAREHOUSE_URI: &str = "s3://iceberg-test/warehouse/";
 const FIXTURE_METADATA_URI: &str = "s3://iceberg-test/warehouse/taxi/metadata/v1.metadata.json";
 
 pub struct IcebergTestHarness {
-    pub ctx: SessionContext,
+    ctx: SessionContext,
 }
 
 impl IcebergTestHarness {
@@ -59,6 +61,25 @@ impl IcebergTestHarness {
         self.ctx.sql(sql).await?.create_physical_plan().await
     }
 
+    /// Returns the fixture scan without SQL optimization, including for an empty table.
+    pub async fn scan(&self) -> Result<Arc<dyn ExecutionPlan>> {
+        self.ctx
+            .table_provider("taxi")
+            .await?
+            .scan(&self.ctx.state(), None, &[], None)
+            .await
+    }
+
+    /// Estimates Iceberg scan tasks using this harness's session configuration.
+    pub fn estimate_task_count(&self, plan: &Arc<dyn ExecutionPlan>) -> Result<Option<usize>> {
+        iceberg_desired_task_count(DesiredTaskCountEvent {
+            plan,
+            session_config: self.ctx.state().config(),
+        })
+        .transpose()
+        .map(|response| response.map(|response| response.task_count.as_usize()))
+    }
+
     pub fn roundtrip_plan(&self, plan: Arc<dyn ExecutionPlan>) -> Result<Arc<dyn ExecutionPlan>> {
         let task_ctx = self.ctx.task_ctx();
         let codec = DistributedCodec::new_combined_with_user(task_ctx.session_config());
@@ -69,6 +90,9 @@ impl IcebergTestHarness {
 }
 
 pub struct IcebergTestHarnessBuilder {
+    config: SessionConfig,
+    distributed_config: DistributedConfig,
+    column_stats_enabled: bool,
     metadata: TableMetadata,
     table_options: BTreeMap<String, String>,
     files: HashMap<String, Vec<u8>>,
@@ -79,6 +103,9 @@ pub struct IcebergTestHarnessBuilder {
 impl Default for IcebergTestHarnessBuilder {
     fn default() -> Self {
         Self {
+            config: SessionConfig::new().with_target_partitions(4),
+            distributed_config: DistributedConfig::default(),
+            column_stats_enabled: false,
             metadata: taxi_metadata(),
             table_options: BTreeMap::new(),
             files: HashMap::new(),
@@ -89,6 +116,24 @@ impl Default for IcebergTestHarnessBuilder {
 }
 
 impl IcebergTestHarnessBuilder {
+    /// Sets the session's target partition count (four by default).
+    pub fn with_target_partitions(mut self, partitions: usize) -> Self {
+        self.config = self.config.with_target_partitions(partitions);
+        self
+    }
+
+    /// Overrides the scan sizing budget without enabling distributed execution.
+    pub fn with_scan_bytes_per_partition(mut self, bytes: usize) -> Self {
+        self.distributed_config.file_scan_config_bytes_per_partition = bytes;
+        self
+    }
+
+    /// Enables or disables Iceberg column statistics for this session.
+    pub fn with_column_stats_enabled(mut self, enabled: bool) -> Self {
+        self.column_stats_enabled = enabled;
+        self
+    }
+
     /// Serves the supplied metadata while reading data files from the taxi fixture.
     pub fn with_table_metadata(mut self, metadata: TableMetadata) -> Self {
         self.metadata = metadata;
@@ -131,8 +176,12 @@ impl IcebergTestHarnessBuilder {
         };
         let state = SessionStateBuilder::new()
             .with_default_features()
-            .with_config(SessionConfig::new().with_target_partitions(4))
-            .with_iceberg_integration(options.clone());
+            .with_config(
+                self.config
+                    .with_distributed_option_extension(self.distributed_config),
+            )
+            .with_iceberg_integration(options.clone())
+            .with_iceberg_column_stats_enabled(self.column_stats_enabled);
         #[cfg(feature = "integration")]
         let state = if let Some(workers) = self.workers {
             let resolver =
