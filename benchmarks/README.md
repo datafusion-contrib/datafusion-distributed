@@ -8,6 +8,9 @@ and its benchmark worker compile together from the same revision.
 
 Generate datasets alongside the integration-test fixtures under `testdata/`.
 For example, `tpch/sf1` is stored in `testdata/tpch/sf1`.
+TPC-H generation partitions the scalable tables, but writes `nation` (25 rows) and `region`
+(5 rows) only once. Regeneration removes surplus numbered Parquet partitions.
+Rebuild the Iceberg copy separately after regenerating Parquet; an existing copy is not updated.
 
 ```shell
 # TPC-H (default: SCALE_FACTOR=1, PARTITIONS=16, SORTED=false - override by setting these environment variables)

@@ -123,13 +123,16 @@ fn generate_tpch_tables(
     fs::create_dir_all(data_dir)?;
 
     macro_rules! generate_tpch_table {
-        ($generator:ident, $arrow:ident, $name:literal) => {{
+        ($generator:ident, $arrow:ident, $name:literal, $parts:expr) => {{
             let table_dir = data_dir.join($name);
+            let table_parts = $parts;
             fs::create_dir_all(&table_dir)?;
+            remove_stale_partitions(&table_dir, table_parts)?;
             let keys = if sorted { sort_keys($name) } else { None };
-            for part in 1..=(parts as i32) {
+            for part in 1..=(table_parts as i32) {
                 generate_table(
-                    $arrow::new($generator::new(sf, part, parts as i32)).with_batch_size(1000),
+                    $arrow::new($generator::new(sf, part, table_parts as i32))
+                        .with_batch_size(1000),
                     &format!("{part}"),
                     &table_dir,
                     keys,
@@ -138,13 +141,32 @@ fn generate_tpch_tables(
         }};
     }
 
-    generate_tpch_table!(RegionGenerator, RegionArrow, "region");
-    generate_tpch_table!(NationGenerator, NationArrow, "nation");
-    generate_tpch_table!(CustomerGenerator, CustomerArrow, "customer");
-    generate_tpch_table!(SupplierGenerator, SupplierArrow, "supplier");
-    generate_tpch_table!(PartGenerator, PartArrow, "part");
-    generate_tpch_table!(PartSuppGenerator, PartSuppArrow, "partsupp");
-    generate_tpch_table!(OrderGenerator, OrderArrow, "orders");
-    generate_tpch_table!(LineItemGenerator, LineItemArrow, "lineitem");
+    // These fixed-size generators ignore partition arguments and emit the entire table.
+    generate_tpch_table!(RegionGenerator, RegionArrow, "region", 1);
+    generate_tpch_table!(NationGenerator, NationArrow, "nation", 1);
+    generate_tpch_table!(CustomerGenerator, CustomerArrow, "customer", parts);
+    generate_tpch_table!(SupplierGenerator, SupplierArrow, "supplier", parts);
+    generate_tpch_table!(PartGenerator, PartArrow, "part", parts);
+    generate_tpch_table!(PartSuppGenerator, PartSuppArrow, "partsupp", parts);
+    generate_tpch_table!(OrderGenerator, OrderArrow, "orders", parts);
+    generate_tpch_table!(LineItemGenerator, LineItemArrow, "lineitem", parts);
+    Ok(())
+}
+
+fn remove_stale_partitions(table_dir: &Path, parts: usize) -> std::io::Result<()> {
+    for entry in fs::read_dir(table_dir)? {
+        let path = entry?.path();
+        if path
+            .extension()
+            .is_some_and(|extension| extension == "parquet")
+            && path
+                .file_stem()
+                .and_then(|name| name.to_str())
+                .and_then(|name| name.parse::<usize>().ok())
+                .is_some_and(|part| part > parts)
+        {
+            fs::remove_file(path)?;
+        }
+    }
     Ok(())
 }
