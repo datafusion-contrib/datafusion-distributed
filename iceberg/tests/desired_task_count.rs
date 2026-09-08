@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests {
     use datafusion::common::Result;
+    use datafusion_distributed::DistributedExt;
     use datafusion_distributed_iceberg::test_utils::{
         IcebergTestHarness, empty_taxi_metadata_builder, taxi_metadata,
     };
@@ -12,8 +13,11 @@ mod tests {
         // 4,480,382 bytes / 1 MB / 2 partitions rounds up to 3 tasks, not all 4 workers.
         let harness = IcebergTestHarness::builder()
             .with_workers(4)
-            .with_target_partitions(2)
-            .with_scan_bytes_per_partition(1_000_000)
+            .configure_session(|mut state| {
+                let config = state.config().get_or_insert_default();
+                config.options_mut().execution.target_partitions = 2;
+                state.with_distributed_file_scan_config_bytes_per_partition(1_000_000)
+            })?
             .build()
             .await?;
         // Grouping prevents COUNT(*) from being answered from snapshot metadata alone.
@@ -114,8 +118,11 @@ mod tests {
     ) -> Result<()> {
         let mut builder = IcebergTestHarness::builder()
             .with_table_metadata(metadata)
-            .with_target_partitions(2)
-            .with_scan_bytes_per_partition(1_000_000);
+            .configure_session(|mut state| {
+                let config = state.config().get_or_insert_default();
+                config.options_mut().execution.target_partitions = 2;
+                state.with_distributed_file_scan_config_bytes_per_partition(1_000_000)
+            })?;
         if let Some(id) = snapshot_id {
             builder = builder.with_table_option("iceberg.snapshot_id", id.to_string());
         }

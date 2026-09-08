@@ -90,9 +90,7 @@ impl IcebergTestHarness {
 }
 
 pub struct IcebergTestHarnessBuilder {
-    config: SessionConfig,
-    distributed_config: DistributedConfig,
-    column_stats_enabled: bool,
+    session_builder: SessionStateBuilder,
     metadata: TableMetadata,
     table_options: BTreeMap<String, String>,
     files: HashMap<String, Vec<u8>>,
@@ -103,9 +101,10 @@ pub struct IcebergTestHarnessBuilder {
 impl Default for IcebergTestHarnessBuilder {
     fn default() -> Self {
         Self {
-            config: SessionConfig::new().with_target_partitions(4),
-            distributed_config: DistributedConfig::default(),
-            column_stats_enabled: false,
+            session_builder: SessionStateBuilder::new()
+                .with_default_features()
+                .with_config(SessionConfig::new().with_target_partitions(4))
+                .with_distributed_option_extension(DistributedConfig::default()),
             metadata: taxi_metadata(),
             table_options: BTreeMap::new(),
             files: HashMap::new(),
@@ -116,22 +115,14 @@ impl Default for IcebergTestHarnessBuilder {
 }
 
 impl IcebergTestHarnessBuilder {
-    /// Sets the session's target partition count (four by default).
-    pub fn with_target_partitions(mut self, partitions: usize) -> Self {
-        self.config = self.config.with_target_partitions(partitions);
-        self
-    }
-
-    /// Overrides the scan sizing budget without enabling distributed execution.
-    pub fn with_scan_bytes_per_partition(mut self, bytes: usize) -> Self {
-        self.distributed_config.file_scan_config_bytes_per_partition = bytes;
-        self
-    }
-
-    /// Enables or disables Iceberg column statistics for this session.
-    pub fn with_column_stats_enabled(mut self, enabled: bool) -> Self {
-        self.column_stats_enabled = enabled;
-        self
+    /// Customizes the existing session builder, retaining defaults unless explicitly replaced.
+    /// Fixture integration and optional worker wiring are installed during [`Self::build`].
+    pub fn configure_session(
+        mut self,
+        configure: impl FnOnce(SessionStateBuilder) -> Result<SessionStateBuilder>,
+    ) -> Result<Self> {
+        self.session_builder = configure(self.session_builder)?;
+        Ok(self)
     }
 
     /// Serves the supplied metadata while reading data files from the taxi fixture.
@@ -174,14 +165,9 @@ impl IcebergTestHarnessBuilder {
             storage_factory: Arc::new(storage_factory),
             iceberg_runtime: iceberg::Runtime::current(),
         };
-        let state = SessionStateBuilder::new()
-            .with_default_features()
-            .with_config(
-                self.config
-                    .with_distributed_option_extension(self.distributed_config),
-            )
-            .with_iceberg_integration(options.clone())
-            .with_iceberg_column_stats_enabled(self.column_stats_enabled);
+        let state = self
+            .session_builder
+            .with_iceberg_integration(options.clone());
         #[cfg(feature = "integration")]
         let state = if let Some(workers) = self.workers {
             let resolver =

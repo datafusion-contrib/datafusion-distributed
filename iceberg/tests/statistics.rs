@@ -7,10 +7,10 @@ mod tests {
     use datafusion::datasource::source::DataSourceExec;
     use datafusion::error::Result;
     use datafusion::physical_plan::{ExecutionPlan, displayable};
-    use datafusion_distributed_iceberg::IcebergDataSource;
     use datafusion_distributed_iceberg::test_utils::{
         FIXTURE_URI, IcebergTestHarness, empty_taxi_metadata_builder, taxi_metadata,
     };
+    use datafusion_distributed_iceberg::{IcebergDataSource, IcebergExt};
     use iceberg::spec::{Operation, Snapshot, Summary, TableMetadata};
 
     // Took values from testdata/iceberg/taxi/metadata/v1.metadata.json snapshot summary.
@@ -46,7 +46,7 @@ mod tests {
     #[tokio::test]
     async fn reports_exact_row_count_and_byte_size_for_full_scan_w_col_stats() -> Result<()> {
         let harness = IcebergTestHarness::builder()
-            .with_column_stats_enabled(true)
+            .configure_session(|state| Ok(state.with_iceberg_column_stats_enabled(true)))?
             .build()
             .await?;
         let stats = source_statistics(&harness, "SELECT * FROM taxi").await?;
@@ -68,7 +68,7 @@ mod tests {
     #[tokio::test]
     async fn column_statistics_match_full_schema_w_col_stats() -> Result<()> {
         let harness = IcebergTestHarness::builder()
-            .with_column_stats_enabled(true)
+            .configure_session(|state| Ok(state.with_iceberg_column_stats_enabled(true)))?
             .build()
             .await?;
         let stats = source_statistics(&harness, "SELECT * FROM taxi").await?;
@@ -94,7 +94,7 @@ mod tests {
         // Regression: a column_statistics vec shorter than the output schema
         // makes DataFusion panic while propagating statistics upstream.
         let harness = IcebergTestHarness::builder()
-            .with_column_stats_enabled(true)
+            .configure_session(|state| Ok(state.with_iceberg_column_stats_enabled(true)))?
             .build()
             .await?;
         let stats = source_statistics(&harness, "SELECT vendor_id, pickup_date FROM taxi").await?;
@@ -150,7 +150,7 @@ mod tests {
     #[tokio::test]
     async fn verify_column_stats_in_explain() -> Result<()> {
         let harness = IcebergTestHarness::builder()
-            .with_column_stats_enabled(true)
+            .configure_session(|state| Ok(state.with_iceberg_column_stats_enabled(true)))?
             .build()
             .await?;
         let plan = harness
@@ -171,7 +171,7 @@ mod tests {
     #[tokio::test]
     async fn explain_shows_statistics_on_the_iceberg_source_w_col_stats() -> Result<()> {
         let harness = IcebergTestHarness::builder()
-            .with_column_stats_enabled(true)
+            .configure_session(|state| Ok(state.with_iceberg_column_stats_enabled(true)))?
             .build()
             .await?;
         let plan = harness.physical_plan("SELECT vendor_id FROM taxi").await?;
@@ -213,7 +213,7 @@ mod tests {
         // With Precision::Exact(num_rows) the AggregateStatistics optimizer
         // rule answers COUNT(*) from metadata without reading any data file.
         let harness = IcebergTestHarness::builder()
-            .with_column_stats_enabled(true)
+            .configure_session(|state| Ok(state.with_iceberg_column_stats_enabled(true)))?
             .build()
             .await?;
         let (plan, batches) = harness.query("SELECT count(*) FROM taxi").await?;
