@@ -5,7 +5,6 @@ mod tests {
         IcebergTestHarness, empty_taxi_metadata_builder, taxi_metadata,
     };
     use iceberg::spec::{Snapshot, TableMetadata};
-    use test_case::test_case;
 
     #[cfg(feature = "integration")]
     #[tokio::test]
@@ -55,15 +54,60 @@ mod tests {
         Ok(())
     }
 
-    #[test_case(metadata_with_file_size(Some("24000000")), None, Some(12); "current snapshot")]
-    #[test_case(metadata_with_file_size(Some("24000000")), taxi_metadata().current_snapshot_id(), Some(3); "selected snapshot")]
-    #[test_case(empty_metadata(), None, Some(0); "empty table")]
-    #[test_case(metadata_with_file_size(None), None, None; "missing size")]
-    #[test_case(metadata_with_file_size(Some("invalid")), None, None; "malformed size")]
-    #[test_case(metadata_with_file_size(Some("-1")), None, None; "negative size")]
-    #[test_case(metadata_with_file_size(Some("18446744073709551616")), None, None; "overflowing size")]
     #[tokio::test]
-    async fn estimates_file_size(
+    async fn estimates_current_snapshot() -> Result<()> {
+        assert_task_count(metadata_with_file_size(Some("24000000")), None, Some(12)).await
+    }
+
+    #[tokio::test]
+    async fn estimates_selected_snapshot() -> Result<()> {
+        assert_task_count(
+            metadata_with_file_size(Some("24000000")),
+            taxi_metadata().current_snapshot_id(),
+            Some(3),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn empty_table_needs_no_tasks() -> Result<()> {
+        assert_task_count(empty_metadata(), None, Some(0)).await
+    }
+
+    #[tokio::test]
+    async fn missing_size_does_not_estimate() -> Result<()> {
+        assert_task_count(metadata_with_file_size(None), None, None).await
+    }
+
+    #[tokio::test]
+    async fn malformed_size_does_not_estimate() -> Result<()> {
+        assert_task_count(metadata_with_file_size(Some("invalid")), None, None).await
+    }
+
+    #[tokio::test]
+    async fn negative_size_does_not_estimate() -> Result<()> {
+        assert_task_count(metadata_with_file_size(Some("-1")), None, None).await
+    }
+
+    #[tokio::test]
+    async fn overflowing_size_does_not_estimate() -> Result<()> {
+        assert_task_count(
+            metadata_with_file_size(Some("18446744073709551616")),
+            None,
+            None,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn remote_feed_does_not_estimate_again() -> Result<()> {
+        let harness = IcebergTestHarness::new().await?;
+        let plan = harness.roundtrip_plan(harness.scan().await?)?;
+        assert_eq!(harness.estimate_task_count(&plan)?, None);
+        Ok(())
+    }
+
+    async fn assert_task_count(
         metadata: TableMetadata,
         snapshot_id: Option<i64>,
         expected: Option<usize>,
@@ -80,14 +124,6 @@ mod tests {
             harness.estimate_task_count(&harness.scan().await?)?,
             expected
         );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn remote_feed_does_not_estimate_again() -> Result<()> {
-        let harness = IcebergTestHarness::new().await?;
-        let plan = harness.roundtrip_plan(harness.scan().await?)?;
-        assert_eq!(harness.estimate_task_count(&plan)?, None);
         Ok(())
     }
 
