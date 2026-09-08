@@ -17,7 +17,6 @@ mod tests {
         DataContentType, DataFileBuilder, DataFileFormat, Datum, Literal, ManifestListWriter,
         ManifestWriterBuilder, Operation, Snapshot, Struct, Summary, TableMetadata,
     };
-    use test_case::test_case;
 
     // Values from the checked-in taxi snapshot summary.
     const TAXI_ROWS: usize = 175_000;
@@ -37,49 +36,24 @@ mod tests {
         Ok(())
     }
 
-    #[test_case(false, false ; "full_scan_without_column_stats")]
-    #[test_case(true, false ; "full_scan_with_column_stats")]
-    #[test_case(false, true ; "projection_without_column_stats")]
-    #[test_case(true, true ; "projection_with_column_stats")]
     #[tokio::test]
-    async fn reports_manifest_statistics(
-        enabled: bool,
-        projected: bool,
-    ) -> Result<(), Box<dyn Error>> {
-        let mut harness = harness_with_manifest_metrics().await?;
-        harness.ctx.set_iceberg_column_stats_enabled(enabled);
-        let sql = if projected {
-            "SELECT passenger_count, vendor_id, trip_distance FROM taxi"
-        } else {
-            "SELECT * FROM taxi"
-        };
-        let mut columns = vec![ColumnStatistics::new_unknown(); TAXI_COLUMNS];
-        if enabled {
-            columns[0] = ColumnStatistics {
-                null_count: Precision::Exact(5),
-                min_value: Precision::Inexact(ScalarValue::Int32(Some(1))),
-                max_value: Precision::Inexact(ScalarValue::Int32(Some(9))),
-                byte_size: Precision::Inexact(400),
-                ..ColumnStatistics::new_unknown()
-            };
-            columns[3] = ColumnStatistics {
-                min_value: Precision::Inexact(ScalarValue::Int64(Some(10))),
-                max_value: Precision::Inexact(ScalarValue::Int64(Some(40))),
-                byte_size: Precision::Inexact(600),
-                // One file omits this column's null count: the total must stay unknown.
-                ..ColumnStatistics::new_unknown()
-            };
-        }
-        if projected {
-            columns = vec![columns[3].clone(), columns[0].clone(), columns[4].clone()];
-        }
-        let stats = query_statistics(&harness, sql).await?;
-        assert_eq!(stats.num_rows, Precision::Exact(TAXI_ROWS));
-        if !projected {
-            assert_eq!(stats.total_byte_size, Precision::Exact(TAXI_BYTES));
-        }
-        assert_eq!(stats.column_statistics, columns);
-        Ok(())
+    async fn full_scan_without_column_stats() -> Result<(), Box<dyn Error>> {
+        assert_manifest_statistics(false, false).await
+    }
+
+    #[tokio::test]
+    async fn full_scan_with_column_stats() -> Result<(), Box<dyn Error>> {
+        assert_manifest_statistics(true, false).await
+    }
+
+    #[tokio::test]
+    async fn projection_without_column_stats() -> Result<(), Box<dyn Error>> {
+        assert_manifest_statistics(false, true).await
+    }
+
+    #[tokio::test]
+    async fn projection_with_column_stats() -> Result<(), Box<dyn Error>> {
+        assert_manifest_statistics(true, true).await
     }
 
     #[tokio::test]
@@ -125,14 +99,63 @@ mod tests {
         Ok(())
     }
 
-    #[test_case(false ; "without_column_stats")]
-    #[test_case(true ; "with_column_stats")]
     #[tokio::test]
-    async fn exact_row_count_lets_count_star_skip_the_scan(enabled: bool) -> Result<()> {
-        let mut harness = IcebergTestHarness::new().await?;
-        harness.ctx.set_iceberg_column_stats_enabled(enabled);
+    async fn count_star_skips_scan_without_column_stats() -> Result<()> {
+        assert_count_star_skips_scan(false).await
+    }
+
+    #[tokio::test]
+    async fn count_star_skips_scan_with_column_stats() -> Result<()> {
+        assert_count_star_skips_scan(true).await
+    }
+
+    async fn assert_manifest_statistics(
+        enabled: bool,
+        projected: bool,
+    ) -> Result<(), Box<dyn Error>> {
+        let harness = harness_with_manifest_metrics(enabled).await?;
+        let sql = if projected {
+            "SELECT passenger_count, vendor_id, trip_distance FROM taxi"
+        } else {
+            "SELECT * FROM taxi"
+        };
+        let mut columns = vec![ColumnStatistics::new_unknown(); TAXI_COLUMNS];
+        if enabled {
+            columns[0] = ColumnStatistics {
+                null_count: Precision::Exact(5),
+                min_value: Precision::Inexact(ScalarValue::Int32(Some(1))),
+                max_value: Precision::Inexact(ScalarValue::Int32(Some(9))),
+                byte_size: Precision::Inexact(400),
+                ..ColumnStatistics::new_unknown()
+            };
+            columns[3] = ColumnStatistics {
+                min_value: Precision::Inexact(ScalarValue::Int64(Some(10))),
+                max_value: Precision::Inexact(ScalarValue::Int64(Some(40))),
+                byte_size: Precision::Inexact(600),
+                // One file omits this column's null count: the total must stay unknown.
+                ..ColumnStatistics::new_unknown()
+            };
+        }
+        if projected {
+            columns = vec![columns[3].clone(), columns[0].clone(), columns[4].clone()];
+        }
+        let stats = query_statistics(&harness, sql).await?;
+        assert_eq!(stats.num_rows, Precision::Exact(TAXI_ROWS));
+        if !projected {
+            assert_eq!(stats.total_byte_size, Precision::Exact(TAXI_BYTES));
+        }
+        assert_eq!(stats.column_statistics, columns);
+        Ok(())
+    }
+
+    async fn assert_count_star_skips_scan(enabled: bool) -> Result<()> {
+        let harness = IcebergTestHarness::builder()
+            .configure_session(|state| Ok(state.with_iceberg_column_stats_enabled(enabled)))?
+            .build()
+            .await?;
         let (plan, batches) = harness.query("SELECT count(*) FROM taxi").await?;
 
+        // Both named tests intentionally share these inline snapshots.
         insta::allow_duplicates! {
             insta::assert_snapshot!(plan, @"
             ProjectionExec: expr=[175000 as count(*)]
@@ -180,7 +203,9 @@ mod tests {
     // Planning-only fixture, explicitly selecting the original snapshot. Synthetic data
     // paths are never opened. Metric IDs 1 and 4 are vendor_id and passenger_count, not
     // schema indexes; trip_distance (ID 5) has no metrics.
-    async fn harness_with_manifest_metrics() -> Result<IcebergTestHarness, Box<dyn Error>> {
+    async fn harness_with_manifest_metrics(
+        enabled: bool,
+    ) -> Result<IcebergTestHarness, Box<dyn Error>> {
         let metadata = taxi_metadata();
         let snapshot = metadata.current_snapshot().expect("taxi has a snapshot");
         let storage = MemoryStorage::new();
@@ -238,6 +263,7 @@ mod tests {
             )
             .with_table_option("iceberg.snapshot_id", snapshot.snapshot_id().to_string())
             .with_table_metadata(metadata)
+            .configure_session(|state| Ok(state.with_iceberg_column_stats_enabled(enabled)))?
             .build()
             .await?)
     }
