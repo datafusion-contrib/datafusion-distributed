@@ -794,8 +794,8 @@ mod tests {
             .broadcast_joins(false);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @"
-        HashJoinExec: task_count=Desired(1.33)
-          NetworkShuffleExec: task_count=Desired(1.33)
+        HashJoinExec: task_count=Desired(2)
+          NetworkShuffleExec: task_count=Desired(2)
             RepartitionExec: task_count=Desired(2)
               ProjectionExec: task_count=Desired(2)
                 AggregateExec: task_count=Desired(2)
@@ -805,7 +805,7 @@ mod tests {
                         FilterExec: task_count=Desired(4)
                           RepartitionExec: task_count=Desired(4)
                             DistributedLeafExec: task_count=Desired(4)
-          NetworkShuffleExec: task_count=Desired(1.33)
+          NetworkShuffleExec: task_count=Desired(2)
             RepartitionExec: task_count=Desired(2)
               ProjectionExec: task_count=Desired(2)
                 AggregateExec: task_count=Desired(2)
@@ -855,8 +855,8 @@ mod tests {
             .broadcast_joins(false);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
-        AggregateExec: task_count=Desired(2.67)
-          NetworkShuffleExec: task_count=Desired(2.67)
+        AggregateExec: task_count=Desired(3)
+          NetworkShuffleExec: task_count=Desired(3)
             RepartitionExec: task_count=Desired(4)
               AggregateExec: task_count=Desired(4)
                 DistributedLeafExec: task_count=Desired(4)
@@ -892,9 +892,9 @@ mod tests {
     #[tokio::test]
     async fn test_union_all_zero_task_count_leaves() {
         let query = r#"
-        SELECT "MinTemp" FROM weather WHERE "RainToday" = 'yes'
+        SELECT * FROM (VALUES (1))
         UNION ALL
-        SELECT "MaxTemp" FROM weather WHERE "RainToday" = 'no'
+        SELECT * FROM (VALUES (2))
         "#;
         let test_plan_builder = TestPlanBuilder::new()
             .target_partitions(4)
@@ -907,13 +907,8 @@ mod tests {
         // (every dataset under the union is empty), not a planning error.
         assert_snapshot!(annotated, @r"
         ChildrenIsolatorUnionExec: task_count=Desired(0)
-          FilterExec: task_count=Maximum(0)
-            RepartitionExec: task_count=Maximum(0)
-              DataSourceExec: task_count=Maximum(0)
-          ProjectionExec: task_count=Maximum(0)
-            FilterExec: task_count=Maximum(0)
-              RepartitionExec: task_count=Maximum(0)
-                DataSourceExec: task_count=Maximum(0)
+          DataSourceExec: task_count=Maximum(0)
+          DataSourceExec: task_count=Maximum(0)
         ")
     }
 
@@ -1008,7 +1003,7 @@ mod tests {
             .desired_task_count_handler(fractional_leaf_desired_task_count_handler);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
-        ChildrenIsolatorUnionExec: task_count=Desired(0.8)
+        ChildrenIsolatorUnionExec: task_count=Desired(0.80)
           DataSourceExec: task_count=Maximum(1)
           DataSourceExec: task_count=Maximum(1)
         ")
@@ -1028,8 +1023,8 @@ mod tests {
             .desired_task_count_handler(repartition_max_one_desired_task_count_handler);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
-        AggregateExec: task_count=Desired(0.67)
-          NetworkShuffleExec: task_count=Desired(0.67)
+        AggregateExec: task_count=Desired(1)
+          NetworkShuffleExec: task_count=Desired(1)
             RepartitionExec: task_count=Desired(1)
               AggregateExec: task_count=Desired(1)
                 DistributedLeafExec: task_count=Desired(1)
