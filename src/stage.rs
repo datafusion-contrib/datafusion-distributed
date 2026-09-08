@@ -1,4 +1,4 @@
-use crate::coordinator::{DistributedExec, MetricsStore};
+use crate::coordinator::DistributedExec;
 use crate::execution_plans::{DistributedLeafExec, NetworkCoalesceExec};
 use crate::metrics::DISTRIBUTED_DATAFUSION_TASK_ID_LABEL;
 use datafusion::common::{HashMap, Statistics, config_err};
@@ -223,9 +223,7 @@ impl DistributedTaskContext {
     }
 }
 
-use crate::{
-    DistributedMetricsFormat, NetworkShuffleExec, TaskKey, rewrite_distributed_plan_with_metrics,
-};
+use crate::{DistributedMetricsFormat, NetworkShuffleExec, rewrite_distributed_plan_with_metrics};
 use crate::{NetworkBoundary, NetworkBoundaryExt};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::DataFusionError;
@@ -269,7 +267,7 @@ const HORIZONTAL: &str = "─"; // Horizontal line
 pub fn display_plan_ascii(plan: &dyn ExecutionPlan, show_metrics: bool) -> String {
     if let Some(plan) = plan.downcast_ref::<DistributedExec>() {
         let mut f = String::new();
-        display_ascii(plan, Either::Left(plan), 0, show_metrics, &mut f).unwrap();
+        display_ascii(Either::Left(plan), 0, show_metrics, &mut f).unwrap();
         f
     } else {
         match show_metrics {
@@ -282,19 +280,18 @@ pub fn display_plan_ascii(plan: &dyn ExecutionPlan, show_metrics: bool) -> Strin
 }
 
 fn display_ascii(
-    root: &DistributedExec,
     stage: Either<&DistributedExec, &Stage>,
     depth: usize,
     show_metrics: bool,
     f: &mut String,
 ) -> std::fmt::Result {
     let plan = match stage {
-        Either::Left(distributed_exec) => distributed_exec.children().first().unwrap(),
+        Either::Left(distributed_exec) => distributed_exec.plan_for_viz_or_base_plan(),
         Either::Right(stage) => {
             let Some(plan) = stage.local_plan() else {
                 return write!(f, "StageExec: encoded input plan");
             };
-            plan
+            Arc::clone(plan)
         }
     };
     match stage {
@@ -328,10 +325,10 @@ fn display_ascii(
                 HORIZONTAL.repeat(5),
                 stage.num(),
                 HORIZONTAL.repeat(2),
-                format_tasks_for_stage(stage.task_count(), plan)
+                format_tasks_for_stage(stage.task_count(), &plan)
             )?;
-            if show_metrics && let Some(metrics_store) = &root.metrics_store {
-                let metrics = gather_stage_header_metrics(stage, metrics_store);
+            let metrics = stage.metrics();
+            if show_metrics && metrics.iter().next().is_some() {
                 write!(f, " ")?;
                 writeln!(f, "{}", format_metrics_by_task(&metrics))?;
             } else {
@@ -341,7 +338,7 @@ fn display_ascii(
     }
 
     let mut plan_str = String::new();
-    display_inner_ascii(plan, 0, show_metrics, &mut plan_str)?;
+    display_inner_ascii(&plan, 0, show_metrics, &mut plan_str)?;
     let plan_str = plan_str
         .split('\n')
         .filter(|v| !v.is_empty())
@@ -356,7 +353,7 @@ fn display_ascii(
         HORIZONTAL.repeat(50)
     )?;
     for input_stage in find_input_stages(plan.as_ref()) {
-        display_ascii(root, Either::Right(input_stage), depth + 1, show_metrics, f)?;
+        display_ascii(Either::Right(input_stage), depth + 1, show_metrics, f)?;
     }
     Ok(())
 }
@@ -435,33 +432,6 @@ fn display_inner_distributed_leaf(
         }
     }
     Ok(())
-}
-
-/// Gathers the metrics global to a stage. These metrics are not specific to any plan node, and
-/// are instead global to a whole stage.
-fn gather_stage_header_metrics(stage: &Stage, metrics_store: &MetricsStore) -> MetricsSet {
-    let mut task_key = TaskKey {
-        query_id: stage.query_id(),
-        stage_id: stage.num(),
-        task_number: 0,
-    };
-    let mut all_metrics = stage.metrics();
-    while let Some(metrics_set) = metrics_store.get(&task_key).map(|v| v.task_metrics) {
-        for metric in metrics_set.iter() {
-            let mut labels = metric.labels().to_vec();
-            labels.push(Label::new(
-                DISTRIBUTED_DATAFUSION_TASK_ID_LABEL,
-                task_key.task_number.to_string(),
-            ));
-            all_metrics.push(Arc::new(Metric::new_with_labels(
-                metric.value().clone(),
-                metric.partition(),
-                labels,
-            )));
-        }
-        task_key.task_number += 1;
-    }
-    all_metrics
 }
 
 /// Aggregates metrics by (name, task_id), preserving the [DISTRIBUTED_DATAFUSION_TASK_ID_LABEL]

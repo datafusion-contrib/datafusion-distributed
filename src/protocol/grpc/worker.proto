@@ -39,7 +39,31 @@ message WorkerToCoordinatorMsg {
     LoadInfo load_info = 2;
 
     bool load_info_eos = 3;
+
+    // Final dynamic filters used by dynamic-filter consumer execution-plan nodes.
+    //
+    // Filters are deduplicated by expression_id because consumers with the same ID share
+    // logical filter state within a task. For example, this plan includes one entry:
+    //
+    // HashJoin producer: expression_id=10
+    // ├── DataSourceExec build side
+    // └── UnionExec probe side
+    //     ├── DataSourceExec A consumer: expression_id=10
+    //     └── DataSourceExec B consumer: expression_id=10
+    //
+    // Another task in the same stage may report a different value for expression_id=10.
+    TaskCompletedDynamicFilters task_completed_dynamic_filters = 4;
   }
+}
+
+message DynamicFilter {
+  uint64 expression_id = 1;
+  // Serialized datafusion.proto.PhysicalExprNode.
+  bytes expression_proto = 2;
+}
+
+message TaskCompletedDynamicFilters {
+  repeated DynamicFilter filters = 1;
 }
 
 message TaskMetrics {

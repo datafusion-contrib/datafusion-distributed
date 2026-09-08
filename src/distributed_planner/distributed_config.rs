@@ -30,6 +30,10 @@ extensions_options! {
         /// Propagate collected metrics from all nodes in the plan across network boundaries
         /// so that they can be reconstructed on the head node of the plan.
         pub collect_metrics: bool, default = true
+        /// Collect completed dynamic filters from worker tasks so that they can be displayed in
+        /// the distributed plan. This does not control whether dynamic filtering is used during
+        /// query execution.
+        pub collect_dynamic_filters: bool, default = true
         /// Enable broadcast joins for CollectLeft hash joins. When enabled, the build side of
         /// a CollectLeft join is broadcast to all consumer tasks.
         pub broadcast_joins: bool, default = true
