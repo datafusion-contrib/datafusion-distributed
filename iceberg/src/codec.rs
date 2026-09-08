@@ -144,7 +144,11 @@ mod tests {
 
     #[tokio::test]
     async fn roundtrips_data_source_plan() -> Result<()> {
-        let harness = IcebergTestHarness::new().await?;
+        let harness = IcebergTestHarness::builder()
+            .with_table_option("fixture.storage", "roundtrip's value")
+            .with_table_option("fixture.region", "test-region")
+            .build()
+            .await?;
         let plan = harness.physical_plan("SELECT * FROM taxi LIMIT 10").await?;
         let decoded_plan = harness.roundtrip_plan(Arc::clone(&plan))?;
         let source_plan = iceberg_plan(&plan)?;
@@ -162,6 +166,15 @@ mod tests {
         assert_eq!(
             source.iceberg_file_io.config().props(),
             decoded.iceberg_file_io.config().props()
+        );
+        let properties = decoded.iceberg_file_io.config().props();
+        assert_eq!(
+            properties.get("fixture.storage").map(String::as_str),
+            Some("roundtrip's value")
+        );
+        assert_eq!(
+            properties.get("fixture.region").map(String::as_str),
+            Some("test-region")
         );
         assert_eq!(
             decoded.partition_statistics(None)?.as_ref(),
