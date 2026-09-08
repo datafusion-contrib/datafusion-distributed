@@ -231,9 +231,10 @@ mod tests {
         SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)
         "#;
         let physical_plan_ascii = TestPlanBuilder::default()
+            .distributed_cardinality_effect_task_scale_factor(1.5)
             .physical_plan_as_ascii(query, false)
             .await;
-        assert_snapshot!(physical_plan_ascii, @"
+        assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [count(*)@0 ASC NULLS LAST]
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=8, input_tasks=2
@@ -359,9 +360,10 @@ mod tests {
         SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)
         "#;
         let physical_plan_ascii = TestPlanBuilder::default()
+            .distributed_cardinality_effect_task_scale_factor(1.5)
             .physical_plan_as_ascii(query, false)
             .await;
-        assert_snapshot!(physical_plan_ascii, @"
+        assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [count(*)@0 ASC NULLS LAST]
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=8, input_tasks=2
@@ -444,9 +446,10 @@ mod tests {
         ON a."RainTomorrow" = b."RainTomorrow"
         "#;
         let physical_plan_ascii = TestPlanBuilder::default()
+            .distributed_cardinality_effect_task_scale_factor(1.5)
             .physical_plan_as_ascii(query, false)
             .await;
-        assert_snapshot!(physical_plan_ascii, @"
+        assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec
         │ CoalescePartitionsExec
         │   [Stage 5] => NetworkCoalesceExec: output_partitions=8, input_tasks=2
@@ -520,6 +523,7 @@ mod tests {
         SELECT "RainToday", count(*) FROM weather GROUP BY "RainToday" LIMIT 10
         "#;
         let physical_plan_ascii = TestPlanBuilder::default()
+            .distributed_cardinality_effect_task_scale_factor(1.5)
             .physical_plan_as_ascii(query, false)
             .await;
         assert_snapshot!(physical_plan_ascii, @r"
@@ -550,6 +554,7 @@ mod tests {
         SELECT DISTINCT "RainToday", "WindGustDir" FROM weather
         "#;
         let physical_plan_ascii = TestPlanBuilder::default()
+            .distributed_cardinality_effect_task_scale_factor(1.5)
             .physical_plan_as_ascii(query, false)
             .await;
         assert_snapshot!(physical_plan_ascii, @r"
