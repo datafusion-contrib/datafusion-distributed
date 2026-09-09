@@ -179,6 +179,10 @@ impl Worker {
                         // messages of different nature in that stream.
                         let _ = work_unit_senders.take();
                     }
+                    CoordinatorToWorkerMsg::ApplyDynamicFilter(_) => {
+                        // Runtime application is introduced independently from the routing
+                        // protocol. Until then, accepting the message is intentionally a no-op.
+                    }
                 }
             }
 
