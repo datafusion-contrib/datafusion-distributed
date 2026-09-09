@@ -5,7 +5,7 @@ use crate::stage::{LocalStage, Stage};
 use crate::worker::WorkerConnectionPool;
 use crate::{DistributedTaskContext, MaybeEncoded, NetworkBoundary};
 use datafusion::common::tree_node::TreeNodeRecursion;
-use datafusion::common::{Result, not_impl_err, plan_err};
+use datafusion::common::{Result, internal_err, not_impl_err, plan_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::{Partitioning, PhysicalExpr};
@@ -18,6 +18,12 @@ use datafusion::physical_plan::{
 use std::fmt::Formatter;
 use std::sync::Arc;
 use uuid::Uuid;
+
+#[derive(Debug, Clone)]
+pub(crate) enum ShuffleMode {
+    Single,
+    TwoLevel(Partitioning),
+}
 
 /// [ExecutionPlan] implementation that shuffles data across the network in a distributed context.
 ///
@@ -105,6 +111,7 @@ pub struct NetworkShuffleExec {
     pub(crate) properties: Arc<PlanProperties>,
     pub(crate) input_stage: Stage,
     pub(crate) worker_connections: WorkerConnectionPool,
+    pub(crate) mode: ShuffleMode,
 }
 
 impl NetworkShuffleExec {
@@ -113,7 +120,36 @@ impl NetworkShuffleExec {
             properties: input_properties,
             worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
             input_stage,
+            mode: ShuffleMode::Single,
         }
+    }
+
+    pub(crate) fn is_two_level(&self) -> bool {
+        matches!(self.mode, ShuffleMode::TwoLevel(_))
+    }
+
+    /// One output stream per producer. A native receiver repartition must restore
+    /// the payload's local hash distribution above this source.
+    pub(crate) fn try_new_two_level(
+        input_stage: Stage,
+        properties: Arc<PlanProperties>,
+        routing: Partitioning,
+    ) -> Result<Self> {
+        if !matches!(routing, Partitioning::Hash(_, 1)) || input_stage.task_count() == 0 {
+            return plan_err!("two-level shuffle requires hash routing and nonzero producer tasks");
+        }
+        let mut properties = properties.as_ref().clone();
+        let mut equivalence = properties.eq_properties.clone();
+        equivalence.clear_orderings();
+        equivalence.clear_per_partition_constants();
+        properties.set_eq_properties(equivalence);
+        properties.partitioning = Partitioning::UnknownPartitioning(input_stage.task_count());
+        Ok(Self {
+            worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
+            input_stage,
+            properties: Arc::new(properties),
+            mode: ShuffleMode::TwoLevel(routing),
+        })
     }
 
     /// Creates a new [NetworkShuffleExec] fed by the provided [RepartitionExec]. The input plan
@@ -149,6 +185,13 @@ impl NetworkBoundary for NetworkShuffleExec {
     }
 
     fn with_input_stage(&self, input_stage: Stage) -> Result<Arc<dyn NetworkBoundary>> {
+        if let ShuffleMode::TwoLevel(routing) = &self.mode {
+            return Ok(Arc::new(Self::try_new_two_level(
+                input_stage,
+                Arc::clone(&self.properties),
+                routing.clone(),
+            )?));
+        }
         let mut self_clone = self.clone();
         self_clone.worker_connections = WorkerConnectionPool::new(input_stage.task_count());
         self_clone.input_stage = input_stage;
@@ -156,11 +199,17 @@ impl NetworkBoundary for NetworkShuffleExec {
     }
 
     fn producer_head(&self, consumer_task_count: usize) -> Result<ProducerHead> {
+        if consumer_task_count == 0 {
+            return plan_err!("shuffle requires at least one consumer task");
+        }
+        let routing = match &self.mode {
+            ShuffleMode::Single => &self.properties.partitioning,
+            ShuffleMode::TwoLevel(routing) => routing,
+        };
         Ok(ProducerHead::RepartitionExec {
-            partitioning: MaybeEncoded::Decoded(scale_partitioning(
-                &self.properties.partitioning,
-                |prev| prev * consumer_task_count,
-            )?),
+            partitioning: MaybeEncoded::Decoded(scale_partitioning(routing, |prev| {
+                prev * consumer_task_count
+            })?),
         })
     }
 }
@@ -170,10 +219,17 @@ impl DisplayAs for NetworkShuffleExec {
         let input_tasks = self.input_stage.task_count();
         let partitions = self.properties.partitioning.partition_count();
         let stage = self.input_stage.num();
-        write!(
-            f,
-            "[Stage {stage}] => NetworkShuffleExec: output_partitions={partitions}, input_tasks={input_tasks}",
-        )
+        if self.is_two_level() {
+            write!(
+                f,
+                "[Stage {stage}] => NetworkShuffleExec: mode=two-level, input_partitions={partitions}, input_tasks={input_tasks}"
+            )
+        } else {
+            write!(
+                f,
+                "[Stage {stage}] => NetworkShuffleExec: output_partitions={partitions}, input_tasks={input_tasks}"
+            )
+        }
     }
 }
 
@@ -224,11 +280,37 @@ impl ExecutionPlan for NetworkShuffleExec {
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream, DataFusionError> {
         let remote_stage = match &self.input_stage {
-            Stage::Local(local) => return local.execute(partition, context),
+            Stage::Local(local) if !self.is_two_level() => {
+                return local.execute(partition, context);
+            }
+            Stage::Local(_) => {
+                return internal_err!("two-level shuffle cannot execute before preparation");
+            }
             Stage::Remote(remote_stage) => remote_stage,
         };
 
         let task_context = DistributedTaskContext::from_ctx(&context);
+        if self.is_two_level() {
+            if partition >= remote_stage.workers.len()
+                || task_context.task_count == 0
+                || task_context.task_index >= task_context.task_count
+            {
+                return internal_err!("invalid producer or consumer task for two-level shuffle");
+            }
+            let remote_partition = task_context.task_index;
+            let stream = self.worker_connections.execute(
+                remote_stage,
+                remote_partition..remote_partition + 1,
+                partition,
+                remote_partition,
+                self.producer_head(task_context.task_count)?,
+                &context,
+            )?;
+            return Ok(Box::pin(RecordBatchStreamAdapter::new(
+                self.schema(),
+                stream,
+            )));
+        }
         let out_partitions = self.properties.partitioning.partition_count();
         let off = out_partitions * task_context.task_index;
 
@@ -259,6 +341,10 @@ impl ExecutionPlan for NetworkShuffleExec {
         _input_stats: &[Arc<Statistics>],
         args: &StatisticsArgs,
     ) -> Result<Arc<Statistics>> {
+        // A two-level output identifies a producer task, not one of its buckets.
+        if self.is_two_level() && args.partition().is_some() {
+            return Ok(Arc::new(Statistics::new_unknown(&self.schema())));
+        }
         self.input_stage.partition_statistics(
             args.partition(),
             self.properties.output_partitioning().partition_count(),

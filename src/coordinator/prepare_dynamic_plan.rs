@@ -1,6 +1,7 @@
 use crate::common::{TreeNodeExt, element_wise_sum, vec_avg_reduce, vec_div, vec_mul};
 use crate::coordinator::distributed::PreparedPlan;
 use crate::coordinator::query_coordinator::QueryCoordinator;
+use crate::distributed_planner::lower_two_level_shuffles;
 use crate::distributed_planner::{
     InjectNetworkBoundaryContext, NetworkBoundaryBuilderResult, ProducerHead, calculate_cost,
     inject_network_boundaries,
@@ -76,6 +77,11 @@ pub(super) async fn prepare_dynamic_plan(
             input_stage.plan = nb_ctx
                 .propagate_task_count_until_network_boundaries(&input_stage.plan, task_count)?;
             input_stage.tasks = task_count.as_usize();
+            input_stage.plan = lower_two_level_shuffles(
+                input_stage.plan,
+                input_stage.tasks,
+                nb_ctx.d_cfg.two_level_shuffle_min_fanout,
+            )?;
             // In order to infer the compute the cost of the stage above this one, here a sampler
             // is injected to gather runtime statistics.
             input_stage.plan = ProducerHead::insert_sampler(input_stage.plan)?;
