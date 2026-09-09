@@ -159,10 +159,10 @@ fn apply_reports_to_distributed_leaves(
                 .iter()
                 .map(|filter| (filter.expression_id, &filter.expression))
                 .collect();
-            let Ok(consumers) = discover_dynamic_filter_consumers(variant) else {
+            let Ok(discovered) = discover_dynamic_filter_consumers(variant) else {
                 continue;
             };
-            for consumer in consumers {
+            for consumer in discovered.consumers {
                 let Some(expression) = updates.get(&consumer.id).copied() else {
                     continue;
                 };

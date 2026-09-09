@@ -1,5 +1,6 @@
 use datafusion::arrow::datatypes::DataType;
-use datafusion::common::{Result, ScalarValue, SplitPoint};
+use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
+use datafusion::common::{Result, ScalarValue, SplitPoint, exec_err};
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::listing::{
     ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl,
@@ -11,7 +12,8 @@ use datafusion_distributed::test_utils::localhost::start_localhost_context;
 use datafusion_distributed::test_utils::parquet::register_parquet_tables;
 use datafusion_distributed::test_utils::routing::url_emitter_route_tasks;
 use datafusion_distributed::{
-    DefaultSessionBuilder, DistributedExt, display_plan_ascii,
+    DefaultSessionBuilder, DistributedExt, RouteTasksEvent, RouteTasksEventResponse,
+    display_plan_ascii, get_distributed_worker_resolver,
     rewrite_distributed_plan_with_dynamic_filters,
 };
 use std::sync::Arc;
@@ -89,12 +91,17 @@ impl<'a> TestQuery<'a> {
 pub(crate) async fn execute_range_partitioned_query(
     sql: &str,
     expected_rows: usize,
+    colocate_tasks_with_dynamic_filters: bool,
 ) -> Result<String> {
     let (ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
-    let ctx = ctx
+    let mut ctx = ctx
         .with_distributed_broadcast_joins(false)?
-        .with_distributed_desired_task_count_handler(2usize)
-        .with_distributed_route_tasks_handler(url_emitter_route_tasks);
+        .with_distributed_desired_task_count_handler(2usize);
+    ctx = if colocate_tasks_with_dynamic_filters {
+        ctx.with_distributed_route_tasks_handler(colocate_dynamic_filter_tasks)
+    } else {
+        ctx.with_distributed_route_tasks_handler(url_emitter_route_tasks)
+    };
     {
         let state = ctx.state_ref();
         let mut state = state.write();
@@ -108,6 +115,37 @@ pub(crate) async fn execute_range_partitioned_query(
     register_range_partitioned_table(&ctx, "fact", "testdata/join/parquet/fact", "f_dkey").await?;
 
     execute_query_and_display(&ctx, sql, expected_rows, true).await
+}
+
+fn colocate_dynamic_filter_tasks(ev: RouteTasksEvent) -> Option<Result<RouteTasksEventResponse>> {
+    let mut has_dynamic_filter_producer = false;
+    if let Err(error) = ev.plan.apply(|node| {
+        if node.dynamic_expressions_produced().is_empty() {
+            Ok(TreeNodeRecursion::Continue)
+        } else {
+            has_dynamic_filter_producer = true;
+            Ok(TreeNodeRecursion::Stop)
+        }
+    }) {
+        return Some(Err(error));
+    }
+    if !has_dynamic_filter_producer {
+        return url_emitter_route_tasks(ev);
+    }
+
+    Some((|| {
+        let Some(worker_url) = get_distributed_worker_resolver(ev.task_ctx.session_config())?
+            .get_urls()?
+            .into_iter()
+            .next()
+        else {
+            return exec_err!("expected at least one worker URL");
+        };
+        Ok(RouteTasksEventResponse::new(vec![
+            worker_url;
+            ev.task_count
+        ]))
+    })())
 }
 
 async fn register_range_partitioned_table(
