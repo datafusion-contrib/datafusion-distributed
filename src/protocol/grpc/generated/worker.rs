@@ -57,7 +57,7 @@ pub mod worker_to_coordinator_msg {
         /// Another task in the same stage may report a different value for expression_id=10.
         #[prost(message, tag = "4")]
         TaskCompletedDynamicFilters(super::TaskCompletedDynamicFilters),
-        /// An observed hash-join dynamic filter state produced by this task.
+        /// An observed dynamic filter state produced by this task.
         #[prost(message, tag = "5")]
         ProducedDynamicFilter(super::ProducedDynamicFilter),
     }

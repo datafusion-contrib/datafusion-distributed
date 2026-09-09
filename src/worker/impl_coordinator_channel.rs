@@ -192,11 +192,12 @@ impl Worker {
                 }
             }
 
+            // Cancel any dynamic filter producce streams that did not complete for any reason.
+            // It's expected that dynamic filters should complete and send their updates before
+            // task execution ends.
+            producer_cancel_tx.send_replace(true);
+
             // Send metrics and completed dynamic filters if enabled.
-            // TODO(#686): handle errors
-            // Producer completion is an optimization signal, not a condition for ending a task.
-            // Wake any filters that never completed before finalizing the task reports.
-            let _ = producer_cancel_tx.send(true);
 
             let metrics_tx = task_data.metrics_tx.lock().unwrap().take();
             let dynamic_filters_tx = task_data
@@ -266,63 +267,54 @@ impl Worker {
             task_ctx: Arc::clone(&task_data.task_ctx),
             stream: select_all([
                 produced_dynamic_filters_stream.boxed(),
-                load_info_stream.boxed(),
-                metrics_stream.boxed(),
-                dynamic_filters_stream.boxed(),
+                load_info_stream.map(Ok).boxed(),
+                metrics_stream.map(Ok).boxed(),
+                dynamic_filters_stream.map(Ok).boxed(),
             ])
-            .map(Ok)
             .boxed(),
         })
     }
 }
 
-/// Streams observable updates from one dynamic-filter producer until it completes or is cancelled.
+/// Streams updates from one dynamic-filter producer until it completes or cancellation is detected.
 fn produced_dynamic_filter_stream(
     expression_id: u64,
     expression: Arc<dyn PhysicalExpr>,
     task_ctx: Arc<TaskContext>,
     cancel_rx: watch::Receiver<bool>,
-) -> BoxStream<'static, WorkerToCoordinatorMsg> {
-    futures::stream::unfold(
+) -> BoxStream<'static, Result<WorkerToCoordinatorMsg>> {
+    futures::stream::try_unfold(
         Some((expression, task_ctx, cancel_rx)),
         move |state| async move {
-            let (expression, task_ctx, mut cancel_rx) = state?;
+            let Some((expression, task_ctx, mut cancel_rx)) = state else {
+                return Ok(None);
+            };
             let dynamic_filter = expression
                 .downcast_ref::<DynamicFilterPhysicalExpr>()
                 .expect("producer discovery returns DynamicFilterPhysicalExpr");
 
-            loop {
-                // `wait_update()` uses a Tokio watch channel, so multiple generations can
-                // naturally coalesce while this observer is busy. The stream promises the latest
-                // observed state rather than one message per generation; completion is awaited
-                // separately because it does not advance the generation.
-                let completed = tokio::select! {
-                    _ = dynamic_filter.wait_update() => false,
-                    _ = dynamic_filter.wait_complete() => true,
-                    _ = cancel_rx.wait_for(|cancelled| *cancelled) => return None,
-                };
-
-                let Ok(serialized) = encode_physical_expr(&expression, &task_ctx) else {
-                    // Dynamic filtering is an optimization. Ignore an unserializable update and
-                    // continue observing the producer in case a later state can be serialized.
-                    if completed {
-                        return None;
-                    }
-                    continue;
-                };
-                let is_complete = matches!(
-                    serialized.expr_type.as_ref(),
-                    Some(ExprType::DynamicFilter(dynamic_filter)) if dynamic_filter.is_complete
-                );
-                let message = WorkerToCoordinatorMsg::ProducedDynamicFilter(Box::new(
-                    ProducedDynamicFilter {
-                        expression_id,
-                        expression: serialized,
-                    },
-                ));
-                let next = (!is_complete).then_some((expression, task_ctx, cancel_rx));
-                return Some((message, next));
+            // `wait_update()` uses a Tokio watch channel, so multiple generations can
+            // are natively "deduped" into just one update. This helps avoid too many
+            // update messages. If this becomes an issue, we can introduce an artificial
+            // backoff.
+            tokio::select! {
+                _ = dynamic_filter.wait_update() => {}
+                _ = dynamic_filter.wait_complete() => {}
+                _ = cancel_rx.wait_for(|cancelled| *cancelled) => return Ok(None),
             }
+
+            let serialized = encode_physical_expr(&expression, &task_ctx)?;
+            let is_complete = matches!(
+                serialized.expr_type.as_ref(),
+                Some(ExprType::DynamicFilter(dynamic_filter)) if dynamic_filter.is_complete
+            );
+            let message =
+                WorkerToCoordinatorMsg::ProducedDynamicFilter(Box::new(ProducedDynamicFilter {
+                    expression_id,
+                    expression: serialized,
+                }));
+            let next = (!is_complete).then_some((expression, task_ctx, cancel_rx));
+            Ok(Some((message, next)))
         },
     )
     .boxed()
@@ -438,7 +430,8 @@ mod tests {
         assert!(stream.next().await.is_none());
     }
 
-    fn produced_filter(message: WorkerToCoordinatorMsg) -> Box<ProducedDynamicFilter> {
+    fn produced_filter(message: Result<WorkerToCoordinatorMsg>) -> Box<ProducedDynamicFilter> {
+        let message = message.unwrap();
         let WorkerToCoordinatorMsg::ProducedDynamicFilter(filter) = message else {
             panic!("expected produced dynamic filter");
         };

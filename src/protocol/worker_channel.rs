@@ -82,8 +82,7 @@ pub struct SetPlanRequest {
     /// The subplan the worker is expected to execute.
     pub plan: MaybeEncoded<Arc<dyn ExecutionPlan>>,
     /// Producer expression IDs whose consumers cross a network boundary. Workers observe and
-    /// report updates only for these IDs; task-local consumers are updated directly in memory
-    /// so they do not need to be reported.
+    /// report updates to the coordinator.
     pub dynamic_filter_remote_producer_ids: Vec<u64>,
     /// Information about all the work unit feeds that will be streamed from coordinator to worker.
     /// This information is needed here because at the moment of setting the plan, all the appropriate
@@ -130,9 +129,8 @@ pub enum WorkerToCoordinatorMsg {
     /// Sends the final dynamic filters used by dynamic filter consumers back to the coorindator
     /// for displaying.
     TaskCompletedDynamicFilters(TaskCompletedDynamicFilters),
-    /// Sends an observed producer dynamic-filter state to the coordinator. Unlike
-    /// `TaskCompletedDynamicFilters`, this message participates in runtime filtering and is not
-    /// used to render the final plan.
+    /// Sends an observed producer dynamic-filter state to the coordinator. This update
+    /// is to be used for runtime dynamic filtering.
     ProducedDynamicFilter(Box<ProducedDynamicFilter>),
     /// Load information reported by a task. This information is used for dynamically
     /// sizing the number of workers involved in a query.
@@ -140,12 +138,11 @@ pub enum WorkerToCoordinatorMsg {
     LoadInfoEos,
 }
 
+/// A dynamic filter snapshot update produced by a plan node in a task to be sent to
+/// the coordinator.
 #[derive(Clone, Debug)]
 pub struct ProducedDynamicFilter {
-    /// DataFusion physical-expression ID. The source TaskKey is implicit from the channel.
     pub expression_id: u64,
-    /// A potentially incomplete `DynamicFilterPhysicalExpr`, encoded only by the transport
-    /// boundary. Its serialized generation and completion state order reports from this task.
     pub expression: PhysicalExprNode,
 }
 

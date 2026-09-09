@@ -1,12 +1,12 @@
-use crate::codec::{encode_execution_plan, roundtrip_pb};
+use crate::codec::roundtrip_pb;
 use crate::common::{TreeNodeExt, now_ns, task_ctx_with_extension};
 use crate::config_extension_ext::get_config_extension_propagation_headers;
 use crate::coordinator::DynamicFilterRegistry;
 use crate::coordinator::Store;
 use crate::coordinator::latency_metric::LatencyMetric;
 use crate::dynamic_filtering::{
-    discover_dynamic_filter_producers, is_dynamic_filtering_enabled,
-    maybe_roundtrip_plan_to_sever_in_memory_dynamic_filter_relationships,
+    discover_dynamic_filter_consumers, discover_dynamic_filter_producers,
+    is_dynamic_filtering_enabled, maybe_roundtrip_plan_to_sever_in_memory_dynamic_filter_relationships,
 };
 use crate::events::{
     RouteTaskEvent, RouteTaskEventResponse, RouteTaskHandlers, new_coordinator_to_worker_dialer,
@@ -19,16 +19,15 @@ use crate::work_unit_feed::{build_work_unit_batch_msg, set_work_unit_send_time};
 use crate::{
     CoordinatorToWorkerMsg, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedGetterExt,
     DistributedTaskContext, DistributedWorkUnitFeedContext, LoadInfo, LocalWorkerContext,
-    MaybeEncoded, NetworkBoundaryExt, SetPlanRequest, TaskCompletedDynamicFilters, TaskKey,
-    TaskMetrics, WorkUnitFeedDeclaration, WorkerToCoordinatorMsg, get_distributed_channel_resolver,
+    MaybeEncoded, SetPlanRequest, TaskCompletedDynamicFilters, TaskKey, TaskMetrics,
+    WorkUnitFeedDeclaration, WorkerToCoordinatorMsg, get_distributed_channel_resolver,
 };
 use datafusion::common::Result;
 use datafusion::common::instant::Instant;
 use datafusion::common::runtime::JoinSet;
-use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
+use datafusion::common::tree_node::{Transformed, TreeNodeRecursion};
 use datafusion::common::{DataFusionError, HashSet, internal_err};
 use datafusion::execution::TaskContext;
-use datafusion::physical_expr::expressions::DynamicFilterPhysicalExpr;
 use datafusion::physical_expr_common::metrics::{ExecutionPlanMetricsSet, Label, MetricBuilder};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::metrics::Count;
@@ -347,8 +346,6 @@ impl<'a> StageCoordinator<'a> {
                             store.insert(task_key, filters);
                         }
                     }
-                    // Runtime dynamic-filter reports are accepted by this transport change. A
-                    // later change in the stack will retain and merge them.
                     WorkerToCoordinatorMsg::ProducedDynamicFilter(_) => {}
                 }
             }
@@ -509,29 +506,11 @@ fn dynamic_filter_remote_producer_ids(plan: &Arc<dyn ExecutionPlan>) -> Result<V
         .into_iter()
         .map(|producer| producer.id)
         .collect();
-    let mut anchor_ids = HashSet::new();
-    plan.apply(|node| {
-        if !node.is_network_boundary() {
-            return Ok(TreeNodeRecursion::Continue);
-        }
-        node.apply_expressions(&mut |root| {
-            root.apply(|expression| {
-                if expression
-                    .downcast_ref::<DynamicFilterPhysicalExpr>()
-                    .is_some()
-                {
-                    let Some(id) = expression.expression_id() else {
-                        return datafusion::common::internal_err!(
-                            "DynamicFilterPhysicalExpr did not have an expression ID"
-                        );
-                    };
-                    anchor_ids.insert(id);
-                }
-                Ok(TreeNodeRecursion::Continue)
-            })
-        })?;
-        Ok(TreeNodeRecursion::Continue)
-    })?;
+    let anchor_ids: HashSet<_> = discover_dynamic_filter_consumers(plan)?
+        .anchors
+        .into_iter()
+        .map(|anchor| anchor.id)
+        .collect();
 
     let mut remote_producer_ids: Vec<_> = producer_ids.intersection(&anchor_ids).copied().collect();
     remote_producer_ids.sort_unstable();
