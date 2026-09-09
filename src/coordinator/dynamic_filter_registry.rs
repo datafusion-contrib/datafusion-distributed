@@ -8,10 +8,11 @@ use std::sync::{Arc, Mutex};
 
 #[derive(Default)]
 pub(super) struct PlannedDynamicFilter {
-    // Producer and consumer tasks for a dynamic filter. Note that it is not guaranteed
-    // that every task within a stage produces / consumes dynamic filters so we specifically store
-    // task keys rather than stage ids. For example, a distributed union may prevent a dynamic filter
-    // consumer from appearing in all tasks.
+    // Producer and consumer tasks for a dynamic filter.
+    //
+    // Note that it is not guaranteed that every task within a stage produces / consumes dynamic filters. For
+    // example, a distributed union may prevent a dynamic filter from appearing in all tasks. So, we
+    // store task keys rather than stage ids.
     pub(super) producer_tasks: HashSet<TaskKey>,
     pub(super) consumer_tasks: HashSet<TaskKey>,
 }
@@ -21,9 +22,9 @@ pub(super) struct DynamicFilterRegistryState {
     pub(super) filters: HashMap<u64, PlannedDynamicFilter>,
 }
 
-/// Query-scoped runtime topology for distributed dynamic filters.
-///
-/// This is intentionally independent from the completed-consumer reports used to render plans.
+/// Query-scoped hub for distributed dynamic filtering. It stores the locations
+/// of dynamic filters and runtime state, informing the coordinator where dynamic filter
+/// updates are coming from, how/if they should be merged, where they need to be forwarded.
 #[derive(Default)]
 pub(crate) struct DynamicFilterRegistry {
     pub(super) state: Mutex<DynamicFilterRegistryState>,
@@ -34,12 +35,15 @@ impl DynamicFilterRegistry {
         Self::default()
     }
 
+    /// Adds any dynamic filter producers and consumers found in `plan` to the registry.
     pub(crate) fn register_task(
         &self,
         plan: &Arc<dyn ExecutionPlan>,
         task_key: TaskKey,
     ) -> Result<()> {
         let producers = discover_dynamic_filter_producers(plan)?;
+        // We can safely ignore anchors because they are not evaluated by network boundaries. This
+        // means they do not need updates forwarded to them.
         let consumers = discover_dynamic_filter_consumers(plan)?.consumers;
 
         let mut state = self.state.lock().expect("dynamic filter registry poisoned");
@@ -80,8 +84,9 @@ mod tests {
     use std::fmt::Formatter;
     use uuid::Uuid;
 
+    // Test that we correctly register producers and consumers while ignoring anchors.
     #[test]
-    fn registers_generic_task_roles_by_expression_id() -> Result<()> {
+    fn registers_dynamic_filters_by_expression_id() -> Result<()> {
         let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
         let dynamic_filter = Arc::new(DynamicFilterPhysicalExpr::new(
             vec![Arc::new(Column::new("a", 0))],
@@ -89,8 +94,6 @@ mod tests {
         )) as Arc<dyn PhysicalExpr>;
         let id = dynamic_filter.expression_id().unwrap();
 
-        // Exercise ID-based matching with a distinct expression wrapper for the same logical
-        // dynamic filter.
         let producer_occurrence =
             Arc::clone(&dynamic_filter).with_new_children(vec![Arc::new(Column::new("a", 0))])?;
         assert!(!Arc::ptr_eq(&dynamic_filter, &producer_occurrence));

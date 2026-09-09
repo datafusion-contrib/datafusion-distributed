@@ -7,7 +7,7 @@ use datafusion::physical_expr::expressions::DynamicFilterPhysicalExpr;
 use datafusion::physical_plan::ExecutionPlan;
 use std::sync::Arc;
 
-/// A dynamic filter produced by an execution plan.
+/// A dynamic filter produced by an [`ExecutionPlan`].
 #[derive(Clone)]
 pub(crate) struct DiscoveredDynamicFilterProducer {
     pub(crate) id: u64,
@@ -22,6 +22,10 @@ pub(crate) struct DiscoveredDynamicFilter {
     pub(crate) input_schema: SchemaRef,
 }
 
+/// An anchor is an artificial dynamic filter consumer injected into network boundaries
+/// to keep consumer references alive when they are moved across network boundaries.
+///
+/// TODO(#697): remove anchors in df-56.
 #[derive(Clone)]
 pub(crate) struct DiscoveredDynamicFilterAnchor {
     pub(crate) id: u64,
@@ -29,10 +33,9 @@ pub(crate) struct DiscoveredDynamicFilterAnchor {
 }
 
 pub(crate) struct DiscoveredDynamicFilterConsumers {
-    /// Dynamic filters that are evaluated by an execution-plan node.
+    // Real consumers, ordered by expression id.
     pub(crate) consumers: Vec<DiscoveredDynamicFilter>,
-    /// Metadata-only references carried by network boundaries to trick producers
-    /// into thinking the dynamic filter is used.
+    // Artificial consumers. Dynamic filters in network boundaries. Also ordered by expression id.
     pub(crate) anchors: Vec<DiscoveredDynamicFilterAnchor>,
 }
 
@@ -109,38 +112,7 @@ pub(crate) fn discover_dynamic_filter_consumers(
     Ok(DiscoveredDynamicFilterConsumers { consumers, anchors })
 }
 
-/// Returns whether `plan` contains only the consumer side of a dynamic filter
-/// relationship.
-pub(crate) fn has_nonlocal_dynamic_filter_relationships(
-    plan: &Arc<dyn ExecutionPlan>,
-) -> Result<bool> {
-    let consumer_ids: HashSet<_> = discover_dynamic_filter_consumers(plan)?
-        .consumers
-        .into_iter()
-        .map(|consumer| consumer.id)
-        .collect();
-
-    let mut producer_ids = HashSet::new();
-    plan.apply(|node| {
-        for produced in node.dynamic_expressions_produced() {
-            let Some(id) = produced.expression_id() else {
-                return internal_err!(
-                    "{}::dynamic_expressions_produced returned an expression without an expression ID",
-                    node.name()
-                );
-            };
-            producer_ids.insert(id);
-        }
-        Ok(TreeNodeRecursion::Continue)
-    })?;
-
-    Ok(consumer_ids != producer_ids)
-}
-
-/// Finds dynamic-filter producers in `plan`, deduplicated by expression ID.
-///
-/// Producer type is intentionally unrestricted: hash joins, aggregates, sorts, and future
-/// producers are all discovered through [`ExecutionPlan::dynamic_expressions_produced`].
+/// Finds dynamic-filter producers in `plan`, deduplicated and orderd by expression ID.
 pub(crate) fn discover_dynamic_filter_producers(
     plan: &Arc<dyn ExecutionPlan>,
 ) -> Result<Vec<DiscoveredDynamicFilterProducer>> {
@@ -168,13 +140,11 @@ pub(crate) fn discover_dynamic_filter_producers(
     Ok(producers)
 }
 
-/// Finds consumers whose producer does not occur in `plan`.
+/// Finds consumers whose producer does not occur in `plan`. These consumers become orphaned
+/// from their producer when the producer is moved behind a remote network boundary. These
+/// orphans become network boundary anchors, artificially keeping the producers alive.
 ///
-/// This includes both consumers evaluated in `plan` and metadata-only anchors propagated through
-/// network boundaries.
-///
-/// These consumers become orphaned from their producer when `plan` is moved behind a remote
-/// network boundary, so their expressions must remain discoverable on that boundary.
+/// TODO(697): remove anchors in df-56
 pub(crate) fn orphan_dynamic_filter_consumers(
     plan: &Arc<dyn ExecutionPlan>,
 ) -> Result<Vec<Arc<dyn PhysicalExpr>>> {
@@ -183,6 +153,10 @@ pub(crate) fn orphan_dynamic_filter_consumers(
         .map(|producer| producer.id)
         .collect();
     let discovered = discover_dynamic_filter_consumers(plan)?;
+    // Include anchors here because we want anchors to work recursively. For example,
+    // if a producer is in stage 4 and its consumer is in stage 1, an
+    // anchor should exist in stage 4. The easiest way to gurantee that is to ensure
+    // the anchor exists in stages 2, 3, and 4 recursively via this function.
     let orphaned: HashMap<_, _> = discovered
         .consumers
         .into_iter()
@@ -251,7 +225,6 @@ mod tests {
             discovered.consumers[0].id,
             dynamic_filter.expression_id().unwrap()
         );
-        assert!(!has_nonlocal_dynamic_filter_relationships(&plan)?);
         assert!(orphan_dynamic_filter_consumers(&plan)?.is_empty());
 
         dynamic_filter
@@ -294,24 +267,6 @@ mod tests {
             discovered.consumers[0].id,
             dynamic_filter.expression_id().unwrap()
         );
-        assert!(has_nonlocal_dynamic_filter_relationships(&plan)?);
-        Ok(())
-    }
-
-    #[test]
-    fn identifies_a_producer_without_a_local_consumer() -> Result<()> {
-        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
-        let dynamic_filter = Arc::new(DynamicFilterPhysicalExpr::new(
-            vec![Arc::new(Column::new("a", 0))],
-            lit(true),
-        )) as Arc<dyn PhysicalExpr>;
-        let plan = Arc::new(ExpressionExec::new(
-            Arc::new(EmptyExec::new(schema)),
-            dynamic_filter,
-            true,
-        )) as Arc<dyn ExecutionPlan>;
-
-        assert!(has_nonlocal_dynamic_filter_relationships(&plan)?);
         Ok(())
     }
 
