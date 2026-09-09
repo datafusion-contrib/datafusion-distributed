@@ -159,20 +159,12 @@ impl ExecutionPlan for MockExec {
         Ok(TreeNodeRecursion::Continue)
     }
 
-    fn with_new_children(
-        self: Arc<Self>,
-        _: Vec<Arc<dyn ExecutionPlan>>,
-    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
-        unimplemented!()
-    }
-
     fn replace_children(
         self: Arc<Self>,
-        children: Vec<Arc<dyn ExecutionPlan>>,
+        _: Vec<Arc<dyn ExecutionPlan>>,
         _options: ReplaceChildrenOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        // Prefer replace_children over deprecated with_new_children (#657).
-        self.with_new_children(children)
+        unimplemented!()
     }
 
     /// Returns a stream which yields data

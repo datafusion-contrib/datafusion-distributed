@@ -102,19 +102,12 @@ impl ExecutionPlan for CacheExec {
         Ok(TreeNodeRecursion::Continue)
     }
 
-    fn with_new_children(
-        self: Arc<Self>,
-        mut children: Vec<Arc<dyn ExecutionPlan>>,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
-        Ok(CacheExec::new(children.remove(0)))
-    }
-
     fn replace_children(
         self: Arc<Self>,
-        children: Vec<Arc<dyn ExecutionPlan>>,
+        mut children: Vec<Arc<dyn ExecutionPlan>>,
         _options: ReplaceChildrenOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        self.with_new_children(children)
+        Ok(CacheExec::new(children.remove(0)))
     }
 
     fn execute(

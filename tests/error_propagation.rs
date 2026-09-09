@@ -120,22 +120,15 @@ mod tests {
             Ok(TreeNodeRecursion::Continue)
         }
 
-        fn with_new_children(
-            self: Arc<Self>,
-            children: Vec<Arc<dyn ExecutionPlan>>,
-        ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
-            Ok(Arc::new(ErrorThrowingExec::new(
-                children[0].clone(),
-                &self.msg,
-            )))
-        }
-
         fn replace_children(
             self: Arc<Self>,
             children: Vec<Arc<dyn ExecutionPlan>>,
             _options: ReplaceChildrenOptions,
         ) -> Result<Arc<dyn ExecutionPlan>> {
-            self.with_new_children(children)
+            Ok(Arc::new(ErrorThrowingExec::new(
+                children[0].clone(),
+                &self.msg,
+            )))
         }
 
         fn execute(

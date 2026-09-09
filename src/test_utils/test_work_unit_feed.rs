@@ -396,20 +396,12 @@ impl ExecutionPlan for RowGeneratorExec {
         Ok(TreeNodeRecursion::Continue)
     }
 
-    fn with_new_children(
-        self: Arc<Self>,
-        _: Vec<Arc<dyn ExecutionPlan>>,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
-        Ok(Arc::new(self.as_ref().clone()))
-    }
-
     fn replace_children(
         self: Arc<Self>,
-        children: Vec<Arc<dyn ExecutionPlan>>,
+        _: Vec<Arc<dyn ExecutionPlan>>,
         _options: ReplaceChildrenOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        // Prefer replace_children over deprecated with_new_children (#657).
-        self.with_new_children(children)
+        Ok(Arc::new(self.as_ref().clone()))
     }
 
     fn execute(

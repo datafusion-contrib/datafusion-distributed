@@ -88,7 +88,7 @@ pub struct ChildrenIsolatorUnionExec {
     pub(crate) metrics: ExecutionPlanMetricsSet,
     pub(crate) children: Vec<Arc<dyn ExecutionPlan>>,
     /// The original per-child weights (and their optional hard caps) used to build the
-    /// `task_idx_map`. Stored so `with_new_children` can re-run the allocator with the same
+    /// `task_idx_map`. Stored so `replace_children` can re-run the allocator with the same
     /// inputs and preserve `Maximum(N)` caps across plan rewrites.
     pub(crate) child_weights: Vec<ChildWeight>,
     pub(crate) task_idx_map: Vec<
@@ -276,9 +276,10 @@ impl ExecutionPlan for ChildrenIsolatorUnionExec {
         &self.properties
     }
 
-    fn with_new_children(
+    fn replace_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
+        _options: ReplaceChildrenOptions,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
         if children.len() != self.children.len() {
             return plan_err!(
@@ -292,15 +293,6 @@ impl ExecutionPlan for ChildrenIsolatorUnionExec {
             self.child_weights.clone(),
             self.task_idx_map.len(),
         )?))
-    }
-
-    fn replace_children(
-        self: Arc<Self>,
-        children: Vec<Arc<dyn ExecutionPlan>>,
-        _options: ReplaceChildrenOptions,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
-        // Prefer replace_children over deprecated with_new_children (#657).
-        self.with_new_children(children)
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {

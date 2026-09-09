@@ -142,19 +142,12 @@ impl ExecutionPlan for SyntheticExec {
         Ok(TreeNodeRecursion::Continue)
     }
 
-    fn with_new_children(
-        self: Arc<Self>,
-        _children: Vec<Arc<dyn ExecutionPlan>>,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
-        unimplemented!()
-    }
-
     fn replace_children(
         self: Arc<Self>,
-        children: Vec<Arc<dyn ExecutionPlan>>,
+        _children: Vec<Arc<dyn ExecutionPlan>>,
         _options: ReplaceChildrenOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        self.with_new_children(children)
+        unimplemented!()
     }
 
     fn execute(

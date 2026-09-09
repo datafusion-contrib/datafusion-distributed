@@ -199,9 +199,10 @@ impl ExecutionPlan for NetworkShuffleExec {
         Ok(TreeNodeRecursion::Continue)
     }
 
-    fn with_new_children(
+    fn replace_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
+        _options: ReplaceChildrenOptions,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
         let mut self_clone = self.as_ref().clone();
         match &mut self_clone.input_stage {
@@ -215,15 +216,6 @@ impl ExecutionPlan for NetworkShuffleExec {
             }
         }
         Ok(Arc::new(self_clone))
-    }
-
-    fn replace_children(
-        self: Arc<Self>,
-        children: Vec<Arc<dyn ExecutionPlan>>,
-        _options: ReplaceChildrenOptions,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
-        // Prefer replace_children over deprecated with_new_children (#657).
-        self.with_new_children(children)
     }
 
     fn execute(

@@ -68,24 +68,16 @@ impl ExecutionPlan for DistributedAnalyzeExec {
         vec![Distribution::UnspecifiedDistribution]
     }
 
-    fn with_new_children(
+    fn replace_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
+        _options: ReplaceChildrenOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         Ok(Arc::new(Self {
             input: require_one_child(&children)?,
             verbose: self.verbose,
             properties: Arc::clone(&self.properties),
         }))
-    }
-
-    fn replace_children(
-        self: Arc<Self>,
-        children: Vec<Arc<dyn ExecutionPlan>>,
-        _options: ReplaceChildrenOptions,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
-        // Prefer replace_children over deprecated with_new_children (#657).
-        self.with_new_children(children)
     }
 
     fn execute(

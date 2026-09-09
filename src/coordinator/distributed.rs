@@ -180,9 +180,10 @@ impl ExecutionPlan for DistributedExec {
         Ok(TreeNodeRecursion::Continue)
     }
 
-    fn with_new_children(
+    fn replace_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
+        _options: ReplaceChildrenOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let child = require_one_child(&children)?;
         // Replacing the public child is independent from replacing the visualization plan. A
@@ -199,15 +200,6 @@ impl ExecutionPlan for DistributedExec {
             metrics_store: self.metrics_store.clone(),
             completed_dynamic_filter_store: self.completed_dynamic_filter_store.clone(),
         }))
-    }
-
-    fn replace_children(
-        self: Arc<Self>,
-        children: Vec<Arc<dyn ExecutionPlan>>,
-        _options: ReplaceChildrenOptions,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
-        // Prefer replace_children over deprecated with_new_children (#657).
-        self.with_new_children(children)
     }
 
     fn execute(
