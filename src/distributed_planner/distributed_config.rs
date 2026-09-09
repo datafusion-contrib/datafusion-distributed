@@ -49,8 +49,8 @@ extensions_options! {
         pub shuffle_batch_size: usize, default = 0
         /// Minimum `producer_tasks * consumer_tasks * local_partitions` per exchange
         /// for two-level shuffle in eligible unordered hash-shuffle regions.
-        /// 0 disables it (the default).
-        pub two_level_shuffle_min_fanout: usize, default = 0
+        /// Defaults to 128. Set to 0 to disable it.
+        pub two_level_shuffle_min_fanout: usize, default = 128
         /// Maximum tasks that will be assigned per stage during distributed planning.
         /// If set to 0, this value is the number of workers returned by the provided `WorkerResolver`.
         /// It defaults to 0.

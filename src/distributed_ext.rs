@@ -508,8 +508,8 @@ pub trait DistributedExt: Sized {
     ) -> Result<(), DataFusionError>;
 
     /// Sets the minimum `producer_tasks * consumer_tasks * local_partitions` per exchange
-    /// for two-level shuffle in eligible unordered hash regions. 0 disables it (the default).
-    /// A positive threshold enables it.
+    /// for two-level shuffle in eligible unordered hash regions. The default is 128.
+    /// Set to 0 to disable it.
     fn with_distributed_two_level_shuffle_min_fanout(
         self,
         min_fanout: usize,
