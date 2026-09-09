@@ -1,4 +1,4 @@
-use crate::codec::{decode_physical_expr, roundtrip_pb};
+use crate::codec::{decode_physical_expr, dynamic_filter_update_target, roundtrip_pb};
 use crate::coordinator::DistributedExec;
 use crate::dynamic_filtering::discover_dynamic_filter_consumers;
 use crate::execution_plans::DistributedLeafExec;
@@ -6,7 +6,6 @@ use crate::{TaskCompletedDynamicFilters, TaskKey};
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{HashMap, Result, internal_err};
 use datafusion::execution::TaskContext;
-use datafusion::physical_expr::expressions::DynamicFilterPhysicalExpr;
 use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::{
@@ -173,22 +172,25 @@ fn apply_reports_to_distributed_leaves(
                 else {
                     continue;
                 };
-                let Ok(reported_expression) =
-                    decode_physical_expr(&proto, consumer.input_schema.as_ref(), task_ctx)
-                else {
+                if dynamic_filter_proto.generation <= 1 {
                     continue;
-                };
-                let Some(reported_dynamic_filter) =
-                    reported_expression.downcast_ref::<DynamicFilterPhysicalExpr>()
-                else {
-                    continue;
-                };
-                let Ok(expression) = reported_dynamic_filter.current() else {
-                    continue;
-                };
-                if dynamic_filter_proto.generation > 1 {
-                    let _ = consumer.expression.update(expression);
                 }
+                let Some(predicate) = dynamic_filter_proto.inner_expr.as_deref() else {
+                    continue;
+                };
+                let Ok(predicate) =
+                    decode_physical_expr(predicate, consumer.input_schema.as_ref(), task_ctx)
+                else {
+                    continue;
+                };
+                let Ok(dynamic_filter) = dynamic_filter_update_target(
+                    &consumer.expression,
+                    consumer.input_schema.as_ref(),
+                    task_ctx,
+                ) else {
+                    continue;
+                };
+                let _ = dynamic_filter.update(predicate);
             }
         }
 

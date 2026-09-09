@@ -181,11 +181,12 @@ impl<'a> StageCoordinator<'a> {
         };
         self.dynamic_filter_registry
             .register_task(&plan, task_key)?;
+        let encoded_plan = encode_execution_plan(plan, self.task_ctx)?;
 
         let set_plan_request = SetPlanRequest {
             task_key,
             task_count: self.task_count,
-            plan: MaybeEncoded::Decoded(plan),
+            plan: MaybeEncoded::Encoded(encoded_plan),
             dynamic_filter_remote_producer_ids,
             work_unit_feed_declarations,
             target_worker_url: url.clone(),
