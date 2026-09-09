@@ -1,4 +1,3 @@
-use crate::codec::encode_physical_expr;
 use crate::common::TreeNodeExt;
 use crate::dynamic_filtering::{
     discover_dynamic_filter_consumers, discover_dynamic_filter_producers,
@@ -20,7 +19,6 @@ use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr::expressions::DynamicFilterPhysicalExpr;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionConfig;
-use datafusion_proto::protobuf::physical_expr_node::ExprType;
 use futures::stream::{BoxStream, FuturesUnordered, select_all};
 use futures::{FutureExt, StreamExt, TryStreamExt};
 use http::HeaderMap;
@@ -138,7 +136,6 @@ impl Worker {
             .into_iter()
             .filter(|producer| dynamic_filter_remote_producer_ids.contains(&producer.id));
         let (producer_cancel_tx, producer_cancel_rx) = watch::channel(false);
-        let producer_task_ctx = Arc::clone(&task_data.task_ctx);
 
         // Continue reading remaining messages (work unit feed data) in the background.
         let mut work_unit_senders = Some(remote_work_unit_feed_registry.senders);
@@ -258,7 +255,6 @@ impl Worker {
                 produced_dynamic_filter_stream(
                     producer.id,
                     producer.expression,
-                    Arc::clone(&producer_task_ctx),
                     producer_cancel_rx.clone(),
                 )
             }));
@@ -267,10 +263,11 @@ impl Worker {
             task_ctx: Arc::clone(&task_data.task_ctx),
             stream: select_all([
                 produced_dynamic_filters_stream.boxed(),
-                load_info_stream.map(Ok).boxed(),
-                metrics_stream.map(Ok).boxed(),
-                dynamic_filters_stream.map(Ok).boxed(),
+                load_info_stream.boxed(),
+                metrics_stream.boxed(),
+                dynamic_filters_stream.boxed(),
             ])
+            .map(Ok)
             .boxed(),
         })
     }
@@ -280,43 +277,31 @@ impl Worker {
 fn produced_dynamic_filter_stream(
     expression_id: u64,
     expression: Arc<dyn PhysicalExpr>,
-    task_ctx: Arc<TaskContext>,
     cancel_rx: watch::Receiver<bool>,
-) -> BoxStream<'static, Result<WorkerToCoordinatorMsg>> {
-    futures::stream::try_unfold(
-        Some((expression, task_ctx, cancel_rx)),
-        move |state| async move {
-            let Some((expression, task_ctx, mut cancel_rx)) = state else {
-                return Ok(None);
-            };
-            let dynamic_filter = expression
-                .downcast_ref::<DynamicFilterPhysicalExpr>()
-                .expect("producer discovery returns DynamicFilterPhysicalExpr");
+) -> BoxStream<'static, WorkerToCoordinatorMsg> {
+    futures::stream::unfold(Some((expression, cancel_rx)), move |state| async move {
+        let (expression, mut cancel_rx) = state?;
+        let dynamic_filter = expression
+            .downcast_ref::<DynamicFilterPhysicalExpr>()
+            .expect("producer discovery returns DynamicFilterPhysicalExpr");
 
-            // `wait_update()` uses a Tokio watch channel, so multiple generations can
-            // are natively "deduped" into just one update. This helps avoid too many
-            // update messages. If this becomes an issue, we can introduce an artificial
-            // backoff.
-            tokio::select! {
-                _ = dynamic_filter.wait_update() => {}
-                _ = dynamic_filter.wait_complete() => {}
-                _ = cancel_rx.wait_for(|cancelled| *cancelled) => return Ok(None),
-            }
-
-            let serialized = encode_physical_expr(&expression, &task_ctx)?;
-            let is_complete = matches!(
-                serialized.expr_type.as_ref(),
-                Some(ExprType::DynamicFilter(dynamic_filter)) if dynamic_filter.is_complete
-            );
-            let message =
-                WorkerToCoordinatorMsg::ProducedDynamicFilter(Box::new(ProducedDynamicFilter {
-                    expression_id,
-                    expression: serialized,
-                }));
-            let next = (!is_complete).then_some((expression, task_ctx, cancel_rx));
-            Ok(Some((message, next)))
-        },
-    )
+        // `wait_update()` uses a Tokio watch channel, so multiple generations can
+        // are natively "deduped" into just one update. This helps avoid too many
+        // update messages. If this becomes an issue, we can introduce an artificial
+        // backoff.
+        let completed = tokio::select! {
+            _ = dynamic_filter.wait_update() => false,
+            _ = dynamic_filter.wait_complete() => true,
+            _ = cancel_rx.wait_for(|cancelled| *cancelled) => return None,
+        };
+        let message =
+            WorkerToCoordinatorMsg::ProducedDynamicFilter(Box::new(ProducedDynamicFilter {
+                expression_id,
+                expression: MaybeEncoded::Decoded(Arc::clone(&expression)),
+            }));
+        let next = (!completed).then_some((expression, cancel_rx));
+        Some((message, next))
+    })
     .boxed()
 }
 
@@ -367,6 +352,7 @@ mod tests {
     use super::*;
     use datafusion::physical_expr::expressions::{Column, lit};
     use datafusion::prelude::SessionContext;
+    use datafusion_proto::protobuf::physical_expr_node::ExprType;
 
     #[tokio::test]
     async fn streams_dynamic_filter_updates_and_completion() -> Result<()> {
@@ -377,19 +363,16 @@ mod tests {
         let expression_id = dynamic_filter.expression_id().unwrap();
         let expression = Arc::clone(&dynamic_filter) as Arc<dyn PhysicalExpr>;
         let (_cancel_tx, cancel_rx) = watch::channel(false);
-        let mut stream = produced_dynamic_filter_stream(
-            expression_id,
-            expression,
-            SessionContext::new().task_ctx(),
-            cancel_rx,
-        );
+        let task_ctx = SessionContext::new().task_ctx();
+        let mut stream = produced_dynamic_filter_stream(expression_id, expression, cancel_rx);
 
         let (update, ()) = tokio::join!(stream.next(), async {
             tokio::task::yield_now().await;
             dynamic_filter.update(lit(false)).unwrap();
         });
         let update = produced_filter(update.expect("expected update"));
-        let ExprType::DynamicFilter(update) = update.expression.expr_type.as_ref().unwrap() else {
+        let update = update.expression.to_proto(&task_ctx)?;
+        let ExprType::DynamicFilter(update) = update.expr_type.as_ref().unwrap() else {
             panic!("expected dynamic filter");
         };
         let update_generation = update.generation;
@@ -400,8 +383,8 @@ mod tests {
             dynamic_filter.mark_complete();
         });
         let completion = produced_filter(completion.expect("expected completion"));
-        let ExprType::DynamicFilter(completion) = completion.expression.expr_type.as_ref().unwrap()
-        else {
+        let completion = completion.expression.to_proto(&task_ctx)?;
+        let ExprType::DynamicFilter(completion) = completion.expr_type.as_ref().unwrap() else {
             panic!("expected dynamic filter");
         };
         assert_eq!(completion.generation, update_generation);
@@ -419,19 +402,13 @@ mod tests {
         let expression_id = dynamic_filter.expression_id().unwrap();
         let expression = dynamic_filter as Arc<dyn PhysicalExpr>;
         let (cancel_tx, cancel_rx) = watch::channel(false);
-        let mut stream = produced_dynamic_filter_stream(
-            expression_id,
-            expression,
-            SessionContext::new().task_ctx(),
-            cancel_rx,
-        );
+        let mut stream = produced_dynamic_filter_stream(expression_id, expression, cancel_rx);
 
         cancel_tx.send(true).unwrap();
         assert!(stream.next().await.is_none());
     }
 
-    fn produced_filter(message: Result<WorkerToCoordinatorMsg>) -> Box<ProducedDynamicFilter> {
-        let message = message.unwrap();
+    fn produced_filter(message: WorkerToCoordinatorMsg) -> Box<ProducedDynamicFilter> {
         let WorkerToCoordinatorMsg::ProducedDynamicFilter(filter) = message else {
             panic!("expected produced dynamic filter");
         };

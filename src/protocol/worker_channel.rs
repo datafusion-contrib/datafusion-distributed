@@ -6,7 +6,6 @@ use datafusion::execution::TaskContext;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricsSet};
-use datafusion_proto::protobuf::PhysicalExprNode;
 use futures::stream::BoxStream;
 use http::HeaderMap;
 use std::sync::Arc;
@@ -138,12 +137,15 @@ pub enum WorkerToCoordinatorMsg {
     LoadInfoEos,
 }
 
-/// A dynamic filter snapshot update produced by a plan node in a task to be sent to
-/// the coordinator.
+/// A dynamic filter state update produced by a plan node in a task to be sent to the coordinator.
 #[derive(Clone, Debug)]
 pub struct ProducedDynamicFilter {
     pub expression_id: u64,
-    pub expression: PhysicalExprNode,
+    /// Note that sending an update via a live pointer could mean that the dynamic filter updates during
+    /// transport. This means that observations at the coordinator may repeat or skip generations, but never
+    /// regress. Since the worker monitors updates and completion, it's guranteed that the completed
+    /// filter state will not be missed.
+    pub expression: MaybeEncoded<Arc<dyn PhysicalExpr>>,
 }
 
 #[derive(Clone, Debug, Default)]

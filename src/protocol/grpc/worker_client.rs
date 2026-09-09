@@ -26,7 +26,6 @@ use datafusion::execution::TaskContext;
 use datafusion::execution::memory_pool::MemoryConsumer;
 use datafusion::physical_expr_common::metrics::{Count, Label, MetricBuilder, MetricValue, Time};
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, Gauge};
-use datafusion_proto::protobuf::PhysicalExprNode;
 use futures::stream::BoxStream;
 use futures::{FutureExt, Stream, StreamExt, TryStreamExt};
 use http::{Extensions, HeaderMap};
@@ -568,8 +567,7 @@ fn decode_produced_dynamic_filter(
 ) -> Result<ProducedDynamicFilter> {
     Ok(ProducedDynamicFilter {
         expression_id: filter.expression_id,
-        expression: PhysicalExprNode::decode(filter.expression_proto.as_slice())
-            .map_err(|error| DataFusionError::External(Box::new(error)))?,
+        expression: MaybeEncoded::Encoded(filter.expression_proto),
     })
 }
 
@@ -874,7 +872,10 @@ mod tests {
             panic!("expected produced dynamic filter");
         };
         assert_eq!(decoded.expression_id, 42);
-        assert_eq!(decoded.expression, expression);
+        let MaybeEncoded::Encoded(decoded_expression) = decoded.expression else {
+            panic!("expected encoded dynamic filter");
+        };
+        assert_eq!(decoded_expression, expression.encode_to_vec());
         Ok(())
     }
 }

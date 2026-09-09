@@ -285,18 +285,24 @@ fn encode_worker_to_coordinator_msg(
             }
             WorkerToCoordinatorMsg::ProducedDynamicFilter(filter) => {
                 pb::worker_to_coordinator_msg::Inner::ProducedDynamicFilter(
-                    encode_produced_dynamic_filter(*filter),
+                    encode_produced_dynamic_filter(*filter, task_ctx)?,
                 )
             }
         }),
     })
 }
 
-fn encode_produced_dynamic_filter(filter: ProducedDynamicFilter) -> pb::ProducedDynamicFilter {
-    pb::ProducedDynamicFilter {
+fn encode_produced_dynamic_filter(
+    filter: ProducedDynamicFilter,
+    task_ctx: &Arc<TaskContext>,
+) -> Result<pb::ProducedDynamicFilter, Status> {
+    Ok(pb::ProducedDynamicFilter {
         expression_id: filter.expression_id,
-        expression_proto: filter.expression.encode_to_vec(),
-    }
+        expression_proto: filter
+            .expression
+            .encode(task_ctx)
+            .map_err(datafusion_error_to_tonic_status)?,
+    })
 }
 
 fn encode_task_completed_dynamic_filters(
@@ -479,17 +485,20 @@ fn garbage_collect_arrays(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use datafusion::physical_expr::expressions::lit;
     use datafusion::prelude::SessionContext;
-    use datafusion_proto::protobuf::PhysicalExprNode;
 
     #[test]
     fn encode_produced_dynamic_filter() {
-        let expression = PhysicalExprNode::default();
+        let expression = lit(true);
         let task_ctx = SessionContext::new().task_ctx();
+        let expected = MaybeEncoded::Decoded(Arc::clone(&expression))
+            .encode(&task_ctx)
+            .unwrap();
         let encoded = encode_worker_to_coordinator_msg(
             WorkerToCoordinatorMsg::ProducedDynamicFilter(Box::new(ProducedDynamicFilter {
                 expression_id: 42,
-                expression: expression.clone(),
+                expression: MaybeEncoded::Decoded(expression),
             })),
             &task_ctx,
         )
@@ -501,6 +510,6 @@ mod tests {
             panic!("expected produced dynamic filter");
         };
         assert_eq!(encoded.expression_id, 42);
-        assert_eq!(encoded.expression_proto, expression.encode_to_vec());
+        assert_eq!(encoded.expression_proto, expected);
     }
 }
