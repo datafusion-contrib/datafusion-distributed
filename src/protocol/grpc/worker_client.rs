@@ -9,9 +9,9 @@ use crate::{
     BytesMetricExt, CoordinatorToWorkerMsg, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL,
     DistributedConfig, ExecuteTaskRequest, FirstLatencyMetric, GetWorkerInfoRequest,
     GetWorkerInfoResponse, LatencyMetricExt, LoadInfo, MaxLatencyMetric, MaybeEncoded,
-    MinLatencyMetric, P50LatencyMetric, P95LatencyMetric, ProducerHead, SetPlanRequest,
-    TaskCompletedDynamicFilters, TaskDynamicFilter, TaskKey, TaskMetrics, WorkUnitBatch,
-    WorkUnitFeedDeclaration, WorkUnitMsg, WorkerChannel, WorkerToCoordinatorMsg,
+    MinLatencyMetric, P50LatencyMetric, P95LatencyMetric, ProducedDynamicFilter, ProducerHead,
+    SetPlanRequest, TaskCompletedDynamicFilters, TaskDynamicFilter, TaskKey, TaskMetrics,
+    WorkUnitBatch, WorkUnitFeedDeclaration, WorkUnitMsg, WorkerChannel, WorkerToCoordinatorMsg,
 };
 use arrow_flight::FlightData;
 use arrow_flight::decode::FlightRecordBatchStream;
@@ -25,6 +25,7 @@ use datafusion::execution::TaskContext;
 use datafusion::execution::memory_pool::MemoryConsumer;
 use datafusion::physical_expr_common::metrics::{Count, Label, MetricBuilder, MetricValue, Time};
 use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
+use datafusion_proto::protobuf::PhysicalExprNode;
 use futures::stream::BoxStream;
 use futures::{FutureExt, Stream, StreamExt, TryStreamExt};
 use http::{Extensions, HeaderMap};
@@ -450,6 +451,7 @@ fn encode_set_plan_request(
             .collect(),
         target_worker_url: request.target_worker_url.to_string(),
         query_start_time_ns: request.query_start_time_ns as u64,
+        dynamic_filter_remote_producer_ids: request.dynamic_filter_remote_producer_ids,
     })
 }
 
@@ -513,8 +515,23 @@ fn decode_worker_to_coordinator_msg(
                     decode_task_completed_dynamic_filters(filters)?,
                 )
             }
+            pb::worker_to_coordinator_msg::Inner::ProducedDynamicFilter(filter) => {
+                WorkerToCoordinatorMsg::ProducedDynamicFilter(Box::new(
+                    decode_produced_dynamic_filter(filter)?,
+                ))
+            }
         },
     )
+}
+
+fn decode_produced_dynamic_filter(
+    filter: pb::ProducedDynamicFilter,
+) -> Result<ProducedDynamicFilter> {
+    Ok(ProducedDynamicFilter {
+        expression_id: filter.expression_id,
+        expression: PhysicalExprNode::decode(filter.expression_proto.as_slice())
+            .map_err(|error| DataFusionError::External(Box::new(error)))?,
+    })
 }
 
 fn decode_task_completed_dynamic_filters(
@@ -725,6 +742,7 @@ impl<O, F: Future<Output = O>> Future for ElapsedComputeFuture<F> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use datafusion_proto::protobuf::PhysicalExprNode;
     use futures::StreamExt;
     use futures::stream::unfold;
 
@@ -799,5 +817,25 @@ mod tests {
         println!("expensive future: {}", expensive_time.value());
 
         assert!(expensive_time.value() > cheap_time.value());
+    }
+
+    #[test]
+    fn decode_produced_dynamic_filter() -> Result<()> {
+        let expression = PhysicalExprNode::default();
+        let decoded = decode_worker_to_coordinator_msg(pb::WorkerToCoordinatorMsg {
+            inner: Some(pb::worker_to_coordinator_msg::Inner::ProducedDynamicFilter(
+                pb::ProducedDynamicFilter {
+                    expression_id: 42,
+                    expression_proto: expression.encode_to_vec(),
+                },
+            )),
+        })?;
+
+        let WorkerToCoordinatorMsg::ProducedDynamicFilter(decoded) = decoded else {
+            panic!("expected produced dynamic filter");
+        };
+        assert_eq!(decoded.expression_id, 42);
+        assert_eq!(decoded.expression, expression);
+        Ok(())
     }
 }
