@@ -112,7 +112,7 @@ pub(crate) fn discover_dynamic_filter_consumers(
     Ok(DiscoveredDynamicFilterConsumers { consumers, anchors })
 }
 
-/// Finds dynamic-filter producers in `plan`, deduplicated and orderd by expression ID.
+/// Finds dynamic-filter producers in `plan`, deduplicated and ordered by expression ID.
 pub(crate) fn discover_dynamic_filter_producers(
     plan: &Arc<dyn ExecutionPlan>,
 ) -> Result<Vec<DiscoveredDynamicFilterProducer>> {
@@ -155,7 +155,7 @@ pub(crate) fn orphan_dynamic_filter_consumers(
     let discovered = discover_dynamic_filter_consumers(plan)?;
     // Include anchors here because we want anchors to work recursively. For example,
     // if a producer is in stage 4 and its consumer is in stage 1, an
-    // anchor should exist in stage 4. The easiest way to gurantee that is to ensure
+    // anchor should exist in stage 4. The easiest way to guarantee that is to ensure
     // the anchor exists in stages 2, 3, and 4 recursively via this function.
     let orphaned: HashMap<_, _> = discovered
         .consumers
