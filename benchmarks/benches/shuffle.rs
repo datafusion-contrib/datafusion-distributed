@@ -50,5 +50,50 @@ fn shuffle(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, shuffle);
+// Paired modes on identical inputs; the existing single-mode group stays unchanged.
+fn shuffle_modes(c: &mut Criterion) {
+    let rt = RuntimeBuilder::new_multi_thread()
+        .worker_threads(8)
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    let mut group = c.benchmark_group("shuffle_modes");
+    group.sample_size(20);
+    group.warm_up_time(Duration::from_secs(1));
+    group.measurement_time(Duration::from_secs(3));
+    for (n, m, rows) in [(1, 8, 8_192), (8, 8, 262_144)] {
+        for compression in [None, Some(CompressionType::LZ4_FRAME)] {
+            let mut bench = ShuffleBench::many_to_many_baseline(n)
+                .with_total_rows(rows)
+                .with_batch_size(1024)
+                .with_partitions(8)
+                .with_compression(compression);
+            bench.consumer_tasks = m;
+            let fixture = rt
+                .block_on(bench.prepare())
+                .expect("prepare shuffle fixture");
+            for (mode, two_level) in [("single", false), ("two-level", true)] {
+                group.bench_function(BenchmarkId::new(mode, bench.label()), |b| {
+                    b.iter_custom(|iters| {
+                        let start = Instant::now();
+                        for _ in 0..iters {
+                            rt.block_on(async {
+                                if two_level {
+                                    fixture.run_two_level().await
+                                } else {
+                                    fixture.run().await
+                                }
+                            })
+                            .unwrap();
+                        }
+                        start.elapsed()
+                    });
+                });
+            }
+        }
+    }
+    group.finish();
+}
+
+criterion_group!(benches, shuffle, shuffle_modes);
 criterion_main!(benches);

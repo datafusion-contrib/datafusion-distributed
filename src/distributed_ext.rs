@@ -507,6 +507,20 @@ pub trait DistributedExt: Sized {
         max_tasks_per_stage: usize,
     ) -> Result<(), DataFusionError>;
 
+    /// Sets the minimum `producer_tasks * consumer_tasks * local_partitions` per exchange
+    /// for two-level shuffle in eligible unordered hash regions. 0 disables it (the default).
+    /// A positive threshold enables it.
+    fn with_distributed_two_level_shuffle_min_fanout(
+        self,
+        min_fanout: usize,
+    ) -> Result<Self, DataFusionError>;
+
+    /// Same as [DistributedExt::with_distributed_two_level_shuffle_min_fanout], in place.
+    fn set_distributed_two_level_shuffle_min_fanout(
+        &mut self,
+        min_fanout: usize,
+    ) -> Result<(), DataFusionError>;
+
     /// Enables or disables the PartialReduce optimization, which inserts an extra aggregation
     /// pass above hash RepartitionExec before network shuffles to reduce shuffle data size.
     /// Disabled by default because its effectiveness is workload-dependent: it helps when
@@ -886,6 +900,15 @@ impl DistributedExt for SessionConfig {
         Ok(())
     }
 
+    fn set_distributed_two_level_shuffle_min_fanout(
+        &mut self,
+        min_fanout: usize,
+    ) -> Result<(), DataFusionError> {
+        let d_cfg = DistributedConfig::from_config_options_mut(self.options_mut())?;
+        d_cfg.two_level_shuffle_min_fanout = min_fanout;
+        Ok(())
+    }
+
     fn set_distributed_worker_connection_buffer_budget_bytes(
         &mut self,
         budget_bytes: usize,
@@ -1012,6 +1035,10 @@ impl DistributedExt for SessionConfig {
             #[call(set_distributed_partial_reduce)]
             #[expr($?;Ok(self))]
             fn with_distributed_partial_reduce(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+
+            #[call(set_distributed_two_level_shuffle_min_fanout)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_two_level_shuffle_min_fanout(mut self, min_fanout: usize) -> Result<Self, DataFusionError>;
 
             #[call(set_distributed_worker_connection_buffer_budget_bytes)]
             #[expr($?;Ok(self))]
@@ -1151,6 +1178,11 @@ impl DistributedExt for SessionStateBuilder {
             #[call(set_distributed_partial_reduce)]
             #[expr($?;Ok(self))]
             fn with_distributed_partial_reduce(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_two_level_shuffle_min_fanout(&mut self, min_fanout: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_two_level_shuffle_min_fanout)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_two_level_shuffle_min_fanout(mut self, min_fanout: usize) -> Result<Self, DataFusionError>;
 
             fn set_distributed_worker_connection_buffer_budget_bytes(&mut self, budget_bytes: usize) -> Result<(), DataFusionError>;
             #[call(set_distributed_worker_connection_buffer_budget_bytes)]
@@ -1307,6 +1339,11 @@ impl DistributedExt for SessionState {
             #[expr($?;Ok(self))]
             fn with_distributed_partial_reduce(mut self, enabled: bool) -> Result<Self, DataFusionError>;
 
+            fn set_distributed_two_level_shuffle_min_fanout(&mut self, min_fanout: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_two_level_shuffle_min_fanout)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_two_level_shuffle_min_fanout(mut self, min_fanout: usize) -> Result<Self, DataFusionError>;
+
             fn set_distributed_worker_connection_buffer_budget_bytes(&mut self, budget_bytes: usize) -> Result<(), DataFusionError>;
             #[call(set_distributed_worker_connection_buffer_budget_bytes)]
             #[expr($?;Ok(self))]
@@ -1454,6 +1491,11 @@ impl DistributedExt for SessionContext {
             #[call(set_distributed_partial_reduce)]
             #[expr($?;Ok(self))]
             fn with_distributed_partial_reduce(self, enabled: bool) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_two_level_shuffle_min_fanout(&mut self, min_fanout: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_two_level_shuffle_min_fanout)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_two_level_shuffle_min_fanout(self, min_fanout: usize) -> Result<Self, DataFusionError>;
 
             fn set_distributed_worker_connection_buffer_budget_bytes(&mut self, budget_bytes: usize) -> Result<(), DataFusionError>;
             #[call(set_distributed_worker_connection_buffer_budget_bytes)]

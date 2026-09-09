@@ -4,6 +4,7 @@ use crate::distributed_planner::inject_network_boundaries::{
 };
 use crate::distributed_planner::insert_broadcast::insert_broadcast_execs;
 use crate::distributed_planner::insert_children_isolator_union::insert_children_isolator_unions;
+use crate::distributed_planner::lower_two_level_shuffles;
 use crate::distributed_planner::normalize_collect_joins::normalize_collect_joins;
 use crate::distributed_planner::partial_reduce_below_network_shuffles::partial_reduce_below_network_shuffles;
 use crate::distributed_planner::prepare_network_boundaries::prepare_network_boundaries;
@@ -28,7 +29,7 @@ use std::sync::Arc;
 /// Transforms a single-node physical plan into a distributed plan by injecting network
 /// boundaries between stages.
 ///
-/// The pipeline runs four passes in order:
+/// The pipeline runs five passes in order:
 ///
 /// 1. **Pre-distribution shaping.** A [CoalescePartitionsExec] is wrapped on top of the plan
 ///    when it has more than one output partition (so [inject_network_boundaries] later sees a
@@ -45,11 +46,14 @@ use std::sync::Arc;
 ///    build-side `BroadcastExec`s, and any node sitting under a `CoalescePartitionsExec` /
 ///    `SortPreservingMergeExec`).
 ///
-/// 3. **Boundary preparation.** [prepare_network_boundaries] readies each injected boundary
+/// 3. **Two-level shuffle lowering.** [lower_two_level_shuffles] splits eligible high-fanout
+///    hash exchanges into task-level network routing followed by process-local repartitioning.
+///
+/// 4. **Boundary preparation.** [prepare_network_boundaries] readies each injected boundary
 ///    for execution: elides ones that aren't actually needed and finalises the survivors. If
 ///    no boundary survives, this function returns `None`.
 ///
-/// 4. **Shuffle-volume optimization.** [partial_reduce_below_network_shuffles] inserts partial
+/// 5. **Shuffle-volume optimization.** [partial_reduce_below_network_shuffles] inserts partial
 ///    aggregation nodes underneath hash shuffles where it can, so less data crosses the network.
 #[derive(Debug)]
 pub(crate) struct DistributedQueryPlanner {
@@ -155,6 +159,7 @@ fn create_distributed_plan(
         plan = inject_network_boundaries(plan, CardinalityBasedNetworkBoundaryBuilder, session_cfg)
             .await?;
 
+        plan = lower_two_level_shuffles(plan, 1, d_cfg.two_level_shuffle_min_fanout)?;
         plan = prepare_network_boundaries(plan)?;
         if !plan.exists(|plan| Ok(plan.is_network_boundary()))? {
             return Ok(original_plan);

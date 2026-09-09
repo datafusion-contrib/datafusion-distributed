@@ -3,7 +3,7 @@ use crate::NetworkShuffleExec;
 use crate::common::{deserialize_uuid, require_one_child, serialize_uuid};
 use crate::execution_plans::{
     BroadcastExec, ChildWeight, ChildrenIsolatorUnionExec, NetworkBroadcastExec,
-    NetworkCoalesceExec, SamplerExec,
+    NetworkCoalesceExec, SamplerExec, ShuffleMode,
 };
 use crate::stage::{LocalStage, RemoteStage, Stage};
 use crate::worker::WorkerConnectionPool;
@@ -99,6 +99,39 @@ impl PhysicalExtensionCodec for DistributedCodec {
         }
 
         match distributed_exec_node {
+            DistributedExecNode::NetworkHashShuffleTwoLevel(inner) => {
+                let schema: Schema = inner
+                    .schema
+                    .as_ref()
+                    .ok_or_else(|| proto_error("Two-level shuffle is missing schema"))?
+                    .try_into()?;
+                let decode_ctx = PhysicalPlanDecodeContext::new(ctx, self);
+                let routing = parse_protobuf_partitioning(
+                    inner.partitioning.as_ref(),
+                    &decode_ctx,
+                    &schema,
+                    proto_converter,
+                )?
+                .ok_or_else(|| proto_error("Two-level shuffle is missing routing"))?;
+                let stage = parse_stage_proto(inner.input_stage, inputs)?;
+                let partitioning = Partitioning::UnknownPartitioning(stage.task_count());
+                let equivalence = parse_equivalence_properties(
+                    inner.equivalence_classes,
+                    Arc::new(schema),
+                    &decode_ctx,
+                    proto_converter,
+                )?;
+                Ok(Arc::new(NetworkShuffleExec::try_new_two_level(
+                    stage,
+                    Arc::new(PlanProperties::new(
+                        equivalence,
+                        partitioning,
+                        EmissionType::Incremental,
+                        Boundedness::Bounded,
+                    )),
+                    routing,
+                )?))
+            }
             DistributedExecNode::NetworkHashShuffle(NetworkShuffleExecProto {
                 schema,
                 partitioning,
@@ -297,13 +330,13 @@ impl PhysicalExtensionCodec for DistributedCodec {
         }
 
         if let Some(node) = node.downcast_ref::<NetworkShuffleExec>() {
+            let routing = match &node.mode {
+                ShuffleMode::Single => node.properties().output_partitioning(),
+                ShuffleMode::TwoLevel(routing) => routing,
+            };
             let inner = NetworkShuffleExecProto {
                 schema: Some(node.schema().try_into()?),
-                partitioning: Some(serialize_partitioning(
-                    node.properties().output_partitioning(),
-                    self,
-                    proto_converter,
-                )?),
+                partitioning: Some(serialize_partitioning(routing, self, proto_converter)?),
                 input_stage: Some(encode_stage_proto(node.input_stage())?),
                 equivalence_classes: serialize_equivalence_group(
                     node.properties().equivalence_properties(),
@@ -312,9 +345,11 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 )?,
             };
 
-            let wrapper = DistributedExecProto {
-                node: Some(DistributedExecNode::NetworkHashShuffle(inner)),
+            let mode = match node.mode {
+                ShuffleMode::Single => DistributedExecNode::NetworkHashShuffle(inner),
+                ShuffleMode::TwoLevel(_) => DistributedExecNode::NetworkHashShuffleTwoLevel(inner),
             };
+            let wrapper = DistributedExecProto { node: Some(mode) };
 
             wrapper.encode(buf).map_err(|e| proto_error(format!("{e}")))
         } else if let Some(node) = node.downcast_ref::<NetworkCoalesceExec>() {
@@ -482,7 +517,7 @@ pub struct ExecutionTaskProto {
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DistributedExecProto {
-    #[prost(oneof = "DistributedExecNode", tags = "1, 2, 3, 4, 5, 6, 7")]
+    #[prost(oneof = "DistributedExecNode", tags = "1, 2, 3, 4, 5, 6, 7, 8")]
     pub node: Option<DistributedExecNode>,
 }
 
@@ -501,6 +536,10 @@ pub enum DistributedExecNode {
     Broadcast(BroadcastExecProto),
     #[prost(message, tag = "7")]
     Sampler(SamplerExecProto),
+    // Older decoders must reject two-level plans rather than silently treating
+    // producer streams as final hash buckets.
+    #[prost(message, tag = "8")]
+    NetworkHashShuffleTwoLevel(NetworkShuffleExecProto),
 }
 
 /// Protobuf representation of the [NetworkShuffleExec] physical node. It serves as
@@ -565,16 +604,15 @@ fn new_network_hash_shuffle_exec(
     equivalence_properties: EquivalenceProperties,
     input_stage: Stage,
 ) -> NetworkShuffleExec {
-    NetworkShuffleExec {
-        properties: Arc::new(PlanProperties::new(
+    NetworkShuffleExec::from_stage(
+        input_stage,
+        Arc::new(PlanProperties::new(
             equivalence_properties,
             partitioning,
             EmissionType::Incremental,
             Boundedness::Bounded,
         )),
-        worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
-        input_stage,
-    }
+    )
 }
 
 /// Protobuf representation of the [NetworkShuffleExec] physical node. It serves as
@@ -654,6 +692,7 @@ mod tests {
     use datafusion::arrow::datatypes::{DataType, Field};
     use datafusion::physical_expr::{LexOrdering, PhysicalExpr};
     use datafusion::physical_plan::empty::EmptyExec;
+    use datafusion::physical_plan::repartition::RepartitionExec;
     use datafusion::prelude::SessionContext;
     use datafusion::{
         physical_expr::{Partitioning, PhysicalSortExpr, expressions::Column, expressions::col},
@@ -693,6 +732,49 @@ mod tests {
 
     fn create_context() -> Arc<TaskContext> {
         SessionContext::new().task_ctx()
+    }
+
+    #[test]
+    fn test_roundtrip_two_level() -> datafusion::common::Result<()> {
+        let ctx = create_context();
+        let schema = schema_i32("key");
+        let hash = Partitioning::Hash(vec![Arc::new(Column::new("key", 0))], 8);
+        let properties = Arc::new(PlanProperties::new(
+            EquivalenceProperties::new(Arc::clone(&schema)),
+            hash.clone(),
+            EmissionType::Incremental,
+            Boundedness::Bounded,
+        ));
+        let stage = Stage::Local(LocalStage {
+            query_id: Default::default(),
+            num: 3,
+            plan: Arc::new(EmptyExec::new(Arc::clone(&schema))),
+            tasks: 2,
+            metrics_set: Default::default(),
+        });
+        let source = Arc::new(NetworkShuffleExec::try_new_two_level(
+            stage,
+            properties,
+            Partitioning::Hash(vec![Arc::new(Column::new("key", 0))], 1),
+        )?);
+        let mut source_bytes = Vec::new();
+        DistributedCodec.try_encode(
+            source.clone(),
+            &mut source_bytes,
+            &default_proto_converter(),
+        )?;
+        assert!(matches!(
+            DistributedExecProto::decode(source_bytes.as_slice())
+                .unwrap()
+                .node,
+            Some(DistributedExecNode::NetworkHashShuffleTwoLevel(_))
+        ));
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(RepartitionExec::try_new(source, hash)?);
+        let encoded = crate::codec::encode_execution_plan(Arc::clone(&plan), &ctx)?;
+        let decoded = crate::codec::decode_execution_plan(&encoded, &ctx)?;
+        assert_eq!(repr(&plan), repr(&decoded));
+        assert_eq!(decoded.schema(), schema);
+        Ok(())
     }
 
     #[test]

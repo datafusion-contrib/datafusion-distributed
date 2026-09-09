@@ -2,16 +2,16 @@ use super::fixture::{
     InMemoryChannelsResolver, benchmark_schema, make_input_partitions, rows_for_producer,
 };
 use crate::common::task_ctx_with_extension;
+use crate::distributed_planner::REMOTE_SHUFFLE_SALT;
 use crate::stage::RemoteStage;
-use crate::worker::WorkerConnectionPool;
 use crate::worker::test_utils::worker_handles::MemoryWorkerHandle;
 use crate::{DistributedExt, DistributedTaskContext, NetworkShuffleExec, Stage};
 use arrow::datatypes::Schema;
 use arrow_ipc::CompressionType;
-use datafusion::common::Result;
+use datafusion::common::{Result, ScalarValue, exec_err};
 use datafusion::execution::SessionStateBuilder;
-use datafusion::physical_expr::expressions::Column;
-use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
+use datafusion::physical_expr::expressions::{Column, Literal};
+use datafusion::physical_expr::{EquivalenceProperties, Partitioning, PhysicalExpr};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::{ExecutionPlan, PlanProperties};
@@ -123,6 +123,16 @@ impl ShuffleBench {
         normalized
     }
 
+    fn generated_rows(&self) -> usize {
+        (0..self.producer_tasks)
+            .map(|task_index| {
+                rows_for_producer(self.total_rows, self.producer_tasks.max(1), task_index)
+                    .div_ceil(self.batch_size)
+                    * self.batch_size
+            })
+            .sum()
+    }
+
     pub fn label(&self) -> String {
         format!(
             "scenario={},producer_tasks={},consumer_tasks={},partitions={},total_rows={},batch_size={},compression={}",
@@ -193,20 +203,48 @@ pub struct ShuffleFixture {
     workers: Vec<MemoryWorkerHandle>,
 }
 
+#[derive(Clone, Copy)]
+enum BenchShuffleMode {
+    Single,
+    TwoLevel,
+}
+
+impl BenchShuffleMode {
+    fn hash_partitioning(self, partitions: usize) -> Partitioning {
+        let mut expressions: Vec<Arc<dyn PhysicalExpr>> = vec![Arc::new(Column::new("id", 0))];
+        if matches!(self, Self::TwoLevel) {
+            expressions.push(Arc::new(Literal::new(ScalarValue::UInt64(Some(
+                REMOTE_SHUFFLE_SALT,
+            )))));
+        }
+        Partitioning::Hash(expressions, partitions)
+    }
+}
+
 impl ShuffleFixture {
     pub async fn run(&self) -> Result<()> {
+        self.run_mode(BenchShuffleMode::Single).await
+    }
+
+    pub async fn run_two_level(&self) -> Result<()> {
+        self.run_mode(BenchShuffleMode::TwoLevel).await
+    }
+
+    async fn run_mode(&self, mode: BenchShuffleMode) -> Result<()> {
         let query_id = Uuid::new_v4();
         for worker in &self.workers {
             worker
                 .register_plan_with(query_id, |input| {
+                    let partitions = match mode {
+                        BenchShuffleMode::Single => self
+                            .bench
+                            .partitions
+                            .saturating_mul(self.bench.consumer_tasks.max(1)),
+                        BenchShuffleMode::TwoLevel => self.bench.consumer_tasks.max(1),
+                    };
                     Ok(Arc::new(RepartitionExec::try_new(
                         input,
-                        Partitioning::Hash(
-                            vec![Arc::new(Column::new("id", 0))],
-                            self.bench
-                                .partitions
-                                .saturating_mul(self.bench.consumer_tasks.max(1)),
-                        ),
+                        mode.hash_partitioning(partitions),
                     )?))
                 })
                 .await?;
@@ -221,15 +259,38 @@ impl ShuffleFixture {
 
         let mut join_set = JoinSet::default();
         for task_index in 0..self.bench.consumer_tasks {
-            let shuffle = NetworkShuffleExec {
-                properties: Arc::new(PlanProperties::new(
-                    EquivalenceProperties::new(Arc::clone(&self.schema)),
-                    Partitioning::Hash(vec![Arc::new(Column::new("id", 0))], self.bench.partitions),
-                    EmissionType::Incremental,
-                    Boundedness::Bounded,
+            let remote_partitions = match mode {
+                BenchShuffleMode::Single => self.bench.partitions,
+                BenchShuffleMode::TwoLevel => 1,
+            };
+            let routing_partitioning = mode.hash_partitioning(remote_partitions);
+            let shuffle: Arc<dyn ExecutionPlan> = match mode {
+                BenchShuffleMode::Single => Arc::new(NetworkShuffleExec::from_stage(
+                    input_stage.clone(),
+                    Arc::new(PlanProperties::new(
+                        EquivalenceProperties::new(Arc::clone(&self.schema)),
+                        routing_partitioning,
+                        EmissionType::Incremental,
+                        Boundedness::Bounded,
+                    )),
                 )),
-                input_stage: input_stage.clone(),
-                worker_connections: WorkerConnectionPool::new(self.bench.producer_tasks),
+                BenchShuffleMode::TwoLevel => Arc::new(NetworkShuffleExec::try_new_two_level(
+                    input_stage.clone(),
+                    Arc::new(PlanProperties::new(
+                        EquivalenceProperties::new(Arc::clone(&self.schema)),
+                        Partitioning::UnknownPartitioning(self.bench.producer_tasks),
+                        EmissionType::Incremental,
+                        Boundedness::Bounded,
+                    )),
+                    routing_partitioning,
+                )?),
+            };
+            let plan: Arc<dyn ExecutionPlan> = match mode {
+                BenchShuffleMode::Single => shuffle,
+                BenchShuffleMode::TwoLevel => Arc::new(RepartitionExec::try_new(
+                    shuffle,
+                    BenchShuffleMode::Single.hash_partitioning(self.bench.partitions),
+                )?),
             };
             let task_ctx = Arc::new(task_ctx_with_extension(
                 &self.task_ctx,
@@ -239,8 +300,8 @@ impl ShuffleFixture {
                 },
             ));
 
-            for partition in 0..shuffle.properties.partitioning.partition_count() {
-                let stream = shuffle.execute(partition, Arc::clone(&task_ctx))?;
+            for partition in 0..plan.properties().partitioning.partition_count() {
+                let stream = plan.execute(partition, Arc::clone(&task_ctx))?;
                 join_set.spawn(async move {
                     let batches = stream.try_collect::<Vec<_>>().await?;
                     Ok::<usize, datafusion::common::DataFusionError>(
@@ -253,7 +314,10 @@ impl ShuffleFixture {
         for task in join_set.join_all().await {
             actual_rows += task?;
         }
-        let _row_count = actual_rows;
+        let expected_rows = self.bench.generated_rows();
+        if actual_rows != expected_rows {
+            return exec_err!("shuffle returned {actual_rows} rows, expected {expected_rows}");
+        }
         Ok(())
     }
 }
@@ -271,5 +335,16 @@ mod tests {
             .prepare()
             .await?;
         fixture.run().await
+    }
+
+    #[tokio::test]
+    async fn two_level_smoke() -> Result<()> {
+        let fixture = ShuffleBench::one_to_many_baseline(4)
+            .with_partitions(4)
+            .with_total_rows(256)
+            .with_batch_size(64)
+            .prepare()
+            .await?;
+        fixture.run_two_level().await
     }
 }

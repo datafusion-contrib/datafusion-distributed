@@ -930,7 +930,14 @@ fn display_inter_task_edges(
             }
             // draw the edges to this node pulling data up from its child
             let output_partitions = plan.output_partitioning().partition_count();
-            for p in 0..output_partitions {
+            let ports: Vec<_> = if node.is_two_level() {
+                vec![(input_task_i, task_i)]
+            } else {
+                (0..output_partitions)
+                    .map(|p| (p, p + task_i * output_partitions))
+                    .collect()
+            };
+            for (p, remote_partition) in ports {
                 writeln!(
                     f,
                     "  {}_{}_{}_{}:t{}:n -> {}_{}_{}_{}:b{}:s [color={}]",
@@ -938,7 +945,7 @@ fn display_inter_task_edges(
                     input_stage.num(),
                     input_task_i,
                     1, // the repartition exec is always the first node in the plan
-                    p + (task_i * output_partitions),
+                    remote_partition,
                     plan.name(),
                     stage.num(),
                     task_i,
