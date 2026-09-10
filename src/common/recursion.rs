@@ -17,9 +17,10 @@ pub(crate) trait TreeNodeExt {
     /// Sibling subtrees are transformed concurrently.
     ///
     /// The returned [`TreeNodeRecursion`] steers the traversal as in
-    /// [`TreeNode::transform_up`]: both [`TreeNodeRecursion::Jump`] and
-    /// [`TreeNodeRecursion::Stop`] prevent `f` from being applied to *any* ancestor of the
-    /// node that returned them.
+    /// [`TreeNode::transform_up`]. [`TreeNodeRecursion::Stop`] propagates through every ancestor,
+    /// so none of their callbacks run. [`TreeNodeRecursion::Jump`] stops recursing to the immediate
+    /// parent, but an adjacent sibling branch that returns [`TreeNodeRecursion::Continue`] can
+    /// still allow the callback to run on their shared ancestors.
     ///
     /// Because sibling subtrees run concurrently, [`TreeNodeRecursion::Stop`] cannot prune
     /// them: unlike [`TreeNode::transform_up`], `f` has already been applied to the sibling
