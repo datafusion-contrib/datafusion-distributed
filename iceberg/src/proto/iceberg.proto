@@ -30,6 +30,7 @@ message FileScanTaskContext {
   PartitionSpec partition_spec = 4;
   NameMapping name_mapping = 5;
   bool case_sensitive = 6;
+  StructType unified_partition_type = 7;
 }
 
 message FileScanTaskBody {
@@ -41,6 +42,9 @@ message FileScanTaskBody {
   DataFileFormat data_file_format = 6;
   repeated DeleteFile deletes = 7;
   PartitionValues partition = 8;
+  optional int64 first_row_id = 9;
+  optional int64 data_sequence_number = 10;
+  optional bytes key_metadata = 11;
 }
 
 enum DataFileFormat {
@@ -57,6 +61,12 @@ message DeleteFile {
   DataContentType file_type = 3;
   int32 partition_spec_id = 4;
   EqualityIds equality_ids = 5;
+  DataFileFormat file_format = 6;
+  optional string referenced_data_file = 7;
+  optional int64 content_offset = 8;
+  optional int64 content_size_in_bytes = 9;
+  optional uint64 record_count = 10;
+  optional bytes key_metadata = 11;
 }
 
 message EqualityIds {
@@ -100,6 +110,7 @@ message Type {
     StructType struct = 2;
     ListType list = 3;
     MapType map = 4;
+    Empty variant = 5;
   }
 }
 

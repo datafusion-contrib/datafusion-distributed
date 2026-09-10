@@ -7,6 +7,7 @@ mod tests {
     use datafusion::common::{ColumnStatistics, Statistics};
     use datafusion::error::Result;
     use datafusion::physical_plan::displayable;
+    use datafusion::physical_plan::statistics::{StatisticsArgs, StatisticsContext};
     use datafusion::scalar::ScalarValue;
     use datafusion_distributed_iceberg::IcebergExt;
     use datafusion_distributed_iceberg::test_utils::{
@@ -188,7 +189,8 @@ mod tests {
 
     // Observe the query's output statistics, including projection and propagation.
     async fn query_statistics(harness: &IcebergTestHarness, sql: &str) -> Result<Arc<Statistics>> {
-        harness.physical_plan(sql).await?.partition_statistics(None)
+        let plan = harness.physical_plan(sql).await?;
+        StatisticsContext::new().compute(plan.as_ref(), &StatisticsArgs::new())
     }
 
     fn metadata_without_summary_statistics() -> TableMetadata {

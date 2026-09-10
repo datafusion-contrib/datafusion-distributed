@@ -9,7 +9,7 @@ use datafusion_distributed::{WorkUnitFeed, WorkUnitFeedProto};
 use datafusion_proto::physical_plan::from_proto::parse_protobuf_partitioning;
 use datafusion_proto::physical_plan::to_proto::serialize_partitioning;
 use datafusion_proto::physical_plan::{
-    DefaultPhysicalProtoConverter, PhysicalExtensionCodec, PhysicalPlanDecodeContext,
+    PhysicalExtensionCodec, PhysicalPlanDecodeContext, PhysicalProtoConverterExtension,
 };
 use datafusion_proto::protobuf::proto_error;
 use iceberg::io::{FileIOBuilder, StorageFactory};
@@ -54,6 +54,7 @@ impl PhysicalExtensionCodec for IcebergCodec {
         buf: &[u8],
         inputs: &[Arc<dyn ExecutionPlan>],
         ctx: &TaskContext,
+        proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         if !inputs.is_empty() {
             return internal_err!(
@@ -78,7 +79,7 @@ impl PhysicalExtensionCodec for IcebergCodec {
             proto.partitioning.as_ref(),
             &decode_ctx,
             &schema,
-            &DefaultPhysicalProtoConverter {},
+            proto_converter,
         )?
         .ok_or_else(|| proto_error("IcebergDataSource is missing its partitioning"))?;
         let fetch = proto
@@ -103,7 +104,12 @@ impl PhysicalExtensionCodec for IcebergCodec {
         }))
     }
 
-    fn try_encode(&self, node: Arc<dyn ExecutionPlan>, buf: &mut Vec<u8>) -> Result<()> {
+    fn try_encode(
+        &self,
+        node: Arc<dyn ExecutionPlan>,
+        buf: &mut Vec<u8>,
+        proto_converter: &dyn PhysicalProtoConverterExtension,
+    ) -> Result<()> {
         let Some(exec) = node.downcast_ref::<DataSourceExec>() else {
             return internal_err!(
                 "expected DataSourceExec wrapping IcebergDataSource, got {}",
@@ -123,7 +129,7 @@ impl PhysicalExtensionCodec for IcebergCodec {
             partitioning: Some(serialize_partitioning(
                 &source.partitioning,
                 self,
-                &DefaultPhysicalProtoConverter {},
+                proto_converter,
             )?),
             fetch: source.fetch.map(|value| value as u64),
             storage_properties: source.iceberg_file_io.config().props().clone(),

@@ -30,16 +30,16 @@ mod tests {
         insta::assert_snapshot!(plan + &results, @"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [pickup_date@0 ASC NULLS LAST]
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=6, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── tasks=2, partitions=2
-          │ SortExec: expr=[pickup_date@0 ASC NULLS LAST], preserve_partitioning=[true]
-          │   ProjectionExec: expr=[pickup_date@0 as pickup_date, count(Int64(1))@1 as trips]
+          ┌───── Stage 2 ── tasks=3, partitions=2
+          │ ProjectionExec: expr=[pickup_date@0 as pickup_date, count(Int64(1))@1 as trips]
+          │   SortExec: expr=[pickup_date@0 ASC NULLS LAST], preserve_partitioning=[true]
           │     AggregateExec: mode=FinalPartitioned, gby=[pickup_date@0 as pickup_date], aggr=[count(Int64(1))]
           │       [Stage 1] => NetworkShuffleExec: output_partitions=2, input_tasks=3
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── tasks=3, partitions=4
-            │ RepartitionExec: partitioning=Hash([pickup_date@0], 4), input_partitions=2
+            ┌───── Stage 1 ── tasks=3, partitions=6
+            │ RepartitionExec: partitioning=Hash([pickup_date@0], 6), input_partitions=2
             │   AggregateExec: mode=Partial, gby=[pickup_date@0 as pickup_date], aggr=[count(Int64(1))]
             │     DataSourceExec: format=iceberg, projection=[pickup_date]
             └──────────────────────────────────────────────────

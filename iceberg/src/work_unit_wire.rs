@@ -167,12 +167,12 @@ impl Message for FileScanTaskMessage {
 }
 
 fn validate_task(task: &FileScanTask) -> Result<()> {
-    validate_file_range(task.file_size_in_bytes, task.start, task.length)?;
-    validate_projected_fields(&task.schema, &task.project_field_ids)?;
+    validate_file_range(task.file_size_in_bytes(), task.start(), task.length())?;
+    validate_projected_fields(task.schema(), task.project_field_ids())?;
     partition_to_proto(
-        task.partition.as_ref(),
-        task.partition_spec.as_deref(),
-        &task.schema,
+        task.partition(),
+        task.partition_spec().map(AsRef::as_ref),
+        task.schema(),
     )?;
     Ok(())
 }
@@ -186,18 +186,21 @@ fn task_to_proto(
         context_id,
         context: include_context.then(|| context_to_proto(task)),
         task: Some(pb::FileScanTaskBody {
-            file_size_in_bytes: task.file_size_in_bytes,
-            start: task.start,
-            length: task.length,
-            record_count: task.record_count,
-            data_file_path: task.data_file_path.clone(),
-            data_file_format: data_file_format_to_proto(task.data_file_format) as i32,
-            deletes: task.deletes.iter().map(delete_to_proto).collect(),
+            file_size_in_bytes: task.file_size_in_bytes(),
+            start: task.start(),
+            length: task.length(),
+            record_count: task.record_count(),
+            data_file_path: task.data_file_path().to_owned(),
+            data_file_format: data_file_format_to_proto(task.data_file_format()) as i32,
+            deletes: task.deletes().iter().map(delete_to_proto).collect(),
             partition: partition_to_proto(
-                task.partition.as_ref(),
-                task.partition_spec.as_deref(),
-                &task.schema,
+                task.partition(),
+                task.partition_spec().map(AsRef::as_ref),
+                task.schema(),
             )?,
+            first_row_id: task.first_row_id(),
+            data_sequence_number: task.data_sequence_number(),
+            key_metadata: task.key_metadata().map(ToOwned::to_owned),
         }),
     })
 }
@@ -209,28 +212,31 @@ struct FileScanTaskContext {
     predicate: Option<BoundPredicate>,
     partition_spec: Option<Arc<PartitionSpec>>,
     name_mapping: Option<Arc<NameMapping>>,
+    unified_partition_type: Option<Arc<StructType>>,
     case_sensitive: bool,
 }
 
 impl FileScanTaskContext {
     fn from_task(task: &FileScanTask) -> Self {
         Self {
-            schema: Arc::clone(&task.schema),
-            projected_field_ids: task.project_field_ids.clone(),
-            predicate: task.predicate.clone(),
-            partition_spec: task.partition_spec.clone(),
-            name_mapping: task.name_mapping.clone(),
-            case_sensitive: task.case_sensitive,
+            schema: task.schema_ref(),
+            projected_field_ids: task.project_field_ids().to_vec(),
+            predicate: task.predicate().cloned(),
+            partition_spec: task.partition_spec().cloned(),
+            name_mapping: task.name_mapping().cloned(),
+            unified_partition_type: task.unified_partition_type().cloned(),
+            case_sensitive: task.case_sensitive(),
         }
     }
 
     fn matches(&self, task: &FileScanTask) -> bool {
-        self.schema == task.schema
-            && self.projected_field_ids == task.project_field_ids
-            && self.predicate == task.predicate
-            && self.partition_spec == task.partition_spec
-            && self.name_mapping == task.name_mapping
-            && self.case_sensitive == task.case_sensitive
+        self.schema.as_ref() == task.schema()
+            && self.projected_field_ids == task.project_field_ids()
+            && self.predicate.as_ref() == task.predicate()
+            && self.partition_spec.as_ref() == task.partition_spec()
+            && self.name_mapping.as_ref() == task.name_mapping()
+            && self.unified_partition_type.as_ref() == task.unified_partition_type()
+            && self.case_sensitive == task.case_sensitive()
     }
 }
 
@@ -243,12 +249,19 @@ fn context_id(index: usize) -> Result<u32> {
 
 fn context_to_proto(task: &FileScanTask) -> pb::FileScanTaskContext {
     pb::FileScanTaskContext {
-        schema: Some(schema_to_proto(&task.schema)),
-        projected_field_ids: task.project_field_ids.clone(),
-        predicate: task.predicate.as_ref().map(predicate_to_proto),
-        partition_spec: task.partition_spec.as_deref().map(partition_spec_to_proto),
-        name_mapping: task.name_mapping.as_deref().map(name_mapping_to_proto),
-        case_sensitive: task.case_sensitive,
+        schema: Some(schema_to_proto(task.schema())),
+        projected_field_ids: task.project_field_ids().to_vec(),
+        predicate: task.predicate().map(predicate_to_proto),
+        partition_spec: task
+            .partition_spec()
+            .map(|spec| partition_spec_to_proto(spec)),
+        name_mapping: task
+            .name_mapping()
+            .map(|mapping| name_mapping_to_proto(mapping)),
+        case_sensitive: task.case_sensitive(),
+        unified_partition_type: task
+            .unified_partition_type()
+            .map(|data_type| struct_type_to_proto(data_type)),
     }
 }
 
@@ -275,6 +288,11 @@ fn context_from_proto(proto: pb::FileScanTaskContext) -> Result<FileScanTaskCont
             .name_mapping
             .map(name_mapping_from_proto)
             .map(Arc::new),
+        unified_partition_type: proto
+            .unified_partition_type
+            .map(struct_type_from_proto)
+            .transpose()?
+            .map(Arc::new),
         case_sensitive: proto.case_sensitive,
     })
 }
@@ -284,30 +302,36 @@ fn body_from_proto(
     context: &FileScanTaskContext,
 ) -> Result<FileScanTask> {
     validate_file_range(body.file_size_in_bytes, body.start, body.length)?;
-    Ok(FileScanTask {
-        file_size_in_bytes: body.file_size_in_bytes,
-        start: body.start,
-        length: body.length,
-        record_count: body.record_count,
-        data_file_path: body.data_file_path,
-        data_file_format: data_file_format_from_proto(body.data_file_format)?,
-        schema: Arc::clone(&context.schema),
-        project_field_ids: context.projected_field_ids.clone(),
-        predicate: context.predicate.clone(),
-        deletes: body
-            .deletes
-            .into_iter()
-            .map(delete_from_proto)
-            .collect::<Result<_>>()?,
-        partition: partition_from_proto(
+    FileScanTask::builder()
+        .with_file_size_in_bytes(body.file_size_in_bytes)
+        .with_start(body.start)
+        .with_length(body.length)
+        .with_record_count(body.record_count)
+        .with_first_row_id(body.first_row_id)
+        .with_data_sequence_number(body.data_sequence_number)
+        .with_data_file_path(body.data_file_path)
+        .with_data_file_format(data_file_format_from_proto(body.data_file_format)?)
+        .with_schema(Arc::clone(&context.schema))
+        .with_project_field_ids(context.projected_field_ids.clone())
+        .with_predicate(context.predicate.clone())
+        .with_deletes(
+            body.deletes
+                .into_iter()
+                .map(delete_from_proto)
+                .collect::<Result<_>>()?,
+        )
+        .with_partition(partition_from_proto(
             body.partition,
             context.partition_spec.as_deref(),
             &context.schema,
-        )?,
-        partition_spec: context.partition_spec.clone(),
-        name_mapping: context.name_mapping.clone(),
-        case_sensitive: context.case_sensitive,
-    })
+        )?)
+        .with_partition_spec(context.partition_spec.clone())
+        .with_name_mapping(context.name_mapping.clone())
+        .with_unified_partition_type(context.unified_partition_type.clone())
+        .with_case_sensitive(context.case_sensitive)
+        .with_key_metadata(body.key_metadata.map(Vec::into_boxed_slice))
+        .build()
+        .map_err(|error| exec_datafusion_err!("invalid Iceberg file scan task: {error}"))
 }
 
 fn validate_projected_fields(schema: &Schema, field_ids: &[i32]) -> Result<()> {
@@ -365,6 +389,12 @@ fn delete_to_proto(delete: &FileScanTaskDeleteFile) -> pb::DeleteFile {
         equality_ids: delete.equality_ids.as_ref().map(|values| pb::EqualityIds {
             values: values.clone(),
         }),
+        file_format: data_file_format_to_proto(delete.file_format) as i32,
+        referenced_data_file: delete.referenced_data_file.clone(),
+        content_offset: delete.content_offset,
+        content_size_in_bytes: delete.content_size_in_bytes,
+        record_count: delete.record_count,
+        key_metadata: delete.key_metadata.as_deref().map(ToOwned::to_owned),
     }
 }
 
@@ -380,13 +410,26 @@ fn delete_from_proto(delete: pb::DeleteFile) -> Result<FileScanTaskDeleteFile> {
             );
         }
     };
-    Ok(FileScanTaskDeleteFile {
-        file_path: delete.file_path,
-        file_size_in_bytes: delete.file_size_in_bytes,
-        file_type,
-        partition_spec_id: delete.partition_spec_id,
-        equality_ids: delete.equality_ids.map(|values| values.values),
-    })
+    Ok(FileScanTaskDeleteFile::builder()
+        .with_file_path(delete.file_path)
+        .with_file_size_in_bytes(delete.file_size_in_bytes)
+        .with_file_type(file_type)
+        // Older workers omitted this field because only Parquet delete files existed.
+        .with_file_format(
+            if delete.file_format == pb::DataFileFormat::Unspecified as i32 {
+                DataFileFormat::Parquet
+            } else {
+                data_file_format_from_proto(delete.file_format)?
+            },
+        )
+        .with_partition_spec_id(delete.partition_spec_id)
+        .with_equality_ids(delete.equality_ids.map(|values| values.values))
+        .with_referenced_data_file(delete.referenced_data_file)
+        .with_content_offset(delete.content_offset)
+        .with_content_size_in_bytes(delete.content_size_in_bytes)
+        .with_record_count(delete.record_count)
+        .with_key_metadata(delete.key_metadata.map(Vec::into_boxed_slice))
+        .build())
 }
 
 fn partition_to_proto(
@@ -570,6 +613,7 @@ fn type_to_proto(data_type: &Type) -> pb::Type {
             key: Some(Box::new(nested_field_to_proto(&data_type.key_field))),
             value: Some(Box::new(nested_field_to_proto(&data_type.value_field))),
         })),
+        Type::Variant(_) => Kind::Variant(pb::Empty {}),
     };
     pb::Type { kind: Some(kind) }
 }
@@ -595,7 +639,28 @@ fn type_from_proto(data_type: pb::Type) -> Result<Type> {
             let value = nested_field_from_proto(*required(data_type.value, "map value")?)?;
             Ok(Type::Map(MapType::new(Arc::new(key), Arc::new(value))))
         }
+        Kind::Variant(_) => Ok(Type::Variant(iceberg::spec::VariantType)),
     }
+}
+
+fn struct_type_to_proto(data_type: &StructType) -> pb::StructType {
+    pb::StructType {
+        fields: data_type
+            .fields()
+            .iter()
+            .map(|field| nested_field_to_proto(field))
+            .collect(),
+    }
+}
+
+fn struct_type_from_proto(data_type: pb::StructType) -> Result<StructType> {
+    data_type
+        .fields
+        .into_iter()
+        .map(nested_field_from_proto)
+        .map(|field| field.map(Arc::new))
+        .collect::<Result<Vec<_>>>()
+        .map(StructType::new)
 }
 
 fn primitive_type_to_proto(data_type: &PrimitiveType) -> pb::PrimitiveType {
@@ -1206,16 +1271,16 @@ mod tests {
     #[test]
     fn local_message_keeps_native_task() {
         let task = sample_task("file.parquet", 10);
-        let schema = Arc::clone(&task.schema);
-        let partition_spec = Arc::clone(task.partition_spec.as_ref().unwrap());
+        let schema = task.schema_ref();
+        let partition_spec = Arc::clone(task.partition_spec().unwrap());
 
         let message = FileScanTaskEncoder::default().encode(task).unwrap();
         let decoded = FileScanTaskDecoder::default().decode(message).unwrap();
 
-        assert!(Arc::ptr_eq(&schema, &decoded.schema));
+        assert!(Arc::ptr_eq(&schema, &decoded.schema_ref()));
         assert!(Arc::ptr_eq(
             &partition_spec,
-            decoded.partition_spec.as_ref().unwrap()
+            decoded.partition_spec().unwrap()
         ));
     }
 
@@ -1253,9 +1318,9 @@ mod tests {
         let mut encoder = FileScanTaskEncoder::default();
         let first = encoder.encode(sample_task("first.parquet", 10)).unwrap();
         let second = encoder.encode(sample_task("second.parquet", 20)).unwrap();
-        let mut changed = sample_task("third.parquet", 30);
-        changed.case_sensitive = false;
-        let changed = encoder.encode(changed).unwrap();
+        let changed = encoder
+            .encode(sample_task_with_case("third.parquet", 30, false))
+            .unwrap();
 
         assert_eq!(context_state(&first), (1, true));
         assert_eq!(context_state(&second), (1, false));
@@ -1264,14 +1329,14 @@ mod tests {
         let mut decoder = FileScanTaskDecoder::default();
         let first = decoder.decode(protobuf_message(first)).unwrap();
         let second = decoder.decode(protobuf_message(second)).unwrap();
-        assert_eq!(first.data_file_path, "first.parquet");
-        assert_eq!(second.data_file_path, "second.parquet");
-        assert!(Arc::ptr_eq(&first.schema, &second.schema));
+        assert_eq!(first.data_file_path(), "first.parquet");
+        assert_eq!(second.data_file_path(), "second.parquet");
+        assert!(Arc::ptr_eq(&first.schema_ref(), &second.schema_ref()));
         assert!(
             !decoder
                 .decode(protobuf_message(changed))
                 .unwrap()
-                .case_sensitive
+                .case_sensitive()
         );
     }
 
@@ -1311,25 +1376,25 @@ mod tests {
     }
 
     #[test]
-    fn omits_untyped_partition_values_from_protobuf() {
-        let mut task = sample_task("file.parquet", 10);
-        task.partition_spec = None;
-
-        let decoded = protobuf_roundtrip(task).unwrap();
-
-        assert!(decoded.partition.is_none());
-        assert!(decoded.partition_spec.is_none());
-    }
-
-    #[test]
     fn rejects_invalid_native_task() {
-        let mut task = sample_task("file.parquet", 10);
-        task.partition = Some(
-            [Some(Literal::List(vec![Some(Literal::int(10))]))]
-                .into_iter()
-                .collect(),
-        );
-
+        let task = sample_task("file.parquet", 10);
+        let task = FileScanTask::builder()
+            .with_file_size_in_bytes(task.file_size_in_bytes())
+            .with_start(task.start())
+            .with_length(task.length())
+            .with_data_file_path(task.data_file_path().to_owned())
+            .with_data_file_format(task.data_file_format())
+            .with_schema(task.schema_ref())
+            .with_project_field_ids(task.project_field_ids().to_vec())
+            .with_partition(Some(
+                [Some(Literal::List(vec![Some(Literal::int(10))]))]
+                    .into_iter()
+                    .collect(),
+            ))
+            .with_partition_spec(task.partition_spec().cloned())
+            .with_case_sensitive(true)
+            .build()
+            .unwrap();
         let error = FileScanTaskEncoder::default().encode(task).unwrap_err();
 
         assert!(error.to_string().contains("not primitive"));
@@ -1464,6 +1529,14 @@ mod tests {
     }
 
     fn sample_task(path: &str, partition_value: i32) -> FileScanTask {
+        sample_task_with_case(path, partition_value, true)
+    }
+
+    fn sample_task_with_case(
+        path: &str,
+        partition_value: i32,
+        case_sensitive: bool,
+    ) -> FileScanTask {
         let schema = test_schema(PrimitiveType::Int);
         let partition_spec = Arc::new(
             PartitionSpec::builder(Arc::clone(&schema))
@@ -1477,32 +1550,56 @@ mod tests {
             .greater_than(Datum::int(5))
             .bind(Arc::clone(&schema), true)
             .unwrap();
-        FileScanTask {
-            file_size_in_bytes: 100,
-            start: 10,
-            length: 80,
-            record_count: Some(12),
-            data_file_path: path.to_owned(),
-            data_file_format: DataFileFormat::Parquet,
-            schema,
-            project_field_ids: vec![1],
-            predicate: Some(predicate),
-            deletes: vec![FileScanTaskDeleteFile {
-                file_path: "delete.parquet".to_owned(),
-                file_size_in_bytes: 20,
-                file_type: DataContentType::EqualityDeletes,
-                partition_spec_id: 7,
-                equality_ids: Some(vec![1]),
-            }],
-            partition: Some([Some(Literal::int(partition_value))].into_iter().collect()),
-            partition_spec: Some(partition_spec),
-            name_mapping: Some(Arc::new(NameMapping::new(vec![MappedField::new(
+        let delete = FileScanTaskDeleteFile::builder()
+            .with_file_path("delete.parquet".to_owned())
+            .with_file_size_in_bytes(20)
+            .with_file_type(DataContentType::EqualityDeletes)
+            .with_file_format(DataFileFormat::Parquet)
+            .with_partition_spec_id(7)
+            .with_equality_ids(Some(vec![1]))
+            .with_record_count(Some(2))
+            .with_key_metadata(Some(vec![4, 5, 6].into_boxed_slice()))
+            .build();
+        let deletion_vector = FileScanTaskDeleteFile::builder()
+            .with_file_path("deletes.puffin".to_owned())
+            .with_file_size_in_bytes(30)
+            .with_file_type(DataContentType::PositionDeletes)
+            .with_file_format(DataFileFormat::Puffin)
+            .with_partition_spec_id(7)
+            .with_referenced_data_file(Some(path.to_owned()))
+            .with_content_offset(Some(10))
+            .with_content_size_in_bytes(Some(15))
+            .with_record_count(Some(3))
+            .build();
+        FileScanTask::builder()
+            .with_file_size_in_bytes(100)
+            .with_start(10)
+            .with_length(80)
+            .with_record_count(Some(12))
+            .with_first_row_id(Some(1000))
+            .with_data_sequence_number(Some(3))
+            .with_data_file_path(path.to_owned())
+            .with_data_file_format(DataFileFormat::Parquet)
+            .with_schema(Arc::clone(&schema))
+            .with_project_field_ids(vec![1])
+            .with_predicate(Some(predicate))
+            .with_deletes(vec![delete, deletion_vector])
+            .with_partition(Some(
+                [Some(Literal::int(partition_value))].into_iter().collect(),
+            ))
+            .with_unified_partition_type(Some(Arc::new(
+                partition_spec.partition_type(&schema).unwrap(),
+            )))
+            .with_partition_spec(Some(partition_spec))
+            .with_name_mapping(Some(Arc::new(NameMapping::new(vec![MappedField::new(
                 Some(1),
                 vec!["id".to_owned(), "record_id".to_owned()],
                 vec![],
-            )]))),
-            case_sensitive: true,
-        }
+            )]))))
+            .with_case_sensitive(case_sensitive)
+            .with_key_metadata(Some(vec![1, 2, 3].into_boxed_slice()))
+            .build()
+            .unwrap()
     }
 
     fn boolean_partition_task() -> FileScanTask {
@@ -1518,22 +1615,19 @@ mod tests {
                 .build()
                 .unwrap(),
         );
-        FileScanTask {
-            file_size_in_bytes: 1,
-            start: 0,
-            length: 1,
-            record_count: None,
-            data_file_path: "typed.parquet".to_owned(),
-            data_file_format: DataFileFormat::Parquet,
-            schema,
-            project_field_ids: vec![1],
-            predicate: None,
-            deletes: vec![],
-            partition: Some([Some(value)].into_iter().collect()),
-            partition_spec: Some(partition_spec),
-            name_mapping: None,
-            case_sensitive: true,
-        }
+        FileScanTask::builder()
+            .with_file_size_in_bytes(1)
+            .with_start(0)
+            .with_length(1)
+            .with_data_file_path("typed.parquet".to_owned())
+            .with_data_file_format(DataFileFormat::Parquet)
+            .with_schema(schema)
+            .with_project_field_ids(vec![1])
+            .with_partition(Some([Some(value)].into_iter().collect()))
+            .with_partition_spec(Some(partition_spec))
+            .with_case_sensitive(true)
+            .build()
+            .unwrap()
     }
 
     fn test_schema(data_type: PrimitiveType) -> iceberg::spec::SchemaRef {

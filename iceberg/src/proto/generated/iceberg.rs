@@ -41,6 +41,8 @@ pub struct FileScanTaskContext {
     pub name_mapping: ::core::option::Option<NameMapping>,
     #[prost(bool, tag = "6")]
     pub case_sensitive: bool,
+    #[prost(message, optional, tag = "7")]
+    pub unified_partition_type: ::core::option::Option<StructType>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FileScanTaskBody {
@@ -60,6 +62,12 @@ pub struct FileScanTaskBody {
     pub deletes: ::prost::alloc::vec::Vec<DeleteFile>,
     #[prost(message, optional, tag = "8")]
     pub partition: ::core::option::Option<PartitionValues>,
+    #[prost(int64, optional, tag = "9")]
+    pub first_row_id: ::core::option::Option<i64>,
+    #[prost(int64, optional, tag = "10")]
+    pub data_sequence_number: ::core::option::Option<i64>,
+    #[prost(bytes = "vec", optional, tag = "11")]
+    pub key_metadata: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct DeleteFile {
@@ -73,6 +81,18 @@ pub struct DeleteFile {
     pub partition_spec_id: i32,
     #[prost(message, optional, tag = "5")]
     pub equality_ids: ::core::option::Option<EqualityIds>,
+    #[prost(enumeration = "DataFileFormat", tag = "6")]
+    pub file_format: i32,
+    #[prost(string, optional, tag = "7")]
+    pub referenced_data_file: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(int64, optional, tag = "8")]
+    pub content_offset: ::core::option::Option<i64>,
+    #[prost(int64, optional, tag = "9")]
+    pub content_size_in_bytes: ::core::option::Option<i64>,
+    #[prost(uint64, optional, tag = "10")]
+    pub record_count: ::core::option::Option<u64>,
+    #[prost(bytes = "vec", optional, tag = "11")]
+    pub key_metadata: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct EqualityIds {
@@ -117,7 +137,7 @@ pub struct NestedField {
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Type {
-    #[prost(oneof = "r#type::Kind", tags = "1, 2, 3, 4")]
+    #[prost(oneof = "r#type::Kind", tags = "1, 2, 3, 4, 5")]
     pub kind: ::core::option::Option<r#type::Kind>,
 }
 /// Nested message and enum types in `Type`.
@@ -132,6 +152,8 @@ pub mod r#type {
         List(::prost::alloc::boxed::Box<super::ListType>),
         #[prost(message, tag = "4")]
         Map(::prost::alloc::boxed::Box<super::MapType>),
+        #[prost(message, tag = "5")]
+        Variant(super::Empty),
     }
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]

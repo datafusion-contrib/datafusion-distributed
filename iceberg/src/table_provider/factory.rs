@@ -4,10 +4,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use datafusion::catalog::{Session, TableProvider, TableProviderFactory};
-use datafusion::common::{plan_datafusion_err, plan_err};
+use datafusion::common::{TableReference, plan_datafusion_err, plan_err};
 use datafusion::error::Result;
 use datafusion::logical_expr::CreateExternalTable;
-use datafusion::sql::TableReference;
 use iceberg::TableIdent;
 use iceberg::io::{FileIOBuilder, StorageFactory};
 use iceberg::table::StaticTable;
@@ -91,7 +90,7 @@ impl TableProviderFactory for IcebergTableProviderFactory {
         check_cmd(cmd)?;
 
         let table_name = &cmd.name;
-        let metadata_file_path = &cmd.location;
+        let metadata_file_path = &cmd.locations[0];
         let options = &cmd.options;
         let snapshot_id = parse_snapshot_id(options)?;
         let mut storage_props = options.clone();
@@ -141,6 +140,7 @@ fn check_cmd(cmd: &CreateExternalTable) -> Result<()> {
         order_exprs,
         constraints,
         column_defaults,
+        locations,
         ..
     } = cmd;
 
@@ -149,7 +149,8 @@ fn check_cmd(cmd: &CreateExternalTable) -> Result<()> {
         || !table_partition_cols.is_empty()
         || !order_exprs.is_empty()
         || !constraints.is_empty()
-        || !column_defaults.is_empty();
+        || !column_defaults.is_empty()
+        || locations.len() != 1;
 
     if is_invalid {
         return plan_err!(

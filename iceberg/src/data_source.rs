@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::stats::Precision;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{ColumnStatistics, Statistics};
 use datafusion::config::ConfigOptions;
 use datafusion::datasource::source::DataSource;
@@ -230,6 +231,13 @@ impl IcebergDataSource {
 }
 
 impl DataSource for IcebergDataSource {
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
+    }
+
     fn open(
         &self,
         partition: usize,

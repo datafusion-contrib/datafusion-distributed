@@ -16,10 +16,10 @@ mod tests {
             )
             .await?;
 
-        insta::assert_snapshot!(plan, @r"
+        insta::assert_snapshot!(plan, @"
         SortPreservingMergeExec: [pickup_date@0 ASC NULLS LAST]
-          SortExec: expr=[pickup_date@0 ASC NULLS LAST], preserve_partitioning=[true]
-            ProjectionExec: expr=[pickup_date@0 as pickup_date, count(Int64(1))@1 as trips]
+          ProjectionExec: expr=[pickup_date@0 as pickup_date, count(Int64(1))@1 as trips]
+            SortExec: expr=[pickup_date@0 ASC NULLS LAST], preserve_partitioning=[true]
               AggregateExec: mode=FinalPartitioned, gby=[pickup_date@0 as pickup_date], aggr=[count(Int64(1))]
                 RepartitionExec: partitioning=Hash([pickup_date@0], 4), input_partitions=4
                   AggregateExec: mode=Partial, gby=[pickup_date@0 as pickup_date], aggr=[count(Int64(1))]
