@@ -90,7 +90,7 @@ pub(super) async fn prepare_dynamic_plan(
 
                 let mut futures = Vec::with_capacity(input_stage.tasks);
                 for task_i in 0..input_stage.tasks {
-                    futures.push(stage_coordinator.send_plan_task(task_i));
+                    futures.push(stage_coordinator.init_bidirectional_stream(task_i));
                 }
                 let results = futures::future::try_join_all(futures).await?;
 

@@ -139,10 +139,13 @@ pub(super) struct StageCoordinator<'a> {
 }
 
 impl<'a> StageCoordinator<'a> {
-    /// Sends a serialized plan to a specific worker and sets up the bidirectional gRPC stream.
-    /// Returns the sender for outbound coordinator-to-worker messages and the receiver for
-    /// inbound worker-to-coordinator messages.
-    pub(super) async fn send_plan_task(
+    /// Sends a plan to a specific worker and sets up the bidirectional stream.
+    ///
+    /// Its returns are:
+    /// - The worker URL in which the task got allocated
+    /// - The coordinator-to-worker stream for producing messages that reach the worker.
+    /// - The worker-to-coordinator stream for receiving messages from the worker.
+    pub(super) async fn init_bidirectional_stream(
         &self,
         task_i: usize,
     ) -> Result<(

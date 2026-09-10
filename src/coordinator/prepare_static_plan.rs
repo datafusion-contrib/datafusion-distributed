@@ -35,7 +35,7 @@ pub(super) async fn prepare_static_plan(
         let mut stage_coordinator = query_coordinator.stage_coordinator(stage);
         let mut futures = Vec::with_capacity(stage.tasks);
         for task_i in 0..stage.tasks {
-            futures.push(stage_coordinator.send_plan_task(task_i));
+            futures.push(stage_coordinator.init_bidirectional_stream(task_i));
         }
         let results = futures::future::try_join_all(futures).await?;
 
