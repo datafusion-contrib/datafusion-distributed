@@ -31,6 +31,7 @@ use datafusion::common::{Result, internal_err};
 use datafusion::config::ConfigOptions;
 use datafusion::datasource::physical_plan::{FileGroup, FileScanConfig};
 use datafusion::execution::{SendableRecordBatchStream, SessionStateBuilder, TaskContext};
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::stream::{
     RecordBatchReceiverStreamBuilder, RecordBatchStreamAdapter,
@@ -45,7 +46,7 @@ use datafusion_distributed::{
     DistributedLeafExec, RouteTasksEvent, RouteTasksEventResponse, ScaleUpLeafNodeEvent,
     ScaleUpLeafNodeEventResponse, SessionStateBuilderExt, WorkerQueryContext, display_plan_ascii,
 };
-use datafusion_proto::physical_plan::PhysicalExtensionCodec;
+use datafusion_proto::physical_plan::{PhysicalExtensionCodec, PhysicalProtoConverterExtension};
 use datafusion_proto::protobuf;
 use futures::TryStreamExt;
 use prost::Message;
@@ -91,6 +92,13 @@ impl ExecutionPlan for CacheExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![&self.child]
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
     }
 
     fn with_new_children(
@@ -151,7 +159,7 @@ impl ExecutionPlan for CacheExec {
 fn hash_key(file_group: &FileGroup) -> usize {
     let mut hasher = DefaultHasher::new();
     for file in file_group.files() {
-        let serialized: protobuf::PartitionedFile = file.try_into().unwrap();
+        let serialized = protobuf::PartitionedFile::try_from(file).unwrap();
         hasher.write(&serialized.encode_to_vec());
     }
     hasher.finish() as usize
@@ -247,6 +255,7 @@ impl PhysicalExtensionCodec for CachedFileScanCodec {
         _buf: &[u8],
         inputs: &[Arc<dyn ExecutionPlan>],
         _ctx: &TaskContext,
+        _proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let [child] = inputs else {
             return internal_err!("CacheExec expects exactly 1 child, got {}", inputs.len());
@@ -254,7 +263,12 @@ impl PhysicalExtensionCodec for CachedFileScanCodec {
         Ok(CacheExec::new(Arc::clone(child)))
     }
 
-    fn try_encode(&self, node: Arc<dyn ExecutionPlan>, _buf: &mut Vec<u8>) -> Result<()> {
+    fn try_encode(
+        &self,
+        node: Arc<dyn ExecutionPlan>,
+        _buf: &mut Vec<u8>,
+        _proto_converter: &dyn PhysicalProtoConverterExtension,
+    ) -> Result<()> {
         if node.downcast_ref::<CacheExec>().is_none() {
             return internal_err!("Expected CacheExec, got {}", node.name());
         }

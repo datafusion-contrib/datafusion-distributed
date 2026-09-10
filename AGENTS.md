@@ -61,6 +61,9 @@ about a user's networking or deployment stack.
 - When claiming a performance improvement, never move a PR out of draft before
   first qualifying the performance benefits following the guidelines in
   `docs/source/contributor-guide/04-benchmarks.md`.
+- Prefer adding `use` statements at the top of the file. Only use fully
+  qualified import paths inside a code block for disambiguating between 
+  functions also present in the standard library (e.g., `tokio::time::sleep`).
 - When submitting PRs, make sure they are scoped to one thing, and that they
   fall in one of these categories:
     - Feature additions (PR prefixed with `feat:`)

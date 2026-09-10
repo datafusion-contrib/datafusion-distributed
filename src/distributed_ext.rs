@@ -149,18 +149,18 @@ pub trait DistributedExt: Sized {
     /// # use datafusion::execution::{SessionState, FunctionRegistry, SessionStateBuilder, TaskContext};
     /// # use datafusion::physical_plan::ExecutionPlan;
     /// # use datafusion::prelude::SessionConfig;
-    /// # use datafusion_proto::physical_plan::PhysicalExtensionCodec;
+    /// # use datafusion_proto::physical_plan::{PhysicalExtensionCodec, PhysicalProtoConverterExtension};
     /// # use datafusion_distributed::{DistributedExt, WorkerQueryContext};
     ///
     /// #[derive(Debug)]
     /// struct CustomExecCodec;
     ///
     /// impl PhysicalExtensionCodec for CustomExecCodec {
-    ///     fn try_decode(&self, buf: &[u8], inputs: &[Arc<dyn ExecutionPlan>], ctx: &TaskContext) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+    ///     fn try_decode(&self, buf: &[u8], inputs: &[Arc<dyn ExecutionPlan>], ctx: &TaskContext, proto_converter: &dyn PhysicalProtoConverterExtension) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
     ///         todo!()
     ///     }
     ///
-    ///     fn try_encode(&self, node: Arc<dyn ExecutionPlan>, buf: &mut Vec<u8>) -> datafusion::common::Result<()> {
+    ///     fn try_encode(&self, node: Arc<dyn ExecutionPlan>, buf: &mut Vec<u8>, proto_converter: &dyn PhysicalProtoConverterExtension) -> datafusion::common::Result<()> {
     ///         todo!()
     ///     }
     /// }
@@ -374,6 +374,20 @@ pub trait DistributedExt: Sized {
 
     /// Same as [DistributedExt::with_distributed_metrics_collection] but with an in-place mutation.
     fn set_distributed_metrics_collection(&mut self, enabled: bool) -> Result<(), DataFusionError>;
+
+    /// Collects completed dynamic filters from worker tasks so they can be displayed in the
+    /// distributed plan. This does not enable or disable dynamic filtering during execution.
+    fn with_distributed_dynamic_filter_collection(
+        self,
+        enabled: bool,
+    ) -> Result<Self, DataFusionError>;
+
+    /// Same as [`DistributedExt::with_distributed_dynamic_filter_collection`] but with an in-place
+    /// mutation.
+    fn set_distributed_dynamic_filter_collection(
+        &mut self,
+        enabled: bool,
+    ) -> Result<(), DataFusionError>;
 
     /// Enables children isolator unions for distributing UNION operations across as many tasks as
     /// the sum of all the tasks required for each child.
@@ -803,6 +817,15 @@ impl DistributedExt for SessionConfig {
         Ok(())
     }
 
+    fn set_distributed_dynamic_filter_collection(
+        &mut self,
+        enabled: bool,
+    ) -> Result<(), DataFusionError> {
+        let d_cfg = DistributedConfig::from_config_options_mut(self.options_mut())?;
+        d_cfg.collect_dynamic_filters = enabled;
+        Ok(())
+    }
+
     fn set_distributed_children_isolator_unions(
         &mut self,
         enabled: bool,
@@ -957,6 +980,10 @@ impl DistributedExt for SessionConfig {
             #[expr($?;Ok(self))]
             fn with_distributed_metrics_collection(mut self, enabled: bool) -> Result<Self, DataFusionError>;
 
+            #[call(set_distributed_dynamic_filter_collection)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_dynamic_filter_collection(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+
             #[call(set_distributed_children_isolator_unions)]
             #[expr($?;Ok(self))]
             fn with_distributed_children_isolator_unions(mut self, enabled: bool) -> Result<Self, DataFusionError>;
@@ -1082,6 +1109,11 @@ impl DistributedExt for SessionStateBuilder {
             #[call(set_distributed_metrics_collection)]
             #[expr($?;Ok(self))]
             fn with_distributed_metrics_collection(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_dynamic_filter_collection(&mut self, enabled: bool) -> Result<(), DataFusionError>;
+            #[call(set_distributed_dynamic_filter_collection)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_dynamic_filter_collection(mut self, enabled: bool) -> Result<Self, DataFusionError>;
 
             fn set_distributed_children_isolator_unions(&mut self, enabled: bool) -> Result<(), DataFusionError>;
             #[call(set_distributed_children_isolator_unions)]
@@ -1233,6 +1265,11 @@ impl DistributedExt for SessionState {
             #[expr($?;Ok(self))]
             fn with_distributed_metrics_collection(mut self, enabled: bool) -> Result<Self, DataFusionError>;
 
+            fn set_distributed_dynamic_filter_collection(&mut self, enabled: bool) -> Result<(), DataFusionError>;
+            #[call(set_distributed_dynamic_filter_collection)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_dynamic_filter_collection(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+
             fn set_distributed_children_isolator_unions(&mut self, enabled: bool) -> Result<(), DataFusionError>;
             #[call(set_distributed_children_isolator_unions)]
             #[expr($?;Ok(self))]
@@ -1375,6 +1412,11 @@ impl DistributedExt for SessionContext {
             #[call(set_distributed_metrics_collection)]
             #[expr($?;Ok(self))]
             fn with_distributed_metrics_collection(self, enabled: bool) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_dynamic_filter_collection(&mut self, enabled: bool) -> Result<(), DataFusionError>;
+            #[call(set_distributed_dynamic_filter_collection)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_dynamic_filter_collection(self, enabled: bool) -> Result<Self, DataFusionError>;
 
             fn set_distributed_children_isolator_unions(&mut self, enabled: bool) -> Result<(), DataFusionError>;
             #[call(set_distributed_children_isolator_unions)]

@@ -4,15 +4,16 @@ use crate::execution_plans::common::scale_partitioning;
 use crate::stage::{LocalStage, Stage};
 use crate::worker::WorkerConnectionPool;
 use crate::{DistributedTaskContext, MaybeEncoded, NetworkBoundary};
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{Result, not_impl_err, plan_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
-use datafusion::physical_expr::Partitioning;
+use datafusion::physical_expr::{Partitioning, PhysicalExpr};
 use datafusion::physical_expr_common::metrics::MetricsSet;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, Statistics,
+    DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, Statistics, StatisticsArgs,
 };
 use std::fmt::Formatter;
 use std::sync::Arc;
@@ -154,13 +155,13 @@ impl NetworkBoundary for NetworkShuffleExec {
         Ok(Arc::new(self_clone))
     }
 
-    fn producer_head(&self, consumer_task_count: usize) -> ProducerHead {
-        ProducerHead::RepartitionExec {
+    fn producer_head(&self, consumer_task_count: usize) -> Result<ProducerHead> {
+        Ok(ProducerHead::RepartitionExec {
             partitioning: MaybeEncoded::Decoded(scale_partitioning(
                 &self.properties.partitioning,
                 |prev| prev * consumer_task_count,
-            )),
-        }
+            )?),
+        })
     }
 }
 
@@ -190,6 +191,13 @@ impl ExecutionPlan for NetworkShuffleExec {
             Some(v) => vec![v],
             None => vec![],
         }
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
     }
 
     fn with_new_children(
@@ -231,7 +239,7 @@ impl ExecutionPlan for NetworkShuffleExec {
                 off..(off + self.properties.partitioning.partition_count()),
                 input_task_index,
                 off + partition,
-                self.producer_head(task_context.task_count),
+                self.producer_head(task_context.task_count)?,
                 &context,
             )?);
         }
@@ -246,9 +254,13 @@ impl ExecutionPlan for NetworkShuffleExec {
         Some(self.worker_connections.metrics.clone_inner())
     }
 
-    fn partition_statistics(&self, partition: Option<usize>) -> Result<Arc<Statistics>> {
+    fn statistics_from_inputs(
+        &self,
+        _input_stats: &[Arc<Statistics>],
+        args: &StatisticsArgs,
+    ) -> Result<Arc<Statistics>> {
         self.input_stage.partition_statistics(
-            partition,
+            args.partition(),
             self.properties.output_partitioning().partition_count(),
             self.schema(),
         )

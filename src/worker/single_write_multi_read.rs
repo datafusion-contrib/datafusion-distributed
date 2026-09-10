@@ -3,7 +3,7 @@ use std::time::Duration;
 use tokio::sync::watch;
 
 /// Synchronization primitive that allows multiple readers to wait for one writer to write
-/// a clonable piece of data.
+/// a cloneable piece of data.
 ///
 /// - If the writer writes before anyone is reading, all subsequent readers will immediately
 ///   resolve to the written piece of data.

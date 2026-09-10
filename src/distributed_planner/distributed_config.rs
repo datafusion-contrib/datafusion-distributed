@@ -18,7 +18,7 @@ extensions_options! {
         /// - If a node is increasing the cardinality of the data, this factor will increase.
         /// - If a node reduces the cardinality of the data, this factor will decrease.
         /// - In any other situation, this factor is left intact.
-        pub cardinality_task_count_factor: f64, default = cardinality_task_count_factor_default()
+        pub cardinality_task_count_factor: f64, default = 1.0
         /// When encountering a UNION operation, isolate its children depending on the task context.
         /// For example, on a UNION operation with 3 children running in 3 distributed tasks,
         /// instead of executing the 3 children in each 3 tasks with a DistributedTaskContext of
@@ -30,6 +30,10 @@ extensions_options! {
         /// Propagate collected metrics from all nodes in the plan across network boundaries
         /// so that they can be reconstructed on the head node of the plan.
         pub collect_metrics: bool, default = true
+        /// Collect completed dynamic filters from worker tasks so that they can be displayed in
+        /// the distributed plan. This does not control whether dynamic filtering is used during
+        /// query execution.
+        pub collect_dynamic_filters: bool, default = true
         /// Enable broadcast joins for CollectLeft hash joins. When enabled, the build side of
         /// a CollectLeft join is broadcast to all consumer tasks.
         pub broadcast_joins: bool, default = true
@@ -68,14 +72,6 @@ extensions_options! {
         /// If `dynamic_task_count` is enabled, this value is the amount of bytes each
         /// partition is expected to handle. Lower values will result in greater parallelism.
         pub dynamic_bytes_per_partition: usize, default = 16 * 1024 * 1024
-    }
-}
-
-fn cardinality_task_count_factor_default() -> f64 {
-    if cfg!(test) || cfg!(feature = "integration") {
-        1.5
-    } else {
-        1.0
     }
 }
 

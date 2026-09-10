@@ -4,17 +4,22 @@ use arrow::{
 };
 use datafusion::{
     catalog::{Session, TableFunctionImpl, TableProvider},
-    common::{Result, ScalarValue, Statistics, internal_err, plan_err},
+    common::{
+        Result, ScalarValue, Statistics, internal_err, plan_err, tree_node::TreeNodeRecursion,
+    },
     datasource::TableType,
     execution::TaskContext,
-    physical_expr::EquivalenceProperties,
+    physical_expr::{EquivalenceProperties, PhysicalExpr},
     physical_plan::{
         DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
         stream::RecordBatchStreamAdapter,
     },
     prelude::Expr,
 };
-use datafusion_proto::{physical_plan::PhysicalExtensionCodec, protobuf::proto_error};
+use datafusion_proto::{
+    physical_plan::{PhysicalExtensionCodec, PhysicalProtoConverterExtension},
+    protobuf::proto_error,
+};
 use futures::stream;
 use prost::Message;
 use std::{fmt::Formatter, sync::Arc};
@@ -23,7 +28,7 @@ use tonic::async_trait;
 use crate::{
     DesiredTaskCountEvent, DesiredTaskCountEventResponse, DistributedLeafExec,
     DistributedTaskContext, LocalWorkerContext, RouteTasksEvent, RouteTasksEventResponse,
-    ScaleUpLeafNodeEvent, ScaleUpLeafNodeEventResponse, WorkerResolver,
+    ScaleUpLeafNodeEvent, ScaleUpLeafNodeEventResponse, WorkerResolver, ok_or_some_err,
 };
 
 use crate::distributed_ext::DistributedGetterExt;
@@ -178,6 +183,13 @@ impl ExecutionPlan for URLEmitterExec {
         vec![]
     }
 
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
+    }
+
     fn with_new_children(
         self: Arc<Self>,
         _: Vec<Arc<dyn ExecutionPlan>>,
@@ -273,12 +285,11 @@ pub fn url_emitter_scale_up_leaf_node(
         })
         .collect();
 
-    Some(Ok(ScaleUpLeafNodeEventResponse::new(
-        match DistributedLeafExec::try_new(template as _, per_task) {
-            Ok(exec) => Arc::new(exec),
-            Err(err) => return Some(Err(err)),
-        },
-    )))
+    let distributed_leaf = ok_or_some_err!(DistributedLeafExec::try_new(template as _, per_task));
+
+    Some(Ok(ScaleUpLeafNodeEventResponse::new(Arc::new(
+        distributed_leaf,
+    ))))
 }
 
 pub fn url_emitter_route_tasks(ev: RouteTasksEvent) -> Option<Result<RouteTasksEventResponse>> {
@@ -319,6 +330,7 @@ impl PhysicalExtensionCodec for URLEmitterExtensionCodec {
         buf: &[u8],
         inputs: &[Arc<dyn ExecutionPlan>],
         _ctx: &TaskContext,
+        _proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         if !inputs.is_empty() {
             return internal_err!(
@@ -347,7 +359,12 @@ impl PhysicalExtensionCodec for URLEmitterExtensionCodec {
         ))
     }
 
-    fn try_encode(&self, node: Arc<dyn ExecutionPlan>, buf: &mut Vec<u8>) -> Result<()> {
+    fn try_encode(
+        &self,
+        node: Arc<dyn ExecutionPlan>,
+        buf: &mut Vec<u8>,
+        _proto_converter: &dyn PhysicalProtoConverterExtension,
+    ) -> Result<()> {
         let Some(exec) = node.downcast_ref::<URLEmitterExec>() else {
             return internal_err!("Expected URLEmitterExec, but was {}", node.name());
         };

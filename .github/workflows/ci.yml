@@ -127,6 +127,13 @@ jobs:
       - uses: ./.github/actions/setup
       - run: cargo test -p datafusion-distributed-iceberg --features integration
 
+  chaos-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: cargo test --features tpch,chaos-tests --test chaos
+
   format-check:
     runs-on: ubuntu-latest
     steps:
@@ -135,3 +142,17 @@ jobs:
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
+
+  typos:
+    name: Spell Check with Typos
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Version fixed on purpose. typos uses heuristics and upgrading it may cause
+      # new failures. Upgrade manually when needed.
+      - name: Install typos
+        uses: taiki-e/install-action@v2
+        with:
+          tool: typos@1.46.1
+      - name: Run typos check
+        run: .github/ci/scripts/typos_check.sh

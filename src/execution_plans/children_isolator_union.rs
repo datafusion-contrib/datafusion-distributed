@@ -2,9 +2,11 @@ use crate::DistributedTaskContext;
 use crate::common::task_ctx_with_extension;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{internal_err, plan_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{RecordBatchStream, SendableRecordBatchStream, TaskContext};
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet};
 use datafusion::physical_plan::union::UnionExec;
@@ -295,6 +297,13 @@ impl ExecutionPlan for ChildrenIsolatorUnionExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         self.children.iter().collect()
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> datafusion::common::Result<TreeNodeRecursion>,
+    ) -> datafusion::common::Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
     }
 
     fn metrics(&self) -> Option<MetricsSet> {

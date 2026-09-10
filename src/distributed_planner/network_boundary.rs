@@ -8,7 +8,9 @@ use datafusion::common::Result;
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::Partitioning;
 use datafusion::physical_plan::repartition::RepartitionExec;
-use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
+use datafusion::physical_plan::{
+    ChildrenPropertiesMode, ExecutionPlan, ExecutionPlanProperties, ReplaceChildrenOptions,
+};
 use std::sync::Arc;
 
 /// This trait represents a node that introduces the necessity of a network boundary in the plan.
@@ -26,8 +28,9 @@ pub trait NetworkBoundary: ExecutionPlan {
 
     /// Defines what head node should the producer stage feeding this [NetworkBoundary]
     /// implementation have. This information is used during planning an executing for ensuring
-    /// the head of a stage has the appropriate shape for consumption.
-    fn producer_head(&self, consumer_tasks: usize) -> ProducerHead;
+    /// the head of a stage has the appropriate shape for consumption. Returns an error when that
+    /// shape cannot be constructed from the boundary's partitioning.
+    fn producer_head(&self, consumer_tasks: usize) -> Result<ProducerHead>;
 }
 
 /// Defines what shape should the head node of a stage have upon getting executed. Depending
@@ -106,10 +109,16 @@ impl ProducerHead {
     pub(crate) fn insert_sampler(input: Arc<dyn ExecutionPlan>) -> Result<Arc<dyn ExecutionPlan>> {
         if let Some(r_exec) = input.downcast_ref::<RepartitionExec>() {
             let child = Arc::clone(r_exec.input());
-            input.with_new_children(vec![Arc::new(SamplerExec::new(child))])
+            input.replace_children(
+                vec![Arc::new(SamplerExec::new(child))],
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            )
         } else if let Some(b_exec) = input.downcast_ref::<BroadcastExec>() {
             let child = Arc::clone(b_exec.input());
-            input.with_new_children(vec![Arc::new(SamplerExec::new(child))])
+            input.replace_children(
+                vec![Arc::new(SamplerExec::new(child))],
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            )
         } else {
             Ok(input)
         }

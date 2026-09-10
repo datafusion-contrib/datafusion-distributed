@@ -1,8 +1,12 @@
 use crate::DistributedTaskContext;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{Result, Statistics, exec_err, not_impl_err, plan_err};
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr_common::metrics::MetricsSet;
-use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
+use datafusion::physical_plan::{
+    DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, StatisticsArgs,
+};
 use std::fmt::Formatter;
 use std::sync::Arc;
 
@@ -156,6 +160,13 @@ impl ExecutionPlan for DistributedLeafExec {
         vec![]
     }
 
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        self.original.apply_expressions(f)
+    }
+
     fn with_new_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
@@ -191,7 +202,46 @@ impl ExecutionPlan for DistributedLeafExec {
         self.original.metrics()
     }
 
-    fn partition_statistics(&self, partition: Option<usize>) -> Result<Arc<Statistics>> {
-        self.original.partition_statistics(partition)
+    fn statistics_from_inputs(
+        &self,
+        _input_stats: &[Arc<Statistics>],
+        args: &StatisticsArgs,
+    ) -> Result<Arc<Statistics>> {
+        // `original` is deliberately hidden from `children()` so this remains a distributed leaf.
+        // It is itself a leaf, so its statistics do not require child inputs.
+        self.original.statistics_from_inputs(&[], args)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::plans::TestPlanBuilder;
+    use datafusion::common::tree_node::TreeNode;
+
+    #[tokio::test]
+    async fn exposes_original_leaf_expressions() -> Result<()> {
+        let plan = TestPlanBuilder::new()
+            .physical_plan(r#"SELECT * FROM weather WHERE "MinTemp" > 20"#)
+            .await;
+        let mut original = None;
+        plan.apply(|node| {
+            if node.children().is_empty() {
+                original = Some(Arc::clone(node));
+                return Ok(TreeNodeRecursion::Stop);
+            }
+            Ok(TreeNodeRecursion::Continue)
+        })?;
+        let original = original.expect("physical plan has a leaf");
+        let leaf = DistributedLeafExec::try_new(Arc::clone(&original), [original])?;
+
+        let mut expression_count = 0;
+        leaf.apply_expressions(&mut |_| {
+            expression_count += 1;
+            Ok(TreeNodeRecursion::Continue)
+        })?;
+
+        assert!(expression_count > 0);
+        Ok(())
     }
 }

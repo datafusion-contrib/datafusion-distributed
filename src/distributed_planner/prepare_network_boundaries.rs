@@ -35,7 +35,7 @@ pub(crate) fn prepare_network_boundaries(
         // 2) Scale up the head node of the input stage in order to account for the amount of partition
         //    and consumer count above it.
         let plan = nb
-            .producer_head(task_count)
+            .producer_head(task_count)?
             .insert(Arc::clone(&input_stage.plan))?;
 
         // 3) Make sure the input stage can be uniquely identified with a stage index and query id.

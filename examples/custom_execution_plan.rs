@@ -23,6 +23,7 @@ use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::arrow::record_batch::RecordBatchOptions;
 use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::catalog::{Session, TableFunctionImpl};
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{
     DataFusionError, Result, ScalarValue, exec_err, extensions_options, internal_err, plan_err,
 };
@@ -30,7 +31,7 @@ use datafusion::config::ConfigExtension;
 use datafusion::datasource::{TableProvider, TableType};
 use datafusion::execution::{SendableRecordBatchStream, SessionStateBuilder, TaskContext};
 use datafusion::logical_expr::Expr;
-use datafusion::physical_expr::EquivalenceProperties;
+use datafusion::physical_expr::{EquivalenceProperties, PhysicalExpr};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
@@ -43,7 +44,7 @@ use datafusion_distributed::{
     ScaleUpLeafNodeEvent, ScaleUpLeafNodeEventResponse, SessionStateBuilderExt, WorkerQueryContext,
     display_plan_ascii,
 };
-use datafusion_proto::physical_plan::PhysicalExtensionCodec;
+use datafusion_proto::physical_plan::{PhysicalExtensionCodec, PhysicalProtoConverterExtension};
 use datafusion_proto::protobuf;
 use datafusion_proto::protobuf::proto_error;
 use futures::{TryStreamExt, stream};
@@ -172,6 +173,13 @@ impl ExecutionPlan for NumbersExec {
         vec![]
     }
 
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
+    }
+
     fn with_new_children(
         self: Arc<Self>,
         _: Vec<Arc<dyn ExecutionPlan>>,
@@ -242,6 +250,7 @@ impl PhysicalExtensionCodec for NumbersExecCodec {
         buf: &[u8],
         inputs: &[Arc<dyn ExecutionPlan>],
         _ctx: &TaskContext,
+        _proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         if !inputs.is_empty() {
             return internal_err!("NumbersExec should have no children, got {}", inputs.len());
@@ -262,7 +271,12 @@ impl PhysicalExtensionCodec for NumbersExecCodec {
         )))
     }
 
-    fn try_encode(&self, node: Arc<dyn ExecutionPlan>, buf: &mut Vec<u8>) -> Result<()> {
+    fn try_encode(
+        &self,
+        node: Arc<dyn ExecutionPlan>,
+        buf: &mut Vec<u8>,
+        _proto_converter: &dyn PhysicalProtoConverterExtension,
+    ) -> Result<()> {
         let Some(exec) = node.downcast_ref::<NumbersExec>() else {
             return internal_err!("Expected plan to be NumbersExec, but was {}", node.name());
         };

@@ -1,9 +1,9 @@
-use crate::DistributedConfig;
 use crate::events::{
     DesiredTaskCountEvent, DesiredTaskCountEventResponse, ScaleUpLeafNodeEvent,
     ScaleUpLeafNodeEventResponse,
 };
 use crate::execution_plans::DistributedLeafExec;
+use crate::{DistributedConfig, ok_or_some_err};
 use datafusion::catalog::memory::DataSourceExec;
 use datafusion::datasource::physical_plan::{FileGroup, FileGroupPartitioner, FileScanConfig};
 use datafusion::error::Result;
@@ -40,7 +40,7 @@ pub(crate) fn file_scan_config_scale_up_leaf_node(
     let file_scan = dse.data_source().downcast_ref::<FileScanConfig>()?;
     let partition_count = ev.plan.output_partitioning().partition_count();
 
-    let rebalanced = if file_scan.partitioned_by_file_group {
+    let rebalanced = if file_scan.output_partitioning.is_some() {
         let all_partitioned_files = file_scan
             .file_groups
             .iter()
@@ -74,10 +74,7 @@ pub(crate) fn file_scan_config_scale_up_leaf_node(
             .into_iter()
             .map(|file_scan| DataSourceExec::from_data_source(file_scan) as _),
     );
-    let distributed_leaf = match distributed_leaf_result {
-        Ok(distributed_leaf) => distributed_leaf,
-        Err(e) => return Some(Err(e)),
-    };
+    let distributed_leaf = ok_or_some_err!(distributed_leaf_result);
 
     Some(Ok(ScaleUpLeafNodeEventResponse::new(Arc::new(
         distributed_leaf,
