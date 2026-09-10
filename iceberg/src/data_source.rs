@@ -435,7 +435,7 @@ pub async fn compute_column_stats(
                     .map_err(df_err)?,
             );
 
-            // If a table has delete files (i.e MOR) - we should account for that fact later and change the counts to `inexact`
+            // Account for merge-on-read delete files later by marking the counts as inexact.
             let has_deletes = manifest_list
                 .entries()
                 .iter()
