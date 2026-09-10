@@ -90,8 +90,9 @@ impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSy
                     // Routing retries this task setup at the higher level on the same URL.
                     Code::Aborted => RetryOutcome::SameUrl.tag(err),
                     // https://grpc.io/docs/guides/status-codes/#unavailable
-                    // This is a transient failure; retry the task setup on the same URL.
-                    Code::Unavailable => RetryOutcome::SameUrl.tag(err),
+                    // If the worker died abruptly (e.g. OOM or SIGKILL), this is what the client
+                    // sees, so a different worker must be attempted.
+                    Code::Unavailable => RetryOutcome::OtherUrl.tag(err),
                     Code::Ok => err,
                     Code::Cancelled => err,
                     Code::Unknown => err,
