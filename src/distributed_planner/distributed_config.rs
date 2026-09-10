@@ -52,7 +52,7 @@ extensions_options! {
         pub max_tasks_per_stage: usize, default = 0
         /// Maximum number of times the coordinator retries establishing a coordinator channel
         /// after the initial dial fails with a retryable error. Set to 0 to disable retries.
-        pub max_coordinator_channel_retries: usize, default = 9
+        pub max_coordinator_channel_retries: usize, default = 3
         /// Initial delay, in milliseconds, before retrying a coordinator channel on the same
         /// worker. The delay doubles after each same-worker retry.
         pub coordinator_channel_retry_initial_backoff_ms: u64, default = 100
