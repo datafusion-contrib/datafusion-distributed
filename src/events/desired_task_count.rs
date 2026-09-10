@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use datafusion::common::Result;
 use datafusion::execution::config::SessionConfig;
 use datafusion::physical_plan::ExecutionPlan;
+use num_traits::AsPrimitive;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 
@@ -74,10 +75,15 @@ impl DesiredTaskCountEventResponse {
     ///
     /// Fractional values let several isolated union children contribute less than one task each;
     /// the planner combines those values before rounding the final task count up.
-    pub fn desired(value: f64) -> Self {
+    pub fn desired<T: AsPrimitive<f64> + 'static>(value: T) -> Self {
         DesiredTaskCountEventResponse {
-            task_count: Desired(value),
+            task_count: Desired(value.as_()),
         }
+    }
+
+    /// Tells the distributed planner that this node does not impose a finite desired task count.
+    pub fn unbounded() -> Self {
+        DesiredTaskCountEventResponse::desired(f64::MAX)
     }
 }
 
@@ -114,7 +120,7 @@ impl From<TaskCountAnnotation> for usize {
 impl TaskCountAnnotation {
     pub fn as_usize(&self) -> usize {
         match self {
-            Desired(desired) => desired.ceil() as usize,
+            Desired(desired) => (desired.ceil() as usize).max(1),
             Maximum(maximum) => *maximum,
         }
     }
@@ -178,7 +184,7 @@ impl DesiredTaskCountHandler for usize {
         ev.plan
             .children()
             .is_empty()
-            .then(|| Ok(DesiredTaskCountEventResponse::desired(*self as f64)))
+            .then(|| Ok(DesiredTaskCountEventResponse::desired(*self)))
     }
 }
 

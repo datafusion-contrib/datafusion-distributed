@@ -115,9 +115,7 @@ fn sharded_scan_desired_task_count(
     // Only handle our own node; returning None lets other handlers try.
     let scan = event.plan.downcast_ref::<ShardedScanExec>()?;
     // One task per shard — the planner caps this at the number of workers.
-    Some(Ok(DesiredTaskCountEventResponse::desired(
-        scan.shards.len() as f64,
-    )))
+    Some(Ok(DesiredTaskCountEventResponse::desired(scan.shards.len())))
 }
 ```
 

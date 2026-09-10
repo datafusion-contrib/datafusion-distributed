@@ -598,7 +598,7 @@ pub trait DistributedExt: Sized {
     ///
     /// fn handle_custom_desired_task_count(event: DesiredTaskCountEvent) -> Option<Result<DesiredTaskCountEventResponse>> {
     ///     let _exec = event.plan.downcast_ref::<EmptyExec>()?;
-    ///     Some(Ok(DesiredTaskCountEventResponse::desired(3.0)))
+    ///     Some(Ok(DesiredTaskCountEventResponse::desired(3)))
     /// }
     ///
     /// SessionStateBuilder::new()

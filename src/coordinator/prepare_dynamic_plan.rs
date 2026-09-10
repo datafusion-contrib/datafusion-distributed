@@ -59,16 +59,17 @@ pub(super) async fn prepare_dynamic_plan(
                 "network_cost",
                 *cost.network.get_value().unwrap_or(&0),
             ));
-            let compute_based_task_count = cost
-                .cpu
-                .get_value()
-                .unwrap_or(&0)
-                .div_ceil(nb_ctx.d_cfg.dynamic_bytes_per_partition.max(1))
-                .div_ceil(input_stage.plan.output_partitioning().partition_count())
-                .clamp(1, nb_ctx.max_tasks()?);
+            let compute_based_task_count = *cost.cpu.get_value().unwrap_or(&0) as f64
+                / nb_ctx.d_cfg.dynamic_bytes_per_partition.max(1) as f64
+                / input_stage
+                    .plan
+                    .output_partitioning()
+                    .partition_count()
+                    .max(1) as f64;
+            let compute_based_task_count = compute_based_task_count.min(nb_ctx.max_tasks()? as f64);
             let task_count = nb_ctx
                 .task_count(&input_stage.plan)?
-                .merge(Desired(compute_based_task_count as f64));
+                .merge(Desired(compute_based_task_count));
 
             // Propagate the final task_count inferred based on runtime statistics and compute cost.
             // Here is where leaf nodes are scaled up by ScaleUpLeafNodeHandler, and the

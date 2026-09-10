@@ -302,7 +302,7 @@ async fn _inject_network_boundaries(
         // broadcasts are unavailable.
         Maximum(1)
     } else {
-        let mut task_count = desired_task_count.unwrap_or(Desired(1.0));
+        let mut task_count = desired_task_count.unwrap_or(Desired(0.0));
         // The task count for this plan is decided by the biggest task count from the children; unless
         // a child specifies a maximum task count, in that case, the maximum is respected. Some
         // nodes can only run in one task. If there is a subplan with a single node declaring that
@@ -443,10 +443,6 @@ impl InjectNetworkBoundaryContext<'_> {
     ) -> Result<Arc<dyn ExecutionPlan>> {
         // Handle leaf nodes.
         if plan.children().is_empty() {
-            // A zero-task stage (empty datasets) has nothing to distribute.
-            if task_count.as_usize() == 0 {
-                return Ok(self.plan_with_task_count(Arc::clone(plan), task_count));
-            }
             let ev = ScaleUpLeafNodeEvent {
                 plan,
                 task_count: task_count.as_usize(),
@@ -605,7 +601,8 @@ where
 /// ```
 ///
 /// With `cardinality_task_count_factor = 1.5`, the example above yields `sf ≈ 0.44`. The
-/// boundary's recorded task count above this stage will be `ceil(T_producer × sf)`.
+/// boundary records `T_producer × sf` as a fractional hint and rounds it only when resolving a
+/// concrete stage task count.
 pub(crate) struct CardinalityBasedNetworkBoundaryBuilder;
 
 #[async_trait]
@@ -654,7 +651,7 @@ impl NetworkBoundaryBuilder for CardinalityBasedNetworkBoundaryBuilder {
         let f = calculate_scale_factor(&input_stage.plan, nb_ctx.d_cfg);
 
         Ok(NetworkBoundaryBuilderResult {
-            consumer_task_count: Desired((f * input_stage.tasks as f64).ceil()),
+            consumer_task_count: Desired(f * input_stage.tasks as f64),
             input_stage: Stage::Local(input_stage),
             input_properties,
         })
@@ -794,8 +791,8 @@ mod tests {
             .broadcast_joins(false);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @"
-        HashJoinExec: task_count=Desired(2)
-          NetworkShuffleExec: task_count=Desired(2)
+        HashJoinExec: task_count=Desired(1.33)
+          NetworkShuffleExec: task_count=Desired(1.33)
             RepartitionExec: task_count=Desired(2)
               ProjectionExec: task_count=Desired(2)
                 AggregateExec: task_count=Desired(2)
@@ -805,7 +802,7 @@ mod tests {
                         FilterExec: task_count=Desired(4)
                           RepartitionExec: task_count=Desired(4)
                             DistributedLeafExec: task_count=Desired(4)
-          NetworkShuffleExec: task_count=Desired(2)
+          NetworkShuffleExec: task_count=Desired(1.33)
             RepartitionExec: task_count=Desired(2)
               ProjectionExec: task_count=Desired(2)
                 AggregateExec: task_count=Desired(2)
@@ -855,8 +852,8 @@ mod tests {
             .broadcast_joins(false);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
-        AggregateExec: task_count=Desired(3)
-          NetworkShuffleExec: task_count=Desired(3)
+        AggregateExec: task_count=Desired(2.67)
+          NetworkShuffleExec: task_count=Desired(2.67)
             RepartitionExec: task_count=Desired(4)
               AggregateExec: task_count=Desired(4)
                 DistributedLeafExec: task_count=Desired(4)
@@ -903,12 +900,11 @@ mod tests {
             .broadcast_joins(false)
             .desired_task_count_handler(zero_leaf_desired_task_count_handler);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
-        // Two 0.0 leaf hints sum to Desired(0). That is a valid empty stage
-        // (every dataset under the union is empty), not a planning error.
+        // Two 0.0 leaf hints remain neutral while the union still receives one concrete task.
         assert_snapshot!(annotated, @r"
         ChildrenIsolatorUnionExec: task_count=Desired(0)
-          DataSourceExec: task_count=Maximum(0)
-          DataSourceExec: task_count=Maximum(0)
+          DataSourceExec: task_count=Maximum(1)
+          DataSourceExec: task_count=Maximum(1)
         ")
     }
 

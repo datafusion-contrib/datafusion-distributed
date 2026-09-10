@@ -266,9 +266,7 @@ fn remote_scan_desired_task_count_handler(
         .feed
         .inner()?
         .task_count;
-    Some(Ok(DesiredTaskCountEventResponse::desired(
-        task_count as f64,
-    )))
+    Some(Ok(DesiredTaskCountEventResponse::desired(task_count)))
 }
 
 fn remote_scan_scale_up_leaf_node_handler(
