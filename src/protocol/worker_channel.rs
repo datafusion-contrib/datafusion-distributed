@@ -65,7 +65,7 @@ pub struct TaskKey {
     pub task_number: usize,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct WorkUnitFeedDeclaration {
     /// Unique identifier of the node to which work unit feeds are expected to be streamed.
     pub id: Uuid,
