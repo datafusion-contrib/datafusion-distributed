@@ -15,7 +15,7 @@ pub(crate) struct RandomRouteTaskHandler;
 impl RouteTaskHandler for RandomRouteTaskHandler {
     async fn handle(&self, ev: RouteTaskEvent<'_>) -> Option<Result<RouteTaskEventResponse>> {
         let urls = ok_or_some_err!(ev.worker_resolver.get_urls());
-        let url = stage_contiguous_rand_choice(&ev.task_key, &urls)?;
+        let url = stage_contiguous_rand_offset(&ev.task_key, &urls)?;
 
         Some(ev.dialer.dial(url.clone()).await)
     }
@@ -23,7 +23,7 @@ impl RouteTaskHandler for RandomRouteTaskHandler {
 
 /// Chooses an item using a random starting offset shared by every task in this stage.
 /// Successive task numbers rotate through the list from that offset.
-fn stage_contiguous_rand_choice<T>(key: &TaskKey, list: impl IntoIterator<Item = T>) -> Option<T> {
+fn stage_contiguous_rand_offset<T>(key: &TaskKey, list: impl IntoIterator<Item = T>) -> Option<T> {
     let list = list.into_iter().collect::<Vec<_>>();
     if list.is_empty() {
         return None;
