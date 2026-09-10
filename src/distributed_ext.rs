@@ -718,18 +718,27 @@ pub trait DistributedExt: Sized {
     /// the coordinator session context is not used by workers
     ///
     /// ```rust
+    /// # use async_trait::async_trait;
     /// # use datafusion::common::Result;
     /// # use datafusion::execution::SessionState;
-    /// # use datafusion_distributed::{DistributedExt, Worker, WorkerPlanRewriteEvent, WorkerPlanRewriteEventResponse, WorkerQueryContext};
+    /// # use datafusion_distributed::{DistributedExt, Worker, WorkerPlanRewriteEvent, WorkerPlanRewriteEventResponse, WorkerPlanRewriteHandler, WorkerQueryContext};
+    ///
+    /// struct Passthrough;
+    ///
+    /// #[async_trait]
+    /// impl WorkerPlanRewriteHandler for Passthrough {
+    ///     async fn rewrite_worker_plan(
+    ///         &self,
+    ///         event: WorkerPlanRewriteEvent<'_>,
+    ///     ) -> Result<WorkerPlanRewriteEventResponse> {
+    ///         Ok(WorkerPlanRewriteEventResponse::new(event.plan))
+    ///     }
+    /// }
     ///
     /// async fn build_worker_session(ctx: WorkerQueryContext) -> Result<SessionState> {
     ///     Ok(ctx
     ///         .builder
-    ///         .with_distributed_worker_plan_rewrite_handler(
-    ///             |event: WorkerPlanRewriteEvent<'_>| {
-    ///                 Ok(WorkerPlanRewriteEventResponse::new(event.plan))
-    ///             },
-    ///         )
+    ///         .with_distributed_worker_plan_rewrite_handler(Passthrough)
     ///         .build())
     /// }
     ///

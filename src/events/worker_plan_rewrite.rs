@@ -1,4 +1,5 @@
 use super::common::EventHandlerChain;
+use async_trait::async_trait;
 use datafusion::error::Result;
 use datafusion::execution::config::SessionConfig;
 use datafusion::physical_plan::ExecutionPlan;
@@ -30,55 +31,49 @@ impl WorkerPlanRewriteEventResponse {
 ///
 /// Every registered handler runs in registration order and receives the plan returned by the
 /// previous handler. Returning an error aborts plan registration.
+///
+/// The handler is `async` so implementations can perform setup work that needs to make network
+/// or I/O calls (e.g. registering tables in the worker session) before the plan executes.
+#[async_trait]
 pub trait WorkerPlanRewriteHandler: Send + Sync + 'static {
     /// Returns the plan to pass to the next handler.
-    fn rewrite_worker_plan(
+    async fn rewrite_worker_plan(
         &self,
-        ev: WorkerPlanRewriteEvent,
+        ev: WorkerPlanRewriteEvent<'_>,
     ) -> Result<WorkerPlanRewriteEventResponse>;
 }
 
-impl<F> WorkerPlanRewriteHandler for F
-where
-    F: Send + Sync + 'static,
-    F: for<'a> Fn(WorkerPlanRewriteEvent<'a>) -> Result<WorkerPlanRewriteEventResponse>,
-{
-    fn rewrite_worker_plan(
-        &self,
-        ev: WorkerPlanRewriteEvent,
-    ) -> Result<WorkerPlanRewriteEventResponse> {
-        self(ev)
-    }
-}
-
+#[async_trait]
 impl WorkerPlanRewriteHandler for Arc<dyn WorkerPlanRewriteHandler> {
-    fn rewrite_worker_plan(
+    async fn rewrite_worker_plan(
         &self,
-        ev: WorkerPlanRewriteEvent,
+        ev: WorkerPlanRewriteEvent<'_>,
     ) -> Result<WorkerPlanRewriteEventResponse> {
-        self.as_ref().rewrite_worker_plan(ev)
+        self.as_ref().rewrite_worker_plan(ev).await
     }
 }
 
 pub(crate) type WorkerPlanRewriteHandlers = EventHandlerChain<dyn WorkerPlanRewriteHandler>;
 
 impl WorkerPlanRewriteHandlers {
-    pub(crate) fn handle(ev: WorkerPlanRewriteEvent) -> Result<WorkerPlanRewriteEventResponse> {
+    pub(crate) async fn handle(
+        ev: WorkerPlanRewriteEvent<'_>,
+    ) -> Result<WorkerPlanRewriteEventResponse> {
         let WorkerPlanRewriteEvent {
-            plan,
+            mut plan,
             session_config,
         } = ev;
-        let plan = match session_config.get_extension::<WorkerPlanRewriteHandlers>() {
-            Some(handlers) => handlers.try_fold(plan, |plan, handler| {
-                handler
+        if let Some(handlers) = session_config.get_extension::<WorkerPlanRewriteHandlers>() {
+            for handler in handlers.iter() {
+                plan = handler
                     .rewrite_worker_plan(WorkerPlanRewriteEvent {
                         plan,
                         session_config,
                     })
-                    .map(|response| response.plan)
-            })?,
-            None => plan,
-        };
+                    .await?
+                    .plan;
+            }
+        }
         Ok(WorkerPlanRewriteEventResponse::new(plan))
     }
 }

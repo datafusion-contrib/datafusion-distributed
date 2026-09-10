@@ -4,6 +4,7 @@ mod tests {
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
     use arrow::util::pretty::pretty_format_batches;
+    use async_trait::async_trait;
     use datafusion::common::{HashSet, Result, assert_contains, extensions_options, internal_err};
     use datafusion::config::ConfigExtension;
     use datafusion::error::DataFusionError;
@@ -14,7 +15,8 @@ mod tests {
     use datafusion_distributed::test_utils::session_context::register_temp_parquet_table;
     use datafusion_distributed::{
         DistributedExt, MappedWorkerSessionBuilderExt, WorkerPlanRewriteEvent,
-        WorkerPlanRewriteEventResponse, WorkerQueryContext, assert_snapshot,
+        WorkerPlanRewriteEventResponse, WorkerPlanRewriteHandler, WorkerQueryContext,
+        assert_snapshot,
     };
     use std::sync::Arc;
     use std::sync::Mutex;
@@ -80,16 +82,7 @@ mod tests {
     async fn plan_hook_errors_propagate_to_query() -> Result<(), Box<dyn std::error::Error>> {
         let session_builder = build_state.map(|builder| {
             Ok(builder
-                .with_distributed_worker_plan_rewrite_handler(
-                    |event: WorkerPlanRewriteEvent<'_>| {
-                        let options = plan_hook_options(event.session_config)?;
-                        if options.fail_in_hook {
-                            return internal_err!("plan hook failed for {}", options.label);
-                        }
-
-                        Ok(WorkerPlanRewriteEventResponse::new(event.plan))
-                    },
-                )
+                .with_distributed_worker_plan_rewrite_handler(FailingPlanHook)
                 .build())
         });
         let mut ctx = start_configured_in_memory_context(3, session_builder, |worker| worker).await;
@@ -115,39 +108,77 @@ mod tests {
         second: usize,
     }
 
-    fn add_first_hook(builder: &mut SessionStateBuilder, calls: Arc<Mutex<HookCalls>>) {
-        builder.set_distributed_worker_plan_rewrite_handler(
-            move |event: WorkerPlanRewriteEvent<'_>| {
-                let options = plan_hook_options(event.session_config)?;
-                if options.label != HOOK_LABEL {
-                    return internal_err!("unexpected plan hook label {}", options.label);
-                }
+    /// Fails the plan if [`PlanHookOptions::fail_in_hook`] is set.
+    struct FailingPlanHook;
 
-                let mut calls = calls.lock().unwrap();
-                calls.pending_plan_ids.insert(plan_identity(&event.plan));
-                calls.first += 1;
-                Ok(WorkerPlanRewriteEventResponse::new(event.plan))
-            },
-        )
+    #[async_trait]
+    impl WorkerPlanRewriteHandler for FailingPlanHook {
+        async fn rewrite_worker_plan(
+            &self,
+            event: WorkerPlanRewriteEvent<'_>,
+        ) -> Result<WorkerPlanRewriteEventResponse> {
+            let options = plan_hook_options(event.session_config)?;
+            if options.fail_in_hook {
+                return internal_err!("plan hook failed for {}", options.label);
+            }
+
+            Ok(WorkerPlanRewriteEventResponse::new(event.plan))
+        }
+    }
+
+    struct FirstPlanHook {
+        calls: Arc<Mutex<HookCalls>>,
+    }
+
+    #[async_trait]
+    impl WorkerPlanRewriteHandler for FirstPlanHook {
+        async fn rewrite_worker_plan(
+            &self,
+            event: WorkerPlanRewriteEvent<'_>,
+        ) -> Result<WorkerPlanRewriteEventResponse> {
+            let options = plan_hook_options(event.session_config)?;
+            if options.label != HOOK_LABEL {
+                return internal_err!("unexpected plan hook label {}", options.label);
+            }
+
+            let mut calls = self.calls.lock().unwrap();
+            calls.pending_plan_ids.insert(plan_identity(&event.plan));
+            calls.first += 1;
+            Ok(WorkerPlanRewriteEventResponse::new(event.plan))
+        }
+    }
+
+    struct SecondPlanHook {
+        calls: Arc<Mutex<HookCalls>>,
+    }
+
+    #[async_trait]
+    impl WorkerPlanRewriteHandler for SecondPlanHook {
+        async fn rewrite_worker_plan(
+            &self,
+            event: WorkerPlanRewriteEvent<'_>,
+        ) -> Result<WorkerPlanRewriteEventResponse> {
+            let options = plan_hook_options(event.session_config)?;
+            if options.label != HOOK_LABEL {
+                return internal_err!("unexpected plan hook label {}", options.label);
+            }
+
+            let mut calls = self.calls.lock().unwrap();
+            if !calls.pending_plan_ids.remove(&plan_identity(&event.plan)) {
+                return internal_err!("second hook ran before first hook");
+            }
+
+            calls.second += 1;
+            Ok(WorkerPlanRewriteEventResponse::new(event.plan))
+        }
+    }
+
+    fn add_first_hook(builder: &mut SessionStateBuilder, calls: Arc<Mutex<HookCalls>>) {
+        builder.set_distributed_worker_plan_rewrite_handler(FirstPlanHook { calls });
     }
 
     fn add_second_hook(builder: &mut SessionStateBuilder, calls: Arc<Mutex<HookCalls>>) {
-        builder.set_distributed_worker_plan_rewrite_handler(
-            move |event: WorkerPlanRewriteEvent<'_>| {
-                let options = plan_hook_options(event.session_config)?;
-                if options.label != HOOK_LABEL {
-                    return internal_err!("unexpected plan hook label {}", options.label);
-                }
-
-                let mut calls = calls.lock().unwrap();
-                if !calls.pending_plan_ids.remove(&plan_identity(&event.plan)) {
-                    return internal_err!("second hook ran before first hook");
-                }
-
-                calls.second += 1;
-                Ok(WorkerPlanRewriteEventResponse::new(event.plan))
-            },
-        )
+        builder.set_distributed_worker_plan_rewrite_handler(SecondPlanHook { calls });
     }
 
     fn plan_identity(plan: &Arc<dyn ExecutionPlan>) -> usize {
