@@ -32,9 +32,13 @@ pub struct RouteTaskEvent<'a> {
 
 /// A worker connection selected by a [`RouteTaskHandler`].
 pub struct RouteTaskEventResponse {
-    /// The URL of the selected worker.
+    /// The URL of the selected worker. Once this URL is returned, the worker officially starts
+    /// being part of the query, and it must commit to drive it to completion. Once a worker URL is
+    /// returned, a failure in the worker means the failure of the query.
     pub url: Url,
-    /// Messages streamed from the selected worker to the coordinator.
+    /// Messages streamed from the selected worker to the coordinator. This must be the result of
+    /// calling `ev.dialer.dial(url).await`, where `dialer` is provided by the [RouteTaskEvent]
+    /// definition.
     pub worker_to_coordinator_stream: BoxStream<'static, Result<WorkerToCoordinatorMsg>>,
 }
 
