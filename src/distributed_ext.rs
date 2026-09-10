@@ -676,7 +676,7 @@ pub trait DistributedExt: Sized {
     /// # use datafusion::error::Result;
     /// # use datafusion::execution::SessionStateBuilder;
     /// # use datafusion_distributed::{ok_or_some_err, DistributedExt, RouteTaskEvent, RouteTaskEventResponse, RouteTaskHandler};
-    /// # use url::Url;
+    /// # use rand::prelude::IndexedRandom;
     ///
     /// struct AssignToWorker;
     ///
@@ -687,8 +687,8 @@ pub trait DistributedExt: Sized {
     ///         event: RouteTaskEvent<'_>,
     ///     ) -> Option<Result<RouteTaskEventResponse>> {
     ///         let urls = ok_or_some_err!(event.worker_resolver.get_urls());
-    ///         let url = urls.choose(&mut rand::rng());
-    ///         Some(event.dialer.dial(url).await)
+    ///         let url = urls.choose(&mut rand::rng()).expect("No URLs available");
+    ///         Some(event.dialer.dial(url.clone()).await)
     ///     }
     /// }
     ///
