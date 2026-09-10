@@ -68,8 +68,8 @@ pub use work_unit_feed::{
     DistributedWorkUnitFeedContext, WorkUnit, WorkUnitFeed, WorkUnitFeedProto, WorkUnitFeedProvider,
 };
 pub use worker::{
-    DefaultSessionBuilder, MappedWorkerSessionBuilder, MappedWorkerSessionBuilderExt, TaskData,
-    Worker, WorkerQueryContext, WorkerSessionBuilder,
+    CoordinatorChannelResult, DefaultSessionBuilder, MappedWorkerSessionBuilder,
+    MappedWorkerSessionBuilderExt, TaskData, Worker, WorkerQueryContext, WorkerSessionBuilder,
 };
 
 #[cfg(any(feature = "integration", test))]

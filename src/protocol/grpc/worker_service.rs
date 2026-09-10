@@ -11,6 +11,7 @@ use crate::{
     WorkUnitFeedDeclaration, WorkUnitMsg, Worker, WorkerResolver, WorkerToCoordinatorMsg,
 };
 
+use crate::worker::CoordinatorChannelResult;
 use arrow_flight::FlightData;
 use arrow_flight::encode::{DictionaryHandling, FlightDataEncoder, FlightDataEncoderBuilder};
 use arrow_flight::error::FlightError;
@@ -107,14 +108,6 @@ impl pb::worker_service_server::WorkerService for Worker {
         };
 
         let set_plan_request = decode_set_plan_request(set_plan_request)?;
-        let task_key = set_plan_request.task_key;
-        // Dynamic-filter reports may carry decoded physical expressions. Retain the worker's
-        // task data so the gRPC boundary can encode them with its configured codecs, even after
-        // the completed task has been removed from the worker cache.
-        let task_data_entry = self
-            .task_data_entries
-            .get_with(task_key, async { Default::default() })
-            .await;
 
         let input_stream = body
             .map_err(map_status_to_datafusion_error)
@@ -123,16 +116,12 @@ impl pb::worker_service_server::WorkerService for Worker {
             })
             .boxed();
 
-        let output_stream = self
+        let CoordinatorChannelResult { task_ctx, stream } = self
             .coordinator_channel(metadata.into_headers(), set_plan_request, input_stream)
             .await
             .map_err(datafusion_error_to_tonic_status)?;
-        let task_data = task_data_entry
-            .read_now()
-            .ok_or_else(|| Status::internal("worker task data was not initialized"))?
-            .map_err(|error| datafusion_error_to_tonic_status(DataFusionError::Shared(error)))?;
-        let task_ctx = Arc::clone(&task_data.task_ctx);
-        let output_stream = output_stream
+
+        let output_stream = stream
             .map(move |msg| match msg {
                 Ok(msg) => encode_worker_to_coordinator_msg(msg, &task_ctx),
                 Err(err) => Err(datafusion_error_to_tonic_status(err)),
