@@ -143,7 +143,7 @@ pub struct ProducedDynamicFilter {
     pub expression_id: u64,
     /// Note that sending an update via a live pointer could mean that the dynamic filter updates during
     /// transport. This means that observations at the coordinator may repeat or skip generations, but never
-    /// regress. Since the worker monitors updates and completion, it's guranteed that the completed
+    /// regress. Since the worker monitors updates and completion, it's guaranteed that the completed
     /// filter state will not be missed.
     pub expression: MaybeEncoded<Arc<dyn PhysicalExpr>>,
 }
