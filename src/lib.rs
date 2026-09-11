@@ -29,7 +29,7 @@ pub use dynamic_filtering::rewrite_distributed_plan_with_dynamic_filters;
 pub use dynamic_filtering::{
     DiscoveredDynamicFilter, DiscoveredDynamicFilterAnchor, DiscoveredDynamicFilterConsumers,
     DiscoveredDynamicFilterProducer, discover_dynamic_filter_consumers,
-    discover_dynamic_filter_producers,
+    discover_dynamic_filter_producers, dynamic_filter_remote_producer_ids,
 };
 pub use events::{
     CoordinatorToWorkerDialer, DesiredTaskCountEvent, DesiredTaskCountEventResponse,

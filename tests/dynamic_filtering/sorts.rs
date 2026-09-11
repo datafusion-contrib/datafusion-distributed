@@ -54,6 +54,7 @@ mod tests {
             "#,
         )
         .with_expected_rows(10)
+        .expect_dynamic_filter_updates()
         .execute()
         .await?;
         assert_snapshot!(display, @"

@@ -141,6 +141,29 @@ pub fn discover_dynamic_filter_producers(
     Ok(producers)
 }
 
+/// Returns producer IDs with at least one remote consumer.
+///
+/// If a producer ID is present in the dynamic-filter anchors of any [`NetworkBoundary`], the plan
+/// contains at least one remote consumer and the producer's updates must be forwarded to the
+/// coordinator.
+///
+/// [`NetworkBoundary`]: crate::NetworkBoundary
+pub fn dynamic_filter_remote_producer_ids(plan: &Arc<dyn ExecutionPlan>) -> Result<Vec<u64>> {
+    let producer_ids: HashSet<_> = discover_dynamic_filter_producers(plan)?
+        .into_iter()
+        .map(|producer| producer.id)
+        .collect();
+    let anchor_ids: HashSet<_> = discover_dynamic_filter_consumers(plan)?
+        .anchors
+        .into_iter()
+        .map(|anchor| anchor.id)
+        .collect();
+
+    let mut remote_producer_ids: Vec<_> = producer_ids.intersection(&anchor_ids).copied().collect();
+    remote_producer_ids.sort_unstable();
+    Ok(remote_producer_ids)
+}
+
 /// Finds consumers whose producer does not occur in `plan`. These consumers become orphaned
 /// from their producer when the producer is moved behind a remote network boundary. These
 /// orphans become network boundary anchors, artificially keeping the producers alive.

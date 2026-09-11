@@ -5,8 +5,8 @@ use crate::coordinator::DynamicFilterRegistry;
 use crate::coordinator::Store;
 use crate::coordinator::latency_metric::LatencyMetric;
 use crate::dynamic_filtering::{
-    discover_dynamic_filter_consumers, discover_dynamic_filter_producers,
-    is_dynamic_filtering_enabled, maybe_roundtrip_plan_to_sever_in_memory_dynamic_filter_relationships,
+    dynamic_filter_remote_producer_ids, is_dynamic_filtering_enabled,
+    maybe_roundtrip_plan_to_sever_in_memory_dynamic_filter_relationships,
 };
 use crate::events::{
     RouteTaskEvent, RouteTaskEventResponse, RouteTaskHandlers, new_coordinator_to_worker_dialer,
@@ -26,7 +26,7 @@ use datafusion::common::Result;
 use datafusion::common::instant::Instant;
 use datafusion::common::runtime::JoinSet;
 use datafusion::common::tree_node::{Transformed, TreeNodeRecursion};
-use datafusion::common::{DataFusionError, HashSet, internal_err};
+use datafusion::common::{DataFusionError, internal_err};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr_common::metrics::{ExecutionPlanMetricsSet, Label, MetricBuilder};
 use datafusion::physical_plan::ExecutionPlan;
@@ -74,7 +74,7 @@ impl QueryCoordinator {
             metrics: metrics_set.clone(),
             metrics_store,
             completed_dynamic_filter_store,
-            dynamic_filter_registry: Arc::new(DynamicFilterRegistry::new()),
+            dynamic_filter_registry: Arc::new(DynamicFilterRegistry::new(metrics_set)),
             coordinator_to_worker_metrics: CoordinatorToWorkerMetrics::new(metrics_set),
             end_stream_notifier: Arc::new(Notify::new()),
             join_set: Mutex::new(JoinSet::new()),
@@ -319,6 +319,7 @@ impl<'a> StageCoordinator<'a> {
         };
         let task_metrics = self.metrics_store.clone();
         let completed_dynamic_filter_store = self.completed_dynamic_filter_store.clone();
+        let dynamic_filter_registry = Arc::clone(self.dynamic_filter_registry);
         let (load_info_tx, load_info_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut load_info_tx_opt = Some(load_info_tx);
 
@@ -346,7 +347,9 @@ impl<'a> StageCoordinator<'a> {
                             store.insert(task_key, filters);
                         }
                     }
-                    WorkerToCoordinatorMsg::ProducedDynamicFilter(_) => {}
+                    WorkerToCoordinatorMsg::ProducedDynamicFilter(_) => {
+                        dynamic_filter_registry.record_update_received();
+                    }
                 }
             }
         });
@@ -494,29 +497,6 @@ impl<'a> StageCoordinator<'a> {
     }
 }
 
-/// Returns producer IDs with at least one remote consumer.
-///
-/// If a producer ID is present in the dynamic-filter anchors of any [`NetworkBoundary`], the plan
-/// contains at least one remote consumer and the producer's updates must be forwarded to the
-/// coordinator.
-///
-/// [`NetworkBoundary`]: crate::NetworkBoundary
-fn dynamic_filter_remote_producer_ids(plan: &Arc<dyn ExecutionPlan>) -> Result<Vec<u64>> {
-    let producer_ids: HashSet<_> = discover_dynamic_filter_producers(plan)?
-        .into_iter()
-        .map(|producer| producer.id)
-        .collect();
-    let anchor_ids: HashSet<_> = discover_dynamic_filter_consumers(plan)?
-        .anchors
-        .into_iter()
-        .map(|anchor| anchor.id)
-        .collect();
-
-    let mut remote_producer_ids: Vec<_> = producer_ids.intersection(&anchor_ids).copied().collect();
-    remote_producer_ids.sort_unstable();
-    Ok(remote_producer_ids)
-}
-
 fn keep_stream_alive<T: 'static>(notify: Arc<Notify>) -> impl Stream<Item = T> + 'static {
     futures::stream::once(notify.notified_owned()).filter_map(|()| futures::future::ready(None))
 }
@@ -566,83 +546,6 @@ impl CoordinatorToWorkerMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::NetworkShuffleExec;
-    use crate::stage::{RemoteStage, Stage};
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::common::{JoinType, NullEquality};
-    use datafusion::physical_expr::Partitioning;
-    use datafusion::physical_expr::PhysicalExpr;
-    use datafusion::physical_expr::expressions::{Column, DynamicFilterPhysicalExpr, lit};
-    use datafusion::physical_plan::empty::EmptyExec;
-    use datafusion::physical_plan::filter::FilterExec;
-    use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
-    use datafusion::physical_plan::repartition::RepartitionExec;
-
-    #[test]
-    fn identifies_only_producers_with_network_boundary_consumers() -> Result<()> {
-        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
-
-        let local_filter = dynamic_filter();
-        let local_probe = Arc::new(FilterExec::try_new(local_filter.clone(), empty(&schema))?)
-            as Arc<dyn ExecutionPlan>;
-        let local_join = join_with_filter(&schema, local_probe, Arc::clone(&local_filter))?;
-        assert!(dynamic_filter_remote_producer_ids(&local_join)?.is_empty());
-
-        let remote_filter = dynamic_filter();
-        let repartition = Arc::new(RepartitionExec::try_new(
-            empty(&schema),
-            Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 1),
-        )?) as Arc<dyn ExecutionPlan>;
-        let input_properties = Arc::clone(repartition.properties());
-        let remote_probe = Arc::new(NetworkShuffleExec::from_stage(
-            Stage::Remote(RemoteStage {
-                query_id: Default::default(),
-                num: 0,
-                workers: vec![],
-                runtime_stats: None,
-                dynamic_filter_anchors: vec![remote_filter.clone()],
-            }),
-            input_properties,
-        )) as Arc<dyn ExecutionPlan>;
-        let remote_join = join_with_filter(&schema, remote_probe, Arc::clone(&remote_filter))?;
-        assert_eq!(
-            dynamic_filter_remote_producer_ids(&remote_join)?,
-            vec![remote_filter.expression_id().unwrap()]
-        );
-        Ok(())
-    }
-
-    fn dynamic_filter() -> Arc<DynamicFilterPhysicalExpr> {
-        Arc::new(DynamicFilterPhysicalExpr::new(
-            vec![Arc::new(Column::new("a", 0))],
-            lit(true),
-        ))
-    }
-
-    fn empty(schema: &Arc<Schema>) -> Arc<dyn ExecutionPlan> {
-        Arc::new(EmptyExec::new(Arc::clone(schema)))
-    }
-
-    fn join_with_filter(
-        schema: &Arc<Schema>,
-        probe: Arc<dyn ExecutionPlan>,
-        dynamic_filter: Arc<DynamicFilterPhysicalExpr>,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
-        Ok(Arc::new(
-            HashJoinExec::try_new(
-                empty(schema),
-                probe,
-                vec![(Arc::new(Column::new("a", 0)), Arc::new(Column::new("a", 0)))],
-                None,
-                &JoinType::Inner,
-                None,
-                PartitionMode::Partitioned,
-                NullEquality::NullEqualsNothing,
-                false,
-            )?
-            .with_dynamic_filter_expr(dynamic_filter)?,
-        ))
-    }
 
     /// Regression test for a rustc miscompilation (present at least through
     /// 1.96, fixed in 1.98) of [`CoordinatorToWorkerMetrics::new`].
