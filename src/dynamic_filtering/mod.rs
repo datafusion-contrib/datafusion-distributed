@@ -7,7 +7,7 @@ use datafusion::execution::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
 use std::sync::Arc;
 
-pub(crate) use discovery::*;
+pub use discovery::*;
 pub use display::rewrite_distributed_plan_with_dynamic_filters;
 pub(crate) use display::sever_dynamic_filter_relationships_in_plan_for_display;
 
