@@ -4,12 +4,20 @@ mod display;
 use crate::codec::roundtrip_pb;
 use datafusion::common::Result;
 use datafusion::execution::TaskContext;
+use datafusion::execution::config::SessionConfig;
 use datafusion::physical_plan::ExecutionPlan;
 use std::sync::Arc;
 
 pub use discovery::*;
 pub use display::rewrite_distributed_plan_with_dynamic_filters;
 pub(crate) use display::sever_dynamic_filter_relationships_in_plan_for_display;
+
+pub(crate) fn is_dynamic_filtering_enabled(session_config: &SessionConfig) -> bool {
+    session_config
+        .options()
+        .optimizer
+        .enable_dynamic_filter_pushdown
+}
 
 /// Isolates all shared, in-memory dynamic filter state from this plan if it contains
 /// any dynamic filter producers or consumers.

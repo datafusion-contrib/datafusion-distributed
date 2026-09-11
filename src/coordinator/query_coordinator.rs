@@ -4,7 +4,10 @@ use crate::config_extension_ext::get_config_extension_propagation_headers;
 use crate::coordinator::DynamicFilterRegistry;
 use crate::coordinator::Store;
 use crate::coordinator::latency_metric::LatencyMetric;
-use crate::dynamic_filtering::maybe_roundtrip_plan_to_sever_in_memory_dynamic_filter_relationships;
+use crate::dynamic_filtering::{
+    is_dynamic_filtering_enabled,
+    maybe_roundtrip_plan_to_sever_in_memory_dynamic_filter_relationships,
+};
 use crate::events::{
     RouteTaskEvent, RouteTaskEventResponse, RouteTaskHandlers, new_coordinator_to_worker_dialer,
 };
@@ -423,6 +426,7 @@ impl<'a> StageCoordinator<'a> {
         let wuf_registry = session_config
             .get_extension::<WorkUnitFeedRegistry>()
             .unwrap_or_default();
+        let dynamic_filtering_enabled = is_dynamic_filtering_enabled(session_config);
 
         let mut work_unit_feed_declarations = vec![];
         let d_ctx = DistributedTaskContext {
@@ -460,10 +464,14 @@ impl<'a> StageCoordinator<'a> {
 
             Ok(Transformed::no(plan))
         })?;
-        let plan = maybe_roundtrip_plan_to_sever_in_memory_dynamic_filter_relationships(
-            Arc::clone(&transformed.data),
-            self.task_ctx,
-        )?;
+        let plan = if dynamic_filtering_enabled {
+            maybe_roundtrip_plan_to_sever_in_memory_dynamic_filter_relationships(
+                Arc::clone(&transformed.data),
+                self.task_ctx,
+            )?
+        } else {
+            transformed.data
+        };
         Ok((plan, work_unit_feed_declarations))
     }
 }
