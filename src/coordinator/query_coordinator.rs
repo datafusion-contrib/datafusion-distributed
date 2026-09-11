@@ -131,12 +131,6 @@ impl QueryCoordinator {
 /// - Building tasks that communicate a serialized plan to multiple workers for further execution.
 /// - Building tasks that stream partition feeds from local [WorkUnitFeedExec] nodes to their
 ///   remote counterparts.
-struct SpecializedTaskPlan {
-    plan: Arc<dyn ExecutionPlan>,
-    work_unit_feed_declarations: Vec<WorkUnitFeedDeclaration>,
-    dynamic_filter_remote_producer_ids: Vec<u64>,
-}
-
 pub(super) struct StageCoordinator<'a> {
     plan: &'a Arc<dyn ExecutionPlan>,
     query_id: Uuid,
@@ -169,7 +163,7 @@ impl<'a> StageCoordinator<'a> {
     )> {
         let session_config = self.task_ctx.session_config();
 
-        let SpecializedTaskPlan {
+        let TaskSpecializedPlan {
             plan,
             work_unit_feed_declarations,
             dynamic_filter_remote_producer_ids,
@@ -433,7 +427,7 @@ impl<'a> StageCoordinator<'a> {
     /// trimming down any unnecessary information that the specific `task_i` task is not going to
     /// need, like unexecuted branches in [ChildrenIsolatorUnionExec], or unexecuted variants of
     /// [DistributedLeafExec].
-    fn task_specialized_plan(&self, task_i: usize) -> Result<SpecializedTaskPlan> {
+    fn task_specialized_plan(&self, task_i: usize) -> Result<TaskSpecializedPlan> {
         let session_config = self.task_ctx.session_config();
         let wuf_registry = session_config
             .get_extension::<WorkUnitFeedRegistry>()
@@ -489,7 +483,7 @@ impl<'a> StageCoordinator<'a> {
         } else {
             vec![]
         };
-        Ok(SpecializedTaskPlan {
+        Ok(TaskSpecializedPlan {
             plan,
             work_unit_feed_declarations,
             dynamic_filter_remote_producer_ids,
@@ -499,6 +493,12 @@ impl<'a> StageCoordinator<'a> {
 
 fn keep_stream_alive<T: 'static>(notify: Arc<Notify>) -> impl Stream<Item = T> + 'static {
     futures::stream::once(notify.notified_owned()).filter_map(|()| futures::future::ready(None))
+}
+
+struct TaskSpecializedPlan {
+    plan: Arc<dyn ExecutionPlan>,
+    work_unit_feed_declarations: Vec<WorkUnitFeedDeclaration>,
+    dynamic_filter_remote_producer_ids: Vec<u64>,
 }
 
 pub(super) struct NotifyGuard(Arc<Notify>);
