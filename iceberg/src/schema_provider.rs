@@ -18,11 +18,11 @@ pub struct IcebergSchemaProvider {
 
 impl IcebergSchemaProvider {
     pub async fn try_new(
-        client: Arc<dyn Catalog>,
+        catalog: Arc<dyn Catalog>,
         namespace: NamespaceIdent,
         iceberg_runtime: Runtime,
     ) -> Result<Self> {
-        let table_names: Vec<_> = client
+        let table_names: Vec<_> = catalog
             .list_tables(&namespace)
             .await
             .map_err(df_err)?
@@ -35,7 +35,7 @@ impl IcebergSchemaProvider {
                 .iter()
                 .map(|name| {
                     IcebergCatalogTableProvider::try_new(
-                        client.clone(),
+                        catalog.clone(),
                         namespace.clone(),
                         name,
                         iceberg_runtime.clone(),

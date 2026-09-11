@@ -17,11 +17,11 @@ pub struct IcebergCatalog {
 }
 
 impl IcebergCatalog {
-    pub async fn try_new(client: Arc<dyn Catalog>, iceberg_runtime: Runtime) -> Result<Self> {
-        let namespaces = client.list_namespaces(None).await.map_err(df_err)?;
+    pub async fn try_new(catalog: Arc<dyn Catalog>, iceberg_runtime: Runtime) -> Result<Self> {
+        let namespaces = catalog.list_namespaces(None).await.map_err(df_err)?;
 
         let schema_providers = try_join_all(namespaces.iter().map(|ns| {
-            IcebergSchemaProvider::try_new(client.clone(), ns.clone(), iceberg_runtime.clone())
+            IcebergSchemaProvider::try_new(catalog.clone(), ns.clone(), iceberg_runtime.clone())
         }))
         .await?;
 

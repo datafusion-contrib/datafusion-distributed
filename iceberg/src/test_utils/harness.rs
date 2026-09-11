@@ -44,7 +44,7 @@ const FIXTURE_METADATA_URI: &str = "s3://iceberg-test/warehouse/taxi/metadata/v1
 
 pub struct IcebergTestHarness {
     ctx: SessionContext,
-    catalog: Option<Arc<dyn Catalog>>,
+    iceberg_catalog: Option<Arc<dyn iceberg::Catalog>>,
 }
 
 impl IcebergTestHarness {
@@ -71,7 +71,7 @@ impl IcebergTestHarness {
     /// Returns the in-memory Iceberg catalog backing a fixture built with
     /// [`IcebergTestHarnessBuilder::with_catalog`].
     pub fn iceberg_catalog(&self) -> Result<Arc<dyn Catalog>> {
-        self.catalog.clone().ok_or_else(|| {
+        self.iceberg_catalog.clone().ok_or_else(|| {
             DataFusionError::Plan("the fixture was not built with a catalog".to_string())
         })
     }
@@ -278,7 +278,7 @@ impl IcebergTestHarnessBuilder {
         }
         Ok(IcebergTestHarness {
             ctx,
-            catalog: iceberg_catalog,
+            iceberg_catalog,
         })
     }
 }
