@@ -3,6 +3,7 @@ use crate::{TaskKey, WorkerResolver, WorkerToCoordinatorMsg};
 use async_trait::async_trait;
 use datafusion::common::Result;
 use datafusion::execution::TaskContext;
+use datafusion::physical_expr_common::metrics::ExecutionPlanMetricsSet;
 use datafusion::physical_plan::ExecutionPlan;
 use futures::stream::BoxStream;
 use std::sync::Arc;
@@ -13,6 +14,8 @@ use url::Url;
 pub struct RouteTaskEvent<'a> {
     /// The task context active for the query being coordinated.
     pub task_ctx: &'a Arc<TaskContext>,
+    /// Metrics attached to the [crate::DistributedExec]
+    pub metrics: &'a ExecutionPlanMetricsSet,
     /// [WorkerResolver] in scope.
     pub worker_resolver: &'a dyn WorkerResolver,
     /// Identifier of the task that is getting assigned.

@@ -243,6 +243,7 @@ impl<'a> StageCoordinator<'a> {
 
         let ev = RouteTaskEvent {
             task_ctx: self.task_ctx,
+            metrics: self.metrics_set,
             worker_resolver: worker_resolver.as_ref(),
             task_specialized_plan: &specialized,
             task_key,
