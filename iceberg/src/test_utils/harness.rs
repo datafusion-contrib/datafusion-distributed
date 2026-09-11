@@ -25,19 +25,26 @@ use iceberg::io::{
     FileMetadata, FileRead, FileWrite, InputFile, LocalFsStorage, OutputFile, Storage,
     StorageConfig, StorageFactory,
 };
+use iceberg::memory::{MEMORY_CATALOG_WAREHOUSE, MemoryCatalogBuilder};
 use iceberg::spec::TableMetadata;
-use iceberg::{Error, ErrorKind, Result as IcebergResult};
+use iceberg::{
+    Catalog, CatalogBuilder, Error, ErrorKind, NamespaceIdent, Result as IcebergResult, TableIdent,
+};
 use serde::{Deserialize, Serialize};
 
 use super::taxi_metadata;
-use crate::{IcebergExt, IcebergIntegrationOptions, iceberg_desired_task_count};
+use crate::common::df_err;
+use crate::{IcebergCatalog, IcebergExt, IcebergIntegrationOptions, iceberg_desired_task_count};
 
+pub const FIXTURE_CATALOG: &str = "iceberg";
+pub const FIXTURE_NAMESPACE: &str = "nyc";
 pub const FIXTURE_URI: &str = "s3://iceberg-test/warehouse/taxi";
 const WAREHOUSE_URI: &str = "s3://iceberg-test/warehouse/";
 const FIXTURE_METADATA_URI: &str = "s3://iceberg-test/warehouse/taxi/metadata/v1.metadata.json";
 
 pub struct IcebergTestHarness {
     ctx: SessionContext,
+    catalog: Option<Arc<dyn Catalog>>,
 }
 
 impl IcebergTestHarness {
@@ -59,6 +66,14 @@ impl IcebergTestHarness {
 
     pub async fn physical_plan(&self, sql: &str) -> Result<Arc<dyn ExecutionPlan>> {
         self.ctx.sql(sql).await?.create_physical_plan().await
+    }
+
+    /// Returns the in-memory Iceberg catalog backing a fixture built with
+    /// [`IcebergTestHarnessBuilder::with_catalog`].
+    pub fn iceberg_catalog(&self) -> Result<Arc<dyn Catalog>> {
+        self.catalog.clone().ok_or_else(|| {
+            DataFusionError::Plan("the fixture was not built with a catalog".to_string())
+        })
     }
 
     /// Returns the fixture scan without SQL optimization, including for an empty table.
@@ -94,6 +109,7 @@ pub struct IcebergTestHarnessBuilder {
     metadata: TableMetadata,
     table_options: BTreeMap<String, String>,
     files: HashMap<String, Vec<u8>>,
+    catalog: bool,
     #[cfg(feature = "integration")]
     workers: Option<usize>,
 }
@@ -108,6 +124,7 @@ impl Default for IcebergTestHarnessBuilder {
             metadata: taxi_metadata(),
             table_options: BTreeMap::new(),
             files: HashMap::new(),
+            catalog: false,
             #[cfg(feature = "integration")]
             workers: None,
         }
@@ -144,6 +161,14 @@ impl IcebergTestHarnessBuilder {
         self
     }
 
+    /// Registers the fixture through an in-memory Iceberg catalog exposed as
+    /// [`FIXTURE_CATALOG`].[`FIXTURE_NAMESPACE`] instead of `CREATE EXTERNAL TABLE`.
+    /// Table options are not applied in this mode.
+    pub fn with_catalog(mut self) -> Self {
+        self.catalog = true;
+        self
+    }
+
     /// Enables distributed planning with logical workers backed by in-memory gRPC.
     #[cfg(feature = "integration")]
     pub fn with_workers(mut self, workers: usize) -> Self {
@@ -162,12 +187,19 @@ impl IcebergTestHarnessBuilder {
             ..FixtureStorageFactory::default()
         };
         let options = IcebergIntegrationOptions {
-            storage_factory: Arc::new(storage_factory),
+            storage_factory: Arc::new(storage_factory.clone()),
             iceberg_runtime: iceberg::Runtime::current(),
         };
-        let state = self
+        let iceberg_runtime = options.iceberg_runtime.clone();
+        let mut state = self
             .session_builder
             .with_iceberg_integration(options.clone());
+        if self.catalog {
+            // Makes `taxi` resolve through the registered Iceberg catalog.
+            let config = state.config().get_or_insert_default();
+            *config = std::mem::take(config)
+                .with_default_catalog_and_schema(FIXTURE_CATALOG, FIXTURE_NAMESPACE);
+        }
         #[cfg(feature = "integration")]
         let state = if let Some(workers) = self.workers {
             let resolver =
@@ -186,6 +218,11 @@ impl IcebergTestHarnessBuilder {
             state
         };
         let ctx = SessionContext::new_with_state(state.build());
+        if self.catalog && !self.table_options.is_empty() {
+            return Err(DataFusionError::Plan(
+                "table options are not supported with a catalog-backed fixture".to_string(),
+            ));
+        }
         let mut statement = format!(
             "CREATE EXTERNAL TABLE taxi STORED AS ICEBERG \
              LOCATION '{FIXTURE_METADATA_URI}'"
@@ -205,8 +242,44 @@ impl IcebergTestHarnessBuilder {
                 .join(", ");
             statement.push_str(&format!(" OPTIONS ({options})"));
         }
-        ctx.sql(&statement).await?.collect().await?;
-        Ok(IcebergTestHarness { ctx })
+
+        let mut iceberg_catalog = None;
+        if self.catalog {
+            let catalog = MemoryCatalogBuilder::default()
+                .with_storage_factory(Arc::new(storage_factory))
+                .with_runtime(iceberg_runtime.clone())
+                .load(
+                    "memory",
+                    HashMap::from([(
+                        MEMORY_CATALOG_WAREHOUSE.to_string(),
+                        WAREHOUSE_URI.to_string(),
+                    )]),
+                )
+                .await
+                .map_err(df_err)?;
+            let namespace = NamespaceIdent::new(FIXTURE_NAMESPACE.to_string());
+            catalog
+                .create_namespace(&namespace, HashMap::new())
+                .await
+                .map_err(df_err)?;
+            catalog
+                .register_table(
+                    &TableIdent::new(namespace, "taxi".to_string()),
+                    FIXTURE_METADATA_URI.to_string(),
+                )
+                .await
+                .map_err(df_err)?;
+            let catalog: Arc<dyn Catalog> = Arc::new(catalog);
+            let provider = IcebergCatalog::try_new(catalog.clone(), iceberg_runtime).await?;
+            ctx.register_catalog(FIXTURE_CATALOG, Arc::new(provider));
+            iceberg_catalog = Some(catalog);
+        } else {
+            ctx.sql(&statement).await?.collect().await?;
+        }
+        Ok(IcebergTestHarness {
+            ctx,
+            catalog: iceberg_catalog,
+        })
     }
 }
 

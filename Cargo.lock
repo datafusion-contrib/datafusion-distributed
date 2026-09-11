@@ -2497,12 +2497,14 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "bytes",
+ "dashmap",
  "datafusion",
  "datafusion-distributed",
  "datafusion-proto",
  "delegate",
  "futures",
  "iceberg",
+ "iceberg-catalog-rest",
  "iceberg-storage-opendal",
  "insta",
  "parquet",
@@ -4045,6 +4047,26 @@ dependencies = [
  "uuid",
  "zeroize",
  "zstd 0.13.3",
+]
+
+[[package]]
+name = "iceberg-catalog-rest"
+version = "0.10.1"
+source = "git+https://github.com/apache/iceberg-rust.git?rev=4d83bc77dc10cff851a3ef427c451ff977bc3643#4d83bc77dc10cff851a3ef427c451ff977bc3643"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "http 1.5.0",
+ "iceberg",
+ "itertools 0.13.0",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "typed-builder",
+ "uuid",
 ]
 
 [[package]]
@@ -5859,7 +5881,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.10.5",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
