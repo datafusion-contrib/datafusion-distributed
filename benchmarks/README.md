@@ -105,9 +105,9 @@ WORKERS=2 ./benchmarks/run.sh --dataset tpch/sf1-iceberg --format iceberg --thre
 - Timing calculations are unchanged; comparisons do not execute queries or check correctness.
 
 Absolute dataset paths are supported when they follow the same `<suite>/<variant>` convention.
-With `--format iceberg`, `--iceberg-column-stats` loads manifest column statistics during planning.
-Iceberg preparation, table registration, and session options live behind the Iceberg crate's
-`benchmarks` feature, enabled by this runner. The execution loop only receives backend callbacks.
+The Iceberg backend always loads manifest column statistics during planning. Iceberg preparation
+and table registration live behind the Iceberg crate's `benchmarks` feature, enabled by this
+runner. The execution loop only receives backend callbacks.
 
 For SF10, SF100, etc., change the generation scale and paths; increase generation `--partitions`
 to avoid oversized source files. Conversion is sequential and retains both representations.

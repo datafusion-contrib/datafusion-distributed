@@ -30,10 +30,7 @@ mod tests {
         let parquet = saved_run(&dataset);
         success(&iceberg_run);
         saved_run(&iceberg);
-        assert!(
-            success(&[iceberg_run.as_slice(), &["--iceberg-column-stats"]].concat())
-                .contains("Comparing")
-        );
+        assert!(success(&iceberg_run).contains("Comparing"));
         assert_eq!(saved_run(&dataset), parquet);
         let comparison = success(&["compare", path(&dataset), path(&iceberg)]);
         assert!(comparison.contains(&format!(
@@ -55,6 +52,7 @@ mod tests {
         for (flags, message) in [
             (vec!["--format", "csv"], "isn't a valid value"),
             (vec!["--iceberg"], "wasn't expected"),
+            (vec!["--iceberg-column-stats"], "wasn't expected"),
         ] {
             let output = command(&[&["run", "--dataset", "unused"][..], &flags].concat());
             assert!(!output.status.success());

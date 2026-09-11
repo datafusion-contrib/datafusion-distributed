@@ -9,7 +9,7 @@ mod run;
 
 use backend::BenchmarkBackend;
 use datafusion::error::Result;
-use datafusion_distributed_iceberg::benchmarks::{IcebergBenchmarkOptions, PrepareIcebergOpt};
+use datafusion_distributed_iceberg::benchmarks::PrepareIcebergOpt;
 use structopt::{StructOpt, clap::arg_enum};
 
 arg_enum! {
@@ -29,8 +29,6 @@ enum Options {
         /// Table format of the dataset directory.
         #[structopt(long, default_value = "parquet", possible_values = &Format::variants(), case_insensitive = true)]
         format: Format,
-        #[structopt(flatten)]
-        iceberg: IcebergBenchmarkOptions,
     },
     /// Compare two saved benchmark states.
     Compare {
@@ -79,13 +77,9 @@ pub fn main() -> Result<()> {
     env_logger::init();
 
     match Options::from_args() {
-        Options::Run {
-            options,
-            format,
-            iceberg,
-        } => options.run(match format {
+        Options::Run { options, format } => options.run(match format {
             Format::Parquet => BenchmarkBackend::parquet(),
-            Format::Iceberg => BenchmarkBackend::iceberg(iceberg),
+            Format::Iceberg => BenchmarkBackend::iceberg(),
         }),
         Options::Compare { states, dataset } => compare::run(comparison_states(states, dataset)?),
         Options::PrepareTpch(opt) => opt.run(),

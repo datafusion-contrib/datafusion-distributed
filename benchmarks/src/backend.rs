@@ -4,7 +4,7 @@ use datafusion::error::Result;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::SessionContext;
 use datafusion_distributed_benchmarks::datasets::register_tables;
-use datafusion_distributed_iceberg::benchmarks::{self as iceberg, IcebergBenchmarkOptions};
+use datafusion_distributed_iceberg::benchmarks as iceberg;
 use futures::future::BoxFuture;
 
 type RegisterTables = for<'a> fn(&'a SessionContext, &'a Path) -> BoxFuture<'a, Result<()>>;
@@ -23,10 +23,10 @@ impl BenchmarkBackend {
         }
     }
 
-    pub fn iceberg(options: IcebergBenchmarkOptions) -> Self {
+    pub fn iceberg() -> Self {
         Self {
             register: |ctx, path| Box::pin(iceberg::register_tables(ctx, path)),
-            configure: Box::new(move |builder| options.configure_session(builder)),
+            configure: Box::new(iceberg::configure_session),
         }
     }
 }
