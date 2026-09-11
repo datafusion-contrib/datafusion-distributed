@@ -1,5 +1,4 @@
 use crate::distributed_planner::insert_broadcast::is_left_broadcast_safe;
-use crate::dynamic_filtering::orphan_dynamic_filter_consumers;
 use crate::events::TaskCountAnnotation::{Desired, Maximum};
 use crate::events::{
     DesiredTaskCountEvent, DesiredTaskCountHandlers, ScaleUpLeafNodeEvent, ScaleUpLeafNodeHandlers,
@@ -332,15 +331,14 @@ async fn _inject_network_boundaries(
             tasks: task_count.as_usize(),
             metrics_set: Default::default(),
         };
-        let dynamic_filter_anchors = orphan_dynamic_filter_consumers(&input_stage.plan)?;
         let result = nb_ctx
             .nb_builder
             .build(input_stage, TypeId::of::<NetworkShuffleExec>(), nb_ctx)
             .await?;
-        let nb = Arc::new(
-            NetworkShuffleExec::from_stage(result.input_stage, result.input_properties)
-                .with_dynamic_filter_anchors(dynamic_filter_anchors),
-        );
+        let nb = Arc::new(NetworkShuffleExec::from_stage(
+            result.input_stage,
+            result.input_properties,
+        ));
         Ok(nb_ctx.plan_with_task_count(nb, result.consumer_task_count))
     }
     // Upon reaching a broadcast, we need to introduce a network broadcast right above it.
@@ -352,15 +350,14 @@ async fn _inject_network_boundaries(
             tasks: task_count.as_usize(),
             metrics_set: Default::default(),
         };
-        let dynamic_filter_anchors = orphan_dynamic_filter_consumers(&input_stage.plan)?;
         let result = nb_ctx
             .nb_builder
             .build(input_stage, TypeId::of::<NetworkBroadcastExec>(), nb_ctx)
             .await?;
-        let nb = Arc::new(
-            NetworkBroadcastExec::from_stage(result.input_stage, result.input_properties)
-                .with_dynamic_filter_anchors(dynamic_filter_anchors),
-        );
+        let nb = Arc::new(NetworkBroadcastExec::from_stage(
+            result.input_stage,
+            result.input_properties,
+        ));
         Ok(nb_ctx.plan_with_task_count(nb, result.consumer_task_count))
     }
     // If the parent of the current node is either a `CoalescePartitionsExec` or a
@@ -375,7 +372,6 @@ async fn _inject_network_boundaries(
             tasks: task_count.as_usize(),
             metrics_set: Default::default(),
         };
-        let dynamic_filter_anchors = orphan_dynamic_filter_consumers(&input_stage.plan)?;
         let result = nb_ctx
             .nb_builder
             .build(input_stage, TypeId::of::<NetworkCoalesceExec>(), nb_ctx)
@@ -388,10 +384,11 @@ async fn _inject_network_boundaries(
         // The parent that triggered this branch is a `CoalescePartitionsExec` or
         // `SortPreservingMergeExec`, both of which fold all partitions into one — so the
         // stage above this boundary must run in exactly one task.
-        let nb = Arc::new(
-            NetworkCoalesceExec::try_from_stage(result.input_stage, result.input_properties, 1)?
-                .with_dynamic_filter_anchors(dynamic_filter_anchors),
-        );
+        let nb = Arc::new(NetworkCoalesceExec::try_from_stage(
+            result.input_stage,
+            result.input_properties,
+            1,
+        )?);
         Ok(nb_ctx.plan_with_task_count(nb, result.consumer_task_count))
     } else if parent.is_none() {
         // We've just finished walking the head stage's subplan. Run a final propagation so
