@@ -3,8 +3,8 @@
 `DistributedExt::with_distributed_worker_plan_rewrite_handler` registers handlers that run after
 the worker session has been built and the physical plan has been decoded, but before the task plan
 is registered for execution. It is intended for **worker-local** rewrites of the fragment a worker
-is about to run. Handlers are `async`, so they can perform I/O—such as registering tables the plan
-references—before the plan is handed off for execution.
+is about to run. Handlers are `async`, so they can perform I/O before the plan is handed off for
+execution.
 
 Register handlers in the `SessionStateBuilder` used by each worker's `WorkerSessionBuilder`.
 Registering one on the coordinator's session has no effect: handlers are not sent to workers with

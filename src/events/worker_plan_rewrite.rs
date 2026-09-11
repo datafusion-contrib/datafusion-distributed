@@ -33,23 +33,37 @@ impl WorkerPlanRewriteEventResponse {
 /// previous handler. Returning an error aborts plan registration.
 ///
 /// The handler is `async` so implementations can perform setup work that needs to make network
-/// or I/O calls (e.g. registering tables in the worker session) before the plan executes.
+/// or I/O calls before the plan executes.
 #[async_trait]
 pub trait WorkerPlanRewriteHandler: Send + Sync + 'static {
     /// Returns the plan to pass to the next handler.
-    async fn rewrite_worker_plan(
+    async fn handle(
         &self,
         ev: WorkerPlanRewriteEvent<'_>,
     ) -> Result<WorkerPlanRewriteEventResponse>;
 }
 
 #[async_trait]
-impl WorkerPlanRewriteHandler for Arc<dyn WorkerPlanRewriteHandler> {
-    async fn rewrite_worker_plan(
+impl<F> WorkerPlanRewriteHandler for F
+where
+    F: Send + Sync + 'static,
+    F: for<'a> Fn(WorkerPlanRewriteEvent<'a>) -> Result<WorkerPlanRewriteEventResponse>,
+{
+    async fn handle(
         &self,
         ev: WorkerPlanRewriteEvent<'_>,
     ) -> Result<WorkerPlanRewriteEventResponse> {
-        self.as_ref().rewrite_worker_plan(ev).await
+        self(ev)
+    }
+}
+
+#[async_trait]
+impl WorkerPlanRewriteHandler for Arc<dyn WorkerPlanRewriteHandler> {
+    async fn handle(
+        &self,
+        ev: WorkerPlanRewriteEvent<'_>,
+    ) -> Result<WorkerPlanRewriteEventResponse> {
+        self.as_ref().handle(ev).await
     }
 }
 
@@ -66,7 +80,7 @@ impl WorkerPlanRewriteHandlers {
         if let Some(handlers) = session_config.get_extension::<WorkerPlanRewriteHandlers>() {
             for handler in handlers.iter() {
                 plan = handler
-                    .rewrite_worker_plan(WorkerPlanRewriteEvent {
+                    .handle(WorkerPlanRewriteEvent {
                         plan,
                         session_config,
                     })

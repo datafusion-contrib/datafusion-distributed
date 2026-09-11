@@ -727,7 +727,7 @@ pub trait DistributedExt: Sized {
     ///
     /// #[async_trait]
     /// impl WorkerPlanRewriteHandler for Passthrough {
-    ///     async fn rewrite_worker_plan(
+    ///     async fn handle(
     ///         &self,
     ///         event: WorkerPlanRewriteEvent<'_>,
     ///     ) -> Result<WorkerPlanRewriteEventResponse> {
