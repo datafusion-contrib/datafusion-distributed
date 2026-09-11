@@ -59,13 +59,14 @@ pub(super) async fn prepare_dynamic_plan(
                 "network_cost",
                 *cost.network.get_value().unwrap_or(&0),
             ));
-            let compute_based_task_count = cost
-                .cpu
-                .get_value()
-                .unwrap_or(&0)
-                .div_ceil(nb_ctx.d_cfg.dynamic_bytes_per_partition.max(1))
-                .div_ceil(input_stage.plan.output_partitioning().partition_count())
-                .clamp(1, nb_ctx.max_tasks()?);
+            let compute_based_task_count = *cost.cpu.get_value().unwrap_or(&0) as f64
+                / nb_ctx.d_cfg.dynamic_bytes_per_partition.max(1) as f64
+                / input_stage
+                    .plan
+                    .output_partitioning()
+                    .partition_count()
+                    .max(1) as f64;
+            let compute_based_task_count = compute_based_task_count.min(nb_ctx.max_tasks()? as f64);
             let task_count = nb_ctx
                 .task_count(&input_stage.plan)?
                 .merge(Desired(compute_based_task_count));
@@ -110,10 +111,13 @@ pub(super) async fn prepare_dynamic_plan(
                     let (stats, new_metrics) =
                         gather_runtime_statistics(load_info_rxs, &input_stage.plan).await?;
                     metrics.extend(new_metrics);
-                    // returning Desired(1) here is our way to tell the planner that we don't care
+                    // returning Desired(0) here is our way to tell the planner that we don't care
                     // about the task count assigned to the network boundary in the consumer stage,
-                    // and we don't want it to affect other task count decisions.
-                    (Some(Arc::new(stats)), Desired(1))
+                    // and we don't want it to affect other task count decisions. A 0.0 hint does
+                    // not mask smaller fractional values via max-merge, and does not inflate
+                    // UNION sums when this boundary sits under a child of a
+                    // ChildrenIsolatorUnionExec.
+                    (Some(Arc::new(stats)), Desired(0.0))
                 };
 
                 // Capture the output partitioning of the (rescaled, sampler-wrapped) input plan
