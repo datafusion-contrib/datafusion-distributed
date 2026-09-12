@@ -12,6 +12,7 @@ datafusion-distributed = { path = "..", features = [
   "integration",
   "system-metrics",
 ] }
+datafusion-distributed-iceberg = { path = "../iceberg", features = ["benchmarks"] }
 tokio = { version = "1.48", features = ["full"] }
 url = "2.5.7"
 parquet = { version = "59" }
@@ -33,6 +34,7 @@ openssl = { version = "0.10", features = ["vendored"] }
 mimalloc = "0.1"
 
 [dev-dependencies]
+tempfile = "3"
 criterion = "0.5"
 sysinfo = "0.30"
 

@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::backend::BenchmarkBackend;
 use crate::results::{BenchResult, BenchmarkRun, QueryIter, dataset_path};
 use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::record_batch::RecordBatch;
@@ -36,11 +37,11 @@ use datafusion_distributed::{
     DistributedExt, DistributedMetricsFormat, NetworkBoundaryExt, SessionStateBuilderExt, Worker,
     display_plan_ascii, rewrite_distributed_plan_with_metrics,
 };
-use datafusion_distributed_benchmarks::datasets::{clickbench, register_tables, tpcds, tpch};
+use datafusion_distributed_benchmarks::datasets::{clickbench, tpcds, tpch};
 use datafusion_distributed_benchmarks::stats::stats_estimation_q_error;
 use std::error::Error;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use structopt::StructOpt;
@@ -158,7 +159,7 @@ impl RunOpt {
         })
     }
 
-    pub fn run(self) -> Result<()> {
+    pub fn run(self, backend: BenchmarkBackend) -> Result<()> {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(self.threads.unwrap_or(get_available_parallelism()))
             .enable_all()
@@ -173,11 +174,12 @@ impl RunOpt {
                 // node when the feature is on. The codec is registered via a
                 // session builder so it is installed on every worker session.
                 let worker = Worker::from_session_builder(
-                    |ctx: datafusion_distributed::WorkerQueryContext| async move {
-                        Ok(ctx
-                            .builder
-                            .with_distributed_user_codec(WorkUnitFileScanCodec)
-                            .build())
+                    move |ctx: datafusion_distributed::WorkerQueryContext| {
+                        let builder = (backend.configure)(
+                            ctx.builder
+                                .with_distributed_user_codec(WorkUnitFileScanCodec),
+                        );
+                        async move { Ok(builder.build()) }
                     },
                 );
                 Ok::<_, Box<dyn Error + Send + Sync>>(
@@ -188,12 +190,12 @@ impl RunOpt {
                 )
             })?;
         } else {
-            rt.block_on(self.run_local())?;
+            rt.block_on(self.run_local(backend))?;
         }
         Ok(())
     }
 
-    async fn run_local(self) -> Result<()> {
+    async fn run_local(self, backend: BenchmarkBackend) -> Result<()> {
         let mut builder = SessionStateBuilder::new()
             .with_default_features()
             .with_config(self.config()?)
@@ -233,9 +235,21 @@ impl RunOpt {
             builder = builder.with_physical_optimizer_rule(Arc::new(WorkUnitFileScanRule))
         }
 
-        let state = builder.build();
+        let state = (backend.configure)(builder).build();
         let ctx = SessionContext::new_with_state(state);
-        register_tables(&ctx, &self.get_path()?).await?;
+        (backend.register)(&ctx, &self.get_path()?).await?;
+        let dataset_suite = if Path::new(&self.dataset).is_absolute() {
+            // Absolute paths follow the same <suite>/<variant> convention.
+            Path::new(&self.dataset)
+                .parent()
+                .and_then(Path::file_name)
+                .and_then(|name| name.to_str())
+                .unwrap_or("")
+        } else {
+            self.dataset
+                .split_once('/')
+                .map_or(self.dataset.as_str(), |(suite, _)| suite)
+        };
 
         println!("Running benchmarks with the following options: {self:?}");
         let mut benchmark_run = BenchmarkRun::new(
@@ -244,10 +258,6 @@ impl RunOpt {
             self.threads.unwrap_or(get_available_parallelism()),
         );
 
-        let dataset_suite = self
-            .dataset
-            .split_once('/')
-            .map_or(self.dataset.as_str(), |(suite, _)| suite);
         for (id, sql) in queries_for_dataset(dataset_suite)? {
             if !self.query.is_empty() && !self.query.contains(&id.to_string()) {
                 continue;
