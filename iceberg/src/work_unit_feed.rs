@@ -1,7 +1,9 @@
+use std::borrow::Cow;
 use std::sync::{Arc, Mutex, OnceLock};
 
+use bytes::{Buf, BufMut};
 use datafusion::common::runtime::SpawnedTask;
-use datafusion::common::{Result, exec_err, internal_err};
+use datafusion::common::{Result, exec_datafusion_err, exec_err, internal_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::Partitioning;
@@ -9,11 +11,98 @@ use datafusion_distributed::{DistributedWorkUnitFeedContext, WorkUnitFeedProvide
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use iceberg::expr::Predicate;
+use iceberg::scan::FileScanTask;
+use prost::encoding::{DecodeContext, WireType};
+use prost::{DecodeError, Message};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::common::df_err;
-use crate::work_unit_wire::{FileScanTaskEncoder, FileScanTaskMessage};
+
+#[derive(Clone, PartialEq, prost::Message)]
+struct SerializedFileScanTask {
+    #[prost(bytes = "vec", tag = "1")]
+    task: Vec<u8>,
+}
+
+#[derive(Clone, Debug)]
+enum FileScanTaskPayload {
+    Native(Box<FileScanTask>),
+    Serialized(SerializedFileScanTask),
+}
+
+/// An Iceberg file scan task that remains native until a transport serializes it.
+#[derive(Clone, Debug)]
+pub struct FileScanTaskWorkUnit {
+    payload: FileScanTaskPayload,
+}
+
+impl Default for FileScanTaskWorkUnit {
+    fn default() -> Self {
+        Self {
+            payload: FileScanTaskPayload::Serialized(SerializedFileScanTask::default()),
+        }
+    }
+}
+
+impl FileScanTaskWorkUnit {
+    fn new(task: FileScanTask) -> Self {
+        Self {
+            payload: FileScanTaskPayload::Native(Box::new(task)),
+        }
+    }
+
+    fn serialized(&self) -> Cow<'_, SerializedFileScanTask> {
+        match &self.payload {
+            FileScanTaskPayload::Native(task) => Cow::Owned(SerializedFileScanTask {
+                task: serde_json::to_vec(task)
+                    .expect("Iceberg table scans produce serializable file scan tasks"),
+            }),
+            FileScanTaskPayload::Serialized(task) => Cow::Borrowed(task),
+        }
+    }
+
+    pub(crate) fn into_task(self) -> Result<FileScanTask> {
+        match self.payload {
+            FileScanTaskPayload::Native(task) => Ok(*task),
+            FileScanTaskPayload::Serialized(task) => {
+                serde_json::from_slice(&task.task).map_err(|error| {
+                    exec_datafusion_err!("failed to deserialize Iceberg file scan task: {error}")
+                })
+            }
+        }
+    }
+}
+
+impl Message for FileScanTaskWorkUnit {
+    fn encode_raw(&self, buf: &mut impl BufMut) {
+        self.serialized().encode_raw(buf);
+    }
+
+    fn merge_field(
+        &mut self,
+        tag: u32,
+        wire_type: WireType,
+        buf: &mut impl Buf,
+        ctx: DecodeContext,
+    ) -> std::result::Result<(), DecodeError> {
+        if let FileScanTaskPayload::Native(_) = &self.payload {
+            self.payload = FileScanTaskPayload::Serialized(self.serialized().into_owned());
+        }
+        let FileScanTaskPayload::Serialized(task) = &mut self.payload else {
+            unreachable!()
+        };
+        task.merge_field(tag, wire_type, buf, ctx)
+    }
+
+    fn encoded_len(&self) -> usize {
+        self.serialized().encoded_len()
+    }
+
+    fn clear(&mut self) {
+        self.payload = FileScanTaskPayload::Serialized(SerializedFileScanTask::default());
+    }
+}
 
 /// Work unit feed implementation that yields [FileScanTask] messages at execution time.
 ///
@@ -113,11 +202,11 @@ type TakeableVec<T> = Vec<Mutex<Option<T>>>;
 #[derive(Debug)]
 pub(crate) struct SyncManager {
     task: Arc<SpawnedTask<()>>,
-    feeds: TakeableVec<UnboundedReceiver<Result<FileScanTaskMessage>>>,
+    feeds: TakeableVec<UnboundedReceiver<Result<FileScanTaskWorkUnit>>>,
 }
 
 impl WorkUnitFeedProvider for IcebergWorkUnitFeed {
-    type WorkUnit = FileScanTaskMessage;
+    type WorkUnit = FileScanTaskWorkUnit;
 
     fn feed(
         &self,
@@ -172,16 +261,13 @@ impl WorkUnitFeedProvider for IcebergWorkUnitFeed {
                 // Round robing across output partitions.
                 // TODO: this is fine for Partitioning::UnknownPartitioning, but any other
                 //  partitioning will require smarter routing across output channels.
-                let mut encoders = (0..txs.len())
-                    .map(|_| FileScanTaskEncoder::default())
-                    .collect::<Vec<_>>();
                 let mut i = 0;
                 while let Some(scan_task_or_err) = stream.next().await {
                     let partition = i % txs.len();
-                    let message = scan_task_or_err
-                        .map_err(df_err)
-                        .and_then(|task| encoders[partition].encode(task));
-                    let _ = txs[partition].send(message);
+                    let work_unit = scan_task_or_err
+                        .map(FileScanTaskWorkUnit::new)
+                        .map_err(df_err);
+                    let _ = txs[partition].send(work_unit);
                     i += 1;
                 }
             });
