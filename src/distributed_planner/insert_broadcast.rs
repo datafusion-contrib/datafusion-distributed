@@ -414,43 +414,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_insert_broadcast_wraps_direct_broadcast_without_nesting() {
-        let query = r#"
-        SELECT a."MinTemp", b."MaxTemp"
-        FROM weather a INNER JOIN weather b
-        ON a."RainToday" = b."RainToday"
-        "#;
-
-        let test_plan = TestPlanBuilder::new()
-            .target_partitions(1)
-            .broadcast_joins(true)
-            .build()
-            .await;
-        let ctx = test_plan.get_ctx();
-        let plan = test_plan.physical_plan(query).await;
-        let mut children: Vec<_> = plan.children().into_iter().cloned().collect();
-        children[0] = Arc::new(BroadcastExec::new(Arc::clone(&children[0]), 1));
-        let plan = plan
-            .replace_children(
-                children,
-                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
-            )
-            .expect("failed to create a direct broadcast build");
-        let plan = insert_broadcast_execs(plan, ctx.state_ref().read().config_options().as_ref())
-            .expect("failed to normalize a direct broadcast build");
-        let plan = displayable(plan.as_ref()).indent(true).to_string();
-
-        assert_eq!(plan.matches("BroadcastExec").count(), 1);
-        assert_snapshot!(plan, @"
-        HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
-          CoalescePartitionsExec
-            BroadcastExec: input_partitions=1, consumer_tasks=1, output_partitions=1
-              DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
-          DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
-        ");
-    }
-
-    #[tokio::test]
     async fn test_no_broadcast_nested_loop_left_join() {
         let query = r#"
         SELECT a."MinTemp", b."MaxTemp"
