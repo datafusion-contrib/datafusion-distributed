@@ -94,7 +94,7 @@ impl Worker {
                 plan,
                 session_config: session_state.config(),
             };
-            let plan = WorkerPlanRewriteHandlers::handle(ev)?.plan;
+            let plan = WorkerPlanRewriteHandlers::handle(ev).await?.plan;
             load_info_rxs =
                 SamplerExec::kick_off_first_sampler(Arc::clone(&plan), Arc::clone(&task_ctx))?;
 

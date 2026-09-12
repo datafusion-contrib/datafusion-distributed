@@ -3,7 +3,8 @@
 `DistributedExt::with_distributed_worker_plan_rewrite_handler` registers handlers that run after
 the worker session has been built and the physical plan has been decoded, but before the task plan
 is registered for execution. It is intended for **worker-local** rewrites of the fragment a worker
-is about to run.
+is about to run. Handlers are `async`, so they can perform I/O before the plan is handed off for
+execution.
 
 Register handlers in the `SessionStateBuilder` used by each worker's `WorkerSessionBuilder`.
 Registering one on the coordinator's session has no effect: handlers are not sent to workers with
@@ -12,15 +13,27 @@ stage plans.
 Each handler receives a `WorkerPlanRewriteEvent` and returns the possibly rewritten plan:
 
 ```rust
+# use async_trait::async_trait;
 # use datafusion::common::Result;
 # use datafusion::execution::SessionState;
-# use datafusion_distributed::{DistributedExt, Worker, WorkerPlanRewriteEvent, WorkerPlanRewriteEventResponse, WorkerQueryContext};
+# use datafusion_distributed::{DistributedExt, Worker, WorkerPlanRewriteEvent, WorkerPlanRewriteEventResponse, WorkerPlanRewriteHandler, WorkerQueryContext};
+
+struct Passthrough;
+
+#[async_trait]
+impl WorkerPlanRewriteHandler for Passthrough {
+    async fn rewrite_worker_plan(
+        &self,
+        event: WorkerPlanRewriteEvent<'_>,
+    ) -> Result<WorkerPlanRewriteEventResponse> {
+        Ok(WorkerPlanRewriteEventResponse::new(event.plan))
+    }
+}
+
 async fn build_worker_session(ctx: WorkerQueryContext) -> Result<SessionState> {
     Ok(ctx
         .builder
-        .with_distributed_worker_plan_rewrite_handler(|event: WorkerPlanRewriteEvent<'_>| {
-            Ok(WorkerPlanRewriteEventResponse::new(event.plan))
-        })
+        .with_distributed_worker_plan_rewrite_handler(Passthrough)
         .build())
 }
 
