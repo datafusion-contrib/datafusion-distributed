@@ -134,18 +134,20 @@ pub(super) fn insert_broadcast_execs(
             return Ok(Transformed::no(node));
         };
 
-        let broadcast_input = build_child
+        let new_build_child: Arc<dyn ExecutionPlan> = if let Some(coalesce) = build_child
             .downcast_ref::<CoalescePartitionsExec>()
             .filter(|coalesce| coalesce.fetch().is_none())
-            .map_or_else(
-                || Arc::clone(build_child),
-                |coalesce| Arc::clone(coalesce.input()),
-            );
-
-        // consumer_task_count=1 is a placeholder and will be corrected during optimizer rule.
-        let broadcast: Arc<dyn ExecutionPlan> = Arc::new(BroadcastExec::new(broadcast_input, 1));
-        let new_build_child: Arc<dyn ExecutionPlan> =
-            Arc::new(CoalescePartitionsExec::new(broadcast));
+        {
+            if coalesce.input().is::<BroadcastExec>() {
+                return Ok(Transformed::no(node));
+            }
+            coalesced_broadcast(Arc::clone(coalesce.input()))
+        } else if build_child.is::<BroadcastExec>() {
+            Arc::new(CoalescePartitionsExec::new(Arc::clone(build_child)))
+        } else {
+            // A fetch-bearing coalesce remains below the broadcast so the limit is global.
+            coalesced_broadcast(Arc::clone(build_child))
+        };
 
         let mut new_children: Vec<Arc<dyn ExecutionPlan>> = children.into_iter().cloned().collect();
         new_children[0] = new_build_child;
@@ -155,6 +157,12 @@ pub(super) fn insert_broadcast_execs(
         )?))
     })
     .map(|transformed| transformed.data)
+}
+
+fn coalesced_broadcast(input: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+    // consumer_task_count=1 is a placeholder and will be corrected during optimizer rule.
+    let broadcast: Arc<dyn ExecutionPlan> = Arc::new(BroadcastExec::new(input, 1));
+    Arc::new(CoalescePartitionsExec::new(broadcast))
 }
 
 fn can_broadcast_left_input(plan: &dyn ExecutionPlan) -> bool {
@@ -185,7 +193,7 @@ pub(super) fn is_left_broadcast_safe(join_type: &JoinType) -> bool {
 mod tests {
     use super::*;
     use crate::assert_snapshot;
-    use crate::test_utils::plans::TestPlanBuilder;
+    use crate::test_utils::plans::{TestPlan, TestPlanBuilder};
     use datafusion::physical_plan::displayable;
 
     #[tokio::test]
@@ -208,7 +216,13 @@ mod tests {
                   DistributedLeafExec: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
               DistributedLeafExec: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
         ");
-        let plan = sql_to_plan_with_broadcast(query, true, 4).await;
+        let test_plan = TestPlanBuilder::new()
+            .target_partitions(4)
+            .broadcast_joins(true)
+            .build()
+            .await;
+        let plan = apply_broadcasts(&test_plan, query, 1).await;
+        let plan = displayable(plan.as_ref()).indent(true).to_string();
         assert_snapshot!(plan, @"
         HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
           CoalescePartitionsExec
@@ -235,7 +249,13 @@ mod tests {
           DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
           DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
         ");
-        let plan = sql_to_plan_with_broadcast(query, true, 1).await;
+        let test_plan = TestPlanBuilder::new()
+            .target_partitions(1)
+            .broadcast_joins(true)
+            .build()
+            .await;
+        let plan = apply_broadcasts(&test_plan, query, 1).await;
+        let plan = displayable(plan.as_ref()).indent(true).to_string();
         assert_snapshot!(plan, @"
         HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
           CoalescePartitionsExec
@@ -252,7 +272,13 @@ mod tests {
         FROM weather a LEFT JOIN weather b
         ON a."RainToday" = b."RainToday"
         "#;
-        let plan = sql_to_plan_with_broadcast(query, true, 4).await;
+        let test_plan = TestPlanBuilder::new()
+            .target_partitions(4)
+            .broadcast_joins(true)
+            .build()
+            .await;
+        let plan = apply_broadcasts(&test_plan, query, 1).await;
+        let plan = displayable(plan.as_ref()).indent(true).to_string();
         assert_snapshot!(plan, @"
         HashJoinExec: mode=CollectLeft, join_type=Left, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
           CoalescePartitionsExec
@@ -268,7 +294,13 @@ mod tests {
         FROM weather a INNER JOIN weather b
         ON a."RainToday" = b."RainToday"
         "#;
-        let plan = sql_to_plan_with_broadcast(query, false, 4).await;
+        let test_plan = TestPlanBuilder::new()
+            .target_partitions(4)
+            .broadcast_joins(false)
+            .build()
+            .await;
+        let plan = apply_broadcasts(&test_plan, query, 1).await;
+        let plan = displayable(plan.as_ref()).indent(true).to_string();
         assert_snapshot!(plan, @"
         HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
           CoalescePartitionsExec
@@ -286,7 +318,13 @@ mod tests {
         ON a."RainToday" = b."RainToday"
         "#;
 
-        let plan = sql_to_plan_with_broadcast(query, true, 4).await;
+        let test_plan = TestPlanBuilder::new()
+            .target_partitions(4)
+            .broadcast_joins(true)
+            .build()
+            .await;
+        let plan = apply_broadcasts(&test_plan, query, 1).await;
+        let plan = displayable(plan.as_ref()).indent(true).to_string();
         assert_snapshot!(plan, @r"
         HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
           CoalescePartitionsExec
@@ -302,7 +340,13 @@ mod tests {
         SELECT a."MinTemp", b."MaxTemp"
         FROM weather a CROSS JOIN weather b
         "#;
-        let plan = sql_to_plan_with_broadcast(query, true, 4).await;
+        let test_plan = TestPlanBuilder::new()
+            .target_partitions(4)
+            .broadcast_joins(true)
+            .build()
+            .await;
+        let plan = apply_broadcasts(&test_plan, query, 1).await;
+        let plan = displayable(plan.as_ref()).indent(true).to_string();
         assert_snapshot!(plan, @"
         CrossJoinExec
           CoalescePartitionsExec
@@ -318,7 +362,13 @@ mod tests {
         SELECT a."MinTemp", b."MaxTemp"
         FROM weather a JOIN weather b ON a."MinTemp" > b."MaxTemp"
         "#;
-        let plan = sql_to_plan_with_broadcast(query, true, 4).await;
+        let test_plan = TestPlanBuilder::new()
+            .target_partitions(4)
+            .broadcast_joins(true)
+            .build()
+            .await;
+        let plan = apply_broadcasts(&test_plan, query, 1).await;
+        let plan = displayable(plan.as_ref()).indent(true).to_string();
         assert_snapshot!(plan, @"
         NestedLoopJoinExec: join_type=Inner, filter=MinTemp@0 > MaxTemp@1
           CoalescePartitionsExec
@@ -329,12 +379,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_insert_broadcast_is_idempotent_for_supported_joins() {
+        let queries = [
+            r#"
+            SELECT a."MinTemp", b."MaxTemp"
+            FROM weather a INNER JOIN weather b
+            ON a."RainToday" = b."RainToday"
+            "#,
+            r#"
+            SELECT a."MinTemp", b."MaxTemp"
+            FROM weather a JOIN weather b ON a."MinTemp" > b."MaxTemp"
+            "#,
+            r#"
+            SELECT a."MinTemp", b."MaxTemp"
+            FROM weather a CROSS JOIN weather b
+            "#,
+        ];
+
+        let test_plan = TestPlanBuilder::new()
+            .target_partitions(4)
+            .broadcast_joins(true)
+            .build()
+            .await;
+
+        for query in queries {
+            let once = apply_broadcasts(&test_plan, query, 1).await;
+            let twice = apply_broadcasts(&test_plan, query, 2).await;
+            let once = displayable(once.as_ref()).indent(true).to_string();
+            let twice = displayable(twice.as_ref()).indent(true).to_string();
+
+            assert_eq!(once, twice);
+            assert_eq!(once.matches("BroadcastExec").count(), 1);
+        }
+    }
+
+    #[tokio::test]
     async fn test_no_broadcast_nested_loop_left_join() {
         let query = r#"
         SELECT a."MinTemp", b."MaxTemp"
         FROM weather a LEFT JOIN weather b ON a."MinTemp" > b."MaxTemp"
         "#;
-        let plan = sql_to_plan_with_broadcast(query, true, 4).await;
+        let test_plan = TestPlanBuilder::new()
+            .target_partitions(4)
+            .broadcast_joins(true)
+            .build()
+            .await;
+        let plan = apply_broadcasts(&test_plan, query, 1).await;
+        let plan = displayable(plan.as_ref()).indent(true).to_string();
         assert_snapshot!(plan, @"
         NestedLoopJoinExec: join_type=Left, filter=MinTemp@0 > MaxTemp@1
           CoalescePartitionsExec
@@ -343,20 +434,17 @@ mod tests {
         ");
     }
 
-    async fn sql_to_plan_with_broadcast(
+    async fn apply_broadcasts(
+        test_plan: &TestPlan,
         query: &str,
-        broadcast_enabled: bool,
-        target_partitions: usize,
-    ) -> String {
-        let test_plan = TestPlanBuilder::new()
-            .target_partitions(target_partitions)
-            .broadcast_joins(broadcast_enabled)
-            .build()
-            .await;
+        applications: usize,
+    ) -> Arc<dyn ExecutionPlan> {
         let ctx = test_plan.get_ctx();
-        let plan = test_plan.physical_plan(query).await;
-        let plan = insert_broadcast_execs(plan, ctx.state_ref().read().config_options().as_ref())
-            .expect("failed to insert broadcasts");
-        format!("{}", displayable(plan.as_ref()).indent(true))
+        let mut plan = test_plan.physical_plan(query).await;
+        for _ in 0..applications {
+            plan = insert_broadcast_execs(plan, ctx.state_ref().read().config_options().as_ref())
+                .expect("failed to insert broadcasts");
+        }
+        plan
     }
 }
