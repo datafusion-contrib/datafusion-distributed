@@ -8,7 +8,7 @@ use datafusion::arrow::array::ArrayRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::runtime::SpawnedTask;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
-use datafusion::common::{DataFusionError, Result, exec_err};
+use datafusion::common::{DataFusionError, Result, exec_datafusion_err, exec_err};
 use datafusion::common::{HashSet, ScalarValue};
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
@@ -29,7 +29,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use std::task::{Context, Poll};
 use std::time::Instant;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 
 /// How many [RecordBatch]s to allow the input stream to yield synchronously (without yielding back
 /// to tokio) before short-circuiting buffering.
@@ -50,15 +50,15 @@ pub struct SamplerExec {
 /// across the partition samplers; the latency metrics aggregate per-partition observations.
 #[derive(Debug, Clone)]
 pub(crate) struct SamplerExecMetrics {
-    /// Time since [SamplerExec::kick_off_first_sampler] was called until the first batch from
+    /// Time since [SamplerExec::gate_for_first_sampler] was called until the first batch from
     /// the input arrived
     kick_off_to_fist_batch_p50: P50LatencyMetric,
     kick_off_to_fist_batch_max: MaxLatencyMetric,
-    /// Time since [SamplerExec::kick_off_first_sampler] was called until the [LoadInfo] message
+    /// Time since [SamplerExec::gate_for_first_sampler] was called until the [LoadInfo] message
     /// was sent.
     kick_off_to_load_info_sent_p50: P50LatencyMetric,
     kick_off_to_load_info_sent_max: MaxLatencyMetric,
-    /// Time since [SamplerExec::kick_off_first_sampler] was called until the node was properly
+    /// Time since [SamplerExec::gate_for_first_sampler] was called until the node was properly
     /// executed with [SamplerExec::execute].
     kick_off_to_execution_p50: P50LatencyMetric,
     kick_off_to_execution_max: MaxLatencyMetric,
@@ -101,6 +101,29 @@ impl SamplerExecMetrics {
     }
 }
 
+/// Gates the sampling until [SamplerGate::kick_off] is called. Sampling has irreversible side
+/// effects in a query's lifetime, and starting it renders the query non-retryable. Only call
+/// [SamplerGate::kick_off] after a worker has fully committed to being part of a query.
+pub(crate) struct SamplerGate {
+    sampling_start_tx_opt: Option<watch::Sender<bool>>,
+    receivers: Vec<oneshot::Receiver<LoadInfo>>,
+}
+
+impl SamplerGate {
+    /// Takes the [LoadInfo] receivers. This function can only be called once, as subsequent calls
+    /// will always return an empty [Vec].
+    pub(crate) fn take_receivers(&mut self) -> Vec<oneshot::Receiver<LoadInfo>> {
+        std::mem::take(&mut self.receivers)
+    }
+
+    /// Kicks off the sampling. Once this is called, the query is no longer retryable.
+    pub(crate) fn kick_off(&self) {
+        if let Some(watch) = &self.sampling_start_tx_opt {
+            let _ = watch.send(true);
+        }
+    }
+}
+
 impl SamplerExec {
     pub(crate) fn new(input: Arc<dyn ExecutionPlan>) -> Self {
         let metric_set = ExecutionPlanMetricsSet::new();
@@ -138,23 +161,29 @@ impl SamplerExec {
         }
     }
 
-    pub(crate) fn kick_off_first_sampler(
+    pub(crate) fn gate_for_first_sampler(
         plan: Arc<dyn ExecutionPlan>,
         ctx: Arc<TaskContext>,
-    ) -> Result<Vec<oneshot::Receiver<LoadInfo>>> {
+    ) -> Result<SamplerGate> {
+        let mut sampling_start_tx_opt = None;
         let mut receivers = vec![];
         plan.apply(|plan| {
             let Some(sampler) = plan.downcast_ref::<SamplerExec>() else {
                 return Ok(TreeNodeRecursion::Continue);
             };
-            receivers.reserve(sampler.partition_samplers.len());
+            let (sampling_start_tx, sampling_start_rx) = watch::channel(false);
             for partition_sampler in &sampler.partition_samplers {
-                let rx = partition_sampler.kick_off(Arc::clone(&ctx))?;
+                let rx = partition_sampler.kick_off(Arc::clone(&ctx), sampling_start_rx.clone())?;
                 receivers.push(rx);
             }
+            sampling_start_tx_opt = Some(sampling_start_tx);
             Ok(TreeNodeRecursion::Stop)
         })?;
-        Ok(receivers)
+
+        Ok(SamplerGate {
+            sampling_start_tx_opt,
+            receivers,
+        })
     }
 }
 
@@ -216,7 +245,11 @@ impl PartitionSampler {
         self.stream.lock().unwrap().take()
     }
 
-    fn kick_off(&self, ctx: Arc<TaskContext>) -> Result<oneshot::Receiver<LoadInfo>> {
+    fn kick_off(
+        &self,
+        ctx: Arc<TaskContext>,
+        mut sampling_start_rx: watch::Receiver<bool>,
+    ) -> Result<oneshot::Receiver<LoadInfo>> {
         let _ = self.kick_off_at.set(Instant::now());
         let (sampling_tx, sampling_rx) = oneshot::channel();
 
@@ -248,11 +281,17 @@ impl PartitionSampler {
             first_batch_at: Arc::clone(&self.first_batch_at),
         };
 
-        // Execute the input synchronously so any setup error surfaces before we
-        // spawn the producer task.
-        let mut input_stream = input.execute(partition_idx, ctx)?.fuse();
-
         let task = SpawnedTask::spawn(async move {
+            sampling_start_rx
+                .wait_for(|started| *started)
+                .await
+                .map_err(|_| exec_datafusion_err!("Sampling start gate closed before kickoff"))?;
+
+            // Instantiating an input stream may itself start executing upstream work. Do not do
+            // that until this worker has committed to sampling: a failed coordinator-channel
+            // attempt must remain retryable without consuming upstream resources.
+            let mut input_stream = input.execute(partition_idx, ctx)?.fuse();
+
             // First, read at once all the RecordBatches that are ready to be yielded synchronously.
             // Some downstream nodes will accumulate data in-memory, and will then yield several
             // RecordBatches at once synchronously (without Poll::Pending gaps in between).
