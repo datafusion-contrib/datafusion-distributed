@@ -1,3 +1,4 @@
+use datafusion::physical_plan::ReplaceChildrenOptions;
 //! This example demonstrates how to create a custom execution plan that works with
 //! Distributed DataFusion. It implements a `numbers(start, end)` table function that
 //! generates a sequence of numbers and can be distributed across multiple workers.
@@ -180,9 +181,10 @@ impl ExecutionPlan for NumbersExec {
         Ok(TreeNodeRecursion::Continue)
     }
 
-    fn with_new_children(
+    fn replace_children(
         self: Arc<Self>,
         _: Vec<Arc<dyn ExecutionPlan>>,
+        _options: ReplaceChildrenOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         Ok(self)
     }

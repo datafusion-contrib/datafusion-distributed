@@ -12,8 +12,7 @@ use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::analyze::AnalyzeExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, Distribution, ExecutionPlan, PlanProperties,
-};
+    DisplayAs, DisplayFormatType, Distribution, ExecutionPlan, PlanProperties, ReplaceChildrenOptions};
 use futures::{StreamExt, stream};
 use std::fmt::Formatter;
 use std::sync::Arc;
@@ -69,9 +68,10 @@ impl ExecutionPlan for DistributedAnalyzeExec {
         vec![Distribution::UnspecifiedDistribution]
     }
 
-    fn with_new_children(
+    fn replace_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
+        _options: ReplaceChildrenOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         Ok(Arc::new(Self {
             input: require_one_child(&children)?,

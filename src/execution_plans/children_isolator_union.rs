@@ -12,8 +12,7 @@ use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSe
 use datafusion::physical_plan::union::UnionExec;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, EmptyRecordBatchStream, ExecutionPlan, ExecutionPlanProperties,
-    Partitioning, PlanProperties,
-};
+    Partitioning, PlanProperties, ReplaceChildrenOptions};
 use futures::{Stream, StreamExt};
 use itertools::Itertools;
 use std::fmt::Formatter;
@@ -89,7 +88,7 @@ pub struct ChildrenIsolatorUnionExec {
     pub(crate) metrics: ExecutionPlanMetricsSet,
     pub(crate) children: Vec<Arc<dyn ExecutionPlan>>,
     /// The original per-child weights (and their optional hard caps) used to build the
-    /// `task_idx_map`. Stored so `with_new_children` can re-run the allocator with the same
+    /// `task_idx_map`. Stored so `replace_children` can re-run the allocator with the same
     /// inputs and preserve `Maximum(N)` caps across plan rewrites.
     pub(crate) child_weights: Vec<ChildWeight>,
     pub(crate) task_idx_map: Vec<
@@ -277,9 +276,10 @@ impl ExecutionPlan for ChildrenIsolatorUnionExec {
         &self.properties
     }
 
-    fn with_new_children(
+    fn replace_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
+        _options: ReplaceChildrenOptions,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
         if children.len() != self.children.len() {
             return plan_err!(

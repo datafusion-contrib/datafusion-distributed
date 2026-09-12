@@ -1,3 +1,4 @@
+use datafusion::physical_plan::ReplaceChildrenOptions;
 use arrow::{
     array::{Int64Array, RecordBatch, StringArray},
     datatypes::{DataType, Field, Schema, SchemaRef},
@@ -189,10 +190,11 @@ impl ExecutionPlan for URLEmitterExec {
         Ok(TreeNodeRecursion::Continue)
     }
 
-    fn with_new_children(
+    fn replace_children(
         self: Arc<Self>,
         _: Vec<Arc<dyn ExecutionPlan>>,
-    ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
+        _options: ReplaceChildrenOptions,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
         Ok(Arc::new(self.as_ref().clone()))
     }
 
