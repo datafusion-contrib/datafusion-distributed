@@ -138,11 +138,11 @@ pub(super) fn insert_broadcast_execs(
             .downcast_ref::<CoalescePartitionsExec>()
             .filter(|coalesce| coalesce.fetch().is_none())
         {
-            if coalesce.input().downcast_ref::<BroadcastExec>().is_some() {
+            if coalesce.input().is::<BroadcastExec>() {
                 return Ok(Transformed::no(node));
             }
             coalesced_broadcast(Arc::clone(coalesce.input()))
-        } else if build_child.downcast_ref::<BroadcastExec>().is_some() {
+        } else if build_child.is::<BroadcastExec>() {
             Arc::new(CoalescePartitionsExec::new(Arc::clone(build_child)))
         } else {
             // A fetch-bearing coalesce remains below the broadcast so the limit is global.
