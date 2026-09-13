@@ -100,7 +100,7 @@ impl Complexity {
                 // `ilog2` panics on 0, which happens whenever the logged input has zero estimated
                 // bytes/rows (e.g. an empty or fully-pruned relation). Flooring at 1 makes log2
                 // contribute 0 there, i.e. sorting/merging nothing costs nothing.
-                n * m.checked_ilog2().unwrap_or(0) as usize
+                n.saturating_mul(m.checked_ilog2().unwrap_or(0) as usize)
             }
             Self::Plus(n, m) => n
                 .cost(output_stat, input_stats)?

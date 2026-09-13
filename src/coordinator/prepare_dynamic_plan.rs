@@ -298,8 +298,14 @@ async fn gather_runtime_statistics(
         return Ok((zero_stats(n_cols), new_metrics));
     }
 
-    let per_col_byte_size = vec_mul(per_col_bytes_ready, 1. / estimated_pct_sampled);
-    let total_byte_size: usize = per_col_byte_size.iter().sum();
+    let scale = 1.0f64 / estimated_pct_sampled as f64;
+    let per_col_byte_size: Vec<usize> = per_col_bytes_ready
+        .iter()
+        .map(|&b| (b as f64 * scale).min(usize::MAX as f64) as usize)
+        .collect();
+    let total_byte_size: usize = per_col_byte_size
+        .iter()
+        .fold(0usize, |acc, &b| acc.saturating_add(b));
 
     new_metrics.push(BytesCounterMetric::new_metric(
         "estimated_output_bytes",

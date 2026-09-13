@@ -25,7 +25,7 @@ impl AddAssign for Cost {
 
 fn sum_precision(one: Precision<usize>, other: Precision<usize>) -> Precision<usize> {
     match (one.get_value(), other.get_value()) {
-        (Some(one), Some(other)) => Precision::Inexact(one + other),
+        (Some(one), Some(other)) => Precision::Inexact(one.saturating_add(*other)),
         (Some(one), None) => Precision::Inexact(*one),
         (None, Some(other)) => Precision::Inexact(*other),
         (None, None) => Precision::Absent,
