@@ -51,6 +51,9 @@ pub async fn rewrite_distributed_plan_with_dynamic_filters(
 /// Severs dynamic filter connections so we can update filter values for
 /// display purposes without having an update in one node propagate to another.
 ///
+/// Unlike [`maybe_roundtrip_plan_to_sever_in_memory_dynamic_filter_relationships()`], this
+/// isolates every dynamic filter found in the plan.
+///
 /// For example, in this plan, we would like to be able to [`update()`] every variant independently
 /// without mutating the producer or other variants
 ///
@@ -62,14 +65,15 @@ pub async fn rewrite_distributed_plan_with_dynamic_filters(
 ///          t0: DataSourceExec: ...
 ///          t1: DataSourceExec: ...
 ///        DistributedLeafExec:
-///          t0: DataSourceExec:  predicate=DynamicFilter [ f_dkey@2 >= A AND f_dkey@2 <= A AND f_dkey@2 IN (SET) ([<values>]) ] <- unique filter
-///          t1: DataSourceExec:  predicate=DynamicFilter [ f_dkey@2 >= B AND f_dkey@2 <= B AND f_dkey@2 IN (SET) ([<values>]) ] <- unique filter
+///          t0: DataSourceExec:  predicate=DynamicFilter [ f_dkey@2 > A ] <- unique filter
+///          t1: DataSourceExec:  predicate=DynamicFilter [ f_dkey@2 < B ] <- unique filter
 /// ```
 ///
 /// This is done by deep-copying every leaf variant so we don't have to
 /// worry about any shared state.
 ///
 /// [`update()`]: DynamicFilterPhysicalExpr::update()
+/// [`maybe_roundtrip_plan_to_sever_in_memory_dynamic_filter_relationships()`]: super::maybe_roundtrip_plan_to_sever_in_memory_dynamic_filter_relationships()
 pub(crate) fn sever_dynamic_filter_relationships_in_plan_for_display(
     plan: Arc<dyn ExecutionPlan>,
     task_ctx: &Arc<TaskContext>,
@@ -159,10 +163,10 @@ fn apply_reports_to_distributed_leaves(
                 .iter()
                 .map(|filter| (filter.expression_id, &filter.expression))
                 .collect();
-            let Ok(consumers) = discover_dynamic_filter_consumers(variant) else {
+            let Ok(discovered) = discover_dynamic_filter_consumers(variant) else {
                 continue;
             };
-            for consumer in consumers {
+            for consumer in discovered.consumers {
                 let Some(expression) = updates.get(&consumer.id).copied() else {
                     continue;
                 };

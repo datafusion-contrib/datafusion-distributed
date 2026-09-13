@@ -3,7 +3,9 @@ use crate::coordinator::prepare_dynamic_plan::prepare_dynamic_plan;
 use crate::coordinator::prepare_static_plan::prepare_static_plan;
 use crate::coordinator::query_coordinator::QueryCoordinator;
 use crate::coordinator::store::{Store, task_keys_for_plan};
-use crate::dynamic_filtering::sever_dynamic_filter_relationships_in_plan_for_display;
+use crate::dynamic_filtering::{
+    is_dynamic_filtering_enabled, sever_dynamic_filter_relationships_in_plan_for_display,
+};
 use crate::{DistributedConfig, TaskCompletedDynamicFilters, TaskKey, TaskMetrics};
 use datafusion::common::internal_datafusion_err;
 use datafusion::common::tree_node::TreeNodeRecursion;
@@ -249,7 +251,8 @@ impl ExecutionPlan for DistributedExec {
                 false => prepare_static_plan(&query_coordinator, &base_plan).await?,
             };
 
-            prepared.plan_for_viz = match collect_dynamic_filters {
+            let dynamic_filtering_enabled = is_dynamic_filtering_enabled(context.session_config());
+            prepared.plan_for_viz = match dynamic_filtering_enabled && collect_dynamic_filters {
                 true => sever_dynamic_filter_relationships_in_plan_for_display(
                     prepared.plan_for_viz,
                     &context,

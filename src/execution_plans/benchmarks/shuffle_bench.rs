@@ -217,6 +217,7 @@ impl ShuffleFixture {
             num: 0,
             workers: self.input_stage_workers.clone(),
             runtime_stats: None,
+            dynamic_filter_anchors: vec![],
         });
 
         let mut join_set = JoinSet::default();

@@ -3,22 +3,35 @@ mod tests {
     use crate::common::{TestQuery, execute_range_partitioned_query};
     use datafusion::common::Result;
     use datafusion_distributed::assert_snapshot;
+    use datafusion_distributed::test_utils::insta::insta::allow_duplicates;
 
     /// A Partitioned HashJoinExec propagates dynamic filters to local consumers.
     #[tokio::test]
     async fn local_dynamic_filters() -> Result<()> {
-        let display = execute_range_partitioned_query(
-            r#"
-                SELECT d.env, COUNT(*) AS n
-                FROM dim d
-                JOIN fact f ON d.d_dkey = f.f_dkey
-                WHERE d.service = 'log'
-                GROUP BY d.env
-            "#,
-            2,
-        )
-        .await?;
-        assert_snapshot!(display, @r"
+        let display = execute_range_partitioned_query(LOCAL_DYNAMIC_FILTER_QUERY, 2, false).await?;
+        assert_local_dynamic_filters_plan(display);
+        Ok(())
+    }
+
+    /// Colocated tasks must not share their task-local dynamic filters.
+    #[tokio::test]
+    async fn colocated_local_dynamic_filters() -> Result<()> {
+        let display = execute_range_partitioned_query(LOCAL_DYNAMIC_FILTER_QUERY, 2, true).await?;
+        assert_local_dynamic_filters_plan(display);
+        Ok(())
+    }
+
+    const LOCAL_DYNAMIC_FILTER_QUERY: &str = r#"
+        SELECT d.env, COUNT(*) AS n
+        FROM dim d
+        JOIN fact f ON d.d_dkey = f.f_dkey
+        WHERE d.service = 'log'
+        GROUP BY d.env
+    "#;
+
+    fn assert_local_dynamic_filters_plan(display: String) {
+        allow_duplicates! {
+            assert_snapshot!(display, @r"
         ┌───── DistributedExec
         │ CoalescePartitionsExec
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
@@ -41,7 +54,7 @@ mod tests {
             │         t1: DataSourceExec: file_groups={2 groups: [[/testdata/join/parquet/fact/f_dkey=B/data0.parquet], [/testdata/join/parquet/fact/f_dkey=D/data0.parquet]]}, projection=[f_dkey], output_partitioning=Range([f_dkey@0 ASC NULLS LAST], [(C)], 2), file_type=parquet, predicate=DynamicFilter [ f_dkey@2 >= B AND f_dkey@2 <= B AND f_dkey@2 IN (SET) ([<values>]) ], dynamic_rg_pruning=eligible, pruning_predicate=f_dkey_null_count@1 != row_count@2 AND f_dkey_max@0 >= B AND f_dkey_null_count@1 != row_count@2 AND f_dkey_min@3 <= B AND f_dkey_null_count@1 != row_count@2 AND f_dkey_min@3 <= B AND B <= f_dkey_max@0, required_guarantees=[f_dkey in (B)]
             └──────────────────────────────────────────────────
         ");
-        Ok(())
+        }
     }
 
     /// A Partitioned HashJoinExec does not propagate dynamic filters to a remote consumer.
