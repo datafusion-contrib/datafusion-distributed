@@ -29,7 +29,7 @@ pub use dynamic_filtering::rewrite_distributed_plan_with_dynamic_filters;
 pub use dynamic_filtering::{
     DiscoveredDynamicFilter, DiscoveredDynamicFilterAnchor, DiscoveredDynamicFilterConsumers,
     DiscoveredDynamicFilterProducer, discover_dynamic_filter_consumers,
-    discover_dynamic_filter_producers,
+    discover_dynamic_filter_producers, dynamic_filter_remote_producer_ids,
 };
 pub use events::{
     CoordinatorToWorkerDialer, DesiredTaskCountEvent, DesiredTaskCountEventResponse,
@@ -63,9 +63,10 @@ pub use worker_resolver::{WorkerResolver, get_distributed_worker_resolver};
 
 pub use protocol::{
     ChannelResolver, CoordinatorToWorkerMsg, ExecuteTaskRequest, GetWorkerInfoRequest,
-    GetWorkerInfoResponse, LoadInfo, SetPlanRequest, TaskCompletedDynamicFilters,
-    TaskDynamicFilter, TaskKey, TaskMetrics, WorkUnitBatch, WorkUnitFeedDeclaration, WorkUnitMsg,
-    WorkerChannel, WorkerToCoordinatorMsg, get_distributed_channel_resolver,
+    GetWorkerInfoResponse, LoadInfo, ProducedDynamicFilter, SetPlanRequest,
+    TaskCompletedDynamicFilters, TaskDynamicFilter, TaskKey, TaskMetrics, WorkUnitBatch,
+    WorkUnitFeedDeclaration, WorkUnitMsg, WorkerChannel, WorkerToCoordinatorMsg,
+    get_distributed_channel_resolver,
 };
 pub use stage::{
     DistributedTaskContext, Stage, display_plan_ascii, display_plan_graphviz, explain_analyze,

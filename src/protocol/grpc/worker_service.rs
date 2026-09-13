@@ -7,8 +7,9 @@ use crate::common::{deserialize_uuid, now_ns};
 use crate::protocol::grpc::{ObservabilityServiceImpl, ObservabilityServiceServer};
 use crate::{
     CoordinatorToWorkerMsg, DistributedConfig, ExecuteTaskRequest, LoadInfo, MaybeEncoded,
-    ProducerHead, SetPlanRequest, TaskCompletedDynamicFilters, TaskKey, TaskMetrics, WorkUnitBatch,
-    WorkUnitFeedDeclaration, WorkUnitMsg, Worker, WorkerResolver, WorkerToCoordinatorMsg,
+    ProducedDynamicFilter, ProducerHead, SetPlanRequest, TaskCompletedDynamicFilters, TaskKey,
+    TaskMetrics, WorkUnitBatch, WorkUnitFeedDeclaration, WorkUnitMsg, Worker, WorkerResolver,
+    WorkerToCoordinatorMsg,
 };
 
 use crate::worker::CoordinatorChannelResult;
@@ -231,6 +232,7 @@ fn decode_set_plan_request(request: pb::SetPlanRequest) -> Result<SetPlanRequest
             .collect::<Result<_, _>>()?,
         target_worker_url: parse_url(&request.target_worker_url, "target_worker_url")?,
         query_start_time_ns: request.query_start_time_ns as usize,
+        dynamic_filter_remote_producer_ids: request.dynamic_filter_remote_producer_ids,
     })
 }
 
@@ -281,7 +283,25 @@ fn encode_worker_to_coordinator_msg(
                     encode_task_completed_dynamic_filters(filters, task_ctx)?,
                 )
             }
+            WorkerToCoordinatorMsg::ProducedDynamicFilter(filter) => {
+                pb::worker_to_coordinator_msg::Inner::ProducedDynamicFilter(
+                    encode_produced_dynamic_filter(*filter, task_ctx)?,
+                )
+            }
         }),
+    })
+}
+
+fn encode_produced_dynamic_filter(
+    filter: ProducedDynamicFilter,
+    task_ctx: &Arc<TaskContext>,
+) -> Result<pb::ProducedDynamicFilter, Status> {
+    Ok(pb::ProducedDynamicFilter {
+        expression_id: filter.expression_id,
+        expression_proto: filter
+            .expression
+            .encode(task_ctx)
+            .map_err(datafusion_error_to_tonic_status)?,
     })
 }
 
@@ -460,4 +480,36 @@ fn garbage_collect_arrays(
         arrays,
         &RecordBatchOptions::new().with_row_count(Some(row_count)),
     )?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use datafusion::physical_expr::expressions::lit;
+    use datafusion::prelude::SessionContext;
+
+    #[test]
+    fn encode_produced_dynamic_filter() {
+        let expression = lit(true);
+        let task_ctx = SessionContext::new().task_ctx();
+        let expected = MaybeEncoded::Decoded(Arc::clone(&expression))
+            .encode(&task_ctx)
+            .unwrap();
+        let encoded = encode_worker_to_coordinator_msg(
+            WorkerToCoordinatorMsg::ProducedDynamicFilter(Box::new(ProducedDynamicFilter {
+                expression_id: 42,
+                expression: MaybeEncoded::Decoded(expression),
+            })),
+            &task_ctx,
+        )
+        .unwrap();
+
+        let Some(pb::worker_to_coordinator_msg::Inner::ProducedDynamicFilter(encoded)) =
+            encoded.inner
+        else {
+            panic!("expected produced dynamic filter");
+        };
+        assert_eq!(encoded.expression_id, 42);
+        assert_eq!(encoded.expression_proto, expected);
+    }
 }

@@ -80,6 +80,9 @@ pub struct SetPlanRequest {
     pub task_count: usize,
     /// The subplan the worker is expected to execute.
     pub plan: MaybeEncoded<Arc<dyn ExecutionPlan>>,
+    /// Producer expression IDs whose consumers cross a network boundary. Workers observe and
+    /// report updates to the coordinator.
+    pub dynamic_filter_remote_producer_ids: Vec<u64>,
     /// Information about all the work unit feeds that will be streamed from coordinator to worker.
     /// This information is needed here because at the moment of setting the plan, all the appropriate
     /// channels for the incoming work unit feeds need to be constructed.
@@ -125,10 +128,24 @@ pub enum WorkerToCoordinatorMsg {
     /// Sends the final dynamic filters used by dynamic filter consumers back to the coorindator
     /// for displaying.
     TaskCompletedDynamicFilters(TaskCompletedDynamicFilters),
+    /// Sends an observed producer dynamic-filter state to the coordinator. This update
+    /// is to be used for runtime dynamic filtering.
+    ProducedDynamicFilter(Box<ProducedDynamicFilter>),
     /// Load information reported by a task. This information is used for dynamically
     /// sizing the number of workers involved in a query.
     LoadInfo(LoadInfo),
     LoadInfoEos,
+}
+
+/// A dynamic filter state update produced by a plan node in a task to be sent to the coordinator.
+#[derive(Clone, Debug)]
+pub struct ProducedDynamicFilter {
+    pub expression_id: u64,
+    /// Note that sending an update via a live pointer could mean that the dynamic filter updates during
+    /// transport. This means that observations at the coordinator may repeat or skip generations, but never
+    /// regress. Since the worker monitors updates and completion, it's guaranteed that the completed
+    /// filter state will not be missed.
+    pub expression: MaybeEncoded<Arc<dyn PhysicalExpr>>,
 }
 
 #[derive(Clone, Debug, Default)]
