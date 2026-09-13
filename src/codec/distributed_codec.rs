@@ -104,6 +104,8 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 partitioning,
                 input_stage,
                 equivalence_classes,
+                producer_salt,
+                single_stream_threshold,
             }) => {
                 let schema: Schema = schema
                     .as_ref()
@@ -130,6 +132,8 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     partitioning,
                     equivalence_properties,
                     parse_stage_proto(input_stage, inputs)?,
+                    producer_salt,
+                    single_stream_threshold as usize,
                 )))
             }
             DistributedExecNode::NetworkCoalesceTasks(NetworkCoalesceExecProto {
@@ -310,6 +314,8 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     self,
                     proto_converter,
                 )?,
+                producer_salt: node.producer_salt,
+                single_stream_threshold: node.single_stream_threshold as u64,
             };
 
             let wrapper = DistributedExecProto {
@@ -516,6 +522,10 @@ pub struct NetworkShuffleExecProto {
     input_stage: Option<StageProto>,
     #[prost(message, repeated, tag = "4")]
     equivalence_classes: Vec<EquivalenceClassProto>,
+    #[prost(uint64, tag = "5")]
+    producer_salt: u64,
+    #[prost(uint64, tag = "7")]
+    single_stream_threshold: u64,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -564,17 +574,20 @@ fn new_network_hash_shuffle_exec(
     partitioning: Partitioning,
     equivalence_properties: EquivalenceProperties,
     input_stage: Stage,
+    producer_salt: u64,
+    single_stream_threshold: usize,
 ) -> NetworkShuffleExec {
-    NetworkShuffleExec {
-        properties: Arc::new(PlanProperties::new(
+    NetworkShuffleExec::from_stage_with_producer_salt(
+        input_stage,
+        Arc::new(PlanProperties::new(
             equivalence_properties,
             partitioning,
             EmissionType::Incremental,
             Boundedness::Bounded,
         )),
-        worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
-        input_stage,
-    }
+        producer_salt,
+        single_stream_threshold,
+    )
 }
 
 /// Protobuf representation of the [NetworkShuffleExec] physical node. It serves as
@@ -706,6 +719,8 @@ mod tests {
             part,
             EquivalenceProperties::new(schema),
             dummy_stage(),
+            0,
+            3,
         ));
 
         let mut buf = Vec::new();
@@ -727,11 +742,15 @@ mod tests {
             Partitioning::RoundRobinBatch(2),
             EquivalenceProperties::new(schema.clone()),
             dummy_stage(),
+            0,
+            3,
         ));
         let right = Arc::new(new_network_hash_shuffle_exec(
             Partitioning::RoundRobinBatch(2),
             EquivalenceProperties::new(schema.clone()),
             dummy_stage(),
+            0,
+            3,
         ));
 
         let union = UnionExec::try_new(vec![left.clone(), right.clone()])?;
@@ -757,6 +776,8 @@ mod tests {
             Partitioning::UnknownPartitioning(1),
             EquivalenceProperties::new(schema.clone()),
             dummy_stage(),
+            0,
+            3,
         ));
 
         let sort_expr = PhysicalSortExpr {
@@ -812,6 +833,8 @@ mod tests {
             part,
             EquivalenceProperties::new(schema),
             dummy_stage_with_plan(),
+            0,
+            3,
         ));
 
         let mut buf = Vec::new();
@@ -908,11 +931,15 @@ mod tests {
             Partitioning::RoundRobinBatch(2),
             EquivalenceProperties::new(schema.clone()),
             dummy_stage(),
+            0,
+            3,
         )) as Arc<dyn ExecutionPlan>;
         let right = Arc::new(new_network_hash_shuffle_exec(
             Partitioning::RoundRobinBatch(2),
             EquivalenceProperties::new(schema.clone()),
             dummy_stage(),
+            0,
+            3,
         )) as Arc<dyn ExecutionPlan>;
 
         let plan: Arc<dyn ExecutionPlan> =
@@ -954,6 +981,8 @@ mod tests {
                     Partitioning::UnknownPartitioning(1),
                     equivalence_properties.clone(),
                     dummy_stage(),
+                    0,
+                    3,
                 )),
             ),
             (

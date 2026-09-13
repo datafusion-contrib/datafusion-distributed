@@ -58,8 +58,8 @@ mod tests {
           │     AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
           │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=3
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── tasks=3, partitions=9
-            │ RepartitionExec: partitioning=Hash([RainToday@0], 9), input_partitions=3
+            ┌───── Stage 1 ── tasks=3, partitions=3
+            │ RepartitionExec: partitioning=Hash([RainToday@0, 5871781006564002453], 3), input_partitions=3
             │   AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
             │     DistributedLeafExec:
             │       t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[RainToday], file_type=parquet
@@ -140,8 +140,8 @@ mod tests {
           │   AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
           │     [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=6
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── tasks=6, partitions=18
-            │ RepartitionExec: partitioning=Hash([RainToday@0], 18), input_partitions=3
+            ┌───── Stage 1 ── tasks=6, partitions=6
+            │ RepartitionExec: partitioning=Hash([RainToday@0, 5871781006564002453], 6), input_partitions=3
             │   AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
             │     DistributedLeafExec:
             │       t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[RainToday], file_type=parquet

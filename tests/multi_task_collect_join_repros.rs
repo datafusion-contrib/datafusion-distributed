@@ -69,16 +69,16 @@ mod tests {
           │   [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           │   [Stage 2] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── tasks=4, partitions=12
-            │ RepartitionExec: partitioning=Hash([id@0], 12), input_partitions=2
+            ┌───── Stage 1 ── tasks=4, partitions=4
+            │ RepartitionExec: partitioning=Hash([id@0, 5871781006564002453], 4), input_partitions=2
             │   DistributedLeafExec:
             │     t0: DataSourceExec: file_groups={2 groups: [[/target/multi_task_collect_join_repros/build_side/part-0.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-2.parquet:<int>..<int>]]}, projection=[id], file_type=parquet
             │     t1: DataSourceExec: file_groups={2 groups: [[/target/multi_task_collect_join_repros/build_side/part-0.parquet:<int>..<int>, /target/multi_task_collect_join_repros/build_side/part-1.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-2.parquet:<int>..<int>, /target/multi_task_collect_join_repros/build_side/part-3.parquet:<int>..<int>]]}, projection=[id], file_type=parquet
             │     t2: DataSourceExec: file_groups={2 groups: [[/target/multi_task_collect_join_repros/build_side/part-1.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-3.parquet:<int>..<int>]]}, projection=[id], file_type=parquet
             │     t3: DataSourceExec: file_groups={2 groups: [[/target/multi_task_collect_join_repros/build_side/part-1.parquet:<int>..<int>, /target/multi_task_collect_join_repros/build_side/part-2.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-3.parquet:<int>..<int>]]}, projection=[id], file_type=parquet
             └──────────────────────────────────────────────────
-            ┌───── Stage 2 ── tasks=4, partitions=12
-            │ RepartitionExec: partitioning=Hash([id@0], 12), input_partitions=2
+            ┌───── Stage 2 ── tasks=4, partitions=4
+            │ RepartitionExec: partitioning=Hash([id@0, 5871781006564002453], 4), input_partitions=2
             │   DistributedLeafExec:
             │     t0: DataSourceExec: file_groups={2 groups: [[/target/multi_task_collect_join_repros/probe_side/part-0.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/probe_side/part-2.parquet:<int>..<int>]]}, projection=[id], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
             │     t1: DataSourceExec: file_groups={2 groups: [[/target/multi_task_collect_join_repros/probe_side/part-0.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/probe_side/part-2.parquet:<int>..<int>]]}, projection=[id], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
@@ -211,16 +211,16 @@ mod tests {
           │   [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           │   [Stage 2] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── tasks=4, partitions=12
-            │ RepartitionExec: partitioning=Hash([id@0], 12), input_partitions=2
+            ┌───── Stage 1 ── tasks=4, partitions=4
+            │ RepartitionExec: partitioning=Hash([id@0, 5871781006564002453], 4), input_partitions=2
             │   DistributedLeafExec:
             │     t0: DataSourceExec: file_groups={2 groups: [[/target/multi_task_collect_join_repros/build_side/part-0.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-2.parquet:<int>..<int>]]}, projection=[id], file_type=parquet
             │     t1: DataSourceExec: file_groups={2 groups: [[/target/multi_task_collect_join_repros/build_side/part-0.parquet:<int>..<int>, /target/multi_task_collect_join_repros/build_side/part-1.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-2.parquet:<int>..<int>, /target/multi_task_collect_join_repros/build_side/part-3.parquet:<int>..<int>]]}, projection=[id], file_type=parquet
             │     t2: DataSourceExec: file_groups={2 groups: [[/target/multi_task_collect_join_repros/build_side/part-1.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-3.parquet:<int>..<int>]]}, projection=[id], file_type=parquet
             │     t3: DataSourceExec: file_groups={2 groups: [[/target/multi_task_collect_join_repros/build_side/part-1.parquet:<int>..<int>, /target/multi_task_collect_join_repros/build_side/part-2.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-3.parquet:<int>..<int>]]}, projection=[id], file_type=parquet
             └──────────────────────────────────────────────────
-            ┌───── Stage 2 ── tasks=4, partitions=12
-            │ RepartitionExec: partitioning=Hash([id@0], 12), input_partitions=2
+            ┌───── Stage 2 ── tasks=4, partitions=4
+            │ RepartitionExec: partitioning=Hash([id@0, 5871781006564002453], 4), input_partitions=2
             │   DistributedLeafExec:
             │     t0: DataSourceExec: file_groups={2 groups: [[/target/multi_task_collect_join_repros/probe_side/part-0.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/probe_side/part-2.parquet:<int>..<int>]]}, projection=[id], file_type=parquet
             │     t1: DataSourceExec: file_groups={2 groups: [[/target/multi_task_collect_join_repros/probe_side/part-0.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/probe_side/part-2.parquet:<int>..<int>]]}, projection=[id], file_type=parquet

@@ -47,8 +47,8 @@ mod tests {
           │     AggregateExec: mode=FinalPartitioned, gby=[test_udf(weather.RainToday)@0 as test_udf(weather.RainToday)], aggr=[count(Int64(1))]
           │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=3
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── tasks=3, partitions=9
-            │ RepartitionExec: partitioning=Hash([test_udf(weather.RainToday)@0], 9), input_partitions=3
+            ┌───── Stage 1 ── tasks=3, partitions=3
+            │ RepartitionExec: partitioning=Hash([test_udf(weather.RainToday)@0, 5871781006564002453], 3), input_partitions=3
             │   AggregateExec: mode=Partial, gby=[test_udf(RainToday@0) as test_udf(weather.RainToday)], aggr=[count(Int64(1))]
             │     DistributedLeafExec:
             │       t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[RainToday], file_type=parquet

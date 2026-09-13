@@ -408,15 +408,15 @@ mod tests {
           │   [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
           │   [Stage 2] => NetworkShuffleExec: output_partitions=4, input_tasks=3
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── tasks=3, partitions=12
-            │ RepartitionExec: partitioning=Hash([RainToday@1], 12), input_partitions=3
+            ┌───── Stage 1 ── tasks=3, partitions=3
+            │ RepartitionExec: partitioning=Hash([RainToday@1, 5871781006564002453], 3), input_partitions=3
             │   DistributedLeafExec:
             │     t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp, RainToday], file_type=parquet
             │     t1: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp, RainToday], file_type=parquet
             │     t2: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp, RainToday], file_type=parquet
             └──────────────────────────────────────────────────
-            ┌───── Stage 2 ── tasks=3, partitions=12
-            │ RepartitionExec: partitioning=Hash([RainToday@1], 12), input_partitions=3
+            ┌───── Stage 2 ── tasks=3, partitions=3
+            │ RepartitionExec: partitioning=Hash([RainToday@1, 5871781006564002453], 3), input_partitions=3
             │   DistributedLeafExec:
             │     t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
             │     t1: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible

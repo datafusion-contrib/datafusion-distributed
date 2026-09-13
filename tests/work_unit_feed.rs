@@ -532,8 +532,8 @@ mod tests {
           │     AggregateExec: mode=FinalPartitioned, gby=[tag@0 as tag, letter@1 as letter], aggr=[count(Int64(1))]
           │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=3
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── tasks=3, partitions=9
-            │ RepartitionExec: partitioning=Hash([tag@0, letter@1], 9), input_partitions=4
+            ┌───── Stage 1 ── tasks=3, partitions=3
+            │ RepartitionExec: partitioning=Hash([tag@0, letter@1, 5871781006564002453], 3), input_partitions=4
             │   AggregateExec: mode=Partial, gby=[tag@0 as tag, letter@1 as letter], aggr=[count(Int64(1))]
             │     DistributedUnionExec: t0:[c0(0/2)] t1:[c0(1/2)] t2:[c1]
             │       RowGeneratorExec: tag=left, tasks=2, partition_ops=[[rows(3)], [rows(2)], [rows(1)], [rows(2)]]
