@@ -53,7 +53,6 @@ impl Worker {
 
         let (metrics_tx, metrics_rx) = oneshot::channel();
         let (dynamic_filters_tx, dynamic_filters_rx) = oneshot::channel();
-        let mut load_info_rxs = vec![];
 
         let task_data = || async {
             let mut cfg = SessionConfig::default()
@@ -95,8 +94,6 @@ impl Worker {
                 session_config: session_state.config(),
             };
             let plan = WorkerPlanRewriteHandlers::handle(ev).await?.plan;
-            load_info_rxs =
-                SamplerExec::kick_off_first_sampler(Arc::clone(&plan), Arc::clone(&task_ctx))?;
 
             // Initialize partition count to the number of partitions in the stage
             Ok::<_, DataFusionError>(TaskData {
@@ -122,6 +119,11 @@ impl Worker {
             .map_err(|e| exec_datafusion_err!("{e}"))?;
 
         let task_data = task_data_result.map_err(DataFusionError::Shared)?;
+        let mut sampler_gate = SamplerExec::gate_for_first_sampler(
+            Arc::clone(&task_data.base_plan),
+            Arc::clone(&task_data.task_ctx),
+        )?;
+        let load_info_rxs = sampler_gate.take_receivers();
 
         // Continue reading remaining messages (work unit feed data) in the background.
         let mut work_unit_senders = Some(remote_work_unit_feed_registry.senders);
@@ -171,6 +173,9 @@ impl Worker {
                         // EOS signal for the coordinator->worker stream, as there might be more
                         // messages of different nature in that stream.
                         let _ = work_unit_senders.take();
+                    }
+                    CoordinatorToWorkerMsg::KickOffSampling => {
+                        sampler_gate.kick_off();
                     }
                 }
             }
