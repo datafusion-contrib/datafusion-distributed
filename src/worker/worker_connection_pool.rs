@@ -2,6 +2,7 @@ use crate::distributed_planner::ProducerHead;
 use crate::passthrough_headers::get_passthrough_headers;
 use crate::stage::RemoteStage;
 use crate::{ExecuteTaskRequest, LocalWorkerContext, TaskKey, get_distributed_channel_resolver};
+use dashmap::DashMap;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::common::runtime::SpawnedTask;
 use datafusion::common::{DataFusionError, Result, internal_datafusion_err, internal_err};
@@ -13,7 +14,7 @@ use futures::stream::BoxStream;
 use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt};
 use std::fmt::{Debug, Formatter};
 use std::ops::Range;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 /// Manages connections to remote workers.
 /// - Handles a range of partitions at a time in other to give the chance to [crate::WorkerChannel]
@@ -21,9 +22,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 ///   streams over an IO interface.
 /// - Short circuits to a local in-memory connection if the remote worker that should be reached
 ///   happens to be the same one issuing the request.
-/// - Lazy inits connections to a remote worker on first call to [WorkerConnectionPool::execute].
+/// - Lazily initializes connections per remote worker and requested partition range.
 pub(crate) struct WorkerConnectionPool {
-    lazy_stream_groups: Vec<OnceLock<SharedBoxFuture<StreamGroup>>>,
+    lazy_stream_groups: Vec<DashMap<Range<usize>, SharedBoxFuture<StreamGroup>>>,
     pub(crate) metrics: ExecutionPlanMetricsSet,
 }
 
@@ -38,7 +39,7 @@ impl WorkerConnectionPool {
     /// the provided `input_tasks`.
     pub(crate) fn new(input_tasks: usize) -> Self {
         Self {
-            lazy_stream_groups: (0..input_tasks).map(|_| OnceLock::new()).collect(),
+            lazy_stream_groups: (0..input_tasks).map(|_| Default::default()).collect(),
             metrics: ExecutionPlanMetricsSet::default(),
         }
     }
@@ -75,7 +76,9 @@ impl WorkerConnectionPool {
             );
         };
 
-        let streams_shared_future = worker_connection.get_or_init(|| {
+        let entry = worker_connection.entry(target_partitions.clone());
+
+        let streams_shared_future = entry.or_insert_with(|| {
             let metrics = self.metrics.clone();
             let ctx = Arc::clone(ctx);
 
@@ -93,9 +96,9 @@ impl WorkerConnectionPool {
                     producer_head,
                 };
                 let mut client = match LocalWorkerContext::from_ctx(&ctx) {
-                    Some(lw) if lw.self_url == target_url => {
+                    Some(local_worker) if local_worker.self_url == target_url => {
                         local_connections_used.add(1);
-                        Ok(lw.to_worker_channel())
+                        Ok(local_worker.to_worker_channel())
                     }
                     _ => {
                         let ch_resolver = get_distributed_channel_resolver(ctx.as_ref());
@@ -143,6 +146,53 @@ impl WorkerConnectionPool {
         })
         .boxed())
     }
+
+    /// Opens one stream from a producer task, routed to `target_partition` (the consumer's own
+    /// task index). Unlike [`Self::execute`], results are not cached; the caller ensures at-most-once use.
+    pub(crate) async fn open_single_stream(
+        &self,
+        input_stage: &RemoteStage,
+        target_task: usize,
+        target_partition: usize,
+        producer_head: ProducerHead,
+        ctx: &Arc<TaskContext>,
+    ) -> Result<BoxStream<'static, Result<RecordBatch>>> {
+        let Some(target_url) = input_stage.workers.get(target_task).cloned() else {
+            return internal_err!("input_stage.workers[{target_task}] out of range.");
+        };
+        let task_key = TaskKey {
+            query_id: input_stage.query_id,
+            stage_id: input_stage.num,
+            task_number: target_task,
+        };
+        let request = ExecuteTaskRequest {
+            task_key,
+            target_partition_start: target_partition,
+            target_partition_end: target_partition + 1,
+            producer_head,
+        };
+        let local_connections_used =
+            MetricBuilder::new(&self.metrics).global_counter("local_connections_used");
+        let mut client = match LocalWorkerContext::from_ctx(ctx) {
+            Some(local_worker) if local_worker.self_url == target_url => {
+                local_connections_used.add(1);
+                local_worker.to_worker_channel()
+            }
+            _ => {
+                let ch_resolver = get_distributed_channel_resolver(ctx.as_ref());
+                ch_resolver.get_worker_client_for_url(&target_url).await?
+            }
+        };
+        let headers = get_passthrough_headers(ctx.session_config());
+        let streams = client
+            .execute_task(headers, request, self.metrics.clone(), ctx)
+            .await?;
+        streams.into_iter().next().ok_or_else(|| {
+            internal_datafusion_err!(
+                "execute_task returned no streams for partition {target_partition}"
+            )
+        })
+    }
 }
 
 /// Returns the logical size of a batch's slices, excluding unused backing-buffer capacity.
@@ -164,6 +214,12 @@ impl Debug for WorkerConnectionPool {
 
 impl Clone for WorkerConnectionPool {
     fn clone(&self) -> Self {
-        Self::new(self.lazy_stream_groups.len())
+        Self {
+            lazy_stream_groups: (0..self.lazy_stream_groups.len())
+                .map(|_| Default::default())
+                .collect(),
+            // Shared metrics so cloned-pool connections are visible to the original's metrics().
+            metrics: self.metrics.clone(),
+        }
     }
 }

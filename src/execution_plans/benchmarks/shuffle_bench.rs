@@ -3,7 +3,6 @@ use super::fixture::{
 };
 use crate::common::task_ctx_with_extension;
 use crate::stage::RemoteStage;
-use crate::worker::WorkerConnectionPool;
 use crate::worker::test_utils::worker_handles::MemoryWorkerHandle;
 use crate::{DistributedExt, DistributedTaskContext, NetworkShuffleExec, Stage};
 use arrow::datatypes::Schema;
@@ -221,16 +220,15 @@ impl ShuffleFixture {
 
         let mut join_set = JoinSet::default();
         for task_index in 0..self.bench.consumer_tasks {
-            let shuffle = NetworkShuffleExec {
-                properties: Arc::new(PlanProperties::new(
+            let shuffle = NetworkShuffleExec::from_stage(
+                input_stage.clone(),
+                Arc::new(PlanProperties::new(
                     EquivalenceProperties::new(Arc::clone(&self.schema)),
                     Partitioning::Hash(vec![Arc::new(Column::new("id", 0))], self.bench.partitions),
                     EmissionType::Incremental,
                     Boundedness::Bounded,
                 )),
-                input_stage: input_stage.clone(),
-                worker_connections: WorkerConnectionPool::new(self.bench.producer_tasks),
-            };
+            );
             let task_ctx = Arc::new(task_ctx_with_extension(
                 &self.task_ctx,
                 DistributedTaskContext {
