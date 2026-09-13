@@ -68,6 +68,13 @@ impl Worker {
                 }))
                 .with_distributed_option_extension_from_headers::<DistributedConfig>(&headers)?;
 
+            // Request extensions are decoded into this task-local config before the user-provided
+            // WorkerSessionBuilder runs, so the builder may inspect them or deliberately replace
+            // one with a node-local value. Decoding itself refuses to replace an extension already
+            // installed above; this prevents a remote payload from shadowing worker-owned DFD state.
+            self.session_extension_codecs
+                .decode(&request.session_extensions, &mut cfg)?;
+
             let d_cfg = DistributedConfig::from_config_options(cfg.options())?;
             let shuffle_batch_size = d_cfg.shuffle_batch_size;
             let collect_metrics = d_cfg.collect_metrics;

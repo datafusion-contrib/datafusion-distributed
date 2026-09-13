@@ -146,6 +146,18 @@ pub struct SetPlanRequest {
     /// relative to when the query was fired in the coordinator.
     #[prost(uint64, tag = "6")]
     pub query_start_time_ns: u64,
+    /// Opt-in, user-encoded session extensions to install in this task's worker session.
+    #[prost(message, repeated, tag = "7")]
+    pub session_extensions: ::prost::alloc::vec::Vec<SessionExtensionPayload>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SessionExtensionPayload {
+    /// Stable identifier of the codec required to decode payload.
+    #[prost(string, tag = "1")]
+    pub type_url: ::prost::alloc::string::String,
+    /// Opaque bytes produced by the registered codec. These bytes may contain sensitive data.
+    #[prost(bytes = "vec", tag = "2")]
+    pub payload: ::prost::alloc::vec::Vec<u8>,
 }
 /// Nested message and enum types in `SetPlanRequest`.
 pub mod set_plan_request {

@@ -1,4 +1,4 @@
-use crate::{MaybeEncoded, ProducerHead, WorkUnit};
+use crate::{MaybeEncoded, ProducerHead, SessionExtensionPayload, WorkUnit};
 use async_trait::async_trait;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::Result;
@@ -92,6 +92,8 @@ pub struct SetPlanRequest {
     /// Unix nanos when the query started as reported by the coordinator. Used for collecting temporal metrics
     /// relative to when the query was fired in the coordinator.
     pub query_start_time_ns: usize,
+    /// Opt-in, user-encoded session extensions to install in this task's worker session.
+    pub session_extensions: Vec<SessionExtensionPayload>,
 }
 
 pub struct WorkUnitBatch {

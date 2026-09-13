@@ -1,3 +1,4 @@
+use crate::codec::{SessionExtensionCodec, SessionExtensionCodecRegistry};
 use crate::protocol::LocalWorkerContext;
 use crate::worker::{SingleWriteMultiRead, WorkerSessionBuilder};
 use crate::{DefaultSessionBuilder, TaskData, TaskKey};
@@ -22,6 +23,7 @@ pub struct Worker {
     /// while allowing concurrent access to task results across multiple partition requests.
     pub(crate) task_data_entries: Arc<TaskDataEntries>,
     pub(super) session_builder: Arc<dyn WorkerSessionBuilder + Send + Sync>,
+    pub(crate) session_extension_codecs: SessionExtensionCodecRegistry,
     pub(crate) max_message_size: Option<usize>,
     pub(super) version: Cow<'static, str>,
 }
@@ -33,6 +35,7 @@ impl Default for Worker {
             runtime: Arc::new(RuntimeEnv::default()),
             task_data_entries: Arc::new(cache),
             session_builder: Arc::new(DefaultSessionBuilder),
+            session_extension_codecs: SessionExtensionCodecRegistry::default(),
             max_message_size: Some(usize::MAX),
             version: Cow::Borrowed(""),
         }
@@ -55,6 +58,16 @@ impl Worker {
     /// its lifetime.
     pub fn with_runtime_env(mut self, runtime_env: Arc<RuntimeEnv>) -> Self {
         self.runtime = runtime_env;
+        self
+    }
+
+    /// Registers a decoder for an opt-in session extension sent by coordinators.
+    ///
+    /// The codec is worker-wide, but each decoded value is installed only in the fresh
+    /// [`SessionConfig`](datafusion::prelude::SessionConfig) created for one distributed task.
+    /// Registering a decoder authorizes coordinators to provide that extension type to this worker.
+    pub fn with_session_extension_codec<C: SessionExtensionCodec>(mut self, codec: C) -> Self {
+        self.session_extension_codecs.push(codec);
         self
     }
 

@@ -1,4 +1,6 @@
-use crate::codec::{set_distributed_user_codec, set_distributed_user_codec_arc};
+use crate::codec::{
+    set_distributed_user_codec, set_distributed_user_codec_arc, set_session_extension_codec,
+};
 use crate::config_extension_ext::{
     set_distributed_option_extension, set_distributed_option_extension_from_headers,
 };
@@ -12,8 +14,8 @@ use crate::protocol::set_distributed_channel_resolver;
 use crate::work_unit_feed::set_distributed_work_unit_feed;
 use crate::worker_resolver::set_distributed_worker_resolver;
 use crate::{
-    ChannelResolver, DistributedConfig, LocalWorkerContext, WorkUnitFeed, WorkUnitFeedProvider,
-    WorkerResolver, get_distributed_worker_resolver,
+    ChannelResolver, DistributedConfig, LocalWorkerContext, SessionExtensionCodec, WorkUnitFeed,
+    WorkUnitFeedProvider, WorkerResolver, get_distributed_worker_resolver,
 };
 use datafusion::common::DataFusionError;
 use datafusion::config::ConfigExtension;
@@ -136,6 +138,18 @@ pub trait DistributedExt: Sized {
         &mut self,
         headers: &HeaderMap,
     ) -> Result<(), DataFusionError>;
+
+    /// Registers a codec that opts one typed [`SessionConfig::with_extension`] value into
+    /// propagation from this coordinating session to workers.
+    ///
+    /// Register the same codec on each worker with [`crate::Worker::with_session_extension_codec`].
+    /// Only the extension value is sent; the codec remains node-local. Payloads may contain
+    /// sensitive data and must be protected by the transport configured by the application.
+    fn with_distributed_session_extension_codec<C: SessionExtensionCodec>(self, codec: C) -> Self;
+
+    /// Same as [`DistributedExt::with_distributed_session_extension_codec`] but with an in-place
+    /// mutation.
+    fn set_distributed_session_extension_codec<C: SessionExtensionCodec>(&mut self, codec: C);
 
     /// Injects a user-defined [PhysicalExtensionCodec] that is capable of encoding/decoding
     /// custom execution nodes. Multiple user-defined [PhysicalExtensionCodec] can be added
@@ -776,6 +790,10 @@ impl DistributedExt for SessionConfig {
         Ok(())
     }
 
+    fn set_distributed_session_extension_codec<C: SessionExtensionCodec>(&mut self, codec: C) {
+        set_session_extension_codec(self, codec)
+    }
+
     fn set_distributed_user_codec<T: PhysicalExtensionCodec + 'static>(&mut self, codec: T) {
         set_distributed_user_codec(self, codec)
     }
@@ -954,6 +972,10 @@ impl DistributedExt for SessionConfig {
             #[expr($?;Ok(self))]
             fn with_distributed_option_extension_from_headers<T: ConfigExtension + Default>(mut self, headers: &HeaderMap) -> Result<Self, DataFusionError>;
 
+            #[call(set_distributed_session_extension_codec)]
+            #[expr($;self)]
+            fn with_distributed_session_extension_codec<C: SessionExtensionCodec>(mut self, codec: C) -> Self;
+
             #[call(set_distributed_user_codec)]
             #[expr($;self)]
             fn with_distributed_user_codec<T: PhysicalExtensionCodec + 'static>(mut self, codec: T) -> Self;
@@ -1076,6 +1098,11 @@ impl DistributedExt for SessionStateBuilder {
             #[call(set_distributed_option_extension_from_headers)]
             #[expr($?;Ok(self))]
             fn with_distributed_option_extension_from_headers<T: ConfigExtension + Default>(mut self, headers: &HeaderMap) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_session_extension_codec<C: SessionExtensionCodec>(&mut self, codec: C);
+            #[call(set_distributed_session_extension_codec)]
+            #[expr($;self)]
+            fn with_distributed_session_extension_codec<C: SessionExtensionCodec>(mut self, codec: C) -> Self;
 
             fn set_distributed_user_codec<T: PhysicalExtensionCodec + 'static>(&mut self, codec: T);
             #[call(set_distributed_user_codec)]
@@ -1232,6 +1259,11 @@ impl DistributedExt for SessionState {
             #[expr($?;Ok(self))]
             fn with_distributed_option_extension_from_headers<T: ConfigExtension + Default>(mut self, headers: &HeaderMap) -> Result<Self, DataFusionError>;
 
+            fn set_distributed_session_extension_codec<C: SessionExtensionCodec>(&mut self, codec: C);
+            #[call(set_distributed_session_extension_codec)]
+            #[expr($;self)]
+            fn with_distributed_session_extension_codec<C: SessionExtensionCodec>(mut self, codec: C) -> Self;
+
             fn set_distributed_user_codec<T: PhysicalExtensionCodec + 'static>(&mut self, codec: T);
             #[call(set_distributed_user_codec)]
             #[expr($;self)]
@@ -1379,6 +1411,11 @@ impl DistributedExt for SessionContext {
             #[call(set_distributed_option_extension_from_headers)]
             #[expr($?;Ok(self))]
             fn with_distributed_option_extension_from_headers<T: ConfigExtension + Default>(self, headers: &HeaderMap) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_session_extension_codec<C: SessionExtensionCodec>(&mut self, codec: C);
+            #[call(set_distributed_session_extension_codec)]
+            #[expr($;self)]
+            fn with_distributed_session_extension_codec<C: SessionExtensionCodec>(self, codec: C) -> Self;
 
             fn set_distributed_user_codec<T: PhysicalExtensionCodec + 'static>(&mut self, codec: T);
             #[call(set_distributed_user_codec)]

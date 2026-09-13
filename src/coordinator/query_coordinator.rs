@@ -1,4 +1,4 @@
-use crate::codec::roundtrip_pb;
+use crate::codec::{encode_session_extensions, roundtrip_pb};
 use crate::common::{TreeNodeExt, now_ns, task_ctx_with_extension};
 use crate::config_extension_ext::get_config_extension_propagation_headers;
 use crate::coordinator::Store;
@@ -165,6 +165,7 @@ impl<'a> StageCoordinator<'a> {
 
         let mut headers = get_config_extension_propagation_headers(session_config)?;
         headers.extend(get_passthrough_headers(session_config));
+        let session_extensions = encode_session_extensions(session_config)?;
 
         let metrics = self.metrics.clone();
         let metrics_set = self.metrics_set.clone();
@@ -204,6 +205,7 @@ impl<'a> StageCoordinator<'a> {
                 work_unit_feed_declarations: work_unit_feed_declarations.clone(),
                 target_worker_url: url.clone(),
                 query_start_time_ns: self.metrics.instantiation_time,
+                session_extensions: session_extensions.clone(),
             };
             let task_ctx = Arc::clone(self.task_ctx);
             let headers = headers.clone();

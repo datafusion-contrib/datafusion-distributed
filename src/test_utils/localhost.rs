@@ -25,6 +25,21 @@ where
     B: WorkerSessionBuilder + Send + Sync + 'static,
     B: Clone,
 {
+    start_localhost_context_with_worker(num_workers, session_builder, Worker::from_session_builder)
+        .await
+}
+
+/// Same as [`start_localhost_context`], with a hook for configuring each worker.
+pub async fn start_localhost_context_with_worker<B, F>(
+    num_workers: usize,
+    session_builder: B,
+    worker_factory: F,
+) -> (SessionContext, JoinSet<()>, Vec<Worker>)
+where
+    B: WorkerSessionBuilder + Send + Sync + 'static,
+    B: Clone,
+    F: Fn(B) -> Worker,
+{
     let listeners = futures::future::try_join_all(
         (0..num_workers)
             .map(|_| TcpListener::bind("127.0.0.1:0"))
@@ -47,7 +62,7 @@ where
     let mut workers = vec![];
     for listener in listeners {
         let session_builder = session_builder.clone();
-        let worker = Worker::from_session_builder(session_builder);
+        let worker = worker_factory(session_builder);
         workers.push(worker.clone());
 
         let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);

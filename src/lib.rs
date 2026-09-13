@@ -51,7 +51,7 @@ pub mod test_utils;
 #[cfg(feature = "grpc")]
 pub use protocol::grpc;
 
-pub use codec::DistributedCodec;
+pub use codec::{DistributedCodec, SessionExtensionCodec, SessionExtensionPayload};
 pub use common::MaybeEncoded;
 pub use worker_resolver::{WorkerResolver, get_distributed_worker_resolver};
 

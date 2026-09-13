@@ -489,6 +489,14 @@ fn encode_set_plan_request(
             .collect(),
         target_worker_url: request.target_worker_url.to_string(),
         query_start_time_ns: request.query_start_time_ns as u64,
+        session_extensions: request
+            .session_extensions
+            .into_iter()
+            .map(|extension| pb::SessionExtensionPayload {
+                type_url: extension.type_url,
+                payload: extension.payload,
+            })
+            .collect(),
     })
 }
 

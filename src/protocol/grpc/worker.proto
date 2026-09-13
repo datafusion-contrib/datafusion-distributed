@@ -131,6 +131,15 @@ message SetPlanRequest {
   // Unix nanos when the query started as reported by the coordinator. Used for collecting temporal metrics
   // relative to when the query was fired in the coordinator.
   uint64 query_start_time_ns = 6;
+  // Opt-in, user-encoded session extensions to install in this task's worker session.
+  repeated SessionExtensionPayload session_extensions = 7;
+}
+
+message SessionExtensionPayload {
+  // Stable identifier of the codec required to decode payload.
+  string type_url = 1;
+  // Opaque bytes produced by the registered codec. These bytes may contain sensitive data.
+  bytes payload = 2;
 }
 
 message WorkUnitBatch {

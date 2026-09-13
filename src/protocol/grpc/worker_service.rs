@@ -231,6 +231,14 @@ fn decode_set_plan_request(request: pb::SetPlanRequest) -> Result<SetPlanRequest
             .collect::<Result<_, _>>()?,
         target_worker_url: parse_url(&request.target_worker_url, "target_worker_url")?,
         query_start_time_ns: request.query_start_time_ns as usize,
+        session_extensions: request
+            .session_extensions
+            .into_iter()
+            .map(|extension| crate::SessionExtensionPayload {
+                type_url: extension.type_url,
+                payload: extension.payload,
+            })
+            .collect(),
     })
 }
 
