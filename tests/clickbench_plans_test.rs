@@ -105,8 +105,8 @@ mod tests {
           │   AggregateExec: mode=FinalPartitioned, gby=[alias1@0 as alias1], aggr=[]
           │     [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── tasks=4, partitions=9
-            │ RepartitionExec: partitioning=Hash([alias1@0], 9), input_partitions=3
+            ┌───── Stage 1 ── tasks=4, partitions=3
+            │ RepartitionExec: partitioning=Hash([alias1@0, 5871781006564002453], 3), input_partitions=3
             │   AggregateExec: mode=Partial, gby=[UserID@0 as alias1], aggr=[]
             │     DistributedLeafExec:
             │       t0: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench/plans_range0-3/hits/0.parquet:<int>..<int>], [/testdata/clickbench/plans_range0-3/hits/1.parquet:<int>..<int>], [/testdata/clickbench/plans_range0-3/hits/2.parquet:<int>..<int>]]}, projection=[UserID], file_type=parquet
@@ -133,8 +133,8 @@ mod tests {
           │   AggregateExec: mode=FinalPartitioned, gby=[alias1@0 as alias1], aggr=[]
           │     [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── tasks=4, partitions=9
-            │ RepartitionExec: partitioning=Hash([alias1@0], 9), input_partitions=3
+            ┌───── Stage 1 ── tasks=4, partitions=3
+            │ RepartitionExec: partitioning=Hash([alias1@0, 5871781006564002453], 3), input_partitions=3
             │   AggregateExec: mode=Partial, gby=[SearchPhrase@0 as alias1], aggr=[]
             │     DistributedLeafExec:
             │       t0: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench/plans_range0-3/hits/0.parquet:<int>..<int>], [/testdata/clickbench/plans_range0-3/hits/1.parquet:<int>..<int>], [/testdata/clickbench/plans_range0-3/hits/2.parquet:<int>..<int>]]}, projection=[SearchPhrase], file_type=parquet
@@ -202,8 +202,8 @@ mod tests {
             │     AggregateExec: mode=FinalPartitioned, gby=[RegionID@0 as RegionID, alias1@1 as alias1], aggr=[]
             │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
             └──────────────────────────────────────────────────
-              ┌───── Stage 1 ── tasks=4, partitions=9
-              │ RepartitionExec: partitioning=Hash([RegionID@0, alias1@1], 9), input_partitions=3
+              ┌───── Stage 1 ── tasks=4, partitions=3
+              │ RepartitionExec: partitioning=Hash([RegionID@0, alias1@1, 5871781006564002453], 3), input_partitions=3
               │   AggregateExec: mode=Partial, gby=[RegionID@0 as RegionID, UserID@1 as alias1], aggr=[]
               │     DistributedLeafExec:
               │       t0: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench/plans_range0-3/hits/0.parquet:<int>..<int>], [/testdata/clickbench/plans_range0-3/hits/1.parquet:<int>..<int>], [/testdata/clickbench/plans_range0-3/hits/2.parquet:<int>..<int>]]}, projection=[RegionID, UserID], file_type=parquet
@@ -229,8 +229,8 @@ mod tests {
           │     AggregateExec: mode=FinalPartitioned, gby=[RegionID@0 as RegionID], aggr=[sum(hits.AdvEngineID), count(Int64(1)), avg(hits.ResolutionWidth), count(DISTINCT hits.UserID)]
           │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── tasks=4, partitions=9
-            │ RepartitionExec: partitioning=Hash([RegionID@0], 9), input_partitions=3
+            ┌───── Stage 1 ── tasks=4, partitions=3
+            │ RepartitionExec: partitioning=Hash([RegionID@0, 5871781006564002453], 3), input_partitions=3
             │   AggregateExec: mode=Partial, gby=[RegionID@0 as RegionID], aggr=[sum(hits.AdvEngineID), count(Int64(1)), avg(hits.ResolutionWidth), count(DISTINCT hits.UserID)]
             │     DistributedLeafExec:
             │       t0: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench/plans_range0-3/hits/0.parquet:<int>..<int>], [/testdata/clickbench/plans_range0-3/hits/1.parquet:<int>..<int>], [/testdata/clickbench/plans_range0-3/hits/2.parquet:<int>..<int>]]}, projection=[RegionID, UserID, ResolutionWidth, AdvEngineID], file_type=parquet
@@ -405,8 +405,8 @@ mod tests {
           │     AggregateExec: mode=FinalPartitioned, gby=[UserID@0 as UserID], aggr=[count(Int64(1))]
           │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── tasks=4, partitions=9
-            │ RepartitionExec: partitioning=Hash([UserID@0], 9), input_partitions=3
+            ┌───── Stage 1 ── tasks=4, partitions=3
+            │ RepartitionExec: partitioning=Hash([UserID@0, 5871781006564002453], 3), input_partitions=3
             │   AggregateExec: mode=Partial, gby=[UserID@0 as UserID], aggr=[count(Int64(1))]
             │     DistributedLeafExec:
             │       t0: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench/plans_range0-3/hits/0.parquet:<int>..<int>], [/testdata/clickbench/plans_range0-3/hits/1.parquet:<int>..<int>], [/testdata/clickbench/plans_range0-3/hits/2.parquet:<int>..<int>]]}, projection=[UserID], file_type=parquet
@@ -432,8 +432,8 @@ mod tests {
           │     AggregateExec: mode=FinalPartitioned, gby=[UserID@0 as UserID, SearchPhrase@1 as SearchPhrase], aggr=[count(Int64(1))]
           │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── tasks=4, partitions=9
-            │ RepartitionExec: partitioning=Hash([UserID@0, SearchPhrase@1], 9), input_partitions=3
+            ┌───── Stage 1 ── tasks=4, partitions=3
+            │ RepartitionExec: partitioning=Hash([UserID@0, SearchPhrase@1, 5871781006564002453], 3), input_partitions=3
             │   AggregateExec: mode=Partial, gby=[UserID@0 as UserID, SearchPhrase@1 as SearchPhrase], aggr=[count(Int64(1))]
             │     DistributedLeafExec:
             │       t0: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench/plans_range0-3/hits/0.parquet:<int>..<int>], [/testdata/clickbench/plans_range0-3/hits/1.parquet:<int>..<int>], [/testdata/clickbench/plans_range0-3/hits/2.parquet:<int>..<int>]]}, projection=[UserID, SearchPhrase], file_type=parquet
@@ -459,8 +459,8 @@ mod tests {
           │   AggregateExec: mode=FinalPartitioned, gby=[UserID@0 as UserID, SearchPhrase@1 as SearchPhrase], aggr=[count(Int64(1))]
           │     [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── tasks=4, partitions=9
-            │ RepartitionExec: partitioning=Hash([UserID@0, SearchPhrase@1], 9), input_partitions=3
+            ┌───── Stage 1 ── tasks=4, partitions=3
+            │ RepartitionExec: partitioning=Hash([UserID@0, SearchPhrase@1, 5871781006564002453], 3), input_partitions=3
             │   AggregateExec: mode=Partial, gby=[UserID@0 as UserID, SearchPhrase@1 as SearchPhrase], aggr=[count(Int64(1))]
             │     DistributedLeafExec:
             │       t0: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench/plans_range0-3/hits/0.parquet:<int>..<int>], [/testdata/clickbench/plans_range0-3/hits/1.parquet:<int>..<int>], [/testdata/clickbench/plans_range0-3/hits/2.parquet:<int>..<int>]]}, projection=[UserID, SearchPhrase], file_type=parquet
@@ -486,8 +486,8 @@ mod tests {
           │     AggregateExec: mode=FinalPartitioned, gby=[UserID@0 as UserID, date_part(Utf8("MINUTE"),to_timestamp_seconds(hits.EventTime))@1 as date_part(Utf8("MINUTE"),to_timestamp_seconds(hits.EventTime)), SearchPhrase@2 as SearchPhrase], aggr=[count(Int64(1))]
           │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── tasks=4, partitions=9
-            │ RepartitionExec: partitioning=Hash([UserID@0, date_part(Utf8("MINUTE"),to_timestamp_seconds(hits.EventTime))@1, SearchPhrase@2], 9), input_partitions=3
+            ┌───── Stage 1 ── tasks=4, partitions=3
+            │ RepartitionExec: partitioning=Hash([UserID@0, date_part(Utf8("MINUTE"),to_timestamp_seconds(hits.EventTime))@1, SearchPhrase@2, 5871781006564002453], 3), input_partitions=3
             │   AggregateExec: mode=Partial, gby=[UserID@1 as UserID, date_part(MINUTE, to_timestamp_seconds(EventTime@0)) as date_part(Utf8("MINUTE"),to_timestamp_seconds(hits.EventTime)), SearchPhrase@2 as SearchPhrase], aggr=[count(Int64(1))]
             │     DistributedLeafExec:
             │       t0: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench/plans_range0-3/hits/0.parquet:<int>..<int>], [/testdata/clickbench/plans_range0-3/hits/1.parquet:<int>..<int>], [/testdata/clickbench/plans_range0-3/hits/2.parquet:<int>..<int>]]}, projection=[EventTime, UserID, SearchPhrase], file_type=parquet
@@ -797,8 +797,8 @@ mod tests {
           │     AggregateExec: mode=FinalPartitioned, gby=[WatchID@0 as WatchID, ClientIP@1 as ClientIP], aggr=[count(Int64(1)), sum(hits.IsRefresh), avg(hits.ResolutionWidth)]
           │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── tasks=4, partitions=9
-            │ RepartitionExec: partitioning=Hash([WatchID@0, ClientIP@1], 9), input_partitions=3
+            ┌───── Stage 1 ── tasks=4, partitions=3
+            │ RepartitionExec: partitioning=Hash([WatchID@0, ClientIP@1, 5871781006564002453], 3), input_partitions=3
             │   AggregateExec: mode=Partial, gby=[WatchID@0 as WatchID, ClientIP@1 as ClientIP], aggr=[count(Int64(1)), sum(hits.IsRefresh), avg(hits.ResolutionWidth)]
             │     DistributedLeafExec:
             │       t0: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench/plans_range0-3/hits/0.parquet:<int>..<int>], [/testdata/clickbench/plans_range0-3/hits/1.parquet:<int>..<int>], [/testdata/clickbench/plans_range0-3/hits/2.parquet:<int>..<int>]]}, projection=[WatchID, ClientIP, IsRefresh, ResolutionWidth], file_type=parquet
@@ -824,8 +824,8 @@ mod tests {
           │     AggregateExec: mode=FinalPartitioned, gby=[URL@0 as URL], aggr=[count(Int64(1))]
           │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── tasks=4, partitions=9
-            │ RepartitionExec: partitioning=Hash([URL@0], 9), input_partitions=3
+            ┌───── Stage 1 ── tasks=4, partitions=3
+            │ RepartitionExec: partitioning=Hash([URL@0, 5871781006564002453], 3), input_partitions=3
             │   AggregateExec: mode=Partial, gby=[URL@0 as URL], aggr=[count(Int64(1))]
             │     DistributedLeafExec:
             │       t0: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench/plans_range0-3/hits/0.parquet:<int>..<int>], [/testdata/clickbench/plans_range0-3/hits/1.parquet:<int>..<int>], [/testdata/clickbench/plans_range0-3/hits/2.parquet:<int>..<int>]]}, projection=[URL], file_type=parquet
@@ -851,8 +851,8 @@ mod tests {
           │     AggregateExec: mode=FinalPartitioned, gby=[URL@0 as URL], aggr=[count(Int64(1))]
           │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── tasks=4, partitions=9
-            │ RepartitionExec: partitioning=Hash([URL@0], 9), input_partitions=3
+            ┌───── Stage 1 ── tasks=4, partitions=3
+            │ RepartitionExec: partitioning=Hash([URL@0, 5871781006564002453], 3), input_partitions=3
             │   AggregateExec: mode=Partial, gby=[URL@0 as URL], aggr=[count(Int64(1))]
             │     DistributedLeafExec:
             │       t0: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench/plans_range0-3/hits/0.parquet:<int>..<int>], [/testdata/clickbench/plans_range0-3/hits/1.parquet:<int>..<int>], [/testdata/clickbench/plans_range0-3/hits/2.parquet:<int>..<int>]]}, projection=[URL], file_type=parquet
@@ -879,8 +879,8 @@ mod tests {
           │       AggregateExec: mode=FinalPartitioned, gby=[ClientIP@0 as ClientIP], aggr=[count(Int64(1))]
           │         [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── tasks=4, partitions=9
-            │ RepartitionExec: partitioning=Hash([ClientIP@0], 9), input_partitions=3
+            ┌───── Stage 1 ── tasks=4, partitions=3
+            │ RepartitionExec: partitioning=Hash([ClientIP@0, 5871781006564002453], 3), input_partitions=3
             │   AggregateExec: mode=Partial, gby=[ClientIP@0 as ClientIP], aggr=[count(Int64(1))]
             │     DistributedLeafExec:
             │       t0: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench/plans_range0-3/hits/0.parquet:<int>..<int>], [/testdata/clickbench/plans_range0-3/hits/1.parquet:<int>..<int>], [/testdata/clickbench/plans_range0-3/hits/2.parquet:<int>..<int>]]}, projection=[ClientIP], file_type=parquet
