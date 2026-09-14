@@ -34,8 +34,8 @@ impl Worker {
             .map_err(DataFusionError::Shared)?;
         task_data.task_data_metrics.mark_execution_started_once();
 
-        let plan = task_data.plan(request.producer_head)?;
-        let task_ctx = task_data.task_ctx;
+        let plan = task_data.plan(request.producer_head.clone())?;
+        let task_ctx = Arc::clone(&task_data.task_ctx);
         let partition_count = plan.properties().partitioning.partition_count();
         let plan_name = plan.name();
 
@@ -50,8 +50,15 @@ impl Worker {
                 );
             }
 
-            let stream = plan.execute(partition, Arc::clone(&task_ctx))?;
-            let stream_schema = plan.schema();
+            // First-time callers share the cached plan; retries get a fresh one so one-shot
+            // nodes like RepartitionExec can re-execute without panicking.
+            let partition_plan = if task_data.try_claim_partition(partition) {
+                Arc::clone(&plan)
+            } else {
+                task_data.fresh_plan(request.producer_head.clone())?
+            };
+            let stream = partition_plan.execute(partition, Arc::clone(&task_ctx))?;
+            let stream_schema = partition_plan.schema();
 
             streams.push(Box::pin(RecordBatchStreamAdapter::new(stream_schema, stream)) as _);
         }
