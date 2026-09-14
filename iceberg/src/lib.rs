@@ -14,7 +14,6 @@ mod iceberg_ext;
 mod proto;
 mod table_provider;
 mod work_unit_feed;
-mod work_unit_wire;
 
 mod codec;
 #[doc(hidden)]
