@@ -6,6 +6,7 @@ use crate::events::{
     file_scan_config_desired_task_count, file_scan_config_scale_up_leaf_node,
 };
 use datafusion::execution::SessionStateBuilder;
+use datafusion::prelude::SessionConfig;
 use std::sync::Arc;
 
 /// Extension trait for [SessionStateBuilder].
@@ -14,40 +15,42 @@ pub trait SessionStateBuilderExt {
     /// normal planning passes are performed.
     ///
     /// It will wrap the existing query planner if one, so while setting up DataFusion's
-    /// [SessionStateBuilder], it's important to inject the custom user query planner implementation
-    /// with [SessionStateBuilderExt::with_distributed_planner] strictly *before* calling
-    /// [SessionStateBuilder::with_query_planner].
+    /// [SessionStateBuilder], install the custom user query planner with
+    /// [SessionStateBuilder::with_query_planner] strictly *before* calling
+    /// [SessionStateBuilderExt::with_distributed_planner].
     fn with_distributed_planner(self) -> Self;
 }
 
 impl SessionStateBuilderExt for SessionStateBuilder {
     fn with_distributed_planner(mut self) -> Self {
         let cfg = self.config().get_or_insert_default();
-        DistributedConfig::ensure_in_config(cfg);
-        cfg.options_mut()
-            .optimizer
-            .enable_physical_uncorrelated_scalar_subquery = false;
-
-        // Add default event handlers for FileScanConfig nodes.
-        DesiredTaskCountHandlers::push_builtin(cfg, Arc::new(file_scan_config_desired_task_count));
-        ScaleUpLeafNodeHandlers::push_builtin(cfg, Arc::new(file_scan_config_scale_up_leaf_node));
-
-        // Add default routing event handlers:
-        RouteTaskHandlers::extend_builtin(
-            cfg,
-            vec![
-                // 1. If there's a single task to route, place it in the coordinator if it can also act as
-                //    a worker.
-                Arc::new(SingleTaskCoordinatorRouteTaskHandler),
-                // 2. If there's a single task to route, and it cannot be placed in the coordinator,
-                //    co-locate it in one of the workers from the stage below to avoid network transfers.
-                Arc::new(SingleTaskChildUrlRouteTaskHandler),
-                // 3. If everything above fails, just place randomly.
-                Arc::new(RandomRouteTaskHandler),
-            ],
-        );
+        inject_distributed_extensions(cfg);
 
         let prev = std::mem::take(self.query_planner());
-        self.with_query_planner(Arc::new(DistributedQueryPlanner { prev }))
+        self.with_query_planner(Arc::new(DistributedQueryPlanner::new(prev)))
     }
+}
+
+/// Adds the configuration and built-in event handlers required by distributed planning.
+///
+/// This is the configuration half of [`SessionStateBuilderExt::with_distributed_planner`]. It is
+/// exposed separately for integrations that provide their own [`QueryPlanner`] installation path,
+/// such as an FFI binding.
+pub fn inject_distributed_extensions(cfg: &mut SessionConfig) {
+    DistributedConfig::ensure_in_config(cfg);
+    cfg.options_mut()
+        .optimizer
+        .enable_physical_uncorrelated_scalar_subquery = false;
+
+    DesiredTaskCountHandlers::push_builtin(cfg, Arc::new(file_scan_config_desired_task_count));
+    ScaleUpLeafNodeHandlers::push_builtin(cfg, Arc::new(file_scan_config_scale_up_leaf_node));
+
+    RouteTaskHandlers::extend_builtin(
+        cfg,
+        vec![
+            Arc::new(SingleTaskCoordinatorRouteTaskHandler),
+            Arc::new(SingleTaskChildUrlRouteTaskHandler),
+            Arc::new(RandomRouteTaskHandler),
+        ],
+    );
 }
