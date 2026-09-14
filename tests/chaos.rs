@@ -48,6 +48,10 @@ mod tests {
         )
     }
 
+    fn adaptive() -> bool {
+        env::var("ADAPTIVE").is_ok_and(|v| v == "true")
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn chaos() -> Result<()> {
         let seed = seed();
@@ -58,7 +62,7 @@ mod tests {
             max_in_flight: MAX_IN_FLIGHT,
             seed,
         };
-        let (ctx, _guard, workers) = chaos_localhost_cluster(cfg).await;
+        let (ctx, _guard, workers) = chaos_localhost_cluster(cfg).await?;
         let data_dir = ensure_tpch_data().await;
         register_tables(&ctx, &data_dir).await?;
 
@@ -243,7 +247,7 @@ mod tests {
 
     async fn chaos_localhost_cluster(
         cfg: ChaosClusterConfig,
-    ) -> (SessionContext, JoinSet<()>, Vec<Worker>) {
+    ) -> Result<(SessionContext, JoinSet<()>, Vec<Worker>)> {
         let mut layer_rng = StdRng::seed_from_u64(cfg.seed);
         let listeners = futures::future::try_join_all(
             (0..cfg.num_workers)
@@ -287,15 +291,15 @@ mod tests {
         let state = SessionStateBuilder::new()
             .with_default_features()
             .with_distributed_planner()
+            .with_distributed_dynamic_task_count(adaptive())?
             .with_distributed_local_worker_context(
                 workers[0].to_local_worker_context(first_worker_url),
             )
             .with_distributed_worker_resolver(worker_resolver)
-            .with_distributed_file_scan_config_bytes_per_partition(1)
-            .unwrap()
+            .with_distributed_file_scan_config_bytes_per_partition(1)?
             .build();
 
-        (SessionContext::from(state), join_set, workers)
+        Ok((SessionContext::from(state), join_set, workers))
     }
 
     async fn assert_no_tasks_running_eventually(workers: &[Worker]) {

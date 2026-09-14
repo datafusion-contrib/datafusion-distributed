@@ -463,6 +463,9 @@ pub(super) fn encode_producer_head(
 fn encode_coordinator_to_worker_msg(msg: CoordinatorToWorkerMsg) -> pb::CoordinatorToWorkerMsg {
     pb::CoordinatorToWorkerMsg {
         inner: Some(match msg {
+            CoordinatorToWorkerMsg::KickOffSampling => {
+                pb::coordinator_to_worker_msg::Inner::KickOffSampling(true)
+            }
             CoordinatorToWorkerMsg::WorkUnitBatch(batch) => {
                 pb::coordinator_to_worker_msg::Inner::WorkUnitBatch(encode_work_unit_batch(batch))
             }

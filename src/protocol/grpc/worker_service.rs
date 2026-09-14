@@ -215,6 +215,9 @@ fn decode_coordinator_to_worker_msg(
             pb::coordinator_to_worker_msg::Inner::WorkUnitEos(_) => {
                 CoordinatorToWorkerMsg::WorkUnitEos
             }
+            pb::coordinator_to_worker_msg::Inner::KickOffSampling(_) => {
+                CoordinatorToWorkerMsg::KickOffSampling
+            }
         },
     )
 }

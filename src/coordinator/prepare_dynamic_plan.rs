@@ -9,7 +9,8 @@ use crate::events::TaskCountAnnotation::{Desired, Maximum};
 use crate::execution_plans::SamplerExec;
 use crate::stage::{LocalStage, RemoteStage};
 use crate::{
-    BytesCounterMetric, LoadInfo, MaxGaugeMetric, NetworkBoundaryExt, NetworkCoalesceExec, Stage,
+    BytesCounterMetric, CoordinatorToWorkerMsg, LoadInfo, MaxGaugeMetric, NetworkBoundaryExt,
+    NetworkCoalesceExec, Stage,
 };
 use dashmap::DashMap;
 use datafusion::common::stats::Precision;
@@ -101,6 +102,7 @@ pub(super) async fn prepare_dynamic_plan(
                         let rx = stage_coordinator.worker_to_coordinator_task(task_i, worker_rx);
                         UnboundedReceiverStream::new(rx)
                     });
+                    let _ = worker_tx.send(CoordinatorToWorkerMsg::KickOffSampling);
                     stage_coordinator.coordinator_to_worker_task(task_i, worker_tx)?;
                 }
 

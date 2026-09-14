@@ -129,10 +129,16 @@ jobs:
 
   chaos-test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        planning_mode: [ "adaptive", "static" ]
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
       - run: cargo test --features tpch,chaos-tests --test chaos
+        env:
+          ADAPTIVE: ${{ matrix.planning_mode == 'adaptive' }}
 
   format-check:
     runs-on: ubuntu-latest

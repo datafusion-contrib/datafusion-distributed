@@ -47,6 +47,8 @@ pub trait WorkerChannel: Send + Sync {
 }
 
 pub enum CoordinatorToWorkerMsg {
+    /// Gives the worker to go ahead for starting to sample during adaptive query execution.
+    KickOffSampling,
     /// A batch of messages from a work unit feed belonging to different partitions from one node from the plan set in
     /// set_plan_request. A work unit feed is a per-partition stream of information that tells the node what should
     /// be executed within a partition, for example, a stream of file addresses that should be read.
