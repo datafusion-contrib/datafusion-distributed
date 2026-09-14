@@ -210,6 +210,7 @@ pub async fn register_plan_on_worker(
     let (dynamic_filters_tx, _dynamic_filters_rx) = tokio::sync::oneshot::channel();
     swmr_task_data
         .write(Ok(TaskData {
+            _admission_permit: Default::default(),
             task_ctx,
             base_plan: plan,
             final_plan: Default::default(),

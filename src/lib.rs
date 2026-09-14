@@ -57,7 +57,7 @@ pub use worker_resolver::{WorkerResolver, get_distributed_worker_resolver};
 
 pub use protocol::{
     ChannelResolver, CoordinatorToWorkerMsg, ExecuteTaskRequest, GetWorkerInfoRequest,
-    GetWorkerInfoResponse, LoadInfo, SetPlanRequest, TaskCompletedDynamicFilters,
+    GetWorkerInfoResponse, LoadInfo, OpenTaskRequest, SetPlanRequest, TaskCompletedDynamicFilters,
     TaskDynamicFilter, TaskKey, TaskMetrics, WorkUnitBatch, WorkUnitFeedDeclaration, WorkUnitMsg,
     WorkerChannel, WorkerToCoordinatorMsg, get_distributed_channel_resolver,
 };
@@ -69,7 +69,9 @@ pub use work_unit_feed::{
 };
 pub use worker::{
     CoordinatorChannelResult, DefaultSessionBuilder, MappedWorkerSessionBuilder,
-    MappedWorkerSessionBuilderExt, TaskData, Worker, WorkerQueryContext, WorkerSessionBuilder,
+    MappedWorkerSessionBuilderExt, RetryTarget, TaskData, Worker, WorkerAdmissionController,
+    WorkerAdmissionPermit, WorkerAdmissionRejection, WorkerAdmissionRequest, WorkerQueryContext,
+    WorkerSessionBuilder,
 };
 
 #[cfg(any(feature = "integration", test))]

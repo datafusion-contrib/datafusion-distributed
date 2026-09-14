@@ -10,9 +10,9 @@ use crate::{
     BytesMetricExt, CoordinatorToWorkerMsg, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL,
     DistributedConfig, ExecuteTaskRequest, FirstLatencyMetric, GetWorkerInfoRequest,
     GetWorkerInfoResponse, LatencyMetricExt, LoadInfo, MaxLatencyMetric, MaybeEncoded,
-    MinLatencyMetric, P50LatencyMetric, P95LatencyMetric, ProducerHead, SetPlanRequest,
-    TaskCompletedDynamicFilters, TaskDynamicFilter, TaskKey, TaskMetrics, WorkUnitBatch,
-    WorkUnitFeedDeclaration, WorkUnitMsg, WorkerChannel, WorkerToCoordinatorMsg,
+    MinLatencyMetric, OpenTaskRequest, P50LatencyMetric, P95LatencyMetric, ProducerHead,
+    SetPlanRequest, TaskCompletedDynamicFilters, TaskDynamicFilter, TaskKey, TaskMetrics,
+    WorkUnitBatch, WorkUnitFeedDeclaration, WorkUnitMsg, WorkerChannel, WorkerToCoordinatorMsg,
 };
 use arrow_flight::FlightData;
 use arrow_flight::decode::FlightRecordBatchStream;
@@ -42,27 +42,31 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_util::sync::CancellationToken;
 use tonic::metadata::MetadataMap;
-use tonic::{Code, Request, Status};
+use tonic::{Request, Status};
 
 #[async_trait]
 impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSyncChannel> {
     async fn coordinator_channel(
         &mut self,
         headers: HeaderMap,
+        open_task_request: OpenTaskRequest,
         set_plan_request: SetPlanRequest,
         c2w_stream: BoxStream<'static, CoordinatorToWorkerMsg>,
         metrics: ExecutionPlanMetricsSet,
         ctx: &Arc<TaskContext>,
     ) -> Result<BoxStream<'static, Result<WorkerToCoordinatorMsg>>> {
+        let open_task_request = encode_open_task_request(open_task_request);
         let set_plan_request = encode_set_plan_request(set_plan_request, ctx)?;
         let plan_bytes_sent = set_plan_request.plan_proto.len();
+        let (commit_tx, commit_rx) = tokio::sync::oneshot::channel();
         let input_stream = futures::stream::once(async move {
             pb::CoordinatorToWorkerMsg {
-                inner: Some(pb::coordinator_to_worker_msg::Inner::SetPlanRequest(
-                    set_plan_request,
+                inner: Some(pb::coordinator_to_worker_msg::Inner::OpenTaskRequest(
+                    open_task_request,
                 )),
             }
         })
+        .chain(gated_set_plan_stream(set_plan_request, commit_rx))
         .chain(c2w_stream.map(encode_coordinator_to_worker_msg));
 
         let output_stream = self
@@ -77,38 +81,22 @@ impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSy
                 if let Some(err) = tonic_status_to_datafusion_error(&err) {
                     return err;
                 }
-                let code = err.code();
                 let err = DataFusionError::External(Box::new(err));
-                match code {
-                    // https://grpc.io/docs/guides/status-codes/#deadline-exceeded
-                    // The worker may be slow or wedged, so retry a different URL.
-                    Code::DeadlineExceeded => RetryOutcome::OtherUrl.tag(err),
-                    // https://grpc.io/docs/guides/status-codes/#resource-exhausted
-                    // Admission pressure is local to this worker, so retry a different URL.
-                    Code::ResourceExhausted => RetryOutcome::OtherUrl.tag(err),
-                    // https://grpc.io/docs/guides/status-codes/#aborted
-                    // Routing retries this task setup at the higher level on the same URL.
-                    Code::Aborted => RetryOutcome::SameUrl.tag(err),
-                    // https://grpc.io/docs/guides/status-codes/#unavailable
-                    // If the worker died abruptly (e.g. OOM or SIGKILL), this is what the client
-                    // sees, so a different worker must be attempted.
-                    Code::Unavailable => RetryOutcome::OtherUrl.tag(err),
-                    Code::Ok => err,
-                    Code::Cancelled => err,
-                    Code::Unknown => err,
-                    Code::InvalidArgument => err,
-                    Code::NotFound => err,
-                    Code::AlreadyExists => err,
-                    Code::PermissionDenied => err,
-                    Code::FailedPrecondition => err,
-                    Code::OutOfRange => err,
-                    Code::Unimplemented => err,
-                    Code::Internal => err,
-                    Code::DataLoss => err,
-                    Code::Unauthenticated => err,
-                }
+                // No SetPlanRequest has crossed the wire yet, so every untyped transport failure
+                // is safe to retry elsewhere. Worker-authored errors use the structured envelope
+                // above and carry their own retry decision.
+                RetryOutcome::OtherUrl.tag(err)
             })?
-            .into_inner()
+            .into_inner();
+
+        commit_tx.send(()).map_err(|_| {
+            RetryOutcome::OtherUrl.tag(DataFusionError::Internal(
+                "Worker coordinator channel closed before SetPlanRequest could be committed"
+                    .to_string(),
+            ))
+        })?;
+
+        let output_stream = output_stream
             .map_err(map_status_to_datafusion_error)
             .map(|msg| decode_worker_to_coordinator_msg(msg?))
             .boxed();
@@ -473,6 +461,31 @@ fn encode_coordinator_to_worker_msg(msg: CoordinatorToWorkerMsg) -> pb::Coordina
     }
 }
 
+fn gated_set_plan_stream(
+    set_plan_request: pb::SetPlanRequest,
+    commit_rx: tokio::sync::oneshot::Receiver<()>,
+) -> impl Stream<Item = pb::CoordinatorToWorkerMsg> {
+    futures::stream::once(async move {
+        // The server returns response headers immediately after admission. Do not release the
+        // commit message before the client has observed those headers. If the response is lost,
+        // the sender is dropped and this stream ends without yielding SetPlan.
+        commit_rx.await.ok().map(|()| pb::CoordinatorToWorkerMsg {
+            inner: Some(pb::coordinator_to_worker_msg::Inner::SetPlanRequest(
+                set_plan_request,
+            )),
+        })
+    })
+    .filter_map(std::future::ready)
+}
+
+fn encode_open_task_request(request: OpenTaskRequest) -> pb::OpenTaskRequest {
+    pb::OpenTaskRequest {
+        task_key: Some(encode_task_key(request.task_key)),
+        attempt_id: serialize_uuid(&request.attempt_id),
+        task_count: request.task_count as u64,
+    }
+}
+
 fn encode_set_plan_request(
     request: SetPlanRequest,
     ctx: &Arc<TaskContext>,
@@ -480,6 +493,7 @@ fn encode_set_plan_request(
     let plan_proto = request.plan.encode(ctx)?;
     Ok(pb::SetPlanRequest {
         task_key: Some(encode_task_key(request.task_key)),
+        attempt_id: serialize_uuid(&request.attempt_id),
         task_count: request.task_count as u64,
         plan_proto,
         work_unit_feed_declarations: request
@@ -766,6 +780,28 @@ mod tests {
     use super::*;
     use futures::StreamExt;
     use futures::stream::unfold;
+
+    #[tokio::test]
+    async fn set_plan_gate_only_emits_after_commit() {
+        let (commit_tx, commit_rx) = tokio::sync::oneshot::channel();
+        let mut stream = Box::pin(gated_set_plan_stream(
+            pb::SetPlanRequest::default(),
+            commit_rx,
+        ));
+        commit_tx.send(()).unwrap();
+        assert!(matches!(
+            stream.next().await.unwrap().inner,
+            Some(pb::coordinator_to_worker_msg::Inner::SetPlanRequest(_))
+        ));
+
+        let (commit_tx, commit_rx) = tokio::sync::oneshot::channel();
+        let mut stream = Box::pin(gated_set_plan_stream(
+            pb::SetPlanRequest::default(),
+            commit_rx,
+        ));
+        drop(commit_tx);
+        assert!(stream.next().await.is_none());
+    }
 
     #[tokio::test]
     async fn elapsed_compute_future() {

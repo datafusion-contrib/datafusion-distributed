@@ -1,5 +1,8 @@
 use crate::protocol::LocalWorkerContext;
-use crate::worker::{SingleWriteMultiRead, WorkerSessionBuilder};
+use crate::worker::{
+    AcceptAllAdmissionController, SingleWriteMultiRead, WorkerAdmissionController,
+    WorkerSessionBuilder,
+};
 use crate::{DefaultSessionBuilder, TaskData, TaskKey};
 use datafusion::common::DataFusionError;
 use datafusion::execution::runtime_env::RuntimeEnv;
@@ -10,6 +13,7 @@ use std::time::Duration;
 use url::Url;
 
 const TASK_CACHE_TTI: Duration = Duration::from_mins(10);
+const TASK_RESERVATION_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(crate) type ResultTaskData = Result<TaskData, Arc<DataFusionError>>;
 pub(crate) type TaskDataEntries = Cache<TaskKey, Arc<SingleWriteMultiRead<ResultTaskData>>>;
@@ -22,6 +26,8 @@ pub struct Worker {
     /// while allowing concurrent access to task results across multiple partition requests.
     pub(crate) task_data_entries: Arc<TaskDataEntries>,
     pub(super) session_builder: Arc<dyn WorkerSessionBuilder + Send + Sync>,
+    pub(super) admission_controller: Arc<dyn WorkerAdmissionController>,
+    pub(super) task_reservation_timeout: Duration,
     pub(crate) max_message_size: Option<usize>,
     pub(super) version: Cow<'static, str>,
 }
@@ -33,6 +39,8 @@ impl Default for Worker {
             runtime: Arc::new(RuntimeEnv::default()),
             task_data_entries: Arc::new(cache),
             session_builder: Arc::new(DefaultSessionBuilder),
+            admission_controller: Arc::new(AcceptAllAdmissionController),
+            task_reservation_timeout: TASK_RESERVATION_TIMEOUT,
             max_message_size: Some(usize::MAX),
             version: Cow::Borrowed(""),
         }
@@ -56,6 +64,28 @@ impl Worker {
     pub fn with_runtime_env(mut self, runtime_env: Arc<RuntimeEnv>) -> Self {
         self.runtime = runtime_env;
         self
+    }
+
+    /// Sets the controller that decides whether this worker can reserve a task.
+    pub fn with_admission_controller(
+        mut self,
+        admission_controller: impl WorkerAdmissionController + 'static,
+    ) -> Self {
+        self.admission_controller = Arc::new(admission_controller);
+        self
+    }
+
+    /// Sets how long an accepted reservation waits for its matching `SetPlanRequest`.
+    ///
+    /// Expired or disconnected reservations are dropped without constructing task state.
+    pub fn with_task_reservation_timeout(mut self, timeout: Duration) -> Self {
+        self.task_reservation_timeout = timeout;
+        self
+    }
+
+    #[cfg(feature = "grpc")]
+    pub(crate) fn task_reservation_timeout(&self) -> Duration {
+        self.task_reservation_timeout
     }
 
     /// Set the maximum message size for FlightData chunks.

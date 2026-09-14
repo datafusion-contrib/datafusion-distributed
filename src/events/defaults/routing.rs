@@ -146,10 +146,19 @@ impl RouteTaskHandler for SingleTaskCoordinatorRouteTaskHandler {
             .task_ctx
             .session_config()
             .get_extension::<LocalWorkerContext>()?;
+        let urls = ok_or_some_err!(ev.worker_resolver.get_urls());
+        let d_cfg = ok_or_some_err!(DistributedConfig::from_task_context(ev.task_ctx));
 
-        // This is co-locating the task in the coordinator, so there's no retries to be handled
-        // here, as no remote connection will be established at any point.
-        Some(ev.dialer.dial(local_worker_context.self_url.clone()).await)
+        Some(
+            dial_with_failover(
+                ev.dialer,
+                local_worker_context.self_url.clone(),
+                urls,
+                ev.metrics,
+                d_cfg,
+            )
+            .await,
+        )
     }
 }
 

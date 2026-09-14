@@ -1,6 +1,8 @@
 use crate::common::OnceLockResult;
 use crate::common::now_ns;
-use crate::{MaxLatencyMetric, ProducerHead, TaskCompletedDynamicFilters, TaskMetrics};
+use crate::{
+    MaxLatencyMetric, ProducerHead, TaskCompletedDynamicFilters, TaskMetrics, WorkerAdmissionPermit,
+};
 use datafusion::common::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
@@ -14,6 +16,8 @@ use tokio::sync::oneshot;
 /// TaskData stores state for a single task being executed by this Endpoint. It may be shared
 /// by concurrent requests for the same task which execute separate partitions.
 pub struct TaskData {
+    /// Keeps resources reserved by worker admission alive for the lifetime of this task.
+    pub(crate) _admission_permit: WorkerAdmissionPermit,
     /// Task context suitable for execute different partitions from the same task.
     pub(crate) task_ctx: Arc<TaskContext>,
     pub(crate) base_plan: Arc<dyn ExecutionPlan>,

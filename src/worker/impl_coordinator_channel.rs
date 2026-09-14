@@ -7,8 +7,9 @@ use crate::work_unit_feed::{RemoteWorkUnitFeedRegistry, set_work_unit_received_t
 use crate::worker::task_data::TaskDataMetrics;
 use crate::{
     CoordinatorToWorkerMsg, DistributedConfig, DistributedExt, DistributedTaskContext,
-    MaybeEncoded, SetPlanRequest, TaskCompletedDynamicFilters, TaskData, TaskDynamicFilter,
-    TaskMetrics, Worker, WorkerQueryContext, WorkerToCoordinatorMsg,
+    MaybeEncoded, OpenTaskRequest, SetPlanRequest, TaskCompletedDynamicFilters, TaskData,
+    TaskDynamicFilter, TaskMetrics, Worker, WorkerAdmissionPermit, WorkerQueryContext,
+    WorkerToCoordinatorMsg,
 };
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{DataFusionError, Result, exec_datafusion_err};
@@ -38,6 +39,29 @@ impl Worker {
         headers: HeaderMap,
         request: SetPlanRequest,
         stream: BoxStream<'static, Result<CoordinatorToWorkerMsg>>,
+    ) -> Result<CoordinatorChannelResult> {
+        let reservation = self
+            .admit_task(
+                headers.clone(),
+                OpenTaskRequest {
+                    task_key: request.task_key,
+                    attempt_id: request.attempt_id,
+                    task_count: request.task_count,
+                },
+            )
+            .await
+            .map_err(|rejection| rejection.into_datafusion_error())?;
+        let permit = reservation.commit(&request)?;
+        self.coordinator_channel_with_permit(headers, request, stream, permit)
+            .await
+    }
+
+    pub(crate) async fn coordinator_channel_with_permit(
+        &self,
+        headers: HeaderMap,
+        request: SetPlanRequest,
+        stream: BoxStream<'static, Result<CoordinatorToWorkerMsg>>,
+        admission_permit: WorkerAdmissionPermit,
     ) -> Result<CoordinatorChannelResult> {
         let key = request.task_key;
 
@@ -100,6 +124,7 @@ impl Worker {
 
             // Initialize partition count to the number of partitions in the stage
             Ok::<_, DataFusionError>(TaskData {
+                _admission_permit: admission_permit,
                 base_plan: plan,
                 final_plan: Arc::new(OnceLock::new()),
                 task_ctx,
