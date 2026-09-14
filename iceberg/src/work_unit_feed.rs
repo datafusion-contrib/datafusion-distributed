@@ -55,7 +55,9 @@ impl FileScanTaskWorkUnit {
     fn serialized(&self) -> Cow<'_, SerializedFileScanTask> {
         match &self.payload {
             FileScanTaskPayload::Native(task) => Cow::Owned(SerializedFileScanTask {
-                task: serde_json::to_vec(task)
+                // The upstream serde implementation does not round-trip through
+                // rmp-serde's compact struct representation.
+                task: rmp_serde::to_vec_named(task)
                     .expect("Iceberg table scans produce serializable file scan tasks"),
             }),
             FileScanTaskPayload::Serialized(task) => Cow::Borrowed(task),
@@ -66,7 +68,7 @@ impl FileScanTaskWorkUnit {
         match self.payload {
             FileScanTaskPayload::Native(task) => Ok(*task),
             FileScanTaskPayload::Serialized(task) => {
-                serde_json::from_slice(&task.task).map_err(|error| {
+                rmp_serde::from_slice(&task.task).map_err(|error| {
                     exec_datafusion_err!("failed to deserialize Iceberg file scan task: {error}")
                 })
             }
