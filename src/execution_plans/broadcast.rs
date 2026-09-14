@@ -12,6 +12,7 @@ use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties, internal_err,
 };
 use futures::{Stream, StreamExt};
+use std::collections::VecDeque;
 use std::fmt::Formatter;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -165,7 +166,7 @@ impl ExecutionPlan for BroadcastExec {
         let input = Arc::clone(&self.input);
 
         let queue_or_err = self.queues[real_partition].get_or_init(|| {
-            let queue = BroadcastQueue::new();
+            let queue = BroadcastQueue::new(self.consumer_task_count);
             let consumers = SegQueue::new();
             for _ in 0..self.consumer_task_count {
                 consumers.push(Box::pin(RecordBatchStreamAdapter::new(
@@ -219,26 +220,45 @@ impl ExecutionPlan for BroadcastExec {
     }
 }
 
+#[derive(Debug)]
+struct Entry<T> {
+    value: T,
+    remaining_readers: usize,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct BroadcastState {
-    len: usize,
+    tail_sequence: usize,
     closed: bool,
 }
 
 #[derive(Debug)]
+struct QueueState<T> {
+    entries: VecDeque<Entry<T>>,
+    base_sequence: usize,
+    tail_sequence: usize,
+    active_readers: usize,
+}
+
+#[derive(Debug)]
 struct BroadcastQueue<T: Clone> {
-    entries: Arc<Mutex<Vec<T>>>,
+    state: Arc<Mutex<QueueState<T>>>,
     notify: tokio::sync::watch::Sender<BroadcastState>,
 }
 
 impl<T: Clone> BroadcastQueue<T> {
-    fn new() -> Self {
+    fn new(expected_readers: usize) -> Self {
         let (notify, _rx) = tokio::sync::watch::channel(BroadcastState {
-            len: 0,
+            tail_sequence: 0,
             closed: false,
         });
         Self {
-            entries: Arc::new(Mutex::new(vec![])),
+            state: Arc::new(Mutex::new(QueueState {
+                entries: VecDeque::new(),
+                base_sequence: 0,
+                tail_sequence: 0,
+                active_readers: expected_readers,
+            })),
             notify,
         }
     }
@@ -247,22 +267,42 @@ impl<T: Clone> BroadcastQueue<T> {
         let rx = self.notify.subscribe();
         let state = *rx.borrow();
         BroadcastConsumer {
-            index: 0,
-            entries: Arc::clone(&self.entries),
+            next_sequence: 0,
+            state: Arc::clone(&self.state),
             notify: WatchStream::new(rx),
-            state,
+            notification: state,
+            registered: true,
         }
     }
 
-    fn push(&self, entry: T) {
-        let len = {
-            let mut entries = self.entries.lock().unwrap();
-            entries.push(entry);
-            entries.len()
+    fn push(&self, value: T) {
+        let tail_sequence = {
+            let mut queue_state = self.state.lock().unwrap();
+
+            // Once every consumer has been dropped, no future consumer can execute this
+            // queue, so don't add values that cannot be read.
+            if queue_state.active_readers == 0 {
+                return;
+            }
+
+            let tail_sequence = queue_state.tail_sequence;
+            let remaining_readers = queue_state.active_readers;
+            queue_state.entries.push_back(Entry {
+                value,
+                remaining_readers,
+            });
+            queue_state.tail_sequence += 1;
+            tail_sequence + 1
         };
-        let mut state = *self.notify.borrow();
-        state.len = len;
-        let _ = self.notify.send(state);
+
+        let mut broadcast_state = *self.notify.borrow();
+        broadcast_state.tail_sequence = tail_sequence;
+        let _ = self.notify.send(broadcast_state);
+    }
+
+    #[cfg(test)]
+    fn buffered_len(&self) -> usize {
+        self.state.lock().unwrap().entries.len()
     }
 }
 
@@ -275,11 +315,12 @@ impl<T: Clone> Drop for BroadcastQueue<T> {
 }
 
 /// A consumer stream that reads from the broadcast queue.
-struct BroadcastConsumer<T> {
-    index: usize,
-    entries: Arc<Mutex<Vec<T>>>,
+struct BroadcastConsumer<T: Clone> {
+    next_sequence: usize,
+    state: Arc<Mutex<QueueState<T>>>,
     notify: WatchStream<BroadcastState>,
-    state: BroadcastState,
+    notification: BroadcastState,
+    registered: bool,
 }
 
 impl<T: Clone> Stream for BroadcastConsumer<T> {
@@ -287,27 +328,79 @@ impl<T: Clone> Stream for BroadcastConsumer<T> {
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         loop {
-            if self.index < self.state.len {
-                let entry = self.entries.lock().unwrap().get(self.index).cloned();
-                if let Some(v) = entry {
-                    self.index += 1;
-                    return Poll::Ready(Some(v));
+            let value = {
+                let mut queue_state = self.state.lock().unwrap();
+                if self.next_sequence < queue_state.tail_sequence {
+                    let offset = self
+                        .next_sequence
+                        .checked_sub(queue_state.base_sequence)
+                        .expect("broadcast consumer fell behind evicted entries");
+                    let entry = queue_state
+                        .entries
+                        .get_mut(offset)
+                        .expect("broadcast entry sequence was not retained");
+                    debug_assert!(entry.remaining_readers > 0);
+                    let value = entry.value.clone();
+                    entry.remaining_readers -= 1;
+
+                    while queue_state
+                        .entries
+                        .front()
+                        .is_some_and(|entry| entry.remaining_readers == 0)
+                    {
+                        queue_state.entries.pop_front();
+                        queue_state.base_sequence += 1;
+                    }
+
+                    Some(value)
+                } else {
+                    None
                 }
+            };
+
+            if let Some(value) = value {
+                self.next_sequence += 1;
+                return Poll::Ready(Some(value));
             }
 
-            if self.state.closed {
+            if self.notification.closed {
                 return Poll::Ready(None);
             }
 
             match Pin::new(&mut self.notify).poll_next(cx) {
                 Poll::Ready(Some(state)) => {
-                    self.state = state;
+                    self.notification = state;
                 }
                 Poll::Ready(None) => {
-                    self.state.closed = true;
+                    self.notification.closed = true;
                 }
                 Poll::Pending => return Poll::Pending,
             }
+        }
+    }
+}
+
+impl<T: Clone> Drop for BroadcastConsumer<T> {
+    fn drop(&mut self) {
+        if !self.registered {
+            return;
+        }
+
+        let mut state = self.state.lock().unwrap();
+        debug_assert!(self.next_sequence >= state.base_sequence);
+        let offset = self.next_sequence.saturating_sub(state.base_sequence);
+        for entry in state.entries.iter_mut().skip(offset) {
+            entry.remaining_readers = entry.remaining_readers.saturating_sub(1);
+        }
+        state.active_readers = state.active_readers.saturating_sub(1);
+
+        while state
+            .entries
+            .front()
+            .is_some_and(|entry| entry.remaining_readers == 0)
+        {
+            state.entries.pop_front();
+            state.base_sequence += 1;
         }
     }
 }
@@ -335,6 +428,47 @@ mod tests {
         for (idx, expected_value) in expected.iter().enumerate() {
             assert_eq!(values.value(idx), *expected_value);
         }
+    }
+
+    #[tokio::test]
+    async fn broadcast_queue_evicts_consumed_prefix() {
+        let queue = BroadcastQueue::new(2);
+        let mut consumer0 = queue.new_consumer();
+        let mut consumer1 = queue.new_consumer();
+
+        queue.push(10);
+        queue.push(20);
+        assert_eq!(queue.buffered_len(), 2);
+
+        assert_eq!(consumer0.next().await, Some(10));
+        assert_eq!(queue.buffered_len(), 2);
+        assert_eq!(consumer1.next().await, Some(10));
+        assert_eq!(queue.buffered_len(), 1);
+
+        assert_eq!(consumer0.next().await, Some(20));
+        assert_eq!(queue.buffered_len(), 1);
+        assert_eq!(consumer1.next().await, Some(20));
+        assert_eq!(queue.buffered_len(), 0);
+    }
+
+    #[tokio::test]
+    async fn broadcast_queue_drop_releases_unread_entries() {
+        let queue = BroadcastQueue::new(2);
+        let mut consumer0 = queue.new_consumer();
+        let mut consumer1 = queue.new_consumer();
+
+        queue.push(10);
+        queue.push(20);
+        assert_eq!(consumer0.next().await, Some(10));
+        drop(consumer0);
+
+        // The dropped consumer must no longer pin the unread suffix, including entries produced
+        // after cancellation.
+        queue.push(30);
+        assert_eq!(consumer1.next().await, Some(10));
+        assert_eq!(consumer1.next().await, Some(20));
+        assert_eq!(consumer1.next().await, Some(30));
+        assert_eq!(queue.buffered_len(), 0);
     }
 
     #[tokio::test]
