@@ -1,0 +1,17 @@
+# Local Iceberg benchmarks
+
+This package composes the generic DataFusion Distributed benchmark runner with the Iceberg table
+backend. Keeping it separate prevents the benchmark library used by root integration tests from
+depending on Iceberg.
+
+From the repository root:
+
+```shell
+cargo run -p datafusion-distributed-iceberg-benchmarks --release -- prepare \
+  --input testdata/tpch/sf1
+WORKERS=2 ./iceberg/benchmarks/run.sh --dataset tpch/sf1-iceberg --threads 2 --partitions 2
+```
+
+Preparation writes an immutable sibling dataset named `<input>-iceberg`. The source must be a
+non-empty local Parquet dataset, and the destination must be empty. See the
+[benchmark guide](../../benchmarks/README.md#iceberg-benchmarks) for generation and comparison.

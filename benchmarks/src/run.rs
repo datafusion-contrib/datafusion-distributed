@@ -16,7 +16,9 @@
 // under the License.
 
 use crate::backend::BenchmarkBackend;
+use crate::datasets::{clickbench, tpcds, tpch};
 use crate::results::{BenchResult, BenchmarkRun, QueryIter, dataset_path};
+use crate::stats::stats_estimation_q_error;
 use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::instant::Instant;
@@ -37,8 +39,6 @@ use datafusion_distributed::{
     DistributedExt, DistributedMetricsFormat, NetworkBoundaryExt, SessionStateBuilderExt, Worker,
     display_plan_ascii, rewrite_distributed_plan_with_metrics,
 };
-use datafusion_distributed_benchmarks::datasets::{clickbench, tpcds, tpch};
-use datafusion_distributed_benchmarks::stats::stats_estimation_q_error;
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};

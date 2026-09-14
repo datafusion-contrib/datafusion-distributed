@@ -1,38 +1,19 @@
 //! DataFusion Distributed benchmark runner
-mod backend;
-mod compare;
 mod prepare_clickbench;
 mod prepare_tpcds;
 mod prepare_tpch;
-mod results;
-mod run;
 
-use backend::BenchmarkBackend;
 use datafusion::error::Result;
-use datafusion_distributed_iceberg::benchmarks::PrepareIcebergOpt;
-use structopt::{StructOpt, clap::arg_enum};
-
-arg_enum! {
-    #[derive(Debug)]
-    enum Format { Parquet, Iceberg }
-}
-
-pub(crate) const RESULTS_DIR: &str = ".results";
+use datafusion_distributed_benchmarks::{backend::BenchmarkBackend, compare, results, run};
+use structopt::StructOpt;
 
 #[derive(Debug, StructOpt)]
 #[structopt(about = "benchmark command")]
 enum Options {
-    /// Run benchmarks using the selected table backend.
-    Run {
-        #[structopt(flatten)]
-        options: run::RunOpt,
-        /// Table format of the dataset directory.
-        #[structopt(long, default_value = "parquet", possible_values = &Format::variants(), case_insensitive = true)]
-        format: Format,
-    },
+    Run(run::RunOpt),
     /// Compare two saved benchmark states.
     Compare {
-        /// Two dataset[@branch] states; omitted branches default to the current branch.
+        /// Two `dataset[@branch]` states; omitted branches default to the current branch.
         /// With --dataset, both arguments are branch names instead.
         #[structopt(name = "STATES")]
         states: Vec<String>,
@@ -42,7 +23,6 @@ enum Options {
         dataset: Option<String>,
     },
     PrepareTpch(prepare_tpch::PrepareTpchOpt),
-    PrepareIceberg(PrepareIcebergOpt),
     PrepareTpcds(prepare_tpcds::PrepareTpcdsOpt),
     PrepareClickbench(prepare_clickbench::PrepareClickBenchOpt),
 }
@@ -77,16 +57,9 @@ pub fn main() -> Result<()> {
     env_logger::init();
 
     match Options::from_args() {
-        Options::Run { options, format } => options.run(match format {
-            Format::Parquet => BenchmarkBackend::parquet(),
-            Format::Iceberg => BenchmarkBackend::iceberg(),
-        }),
+        Options::Run(opt) => opt.run(BenchmarkBackend::parquet()),
         Options::Compare { states, dataset } => compare::run(comparison_states(states, dataset)?),
         Options::PrepareTpch(opt) => opt.run(),
-        Options::PrepareIceberg(opt) => {
-            let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(opt.run())
-        }
         Options::PrepareTpcds(opt) => {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(async { opt.run().await })

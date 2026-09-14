@@ -3,30 +3,32 @@ use std::path::Path;
 use datafusion::error::Result;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::SessionContext;
-use datafusion_distributed_benchmarks::datasets::register_tables;
-use datafusion_distributed_iceberg::benchmarks as iceberg;
 use futures::future::BoxFuture;
 
-type RegisterTables = for<'a> fn(&'a SessionContext, &'a Path) -> BoxFuture<'a, Result<()>>;
+use crate::datasets::register_tables;
+
+pub type RegisterTables = for<'a> fn(&'a SessionContext, &'a Path) -> BoxFuture<'a, Result<()>>;
+pub type ConfigureSession = fn(SessionStateBuilder) -> SessionStateBuilder;
 
 /// Backend callbacks shared by the coordinator and localhost worker runner.
+#[derive(Clone, Copy)]
 pub struct BenchmarkBackend {
-    pub register: RegisterTables,
-    pub configure: Box<dyn Fn(SessionStateBuilder) -> SessionStateBuilder + Send + Sync>,
+    pub(crate) register: RegisterTables,
+    pub(crate) configure: ConfigureSession,
 }
 
 impl BenchmarkBackend {
-    pub fn parquet() -> Self {
+    pub fn new(register: RegisterTables, configure: ConfigureSession) -> Self {
         Self {
-            register: |ctx, path| Box::pin(register_tables(ctx, path)),
-            configure: Box::new(std::convert::identity),
+            register,
+            configure,
         }
     }
 
-    pub fn iceberg() -> Self {
-        Self {
-            register: |ctx, path| Box::pin(iceberg::register_tables(ctx, path)),
-            configure: Box::new(iceberg::configure_session),
-        }
+    pub fn parquet() -> Self {
+        Self::new(
+            |ctx, path| Box::pin(register_tables(ctx, path)),
+            std::convert::identity,
+        )
     }
 }

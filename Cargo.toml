@@ -3,7 +3,8 @@ members = [
     "benchmarks",
     "cli",
     "console",
-    "iceberg"
+    "iceberg",
+    "iceberg/benchmarks",
 ]
 
 [workspace.dependencies]

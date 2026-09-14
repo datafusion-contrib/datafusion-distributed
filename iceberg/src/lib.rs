@@ -4,11 +4,7 @@
 //!
 //! This crate ports the read path from Apache Iceberg Rust's DataFusion
 //! integration. It deliberately contains no distributed execution adaptation
-//! and no production Iceberg write or commit implementation. The optional
-//! `benchmarks` feature supplies local dataset preparation and runner support.
-
-#[cfg(feature = "benchmarks")]
-pub mod benchmarks;
+//! and no production Iceberg write or commit implementation.
 
 mod common;
 mod config;

@@ -1,7 +1,7 @@
 use crate::RESULTS_DIR;
+use crate::stats::median;
 use datafusion::common::utils::get_available_parallelism;
 use datafusion::common::{Result, internal_datafusion_err};
-use datafusion_distributed_benchmarks::stats::median;
 use serde::ser::SerializeSeq;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fs;
@@ -136,7 +136,7 @@ pub(crate) fn dataset_path(dataset: &str) -> PathBuf {
         .join(variant)
 }
 
-pub(crate) fn get_current_branch() -> String {
+pub fn get_current_branch() -> String {
     let output = Command::new("git")
         .args(["rev-parse", "--abbrev-ref", "HEAD"])
         .output()

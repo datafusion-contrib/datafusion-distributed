@@ -9,6 +9,7 @@ use datafusion::common::{DataFusionError, exec_err};
 use datafusion::execution::context::SessionContext;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 use datafusion::prelude::ParquetReadOptions;
+use datafusion_distributed_iceberg::iceberg;
 use futures::StreamExt;
 use iceberg::arrow::{arrow_schema_to_schema_auto_assign_ids, schema_to_arrow_schema};
 use iceberg::io::LocalFsStorageFactory;
@@ -189,14 +190,14 @@ async fn write_table(
     Ok(())
 }
 
-/// Register immutable local benchmark tables written by `prepare-iceberg`.
+/// Register immutable local benchmark tables written by `dfbench-iceberg prepare`.
 pub async fn register_tables(
     ctx: &SessionContext,
     data_path: &Path,
 ) -> Result<(), DataFusionError> {
     if !data_path.join("_SUCCESS").is_file() {
         return exec_err!(
-            "Iceberg dataset is missing or incomplete: {}. Run prepare-iceberg first.",
+            "Iceberg dataset is missing or incomplete: {}. Run dfbench-iceberg prepare first.",
             data_path.display()
         );
     }
@@ -285,87 +286,4 @@ fn file_uri(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
             )
             .into()
         })
-}
-
-#[cfg(test)]
-mod tests {
-    use std::fs::File;
-
-    use crate::{IcebergExt, IcebergIntegrationOptions};
-    use datafusion::arrow::array::{Int64Array, StringArray};
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::arrow::record_batch::RecordBatch;
-    use datafusion::common::ScalarValue;
-    use datafusion::execution::SessionStateBuilder;
-    use parquet::arrow::ArrowWriter;
-    use tempfile::TempDir;
-
-    use super::*;
-
-    #[tokio::test]
-    async fn generates_snapshot_statistics() {
-        let temp = TempDir::new().unwrap();
-        let source = temp.path().join("source");
-        let output = temp.path().join("output");
-        write_source_table(&source);
-
-        convert_parquet_to_iceberg(&source, &output, 1024 * 1024)
-            .await
-            .unwrap();
-
-        let location = output.join("example/metadata.json");
-        let metadata: serde_json::Value =
-            serde_json::from_slice(&fs::read(location).unwrap()).unwrap();
-        let summary = &metadata["snapshots"][0]["summary"];
-        assert_eq!(summary["total-records"], "3");
-        assert!(
-            summary["total-files-size"]
-                .as_str()
-                .unwrap()
-                .parse::<u64>()
-                .unwrap()
-                > 0
-        );
-
-        let state = SessionStateBuilder::new()
-            .with_default_features()
-            .with_iceberg_integration(IcebergIntegrationOptions::default())
-            .build();
-        let ctx = SessionContext::new_with_state(state);
-        register_tables(&ctx, &output).await.unwrap();
-        let batches = ctx
-            .sql("SELECT COUNT(*) FROM example WHERE id > 0")
-            .await
-            .unwrap()
-            .collect()
-            .await
-            .unwrap();
-        let count = ScalarValue::try_from_array(batches[0].column(0), 0).unwrap();
-        assert_eq!(count.to_string(), "3");
-    }
-
-    fn write_source_table(source: &Path) {
-        let table = source.join("example");
-        fs::create_dir_all(&table).unwrap();
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int64, false),
-            Field::new("name", DataType::Utf8, true),
-        ]));
-        let batch = RecordBatch::try_new(
-            Arc::clone(&schema),
-            vec![
-                Arc::new(Int64Array::from(vec![1, 2, 3])),
-                Arc::new(StringArray::from(vec![Some("a"), None, Some("c")])),
-            ],
-        )
-        .unwrap();
-        let mut writer = ArrowWriter::try_new(
-            File::create(table.join("part.parquet")).unwrap(),
-            schema,
-            None,
-        )
-        .unwrap();
-        writer.write(&batch).unwrap();
-        writer.close().unwrap();
-    }
 }

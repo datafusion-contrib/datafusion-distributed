@@ -62,56 +62,37 @@ WORKERS=8 ./benchmarks/run.sh --threads 2 --dataset tpch/sf1 --file-scan-config-
 
 ### Iceberg benchmarks
 
-Prepare Parquet, then convert it with the same Rust binary (from the repository root):
+Iceberg preparation and execution live in a separate package so the benchmark crate used by the
+root integration tests does not depend on Iceberg. Prepare the Parquet input, then convert it:
 
 ```shell
 cargo run -p datafusion-distributed-benchmarks --release -- prepare-tpch \
   --output testdata/tpch/sf1 --scale-factor 1 --partitions 16
-cargo run -p datafusion-distributed-benchmarks --release -- prepare-iceberg \
+cargo run -p datafusion-distributed-iceberg-benchmarks --release -- prepare \
   --input testdata/tpch/sf1
 ```
 
-`prepare-iceberg` writes to the sibling `<input>-iceberg/` directory: for example,
-`testdata/tpch/sf1-iceberg/`. The source Parquet dataset stays in `testdata/tpch/sf1/`.
-Conversion streams one source file at a time into unpartitioned, append-only Iceberg tables using
-Parquet writer defaults. Source file boundaries are preserved unless `--target-file-size` requests
-rolling. Manifests contain per-file metrics; snapshots contain aggregate record/file-size statistics.
-Each table's committed metadata is saved as `<output>/<table>/metadata.json`; `_SUCCESS` is written
-last. The output directory must be empty. Interrupted conversion is not resumable and cannot be run.
+The conversion writes the sibling `testdata/tpch/sf1-iceberg/` dataset and leaves the source
+unchanged. It streams one source file at a time into unpartitioned, append-only Iceberg tables.
+Source file boundaries are preserved unless `--target-file-size` requests rolling. `_SUCCESS` is
+written last, and the output directory must be empty.
 
-Run either representation and compare saved states (`dfbench` is `target/release/dfbench`):
+Run each representation with its format-specific binary, then compare them with `dfbench`:
 
 ```shell
-dfbench run --dataset tpch/sf1
-dfbench run --dataset tpch/sf1-iceberg --format iceberg
+WORKERS=2 ./benchmarks/run.sh --dataset tpch/sf1 --threads 2 --partitions 2
+WORKERS=2 ./iceberg/benchmarks/run.sh --dataset tpch/sf1-iceberg --threads 2 --partitions 2
+
 dfbench compare tpch/sf1 tpch/sf1-iceberg
 dfbench compare tpch/sf1@base tpch/sf1-iceberg@candidate
 dfbench compare base candidate --dataset tpch/sf1
-
-WORKERS=2 ./benchmarks/run.sh --dataset tpch/sf1-iceberg --format iceberg --threads 2 --partitions 2 \
-  --file-scan-config-bytes-per-partition 16777216
 ```
 
-- `run --format` selects the table backend, defaulting to Parquet. Pass the actual dataset
-  directory name; running a benchmark never rewrites it.
-- `compare` takes exactly two `dataset[@branch]` states, [prev] then [new]. An omitted branch
-  defaults to the current branch; the final `@` separates an explicit branch from its dataset.
-  Each state independently selects its dataset and branch, without format-specific flags.
-- With `compare --dataset`, both positional arguments are literal branch names, preserving the
-  existing two-branch shorthand. This also works with an Iceberg dataset such as `tpch/sf1-iceberg`.
-- Each dataset uses the existing `.results/<branch>/` and `previous.json` layout. Iceberg results
-  live under `sf1-iceberg/`, separate from the Parquet results under `sf1/`. Parquet result storage,
-  saved JSON and branch naming are unchanged.
-- Timing calculations are unchanged; comparisons do not execute queries or check correctness.
+`compare` takes two `dataset[@branch]` states, [prev] then [new]. An omitted branch defaults to the
+current branch. With `--dataset`, both positional arguments remain literal branch names. Each
+dataset uses the existing `.results/<branch>/` and `previous.json` layout.
 
 Absolute dataset paths are supported when they follow the same `<suite>/<variant>` convention.
-The Iceberg backend always loads manifest column statistics during planning. Iceberg preparation
-and table registration live behind the Iceberg crate's `benchmarks` feature, enabled by this
-runner. The execution loop only receives backend callbacks.
-
-For SF10, SF100, etc., change the generation scale and paths; increase generation `--partitions`
-to avoid oversized source files. Conversion is sequential and retains both representations.
-Large-scale throughput and TPC-DS/ClickBench Iceberg conversion are not qualified here.
-Generated metadata contains absolute local locations. Older experimental `.iceberg/` datasets
-are not moved automatically; regenerate at the sibling destination rather than simply moving files.
-Uploading files to S3 is not sufficient for remote execution. Cloud publication and harness support remain separate work.
+Iceberg runs always load manifest column statistics. For larger scale factors, increase Parquet
+generation `--partitions` to avoid oversized source files. Generated metadata contains absolute
+local locations; cloud publication and remote harness support remain separate work.
