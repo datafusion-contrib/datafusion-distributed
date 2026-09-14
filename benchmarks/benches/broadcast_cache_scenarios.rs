@@ -326,16 +326,6 @@ fn scenario_matrix() -> Vec<Scenario> {
     scenarios
 }
 
-fn verbose_enabled() -> bool {
-    match std::env::var("BROADCAST_BENCH_VERBOSE") {
-        Ok(val) => {
-            let val = val.to_ascii_lowercase();
-            val == "1" || val == "true" || val == "yes"
-        }
-        Err(_) => false,
-    }
-}
-
 fn rss_enabled() -> bool {
     match std::env::var("BROADCAST_BENCH_RSS") {
         Ok(val) => {
@@ -362,7 +352,6 @@ fn bench_broadcast_cache(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("broadcast_cache_scenarios");
     group.sample_size(10);
-    let verbose = verbose_enabled();
     let sample_rss = rss_enabled();
     let task_ctx = SessionContext::new().task_ctx();
 
@@ -383,11 +372,12 @@ fn bench_broadcast_cache(c: &mut Criterion) {
             .collect::<Vec<_>>();
         let batches = Arc::new(batches);
 
+        let mut rss_peaks = Vec::new();
         group.bench_function(BenchmarkId::new("scenario", scenario.name), |b| {
             b.iter_custom(|iters| {
                 let mut total = Duration::ZERO;
                 let mut peaks = Vec::with_capacity(iters as usize);
-                for i in 0..iters {
+                for _ in 0..iters {
                     let (elapsed, peak_kb) = rt
                         .block_on(run_scenario(
                             &scenario,
@@ -397,35 +387,29 @@ fn bench_broadcast_cache(c: &mut Criterion) {
                             sample_rss,
                         ))
                         .expect("scenario");
-                    if verbose || sample_rss {
-                        eprintln!(
-                            "scenario={} iter={} peak_rss_kb={} elapsed_ms={}",
-                            scenario.name,
-                            i,
-                            peak_kb,
-                            elapsed.as_millis()
-                        );
-                    }
                     peaks.push(peak_kb);
                     total += elapsed;
                 }
-                if sample_rss && !peaks.is_empty() {
-                    peaks.sort_unstable();
-                    let min = peaks[0];
-                    let max = peaks[peaks.len() - 1];
-                    let median = peaks[peaks.len() / 2];
-                    eprintln!(
-                        "scenario={} peak_rss_kb[min/median/max]={}/{}/{} runs={}",
-                        scenario.name,
-                        min,
-                        median,
-                        max,
-                        peaks.len()
-                    );
+                if sample_rss {
+                    rss_peaks.extend(peaks);
                 }
                 total
             });
         });
+        if sample_rss && !rss_peaks.is_empty() {
+            rss_peaks.sort_unstable();
+            let min = rss_peaks[0];
+            let max = rss_peaks[rss_peaks.len() - 1];
+            let median = rss_peaks[rss_peaks.len() / 2];
+            eprintln!(
+                "scenario={} peak_rss_kb[min/median/max]={}/{}/{} runs={}",
+                scenario.name,
+                min,
+                median,
+                max,
+                rss_peaks.len()
+            );
+        }
     }
 
     group.finish();
