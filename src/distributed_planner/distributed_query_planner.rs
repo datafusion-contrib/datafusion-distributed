@@ -52,8 +52,27 @@ use std::sync::Arc;
 /// 4. **Shuffle-volume optimization.** [partial_reduce_below_network_shuffles] inserts partial
 ///    aggregation nodes underneath hash shuffles where it can, so less data crosses the network.
 #[derive(Debug)]
-pub(crate) struct DistributedQueryPlanner {
-    pub(crate) prev: Option<Arc<dyn QueryPlanner + Send + Sync>>,
+pub struct DistributedQueryPlanner {
+    prev: Option<Arc<dyn QueryPlanner + Send + Sync>>,
+}
+
+impl DistributedQueryPlanner {
+    /// Creates a planner that distributes the physical plan produced by `previous`.
+    ///
+    /// When integrating across an FFI boundary, `previous` should be the imported planner from the
+    /// host session. Calling it performs the physical-plan protobuf roundtrip before this planner
+    /// inspects the plan, reconstructing built-in nodes with this library's concrete Rust types.
+    pub fn new(previous: Option<Arc<dyn QueryPlanner + Send + Sync>>) -> Self {
+        Self { prev: previous }
+    }
+
+    /// Returns the planner whose physical result is distributed by this planner.
+    ///
+    /// Bindings use this when rebuilding the protobuf boundary against an updated extension-codec
+    /// chain. The returned planner is the retained fallback, not this distributed wrapper.
+    pub fn previous(&self) -> Option<Arc<dyn QueryPlanner + Send + Sync>> {
+        self.prev.clone()
+    }
 }
 
 #[async_trait]
