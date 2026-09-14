@@ -328,34 +328,32 @@ impl<T: Clone> Stream for BroadcastConsumer<T> {
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         loop {
-            let value = {
+            let value = if self.next_sequence < self.notification.tail_sequence {
                 let mut queue_state = self.state.lock().unwrap();
-                if self.next_sequence < queue_state.tail_sequence {
-                    let offset = self
-                        .next_sequence
-                        .checked_sub(queue_state.base_sequence)
-                        .expect("broadcast consumer fell behind evicted entries");
-                    let entry = queue_state
-                        .entries
-                        .get_mut(offset)
-                        .expect("broadcast entry sequence was not retained");
-                    debug_assert!(entry.remaining_readers > 0);
-                    let value = entry.value.clone();
-                    entry.remaining_readers -= 1;
+                let offset = self
+                    .next_sequence
+                    .checked_sub(queue_state.base_sequence)
+                    .expect("broadcast consumer fell behind evicted entries");
+                let entry = queue_state
+                    .entries
+                    .get_mut(offset)
+                    .expect("broadcast entry sequence was not retained");
+                debug_assert!(entry.remaining_readers > 0);
+                let value = entry.value.clone();
+                entry.remaining_readers -= 1;
 
-                    while queue_state
-                        .entries
-                        .front()
-                        .is_some_and(|entry| entry.remaining_readers == 0)
-                    {
-                        queue_state.entries.pop_front();
-                        queue_state.base_sequence += 1;
-                    }
-
-                    Some(value)
-                } else {
-                    None
+                while queue_state
+                    .entries
+                    .front()
+                    .is_some_and(|entry| entry.remaining_readers == 0)
+                {
+                    queue_state.entries.pop_front();
+                    queue_state.base_sequence += 1;
                 }
+
+                Some(value)
+            } else {
+                None
             };
 
             if let Some(value) = value {
