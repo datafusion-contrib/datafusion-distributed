@@ -7,13 +7,13 @@ use crate::execution_plans::{
 };
 use crate::stage::{LocalStage, RemoteStage, Stage};
 use crate::worker::WorkerConnectionPool;
-use crate::{DistributedTaskContext, NetworkBoundary};
+use crate::{DistributedExec, DistributedTaskContext, NetworkBoundary};
 use bytes::Bytes;
-use datafusion::arrow::datatypes::Schema;
-use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::common::Result;
+use datafusion::arrow::datatypes::{Schema, SchemaRef};
+use datafusion::common::{Result, not_impl_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
+use datafusion::logical_expr::{AggregateUDF, HigherOrderUDF, ScalarUDF, WindowUDF};
 use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_expr::equivalence::{EquivalenceClass, EquivalenceGroup};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
@@ -40,9 +40,210 @@ pub struct DistributedCodec;
 
 impl DistributedCodec {
     pub fn new_combined_with_user(cfg: &SessionConfig) -> ComposedPhysicalExtensionCodec {
-        let mut codecs: Vec<Arc<dyn PhysicalExtensionCodec>> = vec![Arc::new(DistributedCodec {})];
+        let mut codecs: Vec<Arc<dyn PhysicalExtensionCodec>> = vec![Arc::new(DistributedCodec)];
         codecs.extend(get_distributed_user_codecs(cfg));
         ComposedPhysicalExtensionCodec::new(codecs)
+    }
+
+    pub(crate) fn new_with_user(cfg: &SessionConfig) -> FunctionPreservingComposedCodec {
+        let user_codecs = get_distributed_user_codecs(cfg);
+        let distributed: Arc<dyn PhysicalExtensionCodec> = match user_codecs.is_empty() {
+            true => Arc::new(DistributedCodec),
+            false => Arc::new(DistributedCodecWithUserFallback),
+        };
+        let mut codecs = vec![distributed];
+        codecs.extend(user_codecs);
+        FunctionPreservingComposedCodec::new(codecs)
+    }
+}
+
+/// Composes physical codecs without turning an empty, name-only function encoding into a payload.
+///
+/// DataFusion's composed codec wraps the first successful result with its codec position, even
+/// when that codec wrote no bytes. Function encodings use an empty buffer to tell the decoder to
+/// resolve the function from its registry, so wrapping it would make built-in functions fail on
+/// workers. This adapter preserves the empty buffer while retaining positional dispatch for
+/// actual extension payloads.
+#[derive(Debug)]
+pub(crate) struct FunctionPreservingComposedCodec {
+    codecs: Vec<Arc<dyn PhysicalExtensionCodec>>,
+    composed: ComposedPhysicalExtensionCodec,
+}
+
+impl FunctionPreservingComposedCodec {
+    fn new(codecs: Vec<Arc<dyn PhysicalExtensionCodec>>) -> Self {
+        Self {
+            composed: ComposedPhysicalExtensionCodec::new(codecs.clone()),
+            codecs,
+        }
+    }
+
+    fn encode_function<T>(
+        &self,
+        node: &T,
+        buf: &mut Vec<u8>,
+        encode: impl Fn(&dyn PhysicalExtensionCodec, &T, &mut Vec<u8>) -> Result<()>,
+    ) -> Result<()> {
+        let mut last_error = None;
+        let mut encoded_by_name = false;
+
+        for (position, codec) in self.codecs.iter().enumerate() {
+            let mut payload = Vec::new();
+            match encode(codec.as_ref(), node, &mut payload) {
+                Ok(()) if payload.is_empty() => encoded_by_name = true,
+                Ok(()) => {
+                    return FunctionCodecPayload {
+                        encoder_position: position as u32,
+                        blob: payload,
+                    }
+                    .encode(buf)
+                    .map_err(|err| proto_error(err.to_string()));
+                }
+                Err(error) => last_error = Some(error),
+            }
+        }
+
+        if encoded_by_name {
+            Ok(())
+        } else {
+            Err(last_error.unwrap_or_else(|| {
+                DataFusionError::NotImplemented("Empty list of composed codecs".to_string())
+            }))
+        }
+    }
+
+    fn decode_function<T>(
+        &self,
+        buf: &[u8],
+        decode: impl Fn(&dyn PhysicalExtensionCodec, &[u8]) -> Result<T>,
+    ) -> Result<T> {
+        if buf.is_empty() {
+            let mut last_error = None;
+            for codec in &self.codecs {
+                match decode(codec.as_ref(), buf) {
+                    Ok(value) => return Ok(value),
+                    Err(error) => last_error = Some(error),
+                }
+            }
+            return Err(last_error.unwrap_or_else(|| {
+                DataFusionError::NotImplemented("Empty list of composed codecs".to_string())
+            }));
+        }
+
+        let payload =
+            FunctionCodecPayload::decode(buf).map_err(|err| proto_error(err.to_string()))?;
+        let codec = self
+            .codecs
+            .get(payload.encoder_position as usize)
+            .ok_or_else(|| proto_error("Can't find required codec in codec list"))?;
+        decode(codec.as_ref(), &payload.blob)
+    }
+}
+
+#[derive(Clone, PartialEq, Message)]
+struct FunctionCodecPayload {
+    #[prost(uint32, tag = "1")]
+    encoder_position: u32,
+    #[prost(bytes = "vec", tag = "2")]
+    blob: Vec<u8>,
+}
+
+impl PhysicalExtensionCodec for FunctionPreservingComposedCodec {
+    fn try_decode(
+        &self,
+        buf: &[u8],
+        inputs: &[Arc<dyn ExecutionPlan>],
+        ctx: &TaskContext,
+        proto_converter: &dyn PhysicalProtoConverterExtension,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        self.composed.try_decode(buf, inputs, ctx, proto_converter)
+    }
+
+    fn try_encode(
+        &self,
+        node: Arc<dyn ExecutionPlan>,
+        buf: &mut Vec<u8>,
+        proto_converter: &dyn PhysicalProtoConverterExtension,
+    ) -> Result<()> {
+        self.composed.try_encode(node, buf, proto_converter)
+    }
+
+    fn try_decode_udf(&self, name: &str, buf: &[u8]) -> Result<Arc<ScalarUDF>> {
+        self.decode_function(buf, |codec, data| codec.try_decode_udf(name, data))
+    }
+
+    fn try_encode_udf(&self, node: &ScalarUDF, buf: &mut Vec<u8>) -> Result<()> {
+        self.encode_function(node, buf, |codec, node, data| {
+            codec.try_encode_udf(node, data)
+        })
+    }
+
+    fn try_decode_higher_order_function(
+        &self,
+        name: &str,
+        buf: &[u8],
+    ) -> Result<Arc<HigherOrderUDF>> {
+        self.decode_function(buf, |codec, data| {
+            codec.try_decode_higher_order_function(name, data)
+        })
+    }
+
+    fn try_encode_higher_order_function(
+        &self,
+        node: &HigherOrderUDF,
+        buf: &mut Vec<u8>,
+    ) -> Result<()> {
+        self.encode_function(node, buf, |codec, node, data| {
+            codec.try_encode_higher_order_function(node, data)
+        })
+    }
+
+    fn try_decode_udaf(&self, name: &str, buf: &[u8]) -> Result<Arc<AggregateUDF>> {
+        self.decode_function(buf, |codec, data| codec.try_decode_udaf(name, data))
+    }
+
+    fn try_encode_udaf(&self, node: &AggregateUDF, buf: &mut Vec<u8>) -> Result<()> {
+        self.encode_function(node, buf, |codec, node, data| {
+            codec.try_encode_udaf(node, data)
+        })
+    }
+
+    fn try_decode_udwf(&self, name: &str, buf: &[u8]) -> Result<Arc<WindowUDF>> {
+        self.decode_function(buf, |codec, data| codec.try_decode_udwf(name, data))
+    }
+
+    fn try_encode_udwf(&self, node: &WindowUDF, buf: &mut Vec<u8>) -> Result<()> {
+        self.encode_function(node, buf, |codec, node, data| {
+            codec.try_encode_udwf(node, data)
+        })
+    }
+}
+
+#[derive(Debug)]
+struct DistributedCodecWithUserFallback;
+
+impl PhysicalExtensionCodec for DistributedCodecWithUserFallback {
+    fn try_decode(
+        &self,
+        buf: &[u8],
+        inputs: &[Arc<dyn ExecutionPlan>],
+        ctx: &TaskContext,
+        proto_converter: &dyn PhysicalProtoConverterExtension,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        DistributedCodec.try_decode(buf, inputs, ctx, proto_converter)
+    }
+
+    fn try_encode(
+        &self,
+        node: Arc<dyn ExecutionPlan>,
+        buf: &mut Vec<u8>,
+        proto_converter: &dyn PhysicalProtoConverterExtension,
+    ) -> Result<()> {
+        DistributedCodec.try_encode(node, buf, proto_converter)
+    }
+
+    fn try_encode_udf(&self, _node: &ScalarUDF, _buf: &mut Vec<u8>) -> Result<()> {
+        not_impl_err!("DistributedCodec does not encode scalar UDFs")
     }
 }
 
@@ -99,6 +300,14 @@ impl PhysicalExtensionCodec for DistributedCodec {
         }
 
         match distributed_exec_node {
+            DistributedExecNode::DistributedRoot(DistributedRootExecProto {
+                collect_metrics,
+                collect_dynamic_filters,
+            }) => Ok(Arc::new(
+                DistributedExec::new(require_one_child(inputs)?)
+                    .with_metrics_collection(collect_metrics)
+                    .with_dynamic_filter_collection(collect_dynamic_filters),
+            )),
             DistributedExecNode::NetworkHashShuffle(NetworkShuffleExecProto {
                 schema,
                 partitioning,
@@ -296,7 +505,18 @@ impl PhysicalExtensionCodec for DistributedCodec {
             })
         }
 
-        if let Some(node) = node.downcast_ref::<NetworkShuffleExec>() {
+        if let Some(node) = node.downcast_ref::<DistributedExec>() {
+            let wrapper = DistributedExecProto {
+                node: Some(DistributedExecNode::DistributedRoot(
+                    DistributedRootExecProto {
+                        collect_metrics: node.metrics_collection_enabled(),
+                        collect_dynamic_filters: node.dynamic_filter_collection_enabled(),
+                    },
+                )),
+            };
+
+            wrapper.encode(buf).map_err(|e| proto_error(format!("{e}")))
+        } else if let Some(node) = node.downcast_ref::<NetworkShuffleExec>() {
             let inner = NetworkShuffleExecProto {
                 schema: Some(node.schema().try_into()?),
                 partitioning: Some(serialize_partitioning(
@@ -482,7 +702,7 @@ pub struct ExecutionTaskProto {
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DistributedExecProto {
-    #[prost(oneof = "DistributedExecNode", tags = "1, 2, 3, 4, 5, 6, 7")]
+    #[prost(oneof = "DistributedExecNode", tags = "1, 2, 3, 4, 5, 6, 7, 8")]
     pub node: Option<DistributedExecNode>,
 }
 
@@ -501,6 +721,20 @@ pub enum DistributedExecNode {
     Broadcast(BroadcastExecProto),
     #[prost(message, tag = "7")]
     Sampler(SamplerExecProto),
+    #[prost(message, tag = "8")]
+    DistributedRoot(DistributedRootExecProto),
+}
+
+/// Protobuf representation of the coordinator-side [`DistributedExec`] root.
+///
+/// The child is encoded by DataFusion's physical-plan protobuf machinery. The two flags are the
+/// only root-local configuration that changes the reconstructed execution plan.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DistributedRootExecProto {
+    #[prost(bool, tag = "1")]
+    collect_metrics: bool,
+    #[prost(bool, tag = "2")]
+    collect_dynamic_filters: bool,
 }
 
 /// Protobuf representation of the [NetworkShuffleExec] physical node. It serves as
@@ -693,6 +927,27 @@ mod tests {
 
     fn create_context() -> Arc<TaskContext> {
         SessionContext::new().task_ctx()
+    }
+
+    #[test]
+    fn test_roundtrip_distributed_root() -> datafusion::common::Result<()> {
+        let ctx = create_context();
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(
+            DistributedExec::new(empty_exec())
+                .with_metrics_collection(false)
+                .with_dynamic_filter_collection(true),
+        );
+
+        let decoded = crate::codec::roundtrip_pb(plan, &ctx)?;
+        let decoded = decoded
+            .downcast_ref::<DistributedExec>()
+            .expect("roundtrip should preserve the distributed root");
+
+        assert!(!decoded.metrics_collection_enabled());
+        assert!(decoded.dynamic_filter_collection_enabled());
+        assert!(decoded.children()[0].is::<EmptyExec>());
+
+        Ok(())
     }
 
     #[test]

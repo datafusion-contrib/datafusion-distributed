@@ -1,0 +1,35 @@
+[build-system]
+requires = ["maturin>=1.6,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "datafusion-distributed"
+requires-python = ">=3.10"
+dependencies = [
+  "datafusion @ git+https://github.com/apache/datafusion-python@59c1fd1e93705d982b5bb4e9ce37da60a467fff8",
+]
+dynamic = ["version"]
+
+[dependency-groups]
+dev = [
+  "inline-snapshot[black]>=0.34",
+  "pytest>=8",
+]
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+python-source = "."
+module-name = "datafusion_distributed._internal"
+
+[tool.uv]
+# Editable installs still contain a compiled extension. Rebuild it when either
+# this crate or the datafusion-distributed crate it links changes.
+cache-keys = [
+  { file = "pyproject.toml" },
+  { file = "Cargo.toml" },
+  { file = "build.rs" },
+  { file = "src/**/*.rs" },
+  { file = "../Cargo.toml" },
+  { file = "../Cargo.lock" },
+  { file = "../src/**/*.rs" },
+]

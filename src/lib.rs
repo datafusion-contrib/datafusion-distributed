@@ -22,7 +22,8 @@ pub use arrow_ipc::CompressionType;
 pub use coordinator::DistributedExec;
 pub use distributed_ext::{DistributedExt, DistributedGetterExt};
 pub use distributed_planner::{
-    DistributedConfig, NetworkBoundary, NetworkBoundaryExt, ProducerHead, SessionStateBuilderExt,
+    DistributedConfig, DistributedQueryPlanner, NetworkBoundary, NetworkBoundaryExt, ProducerHead,
+    SessionStateBuilderExt, inject_distributed_extensions,
 };
 pub use dynamic_filtering::rewrite_distributed_plan_with_dynamic_filters;
 pub use events::{
