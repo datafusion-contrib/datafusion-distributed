@@ -41,6 +41,20 @@ jobs:
       - uses: ./.github/actions/setup
       - run: cargo test --features integration
 
+  python-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+      - uses: ./.github/actions/setup
+      - uses: astral-sh/setup-uv@v10.1.0
+        with:
+          python-version: "3.10"
+          enable-cache: true
+      - run: uv sync --project python --locked
+      - run: uv run --project python pytest python/tests
+
   tpch-correctness-test:
     runs-on: ubuntu-latest
     strategy:
