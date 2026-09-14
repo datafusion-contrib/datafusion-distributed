@@ -87,6 +87,14 @@ impl DistributedExec {
         self
     }
 
+    pub(crate) fn metrics_collection_enabled(&self) -> bool {
+        self.metrics_store.is_some()
+    }
+
+    pub(crate) fn dynamic_filter_collection_enabled(&self) -> bool {
+        self.completed_dynamic_filter_store.is_some()
+    }
+
     /// Waits until all worker tasks have reported their metrics back via the coordinator channel
     /// if metrics collection is enabled.
     pub async fn wait_for_metrics(&self) -> Option<HashMap<TaskKey, TaskMetrics>> {
