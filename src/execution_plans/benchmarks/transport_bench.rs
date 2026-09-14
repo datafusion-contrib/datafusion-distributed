@@ -11,6 +11,7 @@ use datafusion::common::Result;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+use datafusion::physical_plan::expressions::Column;
 use datafusion::physical_plan::{ExecutionPlan, PlanProperties};
 use futures::TryStreamExt;
 use std::fmt::{Display, Formatter};
@@ -269,17 +270,21 @@ impl TransportFixture {
 
         let mut join_set = JoinSet::default();
         for task_index in 0..self.bench.consumer_tasks {
+            let consumer_partitioning =
+                Partitioning::Hash(vec![Arc::new(Column::new("id", 0))], self.bench.partitions);
             let shuffle = NetworkShuffleExec {
                 properties: Arc::new(PlanProperties::new(
                     EquivalenceProperties::new(Arc::clone(&self.schema)),
-                    Partitioning::RoundRobinBatch(self.bench.partitions),
+                    Partitioning::UnknownPartitioning(self.bench.partitions),
                     EmissionType::Incremental,
                     Boundedness::Bounded,
                 )),
+                consumer_partitioning,
                 input_stage: input_stage.clone(),
                 worker_connections: crate::worker::WorkerConnectionPool::new(
                     self.bench.producer_tasks,
                 ),
+                producer_salt: 0x517cc1b727220a95,
             };
             let task_ctx = Arc::new(task_ctx_with_extension(
                 &self.task_ctx,
@@ -289,7 +294,7 @@ impl TransportFixture {
                 },
             ));
 
-            for partition in 0..shuffle.properties.partitioning.partition_count() {
+            for partition in 0..shuffle.consumer_partitioning.partition_count() {
                 let stream = shuffle.execute(partition, Arc::clone(&task_ctx))?;
                 join_set.spawn(async move {
                     let batches = stream.try_collect::<Vec<_>>().await?;

@@ -1,6 +1,6 @@
 use crate::common::require_one_child;
 use crate::distributed_planner::ProducerHead;
-use crate::execution_plans::common::scale_partitioning;
+use crate::execution_plans::common::salted_partitioning;
 use crate::stage::{LocalStage, Stage};
 use crate::worker::WorkerConnectionPool;
 use crate::{DistributedTaskContext, MaybeEncoded, NetworkBoundary};
@@ -10,6 +10,7 @@ use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::{Partitioning, PhysicalExpr};
 use datafusion::physical_expr_common::metrics::MetricsSet;
+use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
@@ -18,6 +19,8 @@ use datafusion::physical_plan::{
 use std::fmt::Formatter;
 use std::sync::Arc;
 use uuid::Uuid;
+
+const PRODUCER_SALT_DEFAULT: u64 = 0x517cc1b727220a95;
 
 /// [ExecutionPlan] implementation that shuffles data across the network in a distributed context.
 ///
@@ -103,16 +106,29 @@ use uuid::Uuid;
 pub struct NetworkShuffleExec {
     /// the properties we advertise for this execution plan
     pub(crate) properties: Arc<PlanProperties>,
+    /// the consumer's hash partitioning (without salt); stored separately because
+    /// `properties` advertises UnknownPartitioning since salting breaks hash guarantees
+    pub(crate) consumer_partitioning: Partitioning,
     pub(crate) input_stage: Stage,
     pub(crate) worker_connections: WorkerConnectionPool,
+    pub(crate) producer_salt: u64,
 }
 
 impl NetworkShuffleExec {
     pub(crate) fn from_stage(input_stage: Stage, input_properties: Arc<PlanProperties>) -> Self {
+        let consumer_partitioning = input_properties.partitioning.clone();
+        let properties = Arc::new(PlanProperties::new(
+            input_properties.equivalence_properties().clone(),
+            Partitioning::UnknownPartitioning(1),
+            EmissionType::Incremental,
+            Boundedness::Bounded,
+        ));
         Self {
-            properties: input_properties,
+            properties,
+            consumer_partitioning,
             worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
             input_stage,
+            producer_salt: PRODUCER_SALT_DEFAULT,
         }
     }
 
@@ -157,9 +173,10 @@ impl NetworkBoundary for NetworkShuffleExec {
 
     fn producer_head(&self, consumer_task_count: usize) -> Result<ProducerHead> {
         Ok(ProducerHead::RepartitionExec {
-            partitioning: MaybeEncoded::Decoded(scale_partitioning(
-                &self.properties.partitioning,
-                |prev| prev * consumer_task_count,
+            partitioning: MaybeEncoded::Decoded(salted_partitioning(
+                &self.consumer_partitioning,
+                self.producer_salt,
+                consumer_task_count,
             )?),
         })
     }
@@ -229,16 +246,15 @@ impl ExecutionPlan for NetworkShuffleExec {
         };
 
         let task_context = DistributedTaskContext::from_ctx(&context);
-        let out_partitions = self.properties.partitioning.partition_count();
-        let off = out_partitions * task_context.task_index;
+        let task_index = task_context.task_index;
 
         let mut streams = Vec::with_capacity(remote_stage.workers.len());
         for input_task_index in 0..remote_stage.workers.len() {
             streams.push(self.worker_connections.execute(
                 remote_stage,
-                off..(off + self.properties.partitioning.partition_count()),
+                task_index..task_index + 1,
                 input_task_index,
-                off + partition,
+                task_index,
                 self.producer_head(task_context.task_count)?,
                 &context,
             )?);
@@ -261,7 +277,7 @@ impl ExecutionPlan for NetworkShuffleExec {
     ) -> Result<Arc<Statistics>> {
         self.input_stage.partition_statistics(
             args.partition(),
-            self.properties.output_partitioning().partition_count(),
+            self.properties.partitioning.partition_count(),
             self.schema(),
         )
     }
