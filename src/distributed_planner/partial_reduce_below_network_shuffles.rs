@@ -117,7 +117,7 @@ mod tests {
             .distributed_cardinality_effect_task_scale_factor(1.5)
             .physical_plan_as_ascii(query, false)
             .await;
-        assert_snapshot!(physical_plan_ascii, @r"
+        assert_snapshot!(physical_plan_ascii, @"
         ┌───── DistributedExec
         │ CoalescePartitionsExec
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=8, input_tasks=2
@@ -125,11 +125,12 @@ mod tests {
           ┌───── Stage 2 ── tasks=2, partitions=4
           │ ProjectionExec: expr=[RainToday@0 as RainToday, count(Int64(1))@1 as count(*)]
           │   AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
-          │     [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
+          │     RepartitionExec: partitioning=Hash([RainToday@0], 4), input_partitions=1
+          │       [Stage 1] => NetworkShuffleExec: output_partitions=1, input_tasks=3
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── tasks=3, partitions=8
+            ┌───── Stage 1 ── tasks=3, partitions=2
             │ AggregateExec: mode=PartialReduce, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
-            │   RepartitionExec: partitioning=Hash([RainToday@0], 8), input_partitions=3
+            │   RepartitionExec: partitioning=Hash([RainToday@0, 5871781006564002453], 2), input_partitions=3
             │     AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
             │       DistributedLeafExec:
             │         t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[RainToday], file_type=parquet
