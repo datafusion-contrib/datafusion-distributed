@@ -64,10 +64,11 @@ mod tests {
           ┌───── Stage 2 ── tasks=2, partitions=3
           │ SortExec: TopK(fetch=10), expr=[key@0 DESC], preserve_partitioning=[true]
           │   AggregateExec: mode=FinalPartitioned, gby=[key@0 as key], aggr=[], lim=[10]
-          │     [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=2
+          │     RepartitionExec: partitioning=Hash([key@0], 3), input_partitions=1
+          │       [Stage 1] => NetworkShuffleExec: output_partitions=1, input_tasks=2
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── tasks=2, partitions=6
-            │ RepartitionExec: partitioning=Hash([key@0], 6), input_partitions=3
+            ┌───── Stage 1 ── tasks=2, partitions=2
+            │ RepartitionExec: partitioning=Hash([key@0, 5871781006564002453], 2), input_partitions=3
             │   AggregateExec: mode=Partial, gby=[key@0 as key], aggr=[], lim=[10]
             │     DistributedLeafExec:
             │       t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp@0 as key], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
