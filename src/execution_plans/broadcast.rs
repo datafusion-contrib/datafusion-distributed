@@ -15,9 +15,12 @@ use futures::{Stream, StreamExt};
 use std::collections::VecDeque;
 use std::fmt::Formatter;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context, Poll};
 use tokio_stream::wrappers::WatchStream;
+
+const RECLAIM_INTERVAL: usize = 8;
 
 /// [ExecutionPlan] that scales up partitions for network broadcasting.
 ///
@@ -169,9 +172,10 @@ impl ExecutionPlan for BroadcastExec {
             let queue = BroadcastQueue::new(self.consumer_task_count);
             let consumers = SegQueue::new();
             for _ in 0..self.consumer_task_count {
+                let consumer = queue.new_consumer().map_err(Arc::new)?;
                 consumers.push(Box::pin(RecordBatchStreamAdapter::new(
                     self.schema(),
-                    queue.new_consumer().map(|msg| match msg {
+                    consumer.map(|msg| match msg {
                         Ok((batch, _reservation)) => Ok(batch),
                         Err(e) => Err(DataFusionError::Shared(e)),
                     }),
@@ -221,9 +225,10 @@ impl ExecutionPlan for BroadcastExec {
 }
 
 #[derive(Debug)]
-struct Entry<T> {
-    value: T,
-    remaining_readers: usize,
+struct QueueState<T> {
+    entries: VecDeque<T>,
+    base_sequence: usize,
+    tail_sequence: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -233,16 +238,16 @@ struct BroadcastState {
 }
 
 #[derive(Debug)]
-struct QueueState<T> {
-    entries: VecDeque<Entry<T>>,
-    base_sequence: usize,
-    tail_sequence: usize,
-    active_readers: usize,
+struct ConsumerRegistry {
+    consumers: Vec<Arc<ConsumerProgress>>,
+    next_consumer: AtomicUsize,
+    active_count: AtomicUsize,
 }
 
 #[derive(Debug)]
 struct BroadcastQueue<T: Clone> {
-    state: Arc<Mutex<QueueState<T>>>,
+    queue_state: Arc<Mutex<QueueState<T>>>,
+    consumers: Arc<ConsumerRegistry>,
     notify: tokio::sync::watch::Sender<BroadcastState>,
 }
 
@@ -253,46 +258,63 @@ impl<T: Clone> BroadcastQueue<T> {
             closed: false,
         });
         Self {
-            state: Arc::new(Mutex::new(QueueState {
+            queue_state: Arc::new(Mutex::new(QueueState {
                 entries: VecDeque::new(),
                 base_sequence: 0,
                 tail_sequence: 0,
-                active_readers: expected_readers,
             })),
+            consumers: Arc::new(ConsumerRegistry {
+                consumers: (0..expected_readers)
+                    .map(|_| {
+                        Arc::new(ConsumerProgress {
+                            sequence: AtomicUsize::new(0),
+                            active: AtomicBool::new(true),
+                        })
+                    })
+                    .collect(),
+                next_consumer: AtomicUsize::new(0),
+                active_count: AtomicUsize::new(expected_readers),
+            }),
             notify,
         }
     }
 
-    fn new_consumer(&self) -> BroadcastConsumer<T> {
+    fn new_consumer(&self) -> Result<BroadcastConsumer<T>> {
         let rx = self.notify.subscribe();
         let state = *rx.borrow();
-        BroadcastConsumer {
+        let consumer_index = self.consumers.next_consumer.fetch_add(1, Ordering::Relaxed);
+        let Some(progress) = self.consumers.consumers.get(consumer_index) else {
+            return internal_err!(
+                "broadcast queue created more consumers than expected (index {consumer_index})"
+            );
+        };
+        let progress = Arc::clone(progress);
+        Ok(BroadcastConsumer {
             next_sequence: 0,
-            state: Arc::clone(&self.state),
+            progress,
+            consumers: Arc::clone(&self.consumers),
+            queue_state: Arc::clone(&self.queue_state),
             notify: WatchStream::new(rx),
             notification: state,
-            registered: true,
-        }
+        })
     }
 
     fn push(&self, value: T) {
         let tail_sequence = {
-            let mut queue_state = self.state.lock().unwrap();
+            let mut queue_state = self.queue_state.lock().unwrap();
 
             // Once every consumer has been dropped, no future consumer can execute this
             // queue, so don't add values that cannot be read.
-            if queue_state.active_readers == 0 {
+            if self.consumers.active_count.load(Ordering::Acquire) == 0 {
                 return;
             }
 
-            let tail_sequence = queue_state.tail_sequence;
-            let remaining_readers = queue_state.active_readers;
-            queue_state.entries.push_back(Entry {
-                value,
-                remaining_readers,
-            });
+            queue_state.entries.push_back(value);
             queue_state.tail_sequence += 1;
-            tail_sequence + 1
+            if queue_state.tail_sequence.is_multiple_of(RECLAIM_INTERVAL) {
+                Self::reclaim_locked(&self.consumers, &mut queue_state);
+            }
+            queue_state.tail_sequence
         };
 
         let mut broadcast_state = *self.notify.borrow();
@@ -300,9 +322,22 @@ impl<T: Clone> BroadcastQueue<T> {
         let _ = self.notify.send(broadcast_state);
     }
 
-    #[cfg(test)]
-    fn buffered_len(&self) -> usize {
-        self.state.lock().unwrap().entries.len()
+    fn reclaim_locked(consumers: &ConsumerRegistry, queue_state: &mut QueueState<T>) {
+        let minimum_sequence = consumers
+            .consumers
+            .iter()
+            .filter(|consumer| consumer.active.load(Ordering::Acquire))
+            .map(|consumer| consumer.sequence.load(Ordering::Acquire))
+            .min()
+            .unwrap_or(queue_state.tail_sequence);
+
+        while queue_state.base_sequence < minimum_sequence {
+            queue_state
+                .entries
+                .pop_front()
+                .expect("broadcast sequence bounds were inconsistent");
+            queue_state.base_sequence += 1;
+        }
     }
 }
 
@@ -314,13 +349,20 @@ impl<T: Clone> Drop for BroadcastQueue<T> {
     }
 }
 
+#[derive(Debug)]
+struct ConsumerProgress {
+    sequence: AtomicUsize,
+    active: AtomicBool,
+}
+
 /// A consumer stream that reads from the broadcast queue.
 struct BroadcastConsumer<T: Clone> {
     next_sequence: usize,
-    state: Arc<Mutex<QueueState<T>>>,
+    progress: Arc<ConsumerProgress>,
+    consumers: Arc<ConsumerRegistry>,
+    queue_state: Arc<Mutex<QueueState<T>>>,
     notify: WatchStream<BroadcastState>,
     notification: BroadcastState,
-    registered: bool,
 }
 
 impl<T: Clone> Stream for BroadcastConsumer<T> {
@@ -329,39 +371,34 @@ impl<T: Clone> Stream for BroadcastConsumer<T> {
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         loop {
             let value = if self.next_sequence < self.notification.tail_sequence {
-                let mut queue_state = self.state.lock().unwrap();
-                let offset = self
-                    .next_sequence
-                    .checked_sub(queue_state.base_sequence)
-                    .expect("broadcast consumer fell behind evicted entries");
-                let entry = queue_state
-                    .entries
-                    .get_mut(offset)
-                    .expect("broadcast entry sequence was not retained");
-                debug_assert!(entry.remaining_readers > 0);
-                let value = entry.value.clone();
-                entry.remaining_readers -= 1;
-
-                while queue_state
-                    .entries
-                    .front()
-                    .is_some_and(|entry| entry.remaining_readers == 0)
-                {
-                    queue_state.entries.pop_front();
-                    queue_state.base_sequence += 1;
+                let queue_state = self.queue_state.lock().unwrap();
+                if self.next_sequence >= queue_state.tail_sequence {
+                    None
+                } else {
+                    let offset = self
+                        .next_sequence
+                        .checked_sub(queue_state.base_sequence)
+                        .expect("broadcast consumer fell behind evicted entries");
+                    let entry = queue_state
+                        .entries
+                        .get(offset)
+                        .expect("broadcast entry sequence was not retained");
+                    Some(entry.clone())
                 }
-
-                Some(value)
             } else {
                 None
             };
 
             if let Some(value) = value {
                 self.next_sequence += 1;
+                self.progress
+                    .sequence
+                    .store(self.next_sequence, Ordering::Release);
                 return Poll::Ready(Some(value));
             }
 
             if self.notification.closed {
+                self.reclaim();
                 return Poll::Ready(None);
             }
 
@@ -378,28 +415,19 @@ impl<T: Clone> Stream for BroadcastConsumer<T> {
     }
 }
 
+impl<T: Clone> BroadcastConsumer<T> {
+    fn reclaim(&self) {
+        let mut queue_state = self.queue_state.lock().unwrap();
+        BroadcastQueue::<T>::reclaim_locked(&self.consumers, &mut queue_state);
+    }
+}
+
 impl<T: Clone> Drop for BroadcastConsumer<T> {
     fn drop(&mut self) {
-        if !self.registered {
-            return;
+        if self.progress.active.swap(false, Ordering::AcqRel) {
+            self.consumers.active_count.fetch_sub(1, Ordering::AcqRel);
         }
-
-        let mut state = self.state.lock().unwrap();
-        debug_assert!(self.next_sequence >= state.base_sequence);
-        let offset = self.next_sequence.saturating_sub(state.base_sequence);
-        for entry in state.entries.iter_mut().skip(offset) {
-            entry.remaining_readers = entry.remaining_readers.saturating_sub(1);
-        }
-        state.active_readers = state.active_readers.saturating_sub(1);
-
-        while state
-            .entries
-            .front()
-            .is_some_and(|entry| entry.remaining_readers == 0)
-        {
-            state.entries.pop_front();
-            state.base_sequence += 1;
-        }
+        self.reclaim();
     }
 }
 
@@ -428,32 +456,52 @@ mod tests {
         }
     }
 
+    fn buffered_len<T: Clone>(queue: &BroadcastQueue<T>) -> usize {
+        queue.queue_state.lock().unwrap().entries.len()
+    }
+
+    fn sequence_bounds<T: Clone>(queue: &BroadcastQueue<T>) -> (usize, usize) {
+        let state = queue.queue_state.lock().unwrap();
+        (state.base_sequence, state.tail_sequence)
+    }
+
     #[tokio::test]
     async fn broadcast_queue_evicts_consumed_prefix() {
         let queue = BroadcastQueue::new(2);
-        let mut consumer0 = queue.new_consumer();
-        let mut consumer1 = queue.new_consumer();
+        let mut consumer0 = queue.new_consumer().expect("consumer 0 registration");
+        let mut consumer1 = queue.new_consumer().expect("consumer 1 registration");
 
         queue.push(10);
         queue.push(20);
-        assert_eq!(queue.buffered_len(), 2);
+        assert_eq!(buffered_len(&queue), 2);
 
         assert_eq!(consumer0.next().await, Some(10));
-        assert_eq!(queue.buffered_len(), 2);
+        assert_eq!(buffered_len(&queue), 2);
         assert_eq!(consumer1.next().await, Some(10));
-        assert_eq!(queue.buffered_len(), 1);
+        assert_eq!(sequence_bounds(&queue), (0, 2));
 
         assert_eq!(consumer0.next().await, Some(20));
-        assert_eq!(queue.buffered_len(), 1);
+        assert_eq!(buffered_len(&queue), 2);
         assert_eq!(consumer1.next().await, Some(20));
-        assert_eq!(queue.buffered_len(), 0);
+        assert_eq!(buffered_len(&queue), 2);
+
+        // The eighth append observes that consumers have advanced and removes the consumed prefix.
+        for value in [30, 40, 50, 60, 70, 80] {
+            queue.push(value);
+        }
+        assert_eq!(sequence_bounds(&queue), (2, 8));
+        assert_eq!(buffered_len(&queue), 6);
+
+        drop(consumer0);
+        drop(consumer1);
+        assert_eq!(buffered_len(&queue), 0);
     }
 
     #[tokio::test]
     async fn broadcast_queue_drop_releases_unread_entries() {
         let queue = BroadcastQueue::new(2);
-        let mut consumer0 = queue.new_consumer();
-        let mut consumer1 = queue.new_consumer();
+        let mut consumer0 = queue.new_consumer().expect("consumer 0 registration");
+        let mut consumer1 = queue.new_consumer().expect("consumer 1 registration");
 
         queue.push(10);
         queue.push(20);
@@ -466,7 +514,8 @@ mod tests {
         assert_eq!(consumer1.next().await, Some(10));
         assert_eq!(consumer1.next().await, Some(20));
         assert_eq!(consumer1.next().await, Some(30));
-        assert_eq!(queue.buffered_len(), 0);
+        drop(consumer1);
+        assert_eq!(buffered_len(&queue), 0);
     }
 
     #[tokio::test]
