@@ -335,10 +335,12 @@ async fn _inject_network_boundaries(
             .nb_builder
             .build(input_stage, TypeId::of::<NetworkShuffleExec>(), nb_ctx)
             .await?;
-        let nb = Arc::new(NetworkShuffleExec::from_stage(
+        let consumer_partitioning = result.input_properties.partitioning.clone();
+        let shuffle = Arc::new(NetworkShuffleExec::from_stage(
             result.input_stage,
             result.input_properties,
         ));
+        let nb = Arc::new(RepartitionExec::try_new(shuffle, consumer_partitioning)?);
         Ok(nb_ctx.plan_with_task_count(nb, result.consumer_task_count))
     }
     // Upon reaching a broadcast, we need to introduce a network broadcast right above it.
@@ -726,10 +728,11 @@ mod tests {
             ProjectionExec: task_count=Desired(3)
               SortExec: task_count=Desired(3)
                 AggregateExec: task_count=Desired(3)
-                  NetworkShuffleExec: task_count=Desired(3)
-                    RepartitionExec: task_count=Desired(4)
-                      AggregateExec: task_count=Desired(4)
-                        DistributedLeafExec: task_count=Desired(4)
+                  RepartitionExec: task_count=Desired(3)
+                    NetworkShuffleExec: task_count=Desired(3)
+                      RepartitionExec: task_count=Desired(4)
+                        AggregateExec: task_count=Desired(4)
+                          DistributedLeafExec: task_count=Desired(4)
         ")
     }
 
@@ -747,12 +750,14 @@ mod tests {
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @"
         HashJoinExec: task_count=Desired(4)
-          NetworkShuffleExec: task_count=Desired(4)
-            RepartitionExec: task_count=Desired(4)
-              DistributedLeafExec: task_count=Desired(4)
-          NetworkShuffleExec: task_count=Desired(4)
-            RepartitionExec: task_count=Desired(4)
-              DistributedLeafExec: task_count=Desired(4)
+          RepartitionExec: task_count=Desired(4)
+            NetworkShuffleExec: task_count=Desired(4)
+              RepartitionExec: task_count=Desired(4)
+                DistributedLeafExec: task_count=Desired(4)
+          RepartitionExec: task_count=Desired(4)
+            NetworkShuffleExec: task_count=Desired(4)
+              RepartitionExec: task_count=Desired(4)
+                DistributedLeafExec: task_count=Desired(4)
         ")
     }
 
@@ -791,26 +796,30 @@ mod tests {
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @"
         HashJoinExec: task_count=Desired(2)
-          NetworkShuffleExec: task_count=Desired(2)
-            RepartitionExec: task_count=Desired(2)
-              ProjectionExec: task_count=Desired(2)
-                AggregateExec: task_count=Desired(2)
-                  NetworkShuffleExec: task_count=Desired(2)
-                    RepartitionExec: task_count=Desired(4)
-                      AggregateExec: task_count=Desired(4)
-                        FilterExec: task_count=Desired(4)
-                          RepartitionExec: task_count=Desired(4)
-                            DistributedLeafExec: task_count=Desired(4)
-          NetworkShuffleExec: task_count=Desired(2)
-            RepartitionExec: task_count=Desired(2)
-              ProjectionExec: task_count=Desired(2)
-                AggregateExec: task_count=Desired(2)
-                  NetworkShuffleExec: task_count=Desired(2)
-                    RepartitionExec: task_count=Desired(4)
-                      AggregateExec: task_count=Desired(4)
-                        FilterExec: task_count=Desired(4)
-                          RepartitionExec: task_count=Desired(4)
-                            DistributedLeafExec: task_count=Desired(4)
+          RepartitionExec: task_count=Desired(2)
+            NetworkShuffleExec: task_count=Desired(2)
+              RepartitionExec: task_count=Desired(2)
+                ProjectionExec: task_count=Desired(2)
+                  AggregateExec: task_count=Desired(2)
+                    RepartitionExec: task_count=Desired(2)
+                      NetworkShuffleExec: task_count=Desired(2)
+                        RepartitionExec: task_count=Desired(4)
+                          AggregateExec: task_count=Desired(4)
+                            FilterExec: task_count=Desired(4)
+                              RepartitionExec: task_count=Desired(4)
+                                DistributedLeafExec: task_count=Desired(4)
+          RepartitionExec: task_count=Desired(2)
+            NetworkShuffleExec: task_count=Desired(2)
+              RepartitionExec: task_count=Desired(2)
+                ProjectionExec: task_count=Desired(2)
+                  AggregateExec: task_count=Desired(2)
+                    RepartitionExec: task_count=Desired(2)
+                      NetworkShuffleExec: task_count=Desired(2)
+                        RepartitionExec: task_count=Desired(4)
+                          AggregateExec: task_count=Desired(4)
+                            FilterExec: task_count=Desired(4)
+                              RepartitionExec: task_count=Desired(4)
+                                DistributedLeafExec: task_count=Desired(4)
         ")
     }
 
@@ -850,12 +859,13 @@ mod tests {
             .distributed_planner(false)
             .broadcast_joins(false);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
-        assert_snapshot!(annotated, @r"
+        assert_snapshot!(annotated, @"
         AggregateExec: task_count=Desired(3)
-          NetworkShuffleExec: task_count=Desired(3)
-            RepartitionExec: task_count=Desired(4)
-              AggregateExec: task_count=Desired(4)
-                DistributedLeafExec: task_count=Desired(4)
+          RepartitionExec: task_count=Desired(3)
+            NetworkShuffleExec: task_count=Desired(3)
+              RepartitionExec: task_count=Desired(4)
+                AggregateExec: task_count=Desired(4)
+                  DistributedLeafExec: task_count=Desired(4)
         ")
     }
 
@@ -919,13 +929,14 @@ mod tests {
             .distributed_planner(false)
             .broadcast_joins(false);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
-        assert_snapshot!(annotated, @r"
+        assert_snapshot!(annotated, @"
         ProjectionExec: task_count=Desired(4)
           BoundedWindowAggExec: task_count=Desired(4)
             SortExec: task_count=Desired(4)
-              NetworkShuffleExec: task_count=Desired(4)
-                RepartitionExec: task_count=Desired(4)
-                  DistributedLeafExec: task_count=Desired(4)
+              RepartitionExec: task_count=Desired(4)
+                NetworkShuffleExec: task_count=Desired(4)
+                  RepartitionExec: task_count=Desired(4)
+                    DistributedLeafExec: task_count=Desired(4)
         ")
     }
 
@@ -974,12 +985,13 @@ mod tests {
             .broadcast_joins(false)
             .desired_task_count_handler(repartition_max_one_desired_task_count_handler);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
-        assert_snapshot!(annotated, @r"
+        assert_snapshot!(annotated, @"
         AggregateExec: task_count=Desired(1)
-          NetworkShuffleExec: task_count=Desired(1)
-            RepartitionExec: task_count=Desired(1)
-              AggregateExec: task_count=Desired(1)
-                DistributedLeafExec: task_count=Desired(1)
+          RepartitionExec: task_count=Desired(1)
+            NetworkShuffleExec: task_count=Desired(1)
+              RepartitionExec: task_count=Desired(1)
+                AggregateExec: task_count=Desired(1)
+                  DistributedLeafExec: task_count=Desired(1)
         ")
     }
 
