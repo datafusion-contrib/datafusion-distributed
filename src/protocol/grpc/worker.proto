@@ -23,7 +23,17 @@ message CoordinatorToWorkerMsg {
     WorkUnitBatch work_unit_batch = 2;
     // Signals an EOS for WorkUnits. After this message is received, no more WorkUnits will be sent.
     bool work_unit_eos = 3;
+    // Requests a side-effect-free reservation. This must be the first message in the stream.
+    // The server accepting the RPC response is the reservation acknowledgement; SetPlanRequest
+    // is sent only after that acknowledgement reaches the coordinator.
+    OpenTaskRequest open_task_request = 4;
   }
+}
+
+message OpenTaskRequest {
+  TaskKey task_key = 1;
+  bytes attempt_id = 2;
+  uint64 task_count = 3;
 }
 
 message WorkerToCoordinatorMsg {
@@ -131,6 +141,8 @@ message SetPlanRequest {
   // Unix nanos when the query started as reported by the coordinator. Used for collecting temporal metrics
   // relative to when the query was fired in the coordinator.
   uint64 query_start_time_ns = 6;
+  // Identifies the accepted OpenTaskRequest that this request commits.
+  bytes attempt_id = 7;
 }
 
 message WorkUnitBatch {

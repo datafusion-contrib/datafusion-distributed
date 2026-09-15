@@ -1,4 +1,7 @@
-use super::errors::{datafusion_error_to_tonic_status, map_status_to_datafusion_error};
+use super::errors::{
+    datafusion_error_to_tonic_status, datafusion_error_to_tonic_status_with_retry,
+    map_status_to_datafusion_error,
+};
 use super::generated::worker as pb;
 use super::metrics_proto::df_metrics_set_to_proto;
 use super::spawn_select_all::spawn_select_all;
@@ -7,8 +10,9 @@ use crate::common::{deserialize_uuid, now_ns};
 use crate::protocol::grpc::{ObservabilityServiceImpl, ObservabilityServiceServer};
 use crate::{
     CoordinatorToWorkerMsg, DistributedConfig, ExecuteTaskRequest, LoadInfo, MaybeEncoded,
-    ProducerHead, SetPlanRequest, TaskCompletedDynamicFilters, TaskKey, TaskMetrics, WorkUnitBatch,
-    WorkUnitFeedDeclaration, WorkUnitMsg, Worker, WorkerResolver, WorkerToCoordinatorMsg,
+    OpenTaskRequest, ProducerHead, SetPlanRequest, TaskCompletedDynamicFilters, TaskKey,
+    TaskMetrics, WorkUnitBatch, WorkUnitFeedDeclaration, WorkUnitMsg, Worker,
+    WorkerAdmissionRejection, WorkerResolver, WorkerToCoordinatorMsg,
 };
 
 use crate::worker::CoordinatorChannelResult;
@@ -101,32 +105,64 @@ impl pb::worker_service_server::WorkerService for Worker {
             .ok_or_else(empty("Coordinator stream"))?
             .inner
             .ok_or_else(missing("CoordinatorToWorkerMsg.inner"))?;
-        let pb::coordinator_to_worker_msg::Inner::SetPlanRequest(set_plan_request) = msg else {
+        let pb::coordinator_to_worker_msg::Inner::OpenTaskRequest(open_task_request) = msg else {
             return Err(Status::invalid_argument(
-                "First Coordinator to Worker message must be SetPlanRequest",
+                "First Coordinator to Worker message must be OpenTaskRequest",
             ));
         };
 
-        let set_plan_request = decode_set_plan_request(set_plan_request)?;
-
-        let input_stream = body
-            .map_err(map_status_to_datafusion_error)
-            .map(move |msg| {
-                decode_coordinator_to_worker_msg(msg?).map_err(map_status_to_datafusion_error)
-            })
-            .boxed();
-
-        let CoordinatorChannelResult { task_ctx, stream } = self
-            .coordinator_channel(metadata.into_headers(), set_plan_request, input_stream)
+        let open_task_request = decode_open_task_request(open_task_request)?;
+        let headers = metadata.into_headers();
+        let reservation = self
+            .admit_task(headers.clone(), open_task_request)
             .await
-            .map_err(datafusion_error_to_tonic_status)?;
+            .map_err(admission_rejection_to_tonic_status)?;
 
-        let output_stream = stream
-            .map(move |msg| match msg {
-                Ok(msg) => encode_worker_to_coordinator_msg(msg, &task_ctx),
-                Err(err) => Err(datafusion_error_to_tonic_status(err)),
-            })
-            .boxed();
+        let worker = self.clone();
+        let reservation_timeout = self.task_reservation_timeout();
+        let output_stream = futures::stream::once(async move {
+            let msg = tokio::time::timeout(reservation_timeout, body.message())
+                .await
+                .map_err(|_| {
+                    Status::deadline_exceeded("Task reservation expired before SetPlanRequest")
+                })??
+                .ok_or_else(empty("Coordinator stream after OpenTaskRequest"))?
+                .inner
+                .ok_or_else(missing("CoordinatorToWorkerMsg.inner"))?;
+            let pb::coordinator_to_worker_msg::Inner::SetPlanRequest(set_plan_request) = msg else {
+                return Err(Status::invalid_argument(
+                    "Second Coordinator to Worker message must be SetPlanRequest",
+                ));
+            };
+
+            let set_plan_request = decode_set_plan_request(set_plan_request)?;
+            let permit = reservation
+                .commit(&set_plan_request)
+                .map_err(datafusion_error_to_tonic_status)?;
+
+            let input_stream = body
+                .map_err(map_status_to_datafusion_error)
+                .map(move |msg| {
+                    decode_coordinator_to_worker_msg(msg?).map_err(map_status_to_datafusion_error)
+                })
+                .boxed();
+
+            let CoordinatorChannelResult { task_ctx, stream } = worker
+                .coordinator_channel_with_permit(headers, set_plan_request, input_stream, permit)
+                .await
+                .map_err(datafusion_error_to_tonic_status)?;
+
+            let stream = stream
+                .map(move |msg| match msg {
+                    Ok(msg) => encode_worker_to_coordinator_msg(msg, &task_ctx),
+                    Err(err) => Err(datafusion_error_to_tonic_status(err)),
+                })
+                .boxed();
+
+            Ok::<_, Status>(stream)
+        })
+        .try_flatten()
+        .boxed();
 
         Ok(Response::new(output_stream))
     }
@@ -206,7 +242,7 @@ fn decode_coordinator_to_worker_msg(
         {
             pb::coordinator_to_worker_msg::Inner::SetPlanRequest(_) => {
                 return Err(Status::invalid_argument(
-                    "SetPlanRequest must be the first coordinator message",
+                    "SetPlanRequest must immediately follow OpenTaskRequest",
                 ));
             }
             pb::coordinator_to_worker_msg::Inner::WorkUnitBatch(batch) => {
@@ -215,13 +251,29 @@ fn decode_coordinator_to_worker_msg(
             pb::coordinator_to_worker_msg::Inner::WorkUnitEos(_) => {
                 CoordinatorToWorkerMsg::WorkUnitEos
             }
+            pb::coordinator_to_worker_msg::Inner::OpenTaskRequest(_) => {
+                return Err(Status::invalid_argument(
+                    "OpenTaskRequest must be the first coordinator message",
+                ));
+            }
         },
     )
+}
+
+fn decode_open_task_request(request: pb::OpenTaskRequest) -> Result<OpenTaskRequest, Status> {
+    Ok(OpenTaskRequest {
+        task_key: decode_task_key(request.task_key.ok_or_else(missing("task_key"))?)?,
+        attempt_id: deserialize_uuid(&request.attempt_id)
+            .map_err(datafusion_error_to_tonic_status)?,
+        task_count: request.task_count as usize,
+    })
 }
 
 fn decode_set_plan_request(request: pb::SetPlanRequest) -> Result<SetPlanRequest, Status> {
     Ok(SetPlanRequest {
         task_key: decode_task_key(request.task_key.ok_or_else(missing("task_key"))?)?,
+        attempt_id: deserialize_uuid(&request.attempt_id)
+            .map_err(datafusion_error_to_tonic_status)?,
         task_count: request.task_count as usize,
         plan: MaybeEncoded::Encoded(request.plan_proto),
         work_unit_feed_declarations: request
@@ -232,6 +284,14 @@ fn decode_set_plan_request(request: pb::SetPlanRequest) -> Result<SetPlanRequest
         target_worker_url: parse_url(&request.target_worker_url, "target_worker_url")?,
         query_start_time_ns: request.query_start_time_ns as usize,
     })
+}
+
+fn admission_rejection_to_tonic_status(rejection: WorkerAdmissionRejection) -> Status {
+    let (error, retry_target) = rejection.into_parts();
+    match retry_target {
+        Some(retry_target) => datafusion_error_to_tonic_status_with_retry(error, retry_target),
+        None => datafusion_error_to_tonic_status(error),
+    }
 }
 
 async fn decode_execute_task_request(
@@ -460,4 +520,134 @@ fn garbage_collect_arrays(
         arrays,
         &RecordBatchOptions::new().with_row_count(Some(row_count)),
     )?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::{RetryOutcome, serialize_uuid};
+    use crate::{
+        DefaultSessionBuilder, RetryTarget, WorkerAdmissionController, WorkerAdmissionPermit,
+        WorkerAdmissionRequest,
+    };
+    use async_trait::async_trait;
+    use datafusion::common::exec_datafusion_err;
+    use hyper_util::rt::TokioIo;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio_stream::wrappers::UnboundedReceiverStream;
+    use tonic::transport::{Endpoint, Server};
+    use tower::service_fn;
+    use uuid::Uuid;
+
+    #[tokio::test]
+    async fn open_task_is_acknowledged_before_set_plan_side_effects() {
+        let sessions_built = Arc::new(AtomicUsize::new(0));
+        let sessions_built_clone = Arc::clone(&sessions_built);
+        let worker = Worker::from_session_builder(move |ctx: crate::WorkerQueryContext| {
+            let sessions_built = Arc::clone(&sessions_built_clone);
+            async move {
+                sessions_built.fetch_add(1, Ordering::SeqCst);
+                Ok(ctx.builder.build())
+            }
+        });
+        let worker_for_assert = worker.clone();
+        let (mut client, server) = test_client_and_server(worker).await;
+
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tx.send(open_task_message()).unwrap();
+
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            client.coordinator_channel(UnboundedReceiverStream::new(rx)),
+        )
+        .await
+        .expect("OpenTaskRequest was not acknowledged before SetPlanRequest")
+        .unwrap();
+
+        assert_eq!(sessions_built.load(Ordering::SeqCst), 0);
+        assert_eq!(worker_for_assert.tasks_running().await, 0);
+
+        drop(response);
+        drop(tx);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn admission_rejection_carries_worker_retry_target() {
+        let worker = Worker::from_session_builder(DefaultSessionBuilder)
+            .with_admission_controller(RejectDifferentWorker);
+        let (mut client, server) = test_client_and_server(worker).await;
+
+        let error = client
+            .coordinator_channel(futures::stream::iter([open_task_message()]))
+            .await
+            .unwrap_err();
+        let error = super::super::errors::tonic_status_to_datafusion_error(error).unwrap();
+
+        assert_eq!(
+            RetryOutcome::try_from_err(&error),
+            Some(RetryOutcome::OtherUrl)
+        );
+        assert!(error.to_string().contains("worker is full"));
+        server.abort();
+    }
+
+    struct RejectDifferentWorker;
+
+    #[async_trait]
+    impl WorkerAdmissionController for RejectDifferentWorker {
+        async fn admit(
+            &self,
+            _request: &WorkerAdmissionRequest,
+        ) -> Result<WorkerAdmissionPermit, WorkerAdmissionRejection> {
+            Err(WorkerAdmissionRejection::retry(
+                exec_datafusion_err!("worker is full"),
+                RetryTarget::DifferentWorker,
+            ))
+        }
+    }
+
+    fn open_task_message() -> pb::CoordinatorToWorkerMsg {
+        pb::CoordinatorToWorkerMsg {
+            inner: Some(pb::coordinator_to_worker_msg::Inner::OpenTaskRequest(
+                pb::OpenTaskRequest {
+                    task_key: Some(pb::TaskKey {
+                        query_id: serialize_uuid(&Uuid::new_v4()),
+                        stage_id: 1,
+                        task_number: 2,
+                    }),
+                    attempt_id: serialize_uuid(&Uuid::new_v4()),
+                    task_count: 3,
+                },
+            )),
+        }
+    }
+
+    async fn test_client_and_server(
+        worker: Worker,
+    ) -> (
+        pb::worker_service_client::WorkerServiceClient<tonic::transport::Channel>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let (client_io, server_io) = tokio::io::duplex(1024 * 1024);
+        let mut client_io = Some(client_io);
+        let channel = Endpoint::from_static("http://worker.test").connect_with_connector_lazy(
+            service_fn(move |_| {
+                let client_io = client_io.take().expect("connector called twice");
+                async move { Ok::<_, std::io::Error>(TokioIo::new(client_io)) }
+            }),
+        );
+        #[allow(clippy::disallowed_methods)]
+        let server = tokio::spawn(async move {
+            Server::builder()
+                .add_service(worker.into_worker_server())
+                .serve_with_incoming(tokio_stream::once(Ok::<_, std::io::Error>(server_io)))
+                .await
+                .unwrap();
+        });
+        (
+            pb::worker_service_client::WorkerServiceClient::new(channel),
+            server,
+        )
+    }
 }

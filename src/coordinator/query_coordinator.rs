@@ -1,5 +1,5 @@
 use crate::codec::roundtrip_pb;
-use crate::common::{TreeNodeExt, now_ns, task_ctx_with_extension};
+use crate::common::{RetryOutcome, TreeNodeExt, now_ns, task_ctx_with_extension};
 use crate::config_extension_ext::get_config_extension_propagation_headers;
 use crate::coordinator::Store;
 use crate::coordinator::latency_metric::LatencyMetric;
@@ -15,8 +15,8 @@ use crate::work_unit_feed::{build_work_unit_batch_msg, set_work_unit_send_time};
 use crate::{
     CoordinatorToWorkerMsg, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedGetterExt,
     DistributedTaskContext, DistributedWorkUnitFeedContext, LoadInfo, LocalWorkerContext,
-    MaybeEncoded, SetPlanRequest, TaskCompletedDynamicFilters, TaskKey, TaskMetrics,
-    WorkUnitFeedDeclaration, WorkerToCoordinatorMsg, get_distributed_channel_resolver,
+    MaybeEncoded, OpenTaskRequest, SetPlanRequest, TaskCompletedDynamicFilters, TaskKey,
+    TaskMetrics, WorkUnitFeedDeclaration, WorkerToCoordinatorMsg, get_distributed_channel_resolver,
 };
 use datafusion::common::Result;
 use datafusion::common::instant::Instant;
@@ -174,6 +174,7 @@ impl<'a> StageCoordinator<'a> {
         let coordinator_to_worker_tx_slot = Mutex::new(None);
 
         let dialer = new_coordinator_to_worker_dialer(|url| {
+            let attempt_id = Uuid::new_v4();
             let (coordinator_to_worker_tx, coordinator_to_worker_rx) =
                 tokio::sync::mpsc::unbounded_channel();
             coordinator_to_worker_tx_slot
@@ -197,8 +198,14 @@ impl<'a> StageCoordinator<'a> {
                     .chain(keep_stream_alive(Arc::clone(self.end_stream_notifier)))
                     .boxed();
 
+            let open_task_request = OpenTaskRequest {
+                task_key,
+                attempt_id,
+                task_count: self.task_count,
+            };
             let set_plan_request = SetPlanRequest {
                 task_key,
+                attempt_id,
                 task_count: self.task_count,
                 plan: MaybeEncoded::Decoded(Arc::clone(&specialized)),
                 work_unit_feed_declarations: work_unit_feed_declarations.clone(),
@@ -219,12 +226,16 @@ impl<'a> StageCoordinator<'a> {
                     _ => {
                         metrics.remote_coordinator_channels.add(1);
                         let ch_resolver = get_distributed_channel_resolver(task_ctx.as_ref());
-                        ch_resolver.get_worker_client_for_url(&url).await
+                        ch_resolver
+                            .get_worker_client_for_url(&url)
+                            .await
+                            .map_err(|error| RetryOutcome::OtherUrl.tag(error))
                     }
                 }?;
                 let worker_to_coordinator_stream = client
                     .coordinator_channel(
                         headers,
+                        open_task_request,
                         set_plan_request,
                         coordinator_to_worker_stream,
                         metrics_set,

@@ -24,6 +24,7 @@ pub trait WorkerChannel: Send + Sync {
     async fn coordinator_channel(
         &mut self,
         headers: HeaderMap,
+        open_task_request: OpenTaskRequest,
         set_plan_request: SetPlanRequest,
         c2w_stream: BoxStream<'static, CoordinatorToWorkerMsg>,
         metrics: ExecutionPlanMetricsSet,
@@ -44,6 +45,21 @@ pub trait WorkerChannel: Send + Sync {
         &mut self,
         request: GetWorkerInfoRequest,
     ) -> Result<GetWorkerInfoResponse>;
+}
+
+/// Requests a side-effect-free task reservation from a worker.
+///
+/// A worker must not decode the plan, build a session, start sampling, or publish task state
+/// until the matching [`SetPlanRequest`] is received after this request is accepted.
+#[derive(Clone, Copy, Debug)]
+pub struct OpenTaskRequest {
+    /// The unique identifier of the task that may be committed to this worker.
+    pub task_key: TaskKey,
+    /// Identifies this individual placement attempt. Retries must use a new attempt ID.
+    pub attempt_id: Uuid,
+    /// The amount of tasks that share the same subplan. Admission controllers can use this as a
+    /// load hint without inspecting or decoding the plan.
+    pub task_count: usize,
 }
 
 pub enum CoordinatorToWorkerMsg {
@@ -76,6 +92,8 @@ pub struct WorkUnitFeedDeclaration {
 pub struct SetPlanRequest {
     /// The unique identifier of the task to which the subplan belongs to.
     pub task_key: TaskKey,
+    /// The placement attempt accepted by the worker before this request was sent.
+    pub attempt_id: Uuid,
     /// The amount of tasks that share the same subplan. Necessary for building the DistributedTaskContext during execution.
     pub task_count: usize,
     /// The subplan the worker is expected to execute.
