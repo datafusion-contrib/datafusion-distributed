@@ -17,8 +17,8 @@ pub(super) fn scale_partitioning_props(
 }
 
 /// Returns a new Hash partitioning with `salt` appended to the expressions and the partition
-/// count set to `consumer_task_count`. This creates one partition per consumer task so that
-/// each consumer task fetches exactly one partition from each producer.
+/// count set to `consumer_task_count`. The salt breaks hash correlation that would skew
+/// distribution when `consumer_task_count` and the producer's partition count share a common factor.
 pub(super) fn salted_partitioning(
     partitioning: &Partitioning,
     salt: u64,

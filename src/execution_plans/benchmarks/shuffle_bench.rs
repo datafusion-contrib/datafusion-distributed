@@ -2,6 +2,7 @@ use super::fixture::{
     InMemoryChannelsResolver, benchmark_schema, make_input_partitions, rows_for_producer,
 };
 use crate::common::task_ctx_with_extension;
+use crate::execution_plans::{PRODUCER_SALT_DEFAULT, ShuffleMode};
 use crate::stage::RemoteStage;
 use crate::worker::WorkerConnectionPool;
 use crate::worker::test_utils::worker_handles::MemoryWorkerHandle;
@@ -233,7 +234,9 @@ impl ShuffleFixture {
                 consumer_partitioning,
                 input_stage: input_stage.clone(),
                 worker_connections: WorkerConnectionPool::new(self.bench.producer_tasks),
-                producer_salt: 0x517cc1b727220a95,
+                mode: ShuffleMode::Salted {
+                    salt: PRODUCER_SALT_DEFAULT,
+                },
             };
             let task_ctx = Arc::new(task_ctx_with_extension(
                 &self.task_ctx,

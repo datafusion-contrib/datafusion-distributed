@@ -2,6 +2,7 @@ use super::fixture::{
     InMemoryChannelsResolver, benchmark_schema, make_input_partitions, rows_for_producer,
 };
 use crate::common::task_ctx_with_extension;
+use crate::execution_plans::{PRODUCER_SALT_DEFAULT, ShuffleMode};
 use crate::stage::RemoteStage;
 use crate::worker::test_utils::worker_handles::{MemoryWorkerHandle, TcpWorkerHandle};
 use crate::{DistributedExt, DistributedTaskContext, NetworkShuffleExec, Stage, grpc};
@@ -284,7 +285,9 @@ impl TransportFixture {
                 worker_connections: crate::worker::WorkerConnectionPool::new(
                     self.bench.producer_tasks,
                 ),
-                producer_salt: 0x517cc1b727220a95,
+                mode: ShuffleMode::Salted {
+                    salt: PRODUCER_SALT_DEFAULT,
+                },
             };
             let task_ctx = Arc::new(task_ctx_with_extension(
                 &self.task_ctx,
