@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use bytes::Bytes;
 use datafusion::arrow::compute::cast;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::{DataFusionError, exec_err};
@@ -12,7 +13,7 @@ use datafusion::prelude::ParquetReadOptions;
 use datafusion_distributed_iceberg::iceberg;
 use futures::StreamExt;
 use iceberg::arrow::{arrow_schema_to_schema_auto_assign_ids, schema_to_arrow_schema};
-use iceberg::io::LocalFsStorageFactory;
+use iceberg::io::{FileIOBuilder, StorageFactory};
 use iceberg::memory::{MEMORY_CATALOG_WAREHOUSE, MemoryCatalogBuilder};
 use iceberg::spec::DataFileFormat;
 use iceberg::transaction::{ApplyTransactionAction, Transaction};
@@ -24,6 +25,7 @@ use iceberg::writer::file_writer::location_generator::{
 use iceberg::writer::file_writer::rolling_writer::RollingFileWriterBuilder;
 use iceberg::writer::{IcebergWriter, IcebergWriterBuilder};
 use iceberg::{Catalog, CatalogBuilder, NamespaceIdent, TableCreation};
+use iceberg_storage_opendal::OpenDalResolvingStorageFactory;
 use parquet::file::properties::WriterProperties;
 
 #[expect(
@@ -32,18 +34,38 @@ use parquet::file::properties::WriterProperties;
 )]
 type CatalogProperties = std::collections::HashMap<String, String>;
 
-/// The sibling dataset directory used for the Iceberg representation.
-pub(super) fn output_path(input: &Path) -> PathBuf {
-    let mut name = input.file_name().unwrap_or_default().to_os_string();
-    name.push("_iceberg");
-    input.with_file_name(name)
+/// Resolve the destination URI, defaulting to a local sibling dataset.
+pub(super) fn output_location(
+    input: &Path,
+    output: Option<&str>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let local_path = match output {
+        None => {
+            let mut name = input.file_name().unwrap_or_default().to_os_string();
+            name.push("_iceberg");
+            input.with_file_name(name)
+        }
+        Some(output) => match url::Url::parse(output) {
+            Ok(url) if url.scheme() == "file" => url
+                .to_file_path()
+                .map_err(|()| format!("invalid file URI: {output}"))?,
+            Ok(_) => return Ok(trim_uri(output)),
+            Err(_) => PathBuf::from(output),
+        },
+    };
+    let local_path = std::path::absolute(local_path)?;
+    if local_path.exists() && fs::read_dir(&local_path)?.next().is_some() {
+        return Err(format!("output dataset is not empty: {}", local_path.display()).into());
+    }
+    fs::create_dir_all(&local_path)?;
+    file_uri(&local_path.canonicalize()?)
 }
 
 /// Converts prepared local Parquet tables, independently of their query suite.
 /// Data is streamed one input file at a time; completion is marked last.
 pub(super) async fn convert_parquet_to_iceberg(
     source_dir: &Path,
-    output_dir: &Path,
+    output_location: &str,
     target_file_size: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if target_file_size == 0 {
@@ -52,10 +74,6 @@ pub(super) async fn convert_parquet_to_iceberg(
     if !source_dir.is_dir() {
         return Err(format!("source dataset does not exist: {}", source_dir.display()).into());
     }
-    if output_dir.exists() && fs::read_dir(output_dir)?.next().is_some() {
-        return Err(format!("output dataset is not empty: {}", output_dir.display()).into());
-    }
-
     let tables = fs::read_dir(source_dir)?
         .map(|entry| entry.map(|entry| entry.path()))
         .collect::<Result<Vec<_>, _>>()?
@@ -72,14 +90,20 @@ pub(super) async fn convert_parquet_to_iceberg(
     if tables.is_empty() {
         return Err("conversion requires a non-empty Parquet dataset".into());
     }
-    fs::create_dir_all(output_dir)?;
-    let output_dir = output_dir.canonicalize()?;
-    let warehouse = file_uri(&output_dir)?;
+    let storage_factory: Arc<dyn StorageFactory> = Arc::new(OpenDalResolvingStorageFactory::new());
+    let file_io = FileIOBuilder::new(Arc::clone(&storage_factory)).build();
+    let success_location = join_uri(output_location, "_SUCCESS");
+    if file_io.exists(&success_location).await? {
+        return Err(format!("output dataset already exists: {output_location}").into());
+    }
     let catalog = MemoryCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
+        .with_storage_factory(storage_factory)
         .load(
             "benchmark",
-            CatalogProperties::from([(MEMORY_CATALOG_WAREHOUSE.to_string(), warehouse)]),
+            CatalogProperties::from([(
+                MEMORY_CATALOG_WAREHOUSE.to_string(),
+                output_location.to_string(),
+            )]),
         )
         .await?;
     let namespace = NamespaceIdent::new("benchmark".to_string());
@@ -105,12 +129,15 @@ pub(super) async fn convert_parquet_to_iceberg(
             table_name,
             plans,
             ctx.task_ctx(),
-            &output_dir,
+            output_location,
             target_file_size,
         )
         .await?;
     }
-    fs::write(output_dir.join("_SUCCESS"), b"")?;
+    file_io
+        .new_output(success_location)?
+        .write(Bytes::new())
+        .await?;
     Ok(())
 }
 
@@ -120,14 +147,15 @@ async fn write_table(
     table_name: &str,
     plans: Vec<Arc<dyn ExecutionPlan>>,
     task_ctx: Arc<datafusion::execution::TaskContext>,
-    output_dir: &Path,
+    output_location: &str,
     target_file_size: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let Some(first_plan) = plans.first() else {
         return Err(format!("Parquet table {table_name} contains no files").into());
     };
     let iceberg_schema = arrow_schema_to_schema_auto_assign_ids(first_plan.schema().as_ref())?;
-    let table_location = file_uri(&output_dir.join(table_name))?;
+    let table_location = join_uri(output_location, table_name);
+    let metadata_location = join_uri(&table_location, "metadata.json");
     let table = catalog
         .create_table(
             namespace,
@@ -183,10 +211,11 @@ async fn write_table(
     let action = tx.fast_append().add_data_files(data_files);
     let table = action.apply(tx)?.commit(catalog).await?;
     // These benchmark tables are immutable: keep the committed metadata at a fixed path.
-    fs::write(
-        output_dir.join(table_name).join("metadata.json"),
-        serde_json::to_vec(table.metadata())?,
-    )?;
+    table
+        .file_io()
+        .new_output(metadata_location)?
+        .write(Bytes::from(serde_json::to_vec(table.metadata())?))
+        .await?;
     Ok(())
 }
 
@@ -274,6 +303,14 @@ fn align_batch_schema(
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(RecordBatch::try_new(schema, columns)?)
+}
+
+fn join_uri(base: &str, child: &str) -> String {
+    format!("{}/{child}", base.trim_end_matches('/'))
+}
+
+fn trim_uri(uri: &str) -> String {
+    uri.trim_end_matches('/').to_string()
 }
 
 fn file_uri(path: &Path) -> Result<String, Box<dyn std::error::Error>> {

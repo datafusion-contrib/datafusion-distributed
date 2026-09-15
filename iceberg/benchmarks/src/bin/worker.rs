@@ -1,6 +1,7 @@
 use std::error::Error;
 
 use datafusion_distributed_benchmarks::remote_worker::{RemoteBenchmarkWorker, RemoteWorkerOpt};
+use datafusion_distributed_iceberg_benchmarks::IcebergBenchmarkBackend;
 use structopt::StructOpt;
 
 #[global_allocator]
@@ -14,6 +15,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .init();
 
     RemoteBenchmarkWorker::builder(RemoteWorkerOpt::from_args())
+        .with_backend(IcebergBenchmarkBackend)
         .serve()
         .await
 }
