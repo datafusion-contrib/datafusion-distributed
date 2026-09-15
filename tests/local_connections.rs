@@ -106,15 +106,8 @@ mod tests {
             Ok(TreeNodeRecursion::Continue)
         })?;
 
-        // The plan above has two stages, with two tasks each, so 4 tasks in total. Assuming the
-        // coordinator is the worker 0, the network boundary->worker channels are the following:
-        // - coordinator worker 0 -> stage 1, worker 0 | local
-        // - coordinator worker 0 -> stage 1, worker 1 | remote
-        // - stage 1, worker 0 -> stage 0, worker 0    | local
-        // - stage 1, worker 0 -> stage 0, worker 1    | remote
-        // - stage 1, worker 1 -> stage 0, worker 0    | remote
-        // - stage 1, worker 1 -> stage 0, worker 1    | local
-        assert_eq!(local_connections_used, 3);
+        // Direct mode (M=2, N=3): 1 local from coordinator + 3 per consumer task = 7.
+        assert_eq!(local_connections_used, 7);
 
         Ok(())
     }

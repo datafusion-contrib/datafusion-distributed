@@ -5,6 +5,7 @@ use crate::events::{
     TaskCountAnnotation,
 };
 use crate::execution_plans::{ChildWeight, ChildrenIsolatorUnionExec};
+use crate::execution_plans::{MAX_MN_FOR_DIRECT, PRODUCER_SALT_DEFAULT, ShuffleMode};
 use crate::stage::LocalStage;
 use crate::worker_resolver::WorkerResolverExtension;
 use crate::{
@@ -31,9 +32,6 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use uuid::Uuid;
-
-/// Omit the consumer-side [RepartitionExec] above this partition count; the [NetworkShuffleExec] alone is sufficient.
-const MAX_PARTITIONS_FOR_REPARTITION: usize = 75;
 
 /// Walks an [ExecutionPlan] and injects [NetworkShuffleExec], [NetworkBroadcastExec], and
 /// [NetworkCoalesceExec] nodes wherever a stage boundary is needed. The returned plan has the
@@ -226,19 +224,6 @@ fn plan_ptr_key(plan: &Arc<dyn ExecutionPlan>) -> usize {
     Arc::as_ptr(plan) as *const () as usize
 }
 
-/// Wraps `plan` in a [RepartitionExec] when `partition_count * task_count` is within [MAX_PARTITIONS_FOR_REPARTITION]; otherwise returns it unchanged.
-fn repartition_if_within_limit(
-    partition_count: usize,
-    task_count: usize,
-    plan: Arc<dyn ExecutionPlan>,
-    partitioning: Partitioning,
-) -> Result<Arc<dyn ExecutionPlan>> {
-    if partition_count * task_count > MAX_PARTITIONS_FOR_REPARTITION {
-        return Ok(plan);
-    }
-    Ok(Arc::new(RepartitionExec::try_new(plan, partitioning)?))
-}
-
 /// WARNING: every return statement in this function must funnel through
 /// [InjectNetworkBoundaryContext::plan_with_task_count]
 /// (or [InjectNetworkBoundaryContext::set_task_count] on the way through) so the returned node has
@@ -352,27 +337,33 @@ async fn _inject_network_boundaries(
             .build(input_stage, TypeId::of::<NetworkShuffleExec>(), nb_ctx)
             .await?;
         let consumer_partitioning = result.input_properties.partitioning.clone();
-        let total_consumer_partitions =
-            consumer_partitioning.partition_count() * result.consumer_task_count.as_usize();
-        let will_repartition = total_consumer_partitions <= MAX_PARTITIONS_FOR_REPARTITION;
-        let producer_task_count = result.input_stage.task_count();
-        let output_partitions = if will_repartition {
-            producer_task_count
+        let producer_tasks = result.input_stage.task_count();
+        let consumer_partitions = consumer_partitioning.partition_count();
+        let salted = producer_tasks * consumer_partitions > MAX_MN_FOR_DIRECT;
+        let (output_partitions, mode) = if salted {
+            // Hash(key+salt, M); consumer adds RepartitionExec
+            (
+                producer_tasks,
+                ShuffleMode::Salted {
+                    salt: PRODUCER_SALT_DEFAULT,
+                },
+            )
         } else {
-            1
+            // Hash(key, M×N); consumer reads global partitions directly
+            (consumer_partitions, ShuffleMode::Direct)
         };
         let shuffle = Arc::new(NetworkShuffleExec::from_stage(
             result.input_stage,
             result.input_properties,
             output_partitions,
+            mode,
         ));
-        let nb = repartition_if_within_limit(
-            consumer_partitioning.partition_count(),
-            result.consumer_task_count.as_usize(),
-            shuffle,
-            consumer_partitioning,
-        )?;
-        Ok(nb_ctx.plan_with_task_count(nb, result.consumer_task_count))
+        let plan: Arc<dyn ExecutionPlan> = if salted {
+            Arc::new(RepartitionExec::try_new(shuffle, consumer_partitioning)?)
+        } else {
+            shuffle
+        };
+        Ok(nb_ctx.plan_with_task_count(plan, result.consumer_task_count))
     }
     // Upon reaching a broadcast, we need to introduce a network broadcast right above it.
     else if let Some(_b_exec) = plan.downcast_ref::<BroadcastExec>() {
@@ -698,9 +689,7 @@ mod tests {
     use crate::distributed_planner::normalize_collect_joins::normalize_collect_joins;
     use crate::test_utils::plans::{TestPlanBuilder, build_side_one_desired_task_count_handler};
     use crate::{DesiredTaskCountEvent, DesiredTaskCountEventResponse, assert_snapshot};
-    use datafusion::arrow::datatypes::Schema;
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
-    use datafusion::physical_plan::empty::EmptyExec;
     /* schema for the "weather" table
 
      MinTemp [type=DOUBLE] [repetitiontype=OPTIONAL]
@@ -761,11 +750,10 @@ mod tests {
             ProjectionExec: task_count=Desired(3)
               SortExec: task_count=Desired(3)
                 AggregateExec: task_count=Desired(3)
-                  RepartitionExec: task_count=Desired(3)
-                    NetworkShuffleExec: task_count=Desired(3)
-                      RepartitionExec: task_count=Desired(4)
-                        AggregateExec: task_count=Desired(4)
-                          DistributedLeafExec: task_count=Desired(4)
+                  NetworkShuffleExec: task_count=Desired(3)
+                    RepartitionExec: task_count=Desired(4)
+                      AggregateExec: task_count=Desired(4)
+                        DistributedLeafExec: task_count=Desired(4)
         ")
     }
 
@@ -783,14 +771,12 @@ mod tests {
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @"
         HashJoinExec: task_count=Desired(4)
-          RepartitionExec: task_count=Desired(4)
-            NetworkShuffleExec: task_count=Desired(4)
-              RepartitionExec: task_count=Desired(4)
-                DistributedLeafExec: task_count=Desired(4)
-          RepartitionExec: task_count=Desired(4)
-            NetworkShuffleExec: task_count=Desired(4)
-              RepartitionExec: task_count=Desired(4)
-                DistributedLeafExec: task_count=Desired(4)
+          NetworkShuffleExec: task_count=Desired(4)
+            RepartitionExec: task_count=Desired(4)
+              DistributedLeafExec: task_count=Desired(4)
+          NetworkShuffleExec: task_count=Desired(4)
+            RepartitionExec: task_count=Desired(4)
+              DistributedLeafExec: task_count=Desired(4)
         ")
     }
 
@@ -829,30 +815,26 @@ mod tests {
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @"
         HashJoinExec: task_count=Desired(2)
-          RepartitionExec: task_count=Desired(2)
-            NetworkShuffleExec: task_count=Desired(2)
-              RepartitionExec: task_count=Desired(2)
-                ProjectionExec: task_count=Desired(2)
-                  AggregateExec: task_count=Desired(2)
-                    RepartitionExec: task_count=Desired(2)
-                      NetworkShuffleExec: task_count=Desired(2)
-                        RepartitionExec: task_count=Desired(4)
-                          AggregateExec: task_count=Desired(4)
-                            FilterExec: task_count=Desired(4)
-                              RepartitionExec: task_count=Desired(4)
-                                DistributedLeafExec: task_count=Desired(4)
-          RepartitionExec: task_count=Desired(2)
-            NetworkShuffleExec: task_count=Desired(2)
-              RepartitionExec: task_count=Desired(2)
-                ProjectionExec: task_count=Desired(2)
-                  AggregateExec: task_count=Desired(2)
-                    RepartitionExec: task_count=Desired(2)
-                      NetworkShuffleExec: task_count=Desired(2)
-                        RepartitionExec: task_count=Desired(4)
-                          AggregateExec: task_count=Desired(4)
-                            FilterExec: task_count=Desired(4)
-                              RepartitionExec: task_count=Desired(4)
-                                DistributedLeafExec: task_count=Desired(4)
+          NetworkShuffleExec: task_count=Desired(2)
+            RepartitionExec: task_count=Desired(2)
+              ProjectionExec: task_count=Desired(2)
+                AggregateExec: task_count=Desired(2)
+                  NetworkShuffleExec: task_count=Desired(2)
+                    RepartitionExec: task_count=Desired(4)
+                      AggregateExec: task_count=Desired(4)
+                        FilterExec: task_count=Desired(4)
+                          RepartitionExec: task_count=Desired(4)
+                            DistributedLeafExec: task_count=Desired(4)
+          NetworkShuffleExec: task_count=Desired(2)
+            RepartitionExec: task_count=Desired(2)
+              ProjectionExec: task_count=Desired(2)
+                AggregateExec: task_count=Desired(2)
+                  NetworkShuffleExec: task_count=Desired(2)
+                    RepartitionExec: task_count=Desired(4)
+                      AggregateExec: task_count=Desired(4)
+                        FilterExec: task_count=Desired(4)
+                          RepartitionExec: task_count=Desired(4)
+                            DistributedLeafExec: task_count=Desired(4)
         ")
     }
 
@@ -894,11 +876,10 @@ mod tests {
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @"
         AggregateExec: task_count=Desired(3)
-          RepartitionExec: task_count=Desired(3)
-            NetworkShuffleExec: task_count=Desired(3)
-              RepartitionExec: task_count=Desired(4)
-                AggregateExec: task_count=Desired(4)
-                  DistributedLeafExec: task_count=Desired(4)
+          NetworkShuffleExec: task_count=Desired(3)
+            RepartitionExec: task_count=Desired(4)
+              AggregateExec: task_count=Desired(4)
+                DistributedLeafExec: task_count=Desired(4)
         ")
     }
 
@@ -966,10 +947,9 @@ mod tests {
         ProjectionExec: task_count=Desired(4)
           BoundedWindowAggExec: task_count=Desired(4)
             SortExec: task_count=Desired(4)
-              RepartitionExec: task_count=Desired(4)
-                NetworkShuffleExec: task_count=Desired(4)
-                  RepartitionExec: task_count=Desired(4)
-                    DistributedLeafExec: task_count=Desired(4)
+              NetworkShuffleExec: task_count=Desired(4)
+                RepartitionExec: task_count=Desired(4)
+                  DistributedLeafExec: task_count=Desired(4)
         ")
     }
 
@@ -1020,11 +1000,10 @@ mod tests {
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @"
         AggregateExec: task_count=Desired(1)
-          RepartitionExec: task_count=Desired(1)
-            NetworkShuffleExec: task_count=Desired(1)
-              RepartitionExec: task_count=Desired(1)
-                AggregateExec: task_count=Desired(1)
-                  DistributedLeafExec: task_count=Desired(1)
+          NetworkShuffleExec: task_count=Desired(1)
+            RepartitionExec: task_count=Desired(1)
+              AggregateExec: task_count=Desired(1)
+                DistributedLeafExec: task_count=Desired(1)
         ")
     }
 
@@ -1416,36 +1395,6 @@ mod tests {
             .await
             .expect("failed to annotate plan");
         debug_annotated(&annotated, 0, &network_boundaries_ctx)
-    }
-
-    #[test]
-    fn test_repartition_if_within_limit_skips_when_exceeded() {
-        // half_limit * half_limit > MAX_PARTITIONS_FOR_REPARTITION
-        let half_limit = MAX_PARTITIONS_FOR_REPARTITION.div_ceil(2);
-        let plan: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(Arc::new(Schema::empty())));
-        let result = repartition_if_within_limit(
-            half_limit,
-            half_limit,
-            plan,
-            Partitioning::RoundRobinBatch(half_limit),
-        )
-        .unwrap();
-        assert!(!result.is::<RepartitionExec>());
-    }
-
-    #[test]
-    fn test_repartition_if_within_limit_wraps_when_within() {
-        // (MAX / 2 - 1) * 1 < MAX_PARTITIONS_FOR_REPARTITION
-        let floor_half_minus_one = MAX_PARTITIONS_FOR_REPARTITION / 2 - 1;
-        let plan: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(Arc::new(Schema::empty())));
-        let result = repartition_if_within_limit(
-            floor_half_minus_one,
-            1,
-            plan,
-            Partitioning::RoundRobinBatch(floor_half_minus_one),
-        )
-        .unwrap();
-        assert!(result.is::<RepartitionExec>());
     }
 
     fn debug_annotated(
