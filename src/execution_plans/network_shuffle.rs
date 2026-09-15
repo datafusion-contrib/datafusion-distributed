@@ -120,38 +120,15 @@ pub struct NetworkShuffleExec {
 }
 
 impl NetworkShuffleExec {
-    /// Computes the properties advertised by this [NetworkShuffleExec].
-    ///
-    /// When `input_task_count > 1`, partition-local equivalence constants from individual
-    /// upstream tasks cannot be assumed to hold across tasks and are cleared.
-    /// Output ordering is preserved across tasks because [Self::execute] sort-merges incoming
-    /// worker streams when sort expressions are present.
-    ///
-    /// When `input_task_count <= 1`, all batches are received from a single upstream task stream,
-    /// so the upstream equivalence properties and constants are preserved as-is.
-    pub(crate) fn compute_properties(
-        input_properties: &Arc<PlanProperties>,
-        input_task_count: usize,
-    ) -> Arc<PlanProperties> {
-        if input_task_count > 1 {
-            let mut eq_properties = input_properties.eq_properties.clone();
-            eq_properties.clear_per_partition_constants();
-            Arc::new(PlanProperties::new(
-                eq_properties,
-                input_properties.partitioning.clone(),
-                input_properties.emission_type,
-                input_properties.boundedness,
-            ))
-        } else {
-            Arc::clone(input_properties)
-        }
-    }
-
-    pub(crate) fn from_stage(input_stage: Stage, input_properties: Arc<PlanProperties>) -> Self {
+    pub(crate) fn from_stage(
+        input_stage: Stage,
+        input_properties: Arc<PlanProperties>,
+        output_partitions: usize,
+    ) -> Self {
         let consumer_partitioning = input_properties.partitioning.clone();
         let properties = Arc::new(PlanProperties::new(
             input_properties.equivalence_properties().clone(),
-            Partitioning::UnknownPartitioning(1),
+            Partitioning::UnknownPartitioning(output_partitions),
             EmissionType::Incremental,
             Boundedness::Bounded,
         ));
@@ -187,6 +164,7 @@ impl NetworkShuffleExec {
                 metrics_set: Default::default(),
             }),
             input_properties,
+            1,
         ))
     }
 }
@@ -290,10 +268,16 @@ impl ExecutionPlan for NetworkShuffleExec {
         let task_context = DistributedTaskContext::from_ctx(&context);
         let task_index = task_context.task_index;
 
-        let schema = self.schema();
-        let mut streams = Vec::with_capacity(remote_stage.workers.len());
-        for input_task_index in 0..remote_stage.workers.len() {
-            let stream = self.worker_connections.execute(
+        let producer_range = if self.properties.partitioning.partition_count() == 1 {
+            // Single output partition: merge all producer streams into one.
+            0..remote_stage.workers.len()
+        } else {
+            // One output partition per producer: let RepartitionExec drive each concurrently.
+            partition..partition + 1
+        };
+        let mut streams = Vec::with_capacity(producer_range.len());
+        for input_task_index in producer_range {
+            streams.push(self.worker_connections.execute(
                 remote_stage,
                 task_index..task_index + 1,
                 input_task_index,
