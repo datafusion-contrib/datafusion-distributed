@@ -1,10 +1,10 @@
 use crate::common::{OnceLockResult, require_one_child};
-use crossbeam_queue::SegQueue;
 use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::runtime::SpawnedTask;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::{DataFusionError, Result};
-use datafusion::execution::memory_pool::MemoryConsumer;
+use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
@@ -15,10 +15,10 @@ use futures::{Stream, StreamExt};
 use std::collections::VecDeque;
 use std::fmt::Formatter;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context, Poll};
 use tokio_stream::wrappers::WatchStream;
+use tokio_util::sync::CancellationToken;
 
 const RECLAIM_INTERVAL: usize = 8;
 
@@ -81,7 +81,9 @@ pub struct BroadcastExec {
     queues: Vec<OnceLockResult<StreamAndTask>>,
 }
 
-type StreamAndTask = (SegQueue<SendableRecordBatchStream>, Arc<SpawnedTask<()>>);
+type BroadcastMessage =
+    std::result::Result<(RecordBatch, Arc<MemoryReservation>), Arc<DataFusionError>>;
+type StreamAndTask = (BroadcastReaders<BroadcastMessage>, Arc<SpawnedTask<()>>);
 
 impl BroadcastExec {
     pub fn new(input: Arc<dyn ExecutionPlan>, consumer_task_count: usize) -> Self {
@@ -113,6 +115,18 @@ impl BroadcastExec {
 
     pub fn input(&self) -> &Arc<dyn ExecutionPlan> {
         &self.input
+    }
+}
+
+impl Drop for BroadcastExec {
+    fn drop(&mut self) {
+        // The last plan reference is gone, so its unclaimed virtual partitions cannot
+        // execute. Active streams may still hold their producer task and queue alive.
+        for queue in &self.queues {
+            if let Some(Ok((readers, _task))) = queue.get() {
+                readers.release_pending();
+            }
+        }
     }
 }
 
@@ -164,58 +178,60 @@ impl ExecutionPlan for BroadcastExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        let real_partition = partition % self.input_partition_count();
+        let input_partition_count = self.input_partition_count();
+        let real_partition = partition % input_partition_count;
+        let consumer_id = partition / input_partition_count;
 
         let input = Arc::clone(&self.input);
 
         let queue_or_err = self.queues[real_partition].get_or_init(|| {
             let queue = BroadcastQueue::new(self.consumer_task_count);
-            let consumers = SegQueue::new();
-            for _ in 0..self.consumer_task_count {
-                let consumer = queue.new_consumer().map_err(Arc::new)?;
-                consumers.push(Box::pin(RecordBatchStreamAdapter::new(
-                    self.schema(),
-                    consumer.map(|msg| match msg {
-                        Ok((batch, _reservation)) => Ok(batch),
-                        Err(e) => Err(DataFusionError::Shared(e)),
-                    }),
-                )) as SendableRecordBatchStream);
-            }
+            let readers = queue.readers();
 
             let pool = Arc::clone(context.memory_pool());
             let mut stream = input.execute(real_partition, context).map_err(Arc::new)?;
+            let cancel = queue.shared.cancel.clone();
             let task = SpawnedTask::spawn(async move {
                 let mem_consumer = MemoryConsumer::new(format!("BroadcastExec[{real_partition}]"));
 
-                while let Some(msg) = stream.next().await {
+                loop {
+                    let msg = tokio::select! {
+                        _ = cancel.cancelled() => break,
+                        msg = stream.next() => msg,
+                    };
+                    let Some(msg) = msg else { break };
                     match msg {
                         Ok(record_batch) => {
                             let reservation = mem_consumer.clone_with_new_id().register(&pool);
                             reservation.grow(record_batch.get_array_memory_size());
-                            queue.push(Ok((record_batch, Arc::new(reservation))));
+                            if !queue.push(Ok((record_batch, Arc::new(reservation)))) {
+                                break;
+                            }
                         }
                         Err(err) => {
-                            queue.push(Err(Arc::new(err)));
+                            let _ = queue.push(Err(Arc::new(err)));
                             break;
                         }
                     }
                 }
             });
 
-            Ok::<_, Arc<DataFusionError>>((consumers, Arc::new(task)))
+            Ok::<_, Arc<DataFusionError>>((readers, Arc::new(task)))
         });
         let (consumer, task) = match queue_or_err {
-            Ok((consumers, task)) => (consumers.pop(), Arc::clone(task)),
+            Ok((readers, task)) => (readers.claim(consumer_id)?, Arc::clone(task)),
             Err(err) => return Err(DataFusionError::Shared(Arc::clone(err))),
-        };
-        let Some(consumer) = consumer else {
-            return internal_err!("Too many consumers for real partition {real_partition}");
         };
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             self.schema(),
-            consumer.inspect(move |_| {
-                let _ = &task;
-            }),
+            consumer
+                .map(|msg| match msg {
+                    Ok((batch, _reservation)) => Ok(batch),
+                    Err(e) => Err(DataFusionError::Shared(e)),
+                })
+                .inspect(move |_| {
+                    let _ = &task;
+                }),
         )))
     }
 
@@ -229,105 +245,88 @@ struct QueueState<T> {
     entries: VecDeque<T>,
     base_sequence: usize,
     tail_sequence: usize,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct BroadcastState {
-    tail_sequence: usize,
+    readers: Box<[ReaderSlot]>,
+    retaining_readers: usize,
     closed: bool,
 }
 
 #[derive(Debug)]
-struct ConsumerRegistry {
-    consumers: Vec<Arc<ConsumerProgress>>,
-    next_consumer: AtomicUsize,
-    active_count: AtomicUsize,
+enum ReaderSlot {
+    Pending,
+    Reading { next_sequence: usize },
+    Released,
+}
+
+#[derive(Debug)]
+struct BroadcastShared<T: Clone> {
+    queue_state: Mutex<QueueState<T>>,
+    notify: tokio::sync::watch::Sender<()>,
+    cancel: CancellationToken,
 }
 
 #[derive(Debug)]
 struct BroadcastQueue<T: Clone> {
-    queue_state: Arc<Mutex<QueueState<T>>>,
-    consumers: Arc<ConsumerRegistry>,
-    notify: tokio::sync::watch::Sender<BroadcastState>,
+    shared: Arc<BroadcastShared<T>>,
+}
+
+#[derive(Debug)]
+struct BroadcastReaders<T: Clone> {
+    shared: Arc<BroadcastShared<T>>,
 }
 
 impl<T: Clone> BroadcastQueue<T> {
     fn new(expected_readers: usize) -> Self {
-        let (notify, _rx) = tokio::sync::watch::channel(BroadcastState {
-            tail_sequence: 0,
-            closed: false,
-        });
+        let (notify, _rx) = tokio::sync::watch::channel(());
         Self {
-            queue_state: Arc::new(Mutex::new(QueueState {
-                entries: VecDeque::new(),
-                base_sequence: 0,
-                tail_sequence: 0,
-            })),
-            consumers: Arc::new(ConsumerRegistry {
-                consumers: (0..expected_readers)
-                    .map(|_| {
-                        Arc::new(ConsumerProgress {
-                            sequence: AtomicUsize::new(0),
-                            active: AtomicBool::new(true),
-                        })
-                    })
-                    .collect(),
-                next_consumer: AtomicUsize::new(0),
-                active_count: AtomicUsize::new(expected_readers),
+            shared: Arc::new(BroadcastShared {
+                queue_state: Mutex::new(QueueState {
+                    entries: VecDeque::new(),
+                    base_sequence: 0,
+                    tail_sequence: 0,
+                    readers: (0..expected_readers).map(|_| ReaderSlot::Pending).collect(),
+                    retaining_readers: expected_readers,
+                    closed: false,
+                }),
+                notify,
+                cancel: CancellationToken::new(),
             }),
-            notify,
         }
     }
 
-    fn new_consumer(&self) -> Result<BroadcastConsumer<T>> {
-        let rx = self.notify.subscribe();
-        let state = *rx.borrow();
-        let consumer_index = self.consumers.next_consumer.fetch_add(1, Ordering::Relaxed);
-        let Some(progress) = self.consumers.consumers.get(consumer_index) else {
-            return internal_err!(
-                "broadcast queue created more consumers than expected (index {consumer_index})"
-            );
-        };
-        let progress = Arc::clone(progress);
-        Ok(BroadcastConsumer {
-            next_sequence: 0,
-            progress,
-            consumers: Arc::clone(&self.consumers),
-            queue_state: Arc::clone(&self.queue_state),
-            notify: WatchStream::new(rx),
-            notification: state,
-        })
+    fn readers(&self) -> BroadcastReaders<T> {
+        BroadcastReaders {
+            shared: Arc::clone(&self.shared),
+        }
     }
 
-    fn push(&self, value: T) {
-        let tail_sequence = {
-            let mut queue_state = self.queue_state.lock().unwrap();
+    fn push(&self, value: T) -> bool {
+        {
+            let mut queue_state = self.shared.queue_state.lock().unwrap();
 
-            // Once every consumer has been dropped, no future consumer can execute this
-            // queue, so don't add values that cannot be read.
-            if self.consumers.active_count.load(Ordering::Acquire) == 0 {
-                return;
+            if queue_state.retaining_readers == 0 {
+                return false;
             }
 
             queue_state.entries.push_back(value);
             queue_state.tail_sequence += 1;
             if queue_state.tail_sequence.is_multiple_of(RECLAIM_INTERVAL) {
-                Self::reclaim_locked(&self.consumers, &mut queue_state);
+                Self::reclaim_locked(&mut queue_state);
             }
-            queue_state.tail_sequence
-        };
+        }
 
-        let mut broadcast_state = *self.notify.borrow();
-        broadcast_state.tail_sequence = tail_sequence;
-        let _ = self.notify.send(broadcast_state);
+        self.shared.notify.send_replace(());
+        true
     }
 
-    fn reclaim_locked(consumers: &ConsumerRegistry, queue_state: &mut QueueState<T>) {
-        let minimum_sequence = consumers
-            .consumers
+    fn reclaim_locked(queue_state: &mut QueueState<T>) {
+        let minimum_sequence = queue_state
+            .readers
             .iter()
-            .filter(|consumer| consumer.active.load(Ordering::Acquire))
-            .map(|consumer| consumer.sequence.load(Ordering::Acquire))
+            .filter_map(|reader| match reader {
+                ReaderSlot::Pending => Some(0),
+                ReaderSlot::Reading { next_sequence } => Some(*next_sequence),
+                ReaderSlot::Released => None,
+            })
             .min()
             .unwrap_or(queue_state.tail_sequence);
 
@@ -343,26 +342,59 @@ impl<T: Clone> BroadcastQueue<T> {
 
 impl<T: Clone> Drop for BroadcastQueue<T> {
     fn drop(&mut self) {
-        let mut state = *self.notify.borrow();
-        state.closed = true;
-        let _ = self.notify.send(state);
+        {
+            let mut state = self.shared.queue_state.lock().unwrap();
+            state.closed = true;
+        }
+        self.shared.notify.send_replace(());
     }
 }
 
-#[derive(Debug)]
-struct ConsumerProgress {
-    sequence: AtomicUsize,
-    active: AtomicBool,
+impl<T: Clone> BroadcastReaders<T> {
+    fn claim(&self, consumer_id: usize) -> Result<BroadcastConsumer<T>> {
+        let rx = self.shared.notify.subscribe();
+        let mut state = self.shared.queue_state.lock().unwrap();
+        let Some(reader) = state.readers.get_mut(consumer_id) else {
+            return internal_err!("broadcast consumer {consumer_id} is out of range");
+        };
+        match reader {
+            ReaderSlot::Pending => *reader = ReaderSlot::Reading { next_sequence: 0 },
+            ReaderSlot::Reading { .. } | ReaderSlot::Released => {
+                return internal_err!("broadcast consumer {consumer_id} cannot execute twice");
+            }
+        }
+        Ok(BroadcastConsumer {
+            consumer_id,
+            shared: Arc::clone(&self.shared),
+            notify: WatchStream::new(rx),
+        })
+    }
+
+    fn release_pending(&self) {
+        let no_readers_remain = {
+            let mut state = self.shared.queue_state.lock().unwrap();
+            let mut released = 0;
+            for reader in &mut state.readers {
+                if matches!(reader, ReaderSlot::Pending) {
+                    *reader = ReaderSlot::Released;
+                    released += 1;
+                }
+            }
+            state.retaining_readers -= released;
+            BroadcastQueue::<T>::reclaim_locked(&mut state);
+            state.retaining_readers == 0
+        };
+        if no_readers_remain {
+            self.shared.cancel.cancel();
+        }
+    }
 }
 
 /// A consumer stream that reads from the broadcast queue.
 struct BroadcastConsumer<T: Clone> {
-    next_sequence: usize,
-    progress: Arc<ConsumerProgress>,
-    consumers: Arc<ConsumerRegistry>,
-    queue_state: Arc<Mutex<QueueState<T>>>,
-    notify: WatchStream<BroadcastState>,
-    notification: BroadcastState,
+    consumer_id: usize,
+    shared: Arc<BroadcastShared<T>>,
+    notify: WatchStream<()>,
 }
 
 impl<T: Clone> Stream for BroadcastConsumer<T> {
@@ -370,44 +402,45 @@ impl<T: Clone> Stream for BroadcastConsumer<T> {
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         loop {
-            let value = if self.next_sequence < self.notification.tail_sequence {
-                let queue_state = self.queue_state.lock().unwrap();
-                if self.next_sequence >= queue_state.tail_sequence {
-                    None
-                } else {
-                    let offset = self
-                        .next_sequence
-                        .checked_sub(queue_state.base_sequence)
+            let (value, closed) = {
+                let mut state = self.shared.queue_state.lock().unwrap();
+                let next_sequence = match state.readers[self.consumer_id] {
+                    ReaderSlot::Reading { next_sequence } => next_sequence,
+                    ReaderSlot::Released => return Poll::Ready(None),
+                    ReaderSlot::Pending => unreachable!("an unclaimed consumer was polled"),
+                };
+                if next_sequence < state.tail_sequence {
+                    let offset = next_sequence
+                        .checked_sub(state.base_sequence)
                         .expect("broadcast consumer fell behind evicted entries");
-                    let entry = queue_state
+                    let value = state
                         .entries
                         .get(offset)
-                        .expect("broadcast entry sequence was not retained");
-                    Some(entry.clone())
+                        .expect("broadcast entry sequence was not retained")
+                        .clone();
+                    state.readers[self.consumer_id] = ReaderSlot::Reading {
+                        next_sequence: next_sequence + 1,
+                    };
+                    (Some(value), false)
+                } else {
+                    (None, state.closed)
                 }
-            } else {
-                None
             };
 
             if let Some(value) = value {
-                self.next_sequence += 1;
-                self.progress
-                    .sequence
-                    .store(self.next_sequence, Ordering::Release);
                 return Poll::Ready(Some(value));
             }
 
-            if self.notification.closed {
-                self.reclaim();
+            if closed {
+                self.shared.release(self.consumer_id);
                 return Poll::Ready(None);
             }
 
             match Pin::new(&mut self.notify).poll_next(cx) {
-                Poll::Ready(Some(state)) => {
-                    self.notification = state;
-                }
+                Poll::Ready(Some(_)) => continue,
                 Poll::Ready(None) => {
-                    self.notification.closed = true;
+                    self.shared.release(self.consumer_id);
+                    return Poll::Ready(None);
                 }
                 Poll::Pending => return Poll::Pending,
             }
@@ -415,19 +448,27 @@ impl<T: Clone> Stream for BroadcastConsumer<T> {
     }
 }
 
-impl<T: Clone> BroadcastConsumer<T> {
-    fn reclaim(&self) {
-        let mut queue_state = self.queue_state.lock().unwrap();
-        BroadcastQueue::<T>::reclaim_locked(&self.consumers, &mut queue_state);
+impl<T: Clone> BroadcastShared<T> {
+    fn release(&self, consumer_id: usize) {
+        let no_readers_remain = {
+            let mut state = self.queue_state.lock().unwrap();
+            if matches!(state.readers[consumer_id], ReaderSlot::Released) {
+                return;
+            }
+            state.readers[consumer_id] = ReaderSlot::Released;
+            state.retaining_readers -= 1;
+            BroadcastQueue::<T>::reclaim_locked(&mut state);
+            state.retaining_readers == 0
+        };
+        if no_readers_remain {
+            self.cancel.cancel();
+        }
     }
 }
 
 impl<T: Clone> Drop for BroadcastConsumer<T> {
     fn drop(&mut self) {
-        if self.progress.active.swap(false, Ordering::AcqRel) {
-            self.consumers.active_count.fetch_sub(1, Ordering::AcqRel);
-        }
-        self.reclaim();
+        self.shared.release(self.consumer_id);
     }
 }
 
@@ -457,19 +498,19 @@ mod tests {
     }
 
     fn buffered_len<T: Clone>(queue: &BroadcastQueue<T>) -> usize {
-        queue.queue_state.lock().unwrap().entries.len()
+        queue.shared.queue_state.lock().unwrap().entries.len()
     }
 
     fn sequence_bounds<T: Clone>(queue: &BroadcastQueue<T>) -> (usize, usize) {
-        let state = queue.queue_state.lock().unwrap();
+        let state = queue.shared.queue_state.lock().unwrap();
         (state.base_sequence, state.tail_sequence)
     }
 
     #[tokio::test]
     async fn broadcast_queue_evicts_consumed_prefix() {
         let queue = BroadcastQueue::new(2);
-        let mut consumer0 = queue.new_consumer().expect("consumer 0 registration");
-        let mut consumer1 = queue.new_consumer().expect("consumer 1 registration");
+        let mut consumer0 = queue.readers().claim(0).expect("consumer 0 registration");
+        let mut consumer1 = queue.readers().claim(1).expect("consumer 1 registration");
 
         queue.push(10);
         queue.push(20);
@@ -500,8 +541,8 @@ mod tests {
     #[tokio::test]
     async fn broadcast_queue_drop_releases_unread_entries() {
         let queue = BroadcastQueue::new(2);
-        let mut consumer0 = queue.new_consumer().expect("consumer 0 registration");
-        let mut consumer1 = queue.new_consumer().expect("consumer 1 registration");
+        let mut consumer0 = queue.readers().claim(0).expect("consumer 0 registration");
+        let mut consumer1 = queue.readers().claim(1).expect("consumer 1 registration");
 
         queue.push(10);
         queue.push(20);
@@ -516,6 +557,64 @@ mod tests {
         assert_eq!(consumer1.next().await, Some(30));
         drop(consumer1);
         assert_eq!(buffered_len(&queue), 0);
+    }
+
+    #[tokio::test]
+    async fn broadcast_queue_releases_reader_at_eof() {
+        let queue = BroadcastQueue::new(1);
+        let shared = Arc::clone(&queue.shared);
+        let mut consumer = queue.readers().claim(0).expect("consumer registration");
+
+        assert!(queue.push(10));
+        assert_eq!(consumer.next().await, Some(10));
+        drop(queue);
+
+        assert_eq!(consumer.next().await, None);
+        assert_eq!(shared.queue_state.lock().unwrap().entries.len(), 0);
+        assert!(shared.cancel.is_cancelled());
+        assert_eq!(consumer.next().await, None);
+    }
+
+    #[tokio::test]
+    async fn broadcast_queue_cancels_when_all_readers_drop() {
+        let queue = BroadcastQueue::new(2);
+        let reader0 = queue.readers().claim(0).expect("consumer 0 registration");
+        let reader1 = queue.readers().claim(1).expect("consumer 1 registration");
+
+        assert!(queue.push(10));
+        drop(reader0);
+        assert!(!queue.shared.cancel.is_cancelled());
+        drop(reader1);
+        assert!(queue.shared.cancel.is_cancelled());
+        assert_eq!(buffered_len(&queue), 0);
+        assert!(!queue.push(20));
+    }
+
+    #[tokio::test]
+    async fn broadcast_exec_releases_pending_readers_when_plan_drops() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let input = Arc::new(MockExec::new_partitioned(vec![vec![]], Arc::clone(&schema)));
+        let broadcast = BroadcastExec::new(input, 2);
+        let task_ctx = SessionContext::new().task_ctx();
+
+        let stream = broadcast.execute(0, task_ctx)?;
+        let shared = Arc::clone(
+            &broadcast.queues[0]
+                .get()
+                .expect("initialized queue")
+                .as_ref()
+                .expect("queue initialization")
+                .0
+                .shared,
+        );
+
+        drop(broadcast);
+        assert_eq!(shared.queue_state.lock().unwrap().retaining_readers, 1);
+        drop(stream);
+        assert_eq!(shared.queue_state.lock().unwrap().retaining_readers, 0);
+        assert!(shared.cancel.is_cancelled());
+
+        Ok(())
     }
 
     #[tokio::test]
@@ -604,6 +703,23 @@ mod tests {
         assert_int32_batch_values(&batches1[0], &[1]);
         assert_int32_batch_values(&batches2[0], &[0]);
         assert_int32_batch_values(&batches3[0], &[1]);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn broadcast_exec_claims_virtual_partition_once() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let input = Arc::new(MockExec::new_partitioned(vec![vec![]], Arc::clone(&schema)));
+        let broadcast = BroadcastExec::new(input, 2);
+        let task_ctx = SessionContext::new().task_ctx();
+
+        let _stream = broadcast.execute(0, Arc::clone(&task_ctx))?;
+        let err = broadcast
+            .execute(0, task_ctx)
+            .err()
+            .expect("duplicate execute");
+        assert!(err.to_string().contains("consumer 0 cannot execute twice"));
 
         Ok(())
     }
