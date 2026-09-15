@@ -114,6 +114,18 @@ impl MockExec {
         self
     }
 
+    /// Override the plan properties' output partitioning.
+    pub fn with_partitioning(mut self, partitioning: Partitioning) -> Self {
+        self.partitions = partitioning.partition_count();
+        self.cache = Arc::new(PlanProperties::new(
+            self.cache.eq_properties.clone(),
+            partitioning,
+            self.cache.emission_type,
+            self.cache.boundedness,
+        ));
+        self
+    }
+
     /// This function creates the cache object that stores the plan properties such as schema, equivalence properties, ordering, partitioning, etc.
     fn compute_properties(schema: SchemaRef, partitions: usize) -> Arc<PlanProperties> {
         Arc::new(PlanProperties::new(

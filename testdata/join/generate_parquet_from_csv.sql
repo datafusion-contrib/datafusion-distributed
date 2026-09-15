@@ -34,3 +34,8 @@ COPY (SELECT * FROM "testdata/join/csv/fact/f_dkey=D/data0.csv")
 TO "testdata/join/parquet/fact/f_dkey=D/data0.parquet"
 STORED AS PARQUET;
 
+-- Generate parquet services files from csv files.
+COPY (SELECT * FROM "testdata/join/csv/services/data0.csv")
+TO "testdata/join/parquet/services/data0.parquet"
+STORED AS PARQUET;
+
