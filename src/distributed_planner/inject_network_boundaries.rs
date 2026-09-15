@@ -352,9 +352,19 @@ async fn _inject_network_boundaries(
             .build(input_stage, TypeId::of::<NetworkShuffleExec>(), nb_ctx)
             .await?;
         let consumer_partitioning = result.input_properties.partitioning.clone();
+        let total_consumer_partitions =
+            consumer_partitioning.partition_count() * result.consumer_task_count.as_usize();
+        let will_repartition = total_consumer_partitions <= MAX_PARTITIONS_FOR_REPARTITION;
+        let producer_task_count = result.input_stage.task_count();
+        let output_partitions = if will_repartition {
+            producer_task_count
+        } else {
+            1
+        };
         let shuffle = Arc::new(NetworkShuffleExec::from_stage(
             result.input_stage,
             result.input_properties,
+            output_partitions,
         ));
         let nb = repartition_if_within_limit(
             consumer_partitioning.partition_count(),

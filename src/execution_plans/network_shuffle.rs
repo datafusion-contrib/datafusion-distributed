@@ -115,11 +115,15 @@ pub struct NetworkShuffleExec {
 }
 
 impl NetworkShuffleExec {
-    pub(crate) fn from_stage(input_stage: Stage, input_properties: Arc<PlanProperties>) -> Self {
+    pub(crate) fn from_stage(
+        input_stage: Stage,
+        input_properties: Arc<PlanProperties>,
+        output_partitions: usize,
+    ) -> Self {
         let consumer_partitioning = input_properties.partitioning.clone();
         let properties = Arc::new(PlanProperties::new(
             input_properties.equivalence_properties().clone(),
-            Partitioning::UnknownPartitioning(1),
+            Partitioning::UnknownPartitioning(output_partitions),
             EmissionType::Incremental,
             Boundedness::Bounded,
         ));
@@ -155,6 +159,7 @@ impl NetworkShuffleExec {
                 metrics_set: Default::default(),
             }),
             input_properties,
+            1,
         ))
     }
 }
@@ -248,8 +253,15 @@ impl ExecutionPlan for NetworkShuffleExec {
         let task_context = DistributedTaskContext::from_ctx(&context);
         let task_index = task_context.task_index;
 
-        let mut streams = Vec::with_capacity(remote_stage.workers.len());
-        for input_task_index in 0..remote_stage.workers.len() {
+        let producer_range = if self.properties.partitioning.partition_count() == 1 {
+            // Single output partition: merge all producer streams into one.
+            0..remote_stage.workers.len()
+        } else {
+            // One output partition per producer: let RepartitionExec drive each concurrently.
+            partition..partition + 1
+        };
+        let mut streams = Vec::with_capacity(producer_range.len());
+        for input_task_index in producer_range {
             streams.push(self.worker_connections.execute(
                 remote_stage,
                 task_index..task_index + 1,
