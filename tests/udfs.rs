@@ -45,8 +45,8 @@ mod tests {
           │ ProjectionExec: expr=[test_udf(weather.RainToday)@0 as test_udf(weather.RainToday), count(Int64(1))@1 as count(*)]
           │   SortExec: expr=[count(Int64(1))@1 ASC NULLS LAST], preserve_partitioning=[true]
           │     AggregateExec: mode=FinalPartitioned, gby=[test_udf(weather.RainToday)@0 as test_udf(weather.RainToday)], aggr=[count(Int64(1))]
-          │       RepartitionExec: partitioning=Hash([test_udf(weather.RainToday)@0], 3), input_partitions=1
-          │         [Stage 1] => NetworkShuffleExec: output_partitions=1, input_tasks=3
+          │       RepartitionExec: partitioning=Hash([test_udf(weather.RainToday)@0], 3), input_partitions=3
+          │         [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=3
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=3, partitions=3
             │ RepartitionExec: partitioning=Hash([test_udf(weather.RainToday)@0, 5871781006564002453], 3), input_partitions=3

@@ -56,8 +56,8 @@ mod tests {
           │ ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday]
           │   SortExec: expr=[count(Int64(1))@1 ASC NULLS LAST], preserve_partitioning=[true]
           │     AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
-          │       RepartitionExec: partitioning=Hash([RainToday@0], 3), input_partitions=1
-          │         [Stage 1] => NetworkShuffleExec: output_partitions=1, input_tasks=3
+          │       RepartitionExec: partitioning=Hash([RainToday@0], 3), input_partitions=3
+          │         [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=3
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=3, partitions=3
             │ RepartitionExec: partitioning=Hash([RainToday@0, 5871781006564002453], 3), input_partitions=3
@@ -139,8 +139,8 @@ mod tests {
           ┌───── Stage 2 ── tasks=6, partitions=3
           │ ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday]
           │   AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
-          │     RepartitionExec: partitioning=Hash([RainToday@0], 3), input_partitions=1
-          │       [Stage 1] => NetworkShuffleExec: output_partitions=1, input_tasks=6
+          │     RepartitionExec: partitioning=Hash([RainToday@0], 3), input_partitions=6
+          │       [Stage 1] => NetworkShuffleExec: output_partitions=6, input_tasks=6
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=6, partitions=6
             │ RepartitionExec: partitioning=Hash([RainToday@0, 5871781006564002453], 6), input_partitions=3

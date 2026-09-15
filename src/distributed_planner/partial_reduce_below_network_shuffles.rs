@@ -125,8 +125,8 @@ mod tests {
           ┌───── Stage 2 ── tasks=2, partitions=4
           │ ProjectionExec: expr=[RainToday@0 as RainToday, count(Int64(1))@1 as count(*)]
           │   AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
-          │     RepartitionExec: partitioning=Hash([RainToday@0], 4), input_partitions=1
-          │       [Stage 1] => NetworkShuffleExec: output_partitions=1, input_tasks=3
+          │     RepartitionExec: partitioning=Hash([RainToday@0], 4), input_partitions=3
+          │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=3
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=3, partitions=2
             │ AggregateExec: mode=PartialReduce, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]

@@ -56,8 +56,8 @@ mod tests {
           ┌───── Stage 2 ── tasks=2, partitions=3
           │ AggregateExec: mode=Partial, gby=[], aggr=[min(key)]
           │   AggregateExec: mode=FinalPartitioned, gby=[key@0 as key], aggr=[]
-          │     RepartitionExec: partitioning=Hash([key@0], 3), input_partitions=1
-          │       [Stage 1] => NetworkShuffleExec: output_partitions=1, input_tasks=2
+          │     RepartitionExec: partitioning=Hash([key@0], 3), input_partitions=2
+          │       [Stage 1] => NetworkShuffleExec: output_partitions=2, input_tasks=2
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=2, partitions=2
             │ RepartitionExec: partitioning=Hash([key@0, 5871781006564002453], 2), input_partitions=3
