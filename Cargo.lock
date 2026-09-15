@@ -2510,9 +2510,27 @@ dependencies = [
  "rmp-serde",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tokio-stream",
  "typetag",
+]
+
+[[package]]
+name = "datafusion-distributed-iceberg-benchmarks"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "datafusion",
+ "datafusion-distributed-benchmarks",
+ "datafusion-distributed-iceberg",
+ "env_logger",
+ "futures",
+ "parquet",
+ "serde_json",
+ "structopt",
+ "tokio",
+ "url",
 ]
 
 [[package]]

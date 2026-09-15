@@ -8,6 +8,9 @@ and its benchmark worker compile together from the same revision.
 
 Generate datasets alongside the integration-test fixtures under `testdata/`.
 For example, `tpch/sf1` is stored in `testdata/tpch/sf1`.
+TPC-H generation partitions the scalable tables, but writes `nation` (25 rows) and `region`
+(5 rows) only once. Regeneration removes surplus numbered Parquet partitions.
+Rebuild the Iceberg copy separately after regenerating Parquet; an existing copy is not updated.
 
 ```shell
 # TPC-H (default: SCALE_FACTOR=1, PARTITIONS=16, SORTED=false - override by setting these environment variables)
@@ -56,3 +59,40 @@ WORKERS=8 ./benchmarks/run.sh --threads 2 --dataset tpch/sf1 --file-scan-config-
 - `--dataset`: Dataset directory name under `testdata`.
 - `--file-scan-config-bytes-per-partition`: How many bytes each partition is expected to scan. Lower values
   produce more partitions/tasks. Defaults to the engine default when unset.
+
+### Iceberg benchmarks
+
+Iceberg preparation and execution live in a separate package so the benchmark crate used by the
+root integration tests does not depend on Iceberg. Prepare the Parquet input, then convert it:
+
+```shell
+cargo run -p datafusion-distributed-benchmarks --release -- prepare-tpch \
+  --output testdata/tpch/sf1 --scale-factor 1 --partitions 16
+cargo run -p datafusion-distributed-iceberg-benchmarks --release -- prepare \
+  --input testdata/tpch/sf1
+```
+
+The conversion writes the sibling `testdata/tpch/sf1_iceberg/` dataset and leaves the source
+unchanged. It streams one source file at a time into unpartitioned, append-only Iceberg tables.
+Source file boundaries are preserved unless `--target-file-size` requests rolling. `_SUCCESS` is
+written last, and the output directory must be empty.
+
+Run each representation with its format-specific binary, then compare them with `dfbench`:
+
+```shell
+WORKERS=2 ./benchmarks/run.sh --dataset tpch/sf1 --threads 2 --partitions 2
+WORKERS=2 ./iceberg/benchmarks/run.sh --dataset tpch/sf1_iceberg --threads 2 --partitions 2
+
+dfbench compare tpch/sf1 tpch/sf1_iceberg
+dfbench compare tpch/sf1@base tpch/sf1_iceberg@candidate
+dfbench compare base candidate --dataset tpch/sf1
+```
+
+`compare` takes two `dataset[@branch]` states, [prev] then [new]. An omitted branch defaults to the
+current branch. With `--dataset`, both positional arguments remain literal branch names. Each
+dataset uses the existing `.results/<branch>/` and `previous.json` layout.
+
+Absolute dataset paths are supported when they follow the same `<suite>/<variant>` convention.
+Iceberg runs always load manifest column statistics. For larger scale factors, increase Parquet
+generation `--partitions` to avoid oversized source files. Generated metadata contains absolute
+local locations; cloud publication and remote harness support remain separate work.

@@ -30,6 +30,7 @@ tokio = { version = "1.48", features = ["full"] }
 tokio-stream = "0.1"
 
 [dev-dependencies]
+tempfile = "3"
 insta = "1"
 parquet = "59"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
