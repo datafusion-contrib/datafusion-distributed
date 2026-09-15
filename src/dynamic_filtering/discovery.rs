@@ -11,6 +11,7 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct DiscoveredDynamicFilterProducer {
     pub id: u64,
+    pub expression: Arc<dyn PhysicalExpr>,
 }
 
 /// A dynamic-filter consumer discovered in an execution plan along with the schema it is evaluated
@@ -130,7 +131,7 @@ pub fn discover_dynamic_filter_producers(
             };
             producers
                 .entry(id)
-                .or_insert(DiscoveredDynamicFilterProducer { id });
+                .or_insert_with(|| DiscoveredDynamicFilterProducer { id, expression });
         }
         Ok(TreeNodeRecursion::Continue)
     })?;
@@ -138,6 +139,29 @@ pub fn discover_dynamic_filter_producers(
     let mut producers: Vec<_> = producers.into_values().collect();
     producers.sort_unstable_by_key(|producer| producer.id);
     Ok(producers)
+}
+
+/// Returns producer IDs with at least one remote consumer.
+///
+/// If a producer ID is present in the dynamic-filter anchors of any [`NetworkBoundary`], the plan
+/// contains at least one remote consumer and the producer's updates must be forwarded to the
+/// coordinator.
+///
+/// [`NetworkBoundary`]: crate::NetworkBoundary
+pub fn dynamic_filter_remote_producer_ids(plan: &Arc<dyn ExecutionPlan>) -> Result<Vec<u64>> {
+    let producer_ids: HashSet<_> = discover_dynamic_filter_producers(plan)?
+        .into_iter()
+        .map(|producer| producer.id)
+        .collect();
+    let anchor_ids: HashSet<_> = discover_dynamic_filter_consumers(plan)?
+        .anchors
+        .into_iter()
+        .map(|anchor| anchor.id)
+        .collect();
+
+    let mut remote_producer_ids: Vec<_> = producer_ids.intersection(&anchor_ids).copied().collect();
+    remote_producer_ids.sort_unstable();
+    Ok(remote_producer_ids)
 }
 
 /// Finds consumers whose producer does not occur in `plan`. These consumers become orphaned

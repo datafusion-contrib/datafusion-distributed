@@ -11,6 +11,7 @@ mod tests {
         DefaultSessionBuilder, DistributedExt, NetworkBoundaryExt, RouteTaskEvent,
         RouteTaskEventResponse, RouteTaskHandler, assert_snapshot,
         discover_dynamic_filter_consumers, discover_dynamic_filter_producers,
+        dynamic_filter_remote_producer_ids,
     };
     use itertools::Itertools;
     use std::collections::BTreeSet;
@@ -38,7 +39,7 @@ mod tests {
         )
         .await?;
         assert_snapshot!(display, @r"
-        Stage 5
+        Stage 5 remote_producers=[1]
           AggregateExec
             HashJoinExec producers=[1]
               NetworkShuffleExec
@@ -48,7 +49,7 @@ mod tests {
           RepartitionExec
             AggregateExec
               DataSourceExec consumers=[1]
-        Stage 3
+        Stage 3 remote_producers=[2]
           RepartitionExec
             HashJoinExec producers=[2]
               NetworkShuffleExec
@@ -88,7 +89,7 @@ mod tests {
         )
         .await?;
         assert_snapshot!(display, @r"
-        Stage 4
+        Stage 4 remote_producers=[1]
           AggregateExec
             HashJoinExec producers=[1]
               AggregateExec
@@ -258,8 +259,15 @@ mod tests {
         let mut output = String::new();
         let mut normalizer = IdNormalizer::default();
         for stage_id in plans.keys().sorted().rev() {
-            writeln!(output, "Stage {stage_id}").expect("writing to String cannot fail");
             let plan = &plans[stage_id];
+            let remote_producers = dynamic_filter_remote_producer_ids(plan)?
+                .into_iter()
+                .collect();
+            let remote_producers = normalizer
+                .annotation("remote_producers", remote_producers)
+                .map_or_else(String::new, |annotation| format!(" {annotation}"));
+            writeln!(output, "Stage {stage_id}{remote_producers}")
+                .expect("writing to String cannot fail");
             let consumers = discover_dynamic_filter_consumers(plan)?;
             let discovered = DynamicFilterIds {
                 consumers: consumers

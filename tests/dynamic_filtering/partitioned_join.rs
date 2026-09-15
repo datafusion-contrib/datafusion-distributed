@@ -70,6 +70,7 @@ mod tests {
                 JOIN weather probe ON build.key = probe."RainToday"
             "#,
         )
+        .expect_dynamic_filter_updates()
         .execute()
         .await?;
         assert_snapshot!(display, @"
