@@ -2519,6 +2519,7 @@ dependencies = [
 name = "datafusion-distributed-iceberg-benchmarks"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "datafusion",
  "datafusion-distributed-benchmarks",
  "datafusion-distributed-iceberg",

@@ -159,7 +159,7 @@ impl RunOpt {
         })
     }
 
-    pub fn run(self, backend: BenchmarkBackend) -> Result<()> {
+    pub fn run<B: BenchmarkBackend>(self, mut backend: B) -> Result<()> {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(self.threads.unwrap_or(get_available_parallelism()))
             .enable_all()
@@ -175,7 +175,7 @@ impl RunOpt {
                 // session builder so it is installed on every worker session.
                 let worker = Worker::from_session_builder(
                     move |ctx: datafusion_distributed::WorkerQueryContext| {
-                        let builder = (backend.configure)(
+                        let builder = backend.configure_session(
                             ctx.builder
                                 .with_distributed_user_codec(WorkUnitFileScanCodec),
                         );
@@ -190,12 +190,12 @@ impl RunOpt {
                 )
             })?;
         } else {
-            rt.block_on(self.run_local(backend))?;
+            rt.block_on(self.run_local(&mut backend))?;
         }
         Ok(())
     }
 
-    async fn run_local(self, backend: BenchmarkBackend) -> Result<()> {
+    async fn run_local(self, backend: &mut impl BenchmarkBackend) -> Result<()> {
         let mut builder = SessionStateBuilder::new()
             .with_default_features()
             .with_config(self.config()?)
@@ -235,9 +235,9 @@ impl RunOpt {
             builder = builder.with_physical_optimizer_rule(Arc::new(WorkUnitFileScanRule))
         }
 
-        let state = (backend.configure)(builder).build();
+        let state = backend.configure_session(builder).build();
         let ctx = SessionContext::new_with_state(state);
-        (backend.register)(&ctx, &self.get_path()?).await?;
+        backend.register_tables(&ctx, &self.get_path()?).await?;
         let dataset_suite = if Path::new(&self.dataset).is_absolute() {
             // Absolute paths follow the same <suite>/<variant> convention.
             Path::new(&self.dataset)

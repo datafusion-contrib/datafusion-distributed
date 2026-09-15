@@ -6,6 +6,7 @@ default-run = "dfbench-iceberg"
 publish = false
 
 [dependencies]
+async-trait = "0.1.89"
 datafusion = { workspace = true, features = ["parquet", "sql"] }
 datafusion-distributed-benchmarks = { path = "../../benchmarks" }
 datafusion-distributed-iceberg = { path = ".." }

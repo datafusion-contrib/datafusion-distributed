@@ -4,7 +4,7 @@ mod prepare_tpcds;
 mod prepare_tpch;
 
 use datafusion::error::Result;
-use datafusion_distributed_benchmarks::{backend::BenchmarkBackend, compare, results, run};
+use datafusion_distributed_benchmarks::{backend::ParquetBenchmarkBackend, compare, run};
 use structopt::StructOpt;
 
 #[derive(Debug, StructOpt)]
@@ -27,38 +27,15 @@ enum Options {
     PrepareClickbench(prepare_clickbench::PrepareClickBenchOpt),
 }
 
-fn comparison_states(
-    states: Vec<String>,
-    dataset: Option<String>,
-) -> Result<[compare::BenchmarkState; 2]> {
-    let [base, new]: [String; 2] = states.try_into().map_err(|states| {
-        datafusion::common::internal_datafusion_err!(
-            "Exactly two states must be specified, got: {states:?}"
-        )
-    })?;
-    let state = |value: String| {
-        let (dataset, branch) = match &dataset {
-            Some(dataset) => (dataset.clone(), value),
-            None => match value.rsplit_once('@') {
-                Some((dataset, branch)) => (dataset.to_owned(), branch.to_owned()),
-                None => (value, results::get_current_branch()),
-            },
-        };
-        if dataset.is_empty() || branch.is_empty() {
-            return datafusion::common::internal_err!("Dataset and branch must not be empty");
-        }
-        Ok(compare::BenchmarkState { dataset, branch })
-    };
-    Ok([state(base)?, state(new)?])
-}
-
 // Main benchmark runner entrypoint
 pub fn main() -> Result<()> {
     env_logger::init();
 
     match Options::from_args() {
-        Options::Run(opt) => opt.run(BenchmarkBackend::parquet()),
-        Options::Compare { states, dataset } => compare::run(comparison_states(states, dataset)?),
+        Options::Run(opt) => opt.run(ParquetBenchmarkBackend),
+        Options::Compare { states, dataset } => {
+            compare::run(compare::parse_comparison_args(states, dataset)?)
+        }
         Options::PrepareTpch(opt) => opt.run(),
         Options::PrepareTpcds(opt) => {
             let rt = tokio::runtime::Runtime::new()?;

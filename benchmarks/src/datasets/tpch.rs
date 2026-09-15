@@ -141,7 +141,8 @@ fn generate_tpch_tables(
         }};
     }
 
-    // These fixed-size generators ignore partition arguments and emit the entire table.
+    // These generators ignore partition arguments and emit the entire fixed-size table.
+    // Using the requested partition count would duplicate every row in benchmark datasets.
     generate_tpch_table!(RegionGenerator, RegionArrow, "region", 1);
     generate_tpch_table!(NationGenerator, NationArrow, "nation", 1);
     generate_tpch_table!(CustomerGenerator, CustomerArrow, "customer", parts);

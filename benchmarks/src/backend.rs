@@ -1,34 +1,26 @@
 use std::path::Path;
 
+use async_trait::async_trait;
 use datafusion::error::Result;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::SessionContext;
-use futures::future::BoxFuture;
 
 use crate::datasets::register_tables;
 
-pub type RegisterTables = for<'a> fn(&'a SessionContext, &'a Path) -> BoxFuture<'a, Result<()>>;
-pub type ConfigureSession = fn(SessionStateBuilder) -> SessionStateBuilder;
+#[async_trait]
+pub trait BenchmarkBackend: Send + Sync + 'static {
+    async fn register_tables(&mut self, ctx: &SessionContext, path: &Path) -> Result<()>;
 
-/// Backend callbacks shared by the coordinator and localhost worker runner.
-#[derive(Clone, Copy)]
-pub struct BenchmarkBackend {
-    pub(crate) register: RegisterTables,
-    pub(crate) configure: ConfigureSession,
+    fn configure_session(&self, builder: SessionStateBuilder) -> SessionStateBuilder {
+        builder
+    }
 }
 
-impl BenchmarkBackend {
-    pub fn new(register: RegisterTables, configure: ConfigureSession) -> Self {
-        Self {
-            register,
-            configure,
-        }
-    }
+pub struct ParquetBenchmarkBackend;
 
-    pub fn parquet() -> Self {
-        Self::new(
-            |ctx, path| Box::pin(register_tables(ctx, path)),
-            std::convert::identity,
-        )
+#[async_trait]
+impl BenchmarkBackend for ParquetBenchmarkBackend {
+    async fn register_tables(&mut self, ctx: &SessionContext, path: &Path) -> Result<()> {
+        register_tables(ctx, path).await
     }
 }
