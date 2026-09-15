@@ -13,8 +13,7 @@ use datafusion::physical_expr_common::metrics::MetricsSet;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, Statistics, StatisticsArgs,
-};
+    DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, Statistics, StatisticsArgs, ReplaceChildrenOptions};
 use std::fmt::Formatter;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -200,9 +199,10 @@ impl ExecutionPlan for NetworkShuffleExec {
         Ok(TreeNodeRecursion::Continue)
     }
 
-    fn with_new_children(
+    fn replace_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
+        _options: ReplaceChildrenOptions,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
         let mut self_clone = self.as_ref().clone();
         match &mut self_clone.input_stage {

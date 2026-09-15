@@ -1,3 +1,4 @@
+use datafusion::physical_plan::ReplaceChildrenOptions;
 //! Demonstrates **work unit feeds**: a distributed leaf node whose work is discovered on the
 //! coordinator *at runtime* and streamed to the workers while the query runs, instead of being
 //! known at planning time (think a paginated API, a queue, or a catalog handing out keys).
@@ -156,9 +157,10 @@ impl ExecutionPlan for RemoteScanExec {
         Ok(TreeNodeRecursion::Continue)
     }
 
-    fn with_new_children(
+    fn replace_children(
         self: Arc<Self>,
         _: Vec<Arc<dyn ExecutionPlan>>,
+        _options: ReplaceChildrenOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         Ok(self)
     }

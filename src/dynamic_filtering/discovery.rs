@@ -256,9 +256,10 @@ mod tests {
             apply_expression_roots([&self.expression], f)
         }
 
-        fn with_new_children(
+        fn replace_children(
             self: Arc<Self>,
             mut children: Vec<Arc<dyn ExecutionPlan>>,
+            _options: datafusion::physical_plan::ReplaceChildrenOptions,
         ) -> Result<Arc<dyn ExecutionPlan>> {
             Ok(Arc::new(Self::new(
                 children.remove(0),
