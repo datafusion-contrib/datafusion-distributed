@@ -1,3 +1,5 @@
+use crate::backend::{BenchmarkBackend, ParquetBenchmarkBackend};
+use crate::stats::stats_estimation_q_error;
 use async_trait::async_trait;
 use axum::{Json, Router, extract::Query, http::StatusCode, routing::get};
 use datafusion::catalog::memory::DataSourceExec;
@@ -19,7 +21,6 @@ use datafusion_distributed::{
     get_distributed_channel_resolver, get_distributed_worker_resolver,
     rewrite_distributed_plan_with_metrics,
 };
-use datafusion_distributed_benchmarks::stats::stats_estimation_q_error;
 use futures::{StreamExt, TryFutureExt};
 use log::{error, info, warn};
 use object_store::aws::AmazonS3Builder;
@@ -33,9 +34,6 @@ use std::time::Duration;
 use structopt::StructOpt;
 use tonic::transport::Server;
 use url::Url;
-
-#[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[allow(clippy::disallowed_types)]
 type QueryParameters = std::collections::HashMap<String, String>;
@@ -63,9 +61,10 @@ struct WorkerInfo {
     errors: Vec<String>,
 }
 
+/// Network and object-store options for the remote benchmark worker.
 #[derive(Debug, StructOpt, Clone)]
 #[structopt(about = "worker spawn command")]
-struct Cmd {
+pub struct RemoteWorkerOpt {
     /// The bucket name.
     #[structopt(long, default_value = "datafusion-distributed-benchmarks")]
     bucket: String,
@@ -78,15 +77,44 @@ struct Cmd {
     worker_dns_name: String,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    env_logger::builder()
-        .filter_level(log::LevelFilter::Info)
-        .parse_default_env()
-        .init();
+/// Remote benchmark HTTP coordinator and distributed worker service.
+pub struct RemoteBenchmarkWorker;
 
-    let cmd = Cmd::from_args();
+impl RemoteBenchmarkWorker {
+    /// Creates a builder using the Parquet backend.
+    pub fn builder(options: RemoteWorkerOpt) -> RemoteBenchmarkWorkerBuilder {
+        RemoteBenchmarkWorkerBuilder {
+            options,
+            backend: ParquetBenchmarkBackend,
+        }
+    }
+}
 
+/// Configures and serves a remote benchmark worker.
+pub struct RemoteBenchmarkWorkerBuilder<B = ParquetBenchmarkBackend> {
+    options: RemoteWorkerOpt,
+    backend: B,
+}
+
+impl<B: BenchmarkBackend> RemoteBenchmarkWorkerBuilder<B> {
+    /// Replaces the default Parquet backend.
+    pub fn with_backend<T: BenchmarkBackend>(self, backend: T) -> RemoteBenchmarkWorkerBuilder<T> {
+        RemoteBenchmarkWorkerBuilder {
+            options: self.options,
+            backend,
+        }
+    }
+
+    /// Serves the benchmark HTTP endpoint and distributed worker until shutdown.
+    pub async fn serve(self) -> Result<(), Box<dyn Error>> {
+        serve(self.options, self.backend).await
+    }
+}
+
+async fn serve<B: BenchmarkBackend>(
+    cmd: RemoteWorkerOpt,
+    backend: B,
+) -> Result<(), Box<dyn Error>> {
     const LISTENER_ADDR: &str = "0.0.0.0:9000";
     const WORKER_ADDR: &str = "0.0.0.0:9001";
 
@@ -108,11 +136,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let runtime_env = Arc::new(RuntimeEnv::default());
     runtime_env.register_object_store(&s3_url, s3);
 
-    let worker = Worker::from_session_builder(|ctx: WorkerQueryContext| async move {
-        Ok(ctx
-            .builder
-            .with_distributed_user_codec(WorkUnitFileScanCodec)
-            .build())
+    let backend = Arc::new(backend);
+    let worker_backend = Arc::clone(&backend);
+    let worker = Worker::from_session_builder(move |ctx: WorkerQueryContext| {
+        let backend = Arc::clone(&worker_backend);
+        async move {
+            let builder = ctx
+                .builder
+                .with_distributed_user_codec(WorkUnitFileScanCodec);
+            Ok(backend.configure_session(builder).build())
+        }
     })
     .with_runtime_env(Arc::clone(&runtime_env));
 
@@ -132,7 +165,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .downcast_ref::<WorkUnitFileScanConfig>()
                 .map(|v| &v.feed)
         });
-    let state = state_builder.build();
+    let state = backend.configure_session(state_builder).build();
     let ctx = SessionContext::from(state);
     let ctx_clone = ctx.clone();
 

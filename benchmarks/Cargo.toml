@@ -43,10 +43,6 @@ built = { version = "0.8", features = ["git2", "chrono"] }
 name = "dfbench"
 path = "src/main.rs"
 
-[[bin]]
-name = "worker"
-path = "src/remote_worker.rs"
-
 [[bench]]
 name = "broadcast_cache_scenarios"
 harness = false
