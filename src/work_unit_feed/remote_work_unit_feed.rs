@@ -123,7 +123,7 @@ impl RemoteFeedProvider {
     ) -> Result<BoxStream<'static, Result<T>>> {
         let bdr = || MetricBuilder::new(&self.metrics);
 
-        let bytes_transferred = bdr().bytes_counter("work_unit_bytes");
+        let bytes_transferred = bdr().bytes_counter_metric("work_unit_bytes");
         let in_memory_transferred = bdr().global_counter("work_unit_in_memory_count");
         let msg_count = bdr().global_counter("work_unit_count");
         // Track end-to-end network latency distribution for all work units.

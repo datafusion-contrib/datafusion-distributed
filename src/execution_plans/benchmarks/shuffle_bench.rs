@@ -283,13 +283,20 @@ impl ShuffleFixture {
 
         let mut join_set = JoinSet::default();
         for task_index in 0..self.bench.consumer_tasks {
-            let properties_partitioning = match self.bench.mode {
+            let (shuffle_partitioning, properties_partitioning) = match self.bench.mode {
                 ShufflePartitioningMode::Hash => {
-                    Partitioning::Hash(vec![Arc::new(Column::new("id", 0))], self.bench.partitions)
+                    let p = Partitioning::Hash(
+                        vec![Arc::new(Column::new("id", 0))],
+                        self.bench.partitions,
+                    );
+                    (p.clone(), p)
                 }
                 ShufflePartitioningMode::Range => {
-                    let _range = make_range_partitioning(total_partitions.saturating_sub(1));
-                    Partitioning::UnknownPartitioning(1)
+                    let range = make_range_partitioning(total_partitions.saturating_sub(1));
+                    (
+                        Partitioning::Range(range),
+                        Partitioning::UnknownPartitioning(1),
+                    )
                 }
             };
             let shuffle = NetworkShuffleExec {
@@ -301,6 +308,7 @@ impl ShuffleFixture {
                 )),
                 input_stage: input_stage.clone(),
                 worker_connections: WorkerConnectionPool::new(self.bench.producer_tasks),
+                partitioning: shuffle_partitioning,
             };
             let task_ctx = Arc::new(task_ctx_with_extension(
                 &self.task_ctx,
@@ -344,9 +352,7 @@ mod tests {
         fixture.run().await
     }
 
-    // TODO: https://github.com/datafusion-contrib/datafusion-distributed/pull/730
     #[tokio::test]
-    #[ignore = "TODO: https://github.com/datafusion-contrib/datafusion-distributed/pull/730"]
     async fn smoke_range() -> Result<()> {
         let fixture = ShuffleBench::many_to_many_baseline(2)
             .with_mode(ShufflePartitioningMode::Range)
@@ -358,9 +364,7 @@ mod tests {
         fixture.run().await
     }
 
-    // TODO: https://github.com/datafusion-contrib/datafusion-distributed/pull/730
     #[tokio::test]
-    #[ignore = "TODO: https://github.com/datafusion-contrib/datafusion-distributed/pull/730"]
     async fn smoke_range_scaling() -> Result<()> {
         let fixture = ShuffleBench::many_to_many_baseline(4)
             .with_consumer_tasks(2)

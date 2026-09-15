@@ -35,7 +35,7 @@ pub trait NetworkBoundary: ExecutionPlan {
 
 /// Defines what shape should the head node of a stage have upon getting executed. Depending
 /// on the [NetworkBoundary] implementation, the stage below should have different head nodes.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub enum ProducerHead {
     /// No specific head node is necessary.
     None,
