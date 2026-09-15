@@ -162,8 +162,8 @@ mod tests {
           ┌───── Stage 2 ── tasks=5, partitions=3
           │ SortExec: expr=[tag@2 ASC NULLS LAST, task_index@1 ASC NULLS LAST], preserve_partitioning=[true]
           │   AggregateExec: mode=FinalPartitioned, gby=[task_count@0 as task_count, task_index@1 as task_index, tag@2 as tag, worker_url@3 as worker_url], aggr=[]
-          │     RepartitionExec: partitioning=Hash([task_count@0, task_index@1, tag@2, worker_url@3], 3), input_partitions=1
-          │       [Stage 1] => NetworkShuffleExec: output_partitions=1, input_tasks=5
+          │     RepartitionExec: partitioning=Hash([task_count@0, task_index@1, tag@2, worker_url@3], 3), input_partitions=5
+          │       [Stage 1] => NetworkShuffleExec: output_partitions=5, input_tasks=5
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=5, partitions=5
             │ RepartitionExec: partitioning=Hash([task_count@0, task_index@1, tag@2, worker_url@3, 5871781006564002453], 5), input_partitions=3
@@ -214,8 +214,8 @@ mod tests {
           ┌───── Stage 2 ── tasks=5, partitions=3
           │ SortExec: expr=[tag@2 ASC NULLS LAST, task_index@1 ASC NULLS LAST], preserve_partitioning=[true]
           │   AggregateExec: mode=FinalPartitioned, gby=[task_count@0 as task_count, task_index@1 as task_index, tag@2 as tag, worker_url@3 as worker_url], aggr=[]
-          │     RepartitionExec: partitioning=Hash([task_count@0, task_index@1, tag@2, worker_url@3], 3), input_partitions=1
-          │       [Stage 1] => NetworkShuffleExec: output_partitions=1, input_tasks=5
+          │     RepartitionExec: partitioning=Hash([task_count@0, task_index@1, tag@2, worker_url@3], 3), input_partitions=5
+          │       [Stage 1] => NetworkShuffleExec: output_partitions=5, input_tasks=5
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=5, partitions=5
             │ RepartitionExec: partitioning=Hash([task_count@0, task_index@1, tag@2, worker_url@3, 5871781006564002453], 5), input_partitions=4
@@ -272,10 +272,10 @@ mod tests {
           │ ProjectionExec: expr=[task_count@0 as task_count, task_index@1 as left_index, tag@2 as left_tag, worker_url@3 as worker_left, task_index@4 as right_index, tag@5 as right_tag, worker_url@6 as worker_right]
           │   SortExec: expr=[task_index@1 ASC NULLS LAST], preserve_partitioning=[true]
           │     HashJoinExec: mode=Partitioned, join_type=Inner, on=[(task_index@1, task_index@0)]
-          │       RepartitionExec: partitioning=Hash([task_index@1], 3), input_partitions=1
-          │         [Stage 1] => NetworkShuffleExec: output_partitions=1, input_tasks=5
-          │       RepartitionExec: partitioning=Hash([task_index@0], 3), input_partitions=1
-          │         [Stage 2] => NetworkShuffleExec: output_partitions=1, input_tasks=5
+          │       RepartitionExec: partitioning=Hash([task_index@1], 3), input_partitions=5
+          │         [Stage 1] => NetworkShuffleExec: output_partitions=5, input_tasks=5
+          │       RepartitionExec: partitioning=Hash([task_index@0], 3), input_partitions=5
+          │         [Stage 2] => NetworkShuffleExec: output_partitions=5, input_tasks=5
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=5, partitions=5
             │ RepartitionExec: partitioning=Hash([task_index@1, 5871781006564002453], 5), input_partitions=1
@@ -339,10 +339,10 @@ mod tests {
           │ ProjectionExec: expr=[task_count@0 as task_count, task_index@1 as left_index, tag@2 as left_tag, worker_url@3 as worker_left, task_index@4 as right_index, tag@5 as right_tag, worker_url@6 as worker_right]
           │   SortExec: expr=[task_index@1 ASC NULLS LAST], preserve_partitioning=[true]
           │     HashJoinExec: mode=Partitioned, join_type=Inner, on=[(task_index@1, task_index@0)]
-          │       RepartitionExec: partitioning=Hash([task_index@1], 3), input_partitions=1
-          │         [Stage 1] => NetworkShuffleExec: output_partitions=1, input_tasks=5
-          │       RepartitionExec: partitioning=Hash([task_index@0], 3), input_partitions=1
-          │         [Stage 2] => NetworkShuffleExec: output_partitions=1, input_tasks=5
+          │       RepartitionExec: partitioning=Hash([task_index@1], 3), input_partitions=5
+          │         [Stage 1] => NetworkShuffleExec: output_partitions=5, input_tasks=5
+          │       RepartitionExec: partitioning=Hash([task_index@0], 3), input_partitions=5
+          │         [Stage 2] => NetworkShuffleExec: output_partitions=5, input_tasks=5
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=5, partitions=5
             │ RepartitionExec: partitioning=Hash([task_index@1, 5871781006564002453], 5), input_partitions=3

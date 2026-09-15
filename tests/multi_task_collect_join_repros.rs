@@ -66,10 +66,10 @@ mod tests {
         └──────────────────────────────────────────────────
           ┌───── Stage 3 ── tasks=4, partitions=3
           │ HashJoinExec: mode=Partitioned, join_type=LeftSemi, on=[(id@0, id@0)]
-          │   RepartitionExec: partitioning=Hash([id@0], 3), input_partitions=1
-          │     [Stage 1] => NetworkShuffleExec: output_partitions=1, input_tasks=4
-          │   RepartitionExec: partitioning=Hash([id@0], 3), input_partitions=1
-          │     [Stage 2] => NetworkShuffleExec: output_partitions=1, input_tasks=4
+          │   RepartitionExec: partitioning=Hash([id@0], 3), input_partitions=4
+          │     [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=4
+          │   RepartitionExec: partitioning=Hash([id@0], 3), input_partitions=4
+          │     [Stage 2] => NetworkShuffleExec: output_partitions=4, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=4, partitions=4
             │ RepartitionExec: partitioning=Hash([id@0, 5871781006564002453], 4), input_partitions=2
@@ -210,10 +210,10 @@ mod tests {
         └──────────────────────────────────────────────────
           ┌───── Stage 3 ── tasks=4, partitions=12
           │ HashJoinExec: mode=Partitioned, join_type=Full, on=[(id@0, id@0)]
-          │   RepartitionExec: partitioning=Hash([id@0], 3), input_partitions=1
-          │     [Stage 1] => NetworkShuffleExec: output_partitions=1, input_tasks=4
-          │   RepartitionExec: partitioning=Hash([id@0], 3), input_partitions=1
-          │     [Stage 2] => NetworkShuffleExec: output_partitions=1, input_tasks=4
+          │   RepartitionExec: partitioning=Hash([id@0], 3), input_partitions=4
+          │     [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=4
+          │   RepartitionExec: partitioning=Hash([id@0], 3), input_partitions=4
+          │     [Stage 2] => NetworkShuffleExec: output_partitions=4, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=4, partitions=4
             │ RepartitionExec: partitioning=Hash([id@0, 5871781006564002453], 4), input_partitions=2
