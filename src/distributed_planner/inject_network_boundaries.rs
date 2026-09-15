@@ -5,6 +5,7 @@ use crate::events::{
     TaskCountAnnotation,
 };
 use crate::execution_plans::{ChildWeight, ChildrenIsolatorUnionExec};
+use crate::execution_plans::{MAX_MN_FOR_DIRECT, PRODUCER_SALT_DEFAULT, ShuffleMode};
 use crate::stage::LocalStage;
 use crate::worker_resolver::WorkerResolverExtension;
 use crate::{
@@ -335,11 +336,34 @@ async fn _inject_network_boundaries(
             .nb_builder
             .build(input_stage, TypeId::of::<NetworkShuffleExec>(), nb_ctx)
             .await?;
-        let nb = Arc::new(NetworkShuffleExec::from_stage(
+        let consumer_partitioning = result.input_properties.partitioning.clone();
+        let producer_tasks = result.input_stage.task_count();
+        let consumer_partitions = consumer_partitioning.partition_count();
+        let salted = producer_tasks * consumer_partitions > MAX_MN_FOR_DIRECT;
+        let (output_partitions, mode) = if salted {
+            // Hash(key+salt, M); consumer adds RepartitionExec
+            (
+                producer_tasks,
+                ShuffleMode::Salted {
+                    salt: PRODUCER_SALT_DEFAULT,
+                },
+            )
+        } else {
+            // Hash(key, M×N); consumer reads global partitions directly
+            (consumer_partitions, ShuffleMode::Direct)
+        };
+        let shuffle = Arc::new(NetworkShuffleExec::from_stage(
             result.input_stage,
             result.input_properties,
+            output_partitions,
+            mode,
         ));
-        Ok(nb_ctx.plan_with_task_count(nb, result.consumer_task_count))
+        let plan: Arc<dyn ExecutionPlan> = if salted {
+            Arc::new(RepartitionExec::try_new(shuffle, consumer_partitioning)?)
+        } else {
+            shuffle
+        };
+        Ok(nb_ctx.plan_with_task_count(plan, result.consumer_task_count))
     }
     // Upon reaching a broadcast, we need to introduce a network broadcast right above it.
     else if let Some(_b_exec) = plan.downcast_ref::<BroadcastExec>() {
@@ -850,7 +874,7 @@ mod tests {
             .distributed_planner(false)
             .broadcast_joins(false);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
-        assert_snapshot!(annotated, @r"
+        assert_snapshot!(annotated, @"
         AggregateExec: task_count=Desired(3)
           NetworkShuffleExec: task_count=Desired(3)
             RepartitionExec: task_count=Desired(4)
@@ -919,7 +943,7 @@ mod tests {
             .distributed_planner(false)
             .broadcast_joins(false);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
-        assert_snapshot!(annotated, @r"
+        assert_snapshot!(annotated, @"
         ProjectionExec: task_count=Desired(4)
           BoundedWindowAggExec: task_count=Desired(4)
             SortExec: task_count=Desired(4)
@@ -974,7 +998,7 @@ mod tests {
             .broadcast_joins(false)
             .desired_task_count_handler(repartition_max_one_desired_task_count_handler);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
-        assert_snapshot!(annotated, @r"
+        assert_snapshot!(annotated, @"
         AggregateExec: task_count=Desired(1)
           NetworkShuffleExec: task_count=Desired(1)
             RepartitionExec: task_count=Desired(1)

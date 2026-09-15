@@ -1,6 +1,6 @@
 use crate::common::require_one_child;
 use crate::distributed_planner::ProducerHead;
-use crate::execution_plans::common::scale_partitioning;
+use crate::execution_plans::common::{salted_partitioning, scale_partitioning};
 use crate::stage::{LocalStage, Stage};
 use crate::worker::WorkerConnectionPool;
 use crate::{DistributedTaskContext, MaybeEncoded, NetworkBoundary};
@@ -10,6 +10,7 @@ use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::{Partitioning, PhysicalExpr};
 use datafusion::physical_expr_common::metrics::MetricsSet;
+use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
@@ -18,6 +19,19 @@ use datafusion::physical_plan::{
 use std::fmt::Formatter;
 use std::sync::Arc;
 use uuid::Uuid;
+
+pub const PRODUCER_SALT_DEFAULT: u64 = 0x517cc1b727220a95;
+/// Below this M*N threshold, [ShuffleMode::Direct] is used; above it, [ShuffleMode::Salted].
+pub const MAX_MN_FOR_DIRECT: usize = 75;
+
+/// Routing strategy between producer and consumer stages.
+#[derive(Debug, Clone)]
+pub enum ShuffleMode {
+    /// Hash(key, M*N): consumer reads global partitions directly, no RepartitionExec needed.
+    Direct,
+    /// Hash(key+salt, M): consumer adds a RepartitionExec to restore N-way local parallelism.
+    Salted { salt: u64 },
+}
 
 /// [ExecutionPlan] implementation that shuffles data across the network in a distributed context.
 ///
@@ -103,16 +117,41 @@ use uuid::Uuid;
 pub struct NetworkShuffleExec {
     /// the properties we advertise for this execution plan
     pub(crate) properties: Arc<PlanProperties>,
+    /// the consumer's hash partitioning; in Salted mode `properties` advertises UnknownPartitioning
+    /// since salting breaks hash guarantees, so we keep the original partitioning here
+    pub(crate) consumer_partitioning: Partitioning,
     pub(crate) input_stage: Stage,
     pub(crate) worker_connections: WorkerConnectionPool,
+    pub(crate) mode: ShuffleMode,
 }
 
 impl NetworkShuffleExec {
-    pub(crate) fn from_stage(input_stage: Stage, input_properties: Arc<PlanProperties>) -> Self {
+    pub(crate) fn from_stage(
+        input_stage: Stage,
+        input_properties: Arc<PlanProperties>,
+        output_partitions: usize,
+        mode: ShuffleMode,
+    ) -> Self {
+        let consumer_partitioning = input_properties.partitioning.clone();
+        // Direct mode preserves Hash(key, N) partitioning: hash(key) % (M*N) == j*N + p implies
+        // hash(key) % N == p, so the routing guarantee holds. Salted mode uses an extra salt term
+        // that breaks the hash guarantee, so it falls back to UnknownPartitioning.
+        let advertised_partitioning = match &mode {
+            ShuffleMode::Direct => consumer_partitioning.clone(),
+            ShuffleMode::Salted { .. } => Partitioning::UnknownPartitioning(output_partitions),
+        };
+        let properties = Arc::new(PlanProperties::new(
+            input_properties.equivalence_properties().clone(),
+            advertised_partitioning,
+            EmissionType::Incremental,
+            Boundedness::Bounded,
+        ));
         Self {
-            properties: input_properties,
+            properties,
+            consumer_partitioning,
             worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
             input_stage,
+            mode,
         }
     }
 
@@ -139,6 +178,10 @@ impl NetworkShuffleExec {
                 metrics_set: Default::default(),
             }),
             input_properties,
+            1,
+            ShuffleMode::Salted {
+                salt: PRODUCER_SALT_DEFAULT,
+            },
         ))
     }
 }
@@ -156,11 +199,16 @@ impl NetworkBoundary for NetworkShuffleExec {
     }
 
     fn producer_head(&self, consumer_task_count: usize) -> Result<ProducerHead> {
+        let partitioning = match &self.mode {
+            ShuffleMode::Direct => {
+                scale_partitioning(&self.consumer_partitioning, |n| n * consumer_task_count)?
+            }
+            ShuffleMode::Salted { salt } => {
+                salted_partitioning(&self.consumer_partitioning, *salt, consumer_task_count)?
+            }
+        };
         Ok(ProducerHead::RepartitionExec {
-            partitioning: MaybeEncoded::Decoded(scale_partitioning(
-                &self.properties.partitioning,
-                |prev| prev * consumer_task_count,
-            )?),
+            partitioning: MaybeEncoded::Decoded(partitioning),
         })
     }
 }
@@ -229,20 +277,36 @@ impl ExecutionPlan for NetworkShuffleExec {
         };
 
         let task_context = DistributedTaskContext::from_ctx(&context);
-        let out_partitions = self.properties.partitioning.partition_count();
-        let off = out_partitions * task_context.task_index;
+        let task_index = task_context.task_index;
+        let m = remote_stage.workers.len();
 
-        let mut streams = Vec::with_capacity(remote_stage.workers.len());
-        for input_task_index in 0..remote_stage.workers.len() {
-            streams.push(self.worker_connections.execute(
+        let streams = if matches!(self.mode, ShuffleMode::Direct) {
+            // Read global partition task_index*N+p from all M producers.
+            let n = self.properties.partitioning.partition_count();
+            let global_partition = task_index * n + partition;
+            let mut streams = Vec::with_capacity(m);
+            for input_task_index in 0..m {
+                streams.push(self.worker_connections.execute(
+                    remote_stage,
+                    global_partition..global_partition + 1,
+                    input_task_index,
+                    global_partition,
+                    self.producer_head(task_context.task_count)?,
+                    &context,
+                )?);
+            }
+            streams
+        } else {
+            // Salted: one producer per output partition.
+            vec![self.worker_connections.execute(
                 remote_stage,
-                off..(off + self.properties.partitioning.partition_count()),
-                input_task_index,
-                off + partition,
+                task_index..task_index + 1,
+                partition,
+                task_index,
                 self.producer_head(task_context.task_count)?,
                 &context,
-            )?);
-        }
+            )?]
+        };
 
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             self.schema(),
@@ -261,7 +325,7 @@ impl ExecutionPlan for NetworkShuffleExec {
     ) -> Result<Arc<Statistics>> {
         self.input_stage.partition_statistics(
             args.partition(),
-            self.properties.output_partitioning().partition_count(),
+            self.properties.partitioning.partition_count(),
             self.schema(),
         )
     }

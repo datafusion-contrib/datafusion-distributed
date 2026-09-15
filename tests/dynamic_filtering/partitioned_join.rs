@@ -18,7 +18,7 @@ mod tests {
             2,
         )
         .await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec
         │ CoalescePartitionsExec
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=4, input_tasks=2

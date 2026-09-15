@@ -1,9 +1,11 @@
 use super::get_distributed_user_codecs;
-use crate::NetworkShuffleExec;
 use crate::common::{deserialize_uuid, require_one_child, serialize_uuid};
 use crate::execution_plans::{
     BroadcastExec, ChildWeight, ChildrenIsolatorUnionExec, NetworkBroadcastExec,
     NetworkCoalesceExec, SamplerExec,
+};
+use crate::execution_plans::{
+    MAX_MN_FOR_DIRECT, NetworkShuffleExec, PRODUCER_SALT_DEFAULT, ShuffleMode,
 };
 use crate::stage::{LocalStage, RemoteStage, Stage};
 use crate::worker::WorkerConnectionPool;
@@ -300,7 +302,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
             let inner = NetworkShuffleExecProto {
                 schema: Some(node.schema().try_into()?),
                 partitioning: Some(serialize_partitioning(
-                    node.properties().output_partitioning(),
+                    &node.consumer_partitioning,
                     self,
                     proto_converter,
                 )?),
@@ -565,15 +567,34 @@ fn new_network_hash_shuffle_exec(
     equivalence_properties: EquivalenceProperties,
     input_stage: Stage,
 ) -> NetworkShuffleExec {
+    let producer_tasks = input_stage.task_count();
+    let consumer_partitions = partitioning.partition_count();
+    let (mode, output_partitions) = if producer_tasks * consumer_partitions <= MAX_MN_FOR_DIRECT {
+        (ShuffleMode::Direct, consumer_partitions)
+    } else {
+        (
+            ShuffleMode::Salted {
+                salt: PRODUCER_SALT_DEFAULT,
+            },
+            producer_tasks,
+        )
+    };
+    let advertised_partitioning = match &mode {
+        ShuffleMode::Direct => partitioning.clone(),
+        ShuffleMode::Salted { .. } => Partitioning::UnknownPartitioning(output_partitions),
+    };
+    let properties = Arc::new(PlanProperties::new(
+        equivalence_properties,
+        advertised_partitioning,
+        EmissionType::Incremental,
+        Boundedness::Bounded,
+    ));
     NetworkShuffleExec {
-        properties: Arc::new(PlanProperties::new(
-            equivalence_properties,
-            partitioning,
-            EmissionType::Incremental,
-            Boundedness::Bounded,
-        )),
+        properties,
+        consumer_partitioning: partitioning,
         worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
         input_stage,
+        mode,
     }
 }
 

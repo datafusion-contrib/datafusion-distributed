@@ -2,6 +2,7 @@ use super::fixture::{
     InMemoryChannelsResolver, benchmark_schema, make_input_partitions, rows_for_producer,
 };
 use crate::common::task_ctx_with_extension;
+use crate::execution_plans::{PRODUCER_SALT_DEFAULT, ShuffleMode};
 use crate::stage::RemoteStage;
 use crate::worker::WorkerConnectionPool;
 use crate::worker::test_utils::worker_handles::MemoryWorkerHandle;
@@ -221,15 +222,21 @@ impl ShuffleFixture {
 
         let mut join_set = JoinSet::default();
         for task_index in 0..self.bench.consumer_tasks {
+            let consumer_partitioning =
+                Partitioning::Hash(vec![Arc::new(Column::new("id", 0))], self.bench.partitions);
             let shuffle = NetworkShuffleExec {
                 properties: Arc::new(PlanProperties::new(
                     EquivalenceProperties::new(Arc::clone(&self.schema)),
-                    Partitioning::Hash(vec![Arc::new(Column::new("id", 0))], self.bench.partitions),
+                    Partitioning::UnknownPartitioning(self.bench.partitions),
                     EmissionType::Incremental,
                     Boundedness::Bounded,
                 )),
+                consumer_partitioning,
                 input_stage: input_stage.clone(),
                 worker_connections: WorkerConnectionPool::new(self.bench.producer_tasks),
+                mode: ShuffleMode::Salted {
+                    salt: PRODUCER_SALT_DEFAULT,
+                },
             };
             let task_ctx = Arc::new(task_ctx_with_extension(
                 &self.task_ctx,
