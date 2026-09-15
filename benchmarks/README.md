@@ -72,7 +72,7 @@ cargo run -p datafusion-distributed-iceberg-benchmarks --release -- prepare \
   --input testdata/tpch/sf1
 ```
 
-The conversion writes the sibling `testdata/tpch/sf1-iceberg/` dataset and leaves the source
+The conversion writes the sibling `testdata/tpch/sf1_iceberg/` dataset and leaves the source
 unchanged. It streams one source file at a time into unpartitioned, append-only Iceberg tables.
 Source file boundaries are preserved unless `--target-file-size` requests rolling. `_SUCCESS` is
 written last, and the output directory must be empty.
@@ -81,10 +81,10 @@ Run each representation with its format-specific binary, then compare them with 
 
 ```shell
 WORKERS=2 ./benchmarks/run.sh --dataset tpch/sf1 --threads 2 --partitions 2
-WORKERS=2 ./iceberg/benchmarks/run.sh --dataset tpch/sf1-iceberg --threads 2 --partitions 2
+WORKERS=2 ./iceberg/benchmarks/run.sh --dataset tpch/sf1_iceberg --threads 2 --partitions 2
 
-dfbench compare tpch/sf1 tpch/sf1-iceberg
-dfbench compare tpch/sf1@base tpch/sf1-iceberg@candidate
+dfbench compare tpch/sf1 tpch/sf1_iceberg
+dfbench compare tpch/sf1@base tpch/sf1_iceberg@candidate
 dfbench compare base candidate --dataset tpch/sf1
 ```
 

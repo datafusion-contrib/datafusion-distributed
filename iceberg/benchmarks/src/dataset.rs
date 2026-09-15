@@ -35,7 +35,7 @@ type CatalogProperties = std::collections::HashMap<String, String>;
 /// The sibling dataset directory used for the Iceberg representation.
 pub(super) fn output_path(input: &Path) -> PathBuf {
     let mut name = input.file_name().unwrap_or_default().to_os_string();
-    name.push("-iceberg");
+    name.push("_iceberg");
     input.with_file_name(name)
 }
 

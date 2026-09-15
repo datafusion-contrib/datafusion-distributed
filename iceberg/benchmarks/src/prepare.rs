@@ -4,7 +4,7 @@ use super::dataset::{convert_parquet_to_iceberg, output_path};
 use datafusion::error::{DataFusionError, Result};
 use structopt::StructOpt;
 
-/// Convert local Parquet tables into a sibling <input>-iceberg dataset.
+/// Convert local Parquet tables into a sibling <input>_iceberg dataset.
 #[derive(Debug, StructOpt)]
 pub struct PrepareIcebergOpt {
     /// Existing Parquet dataset directory.
