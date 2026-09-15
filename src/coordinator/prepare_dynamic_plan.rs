@@ -5,6 +5,7 @@ use crate::distributed_planner::{
     InjectNetworkBoundaryContext, NetworkBoundaryBuilderResult, ProducerHead, calculate_cost,
     inject_network_boundaries,
 };
+use crate::dynamic_filtering::orphan_dynamic_filter_consumers;
 use crate::events::TaskCountAnnotation::{Desired, Maximum};
 use crate::execution_plans::SamplerExec;
 use crate::stage::{LocalStage, RemoteStage};
@@ -79,6 +80,7 @@ pub(super) async fn prepare_dynamic_plan(
             // In order to infer the compute the cost of the stage above this one, here a sampler
             // is injected to gather runtime statistics.
             input_stage.plan = ProducerHead::insert_sampler(input_stage.plan)?;
+            let dynamic_filter_anchors = orphan_dynamic_filter_consumers(&input_stage.plan)?;
 
             let mut load_info_rxs = Vec::with_capacity(input_stage.tasks);
 
@@ -128,6 +130,7 @@ pub(super) async fn prepare_dynamic_plan(
                         num: input_stage.num,
                         workers,
                         runtime_stats: stats,
+                        dynamic_filter_anchors,
                     }),
                     input_properties,
                 })

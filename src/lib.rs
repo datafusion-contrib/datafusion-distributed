@@ -25,6 +25,12 @@ pub use distributed_planner::{
     DistributedConfig, NetworkBoundary, NetworkBoundaryExt, ProducerHead, SessionStateBuilderExt,
 };
 pub use dynamic_filtering::rewrite_distributed_plan_with_dynamic_filters;
+#[cfg(any(feature = "integration", test))]
+pub use dynamic_filtering::{
+    DiscoveredDynamicFilter, DiscoveredDynamicFilterAnchor, DiscoveredDynamicFilterConsumers,
+    DiscoveredDynamicFilterProducer, discover_dynamic_filter_consumers,
+    discover_dynamic_filter_producers,
+};
 pub use events::{
     CoordinatorToWorkerDialer, DesiredTaskCountEvent, DesiredTaskCountEventResponse,
     DesiredTaskCountHandler, RouteTaskEvent, RouteTaskEventResponse, RouteTaskHandler,

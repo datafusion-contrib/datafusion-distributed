@@ -5,7 +5,8 @@ use arrow::{
 use datafusion::{
     catalog::{Session, TableFunctionImpl, TableProvider},
     common::{
-        Result, ScalarValue, Statistics, internal_err, plan_err, tree_node::TreeNodeRecursion,
+        Result, ScalarValue, Statistics, exec_err, internal_err, plan_err,
+        tree_node::TreeNodeRecursion,
     },
     datasource::TableType,
     execution::TaskContext,
@@ -23,7 +24,9 @@ use datafusion_proto::{
 use futures::stream;
 use prost::Message;
 use std::{fmt::Formatter, sync::Arc};
+use tokio::sync::Mutex;
 use tonic::async_trait;
+use url::Url;
 
 use crate::{
     DesiredTaskCountEvent, DesiredTaskCountEventResponse, DistributedLeafExec,
@@ -384,5 +387,35 @@ impl PhysicalExtensionCodec for URLEmitterExtensionCodec {
         proto
             .encode(buf)
             .map_err(|e| proto_error(format!("Failed to encode URLEmitterExec: {e}")))
+    }
+}
+
+/// Colocates all tasks on the same worker by choosing a URL once and caching it.
+#[derive(Default)]
+pub struct ColocateAllTasksHandler {
+    cached: Mutex<Option<Url>>,
+}
+
+#[async_trait]
+impl RouteTaskHandler for ColocateAllTasksHandler {
+    async fn handle(&self, ev: RouteTaskEvent<'_>) -> Option<Result<RouteTaskEventResponse>> {
+        let url = {
+            let mut cached = self.cached.lock().await;
+            if let Some(url) = cached.as_ref() {
+                url.clone()
+            } else {
+                let urls = match ev.worker_resolver.get_urls() {
+                    Ok(urls) => urls,
+                    Err(error) => return Some(Err(error)),
+                };
+                let Some(url) = urls.into_iter().next() else {
+                    return Some(exec_err!("expected at least one worker URL"));
+                };
+                *cached = Some(url.clone());
+                url
+            }
+        };
+
+        Some(ev.dialer.dial(url).await)
     }
 }
