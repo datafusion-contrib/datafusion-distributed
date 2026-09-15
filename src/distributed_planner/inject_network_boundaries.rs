@@ -32,6 +32,9 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use uuid::Uuid;
 
+/// Omit the consumer-side [RepartitionExec] above this partition count; the [NetworkShuffleExec] alone is sufficient.
+const MAX_PARTITIONS_FOR_REPARTITION: usize = 75;
+
 /// Walks an [ExecutionPlan] and injects [NetworkShuffleExec], [NetworkBroadcastExec], and
 /// [NetworkCoalesceExec] nodes wherever a stage boundary is needed. The returned plan has the
 /// same shape as the input except for these inserted boundary nodes.
@@ -223,6 +226,19 @@ fn plan_ptr_key(plan: &Arc<dyn ExecutionPlan>) -> usize {
     Arc::as_ptr(plan) as *const () as usize
 }
 
+/// Wraps `plan` in a [RepartitionExec] when `partition_count * task_count` is within [MAX_PARTITIONS_FOR_REPARTITION]; otherwise returns it unchanged.
+fn repartition_if_within_limit(
+    partition_count: usize,
+    task_count: usize,
+    plan: Arc<dyn ExecutionPlan>,
+    partitioning: Partitioning,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    if partition_count * task_count > MAX_PARTITIONS_FOR_REPARTITION {
+        return Ok(plan);
+    }
+    Ok(Arc::new(RepartitionExec::try_new(plan, partitioning)?))
+}
+
 /// WARNING: every return statement in this function must funnel through
 /// [InjectNetworkBoundaryContext::plan_with_task_count]
 /// (or [InjectNetworkBoundaryContext::set_task_count] on the way through) so the returned node has
@@ -340,7 +356,12 @@ async fn _inject_network_boundaries(
             result.input_stage,
             result.input_properties,
         ));
-        let nb = Arc::new(RepartitionExec::try_new(shuffle, consumer_partitioning)?);
+        let nb = repartition_if_within_limit(
+            consumer_partitioning.partition_count(),
+            result.consumer_task_count.as_usize(),
+            shuffle,
+            consumer_partitioning,
+        )?;
         Ok(nb_ctx.plan_with_task_count(nb, result.consumer_task_count))
     }
     // Upon reaching a broadcast, we need to introduce a network broadcast right above it.
@@ -667,7 +688,9 @@ mod tests {
     use crate::distributed_planner::normalize_collect_joins::normalize_collect_joins;
     use crate::test_utils::plans::{TestPlanBuilder, build_side_one_desired_task_count_handler};
     use crate::{DesiredTaskCountEvent, DesiredTaskCountEventResponse, assert_snapshot};
+    use datafusion::arrow::datatypes::Schema;
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
+    use datafusion::physical_plan::empty::EmptyExec;
     /* schema for the "weather" table
 
      MinTemp [type=DOUBLE] [repetitiontype=OPTIONAL]
@@ -1383,6 +1406,36 @@ mod tests {
             .await
             .expect("failed to annotate plan");
         debug_annotated(&annotated, 0, &network_boundaries_ctx)
+    }
+
+    #[test]
+    fn test_repartition_if_within_limit_skips_when_exceeded() {
+        // half_limit * half_limit > MAX_PARTITIONS_FOR_REPARTITION
+        let half_limit = MAX_PARTITIONS_FOR_REPARTITION.div_ceil(2);
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(Arc::new(Schema::empty())));
+        let result = repartition_if_within_limit(
+            half_limit,
+            half_limit,
+            plan,
+            Partitioning::RoundRobinBatch(half_limit),
+        )
+        .unwrap();
+        assert!(!result.is::<RepartitionExec>());
+    }
+
+    #[test]
+    fn test_repartition_if_within_limit_wraps_when_within() {
+        // (MAX / 2 - 1) * 1 < MAX_PARTITIONS_FOR_REPARTITION
+        let floor_half_minus_one = MAX_PARTITIONS_FOR_REPARTITION / 2 - 1;
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(Arc::new(Schema::empty())));
+        let result = repartition_if_within_limit(
+            floor_half_minus_one,
+            1,
+            plan,
+            Partitioning::RoundRobinBatch(floor_half_minus_one),
+        )
+        .unwrap();
+        assert!(result.is::<RepartitionExec>());
     }
 
     fn debug_annotated(
