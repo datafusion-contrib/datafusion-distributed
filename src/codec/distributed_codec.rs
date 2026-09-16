@@ -540,8 +540,6 @@ pub struct NetworkShuffleExecProto {
     input_stage: Option<StageProto>,
     #[prost(message, repeated, tag = "4")]
     equivalence_classes: Vec<EquivalenceClassProto>,
-    /// Whether the planner chose Salted mode. Serialized so the worker uses the
-    /// same mode the planner decided on, rather than re-evaluating the threshold.
     #[prost(bool, tag = "5")]
     salted: bool,
     /// Salt value used in Salted mode; ignored when `salted` is false.
