@@ -145,7 +145,7 @@ pub struct IcebergDataSource {
 #[derive(Default, Clone)]
 pub(crate) struct IcebergDataSourceOptions<'a> {
     pub(crate) snapshot_id: Option<i64>,
-    pub(crate) projection: Option<&'a Vec<usize>>,
+    pub(crate) projection: Option<&'a [usize]>,
     pub(crate) fetch: Option<usize>,
     pub(crate) filters: &'a [Expr],
     pub(crate) iceberg_runtime: Option<iceberg::Runtime>,
@@ -203,7 +203,7 @@ impl IcebergDataSource {
     pub(crate) async fn with_column_statistics(
         mut self,
         table: Table,
-        projection: Option<&Vec<usize>>,
+        projection: Option<&[usize]>,
     ) -> Result<Self> {
         let schema = match &self.table_snapshot {
             Some(snap) => snap.schema(table.metadata()).map_err(df_err)?,

@@ -7,7 +7,7 @@ use crate::grpc::errors::tonic_status_to_datafusion_error;
 use crate::grpc::generated::worker::FlightAppMetadata;
 use crate::grpc::on_drop_stream::on_drop_stream;
 use crate::{
-    BytesMetricExt, CoordinatorToWorkerMsg, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL,
+    CoordinatorToWorkerMsg, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL,
     DistributedConfig, ExecuteTaskRequest, FirstLatencyMetric, GetWorkerInfoRequest,
     GetWorkerInfoResponse, LatencyMetricExt, LoadInfo, MaxLatencyMetric, MaybeEncoded,
     MinLatencyMetric, P50LatencyMetric, P95LatencyMetric, ProducerHead, SetPlanRequest,
@@ -115,8 +115,8 @@ impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSy
 
         MetricBuilder::new(&metrics)
             .with_label(Label::new(DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, "0"))
-            .bytes_counter("plan_bytes_sent")
-            .add_bytes(plan_bytes_sent);
+            .global_bytes_counter("plan_bytes_sent")
+            .add(plan_bytes_sent);
 
         Ok(output_stream)
     }
@@ -145,7 +145,7 @@ impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSy
             gauge: max_mem_used.clone(),
         });
         // Track the total encoded size of all received messages.
-        let bytes_transferred = MetricBuilder::new(&metrics).bytes_counter("bytes_transferred");
+        let bytes_transferred = MetricBuilder::new(&metrics).global_bytes_counter("bytes_transferred");
         let msg_count = MetricBuilder::new(&metrics).global_counter("msg_count");
         // Track end-to-end network latency distribution for messages that actually arrive.
         let mut latency_metrics = NetworkLatencyMetrics::new(&metrics);
@@ -295,7 +295,7 @@ impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSy
 
                 // Update memory related metrics.
                 msg_count.add(1);
-                bytes_transferred.add_bytes(size);
+                bytes_transferred.add(size);
                 let curr_mem = memory_reservation.size();
                 if curr_mem > curr_max_mem {
                     curr_max_mem = curr_mem;

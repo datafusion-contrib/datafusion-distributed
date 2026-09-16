@@ -1,6 +1,6 @@
 use crate::common::now_ns;
 use crate::{
-    BytesMetricExt, CoordinatorToWorkerMsg, LatencyMetricExt, MaybeEncoded, WorkUnit,
+    CoordinatorToWorkerMsg, LatencyMetricExt, MaybeEncoded, WorkUnit,
     WorkUnitBatch, WorkUnitMsg,
 };
 use datafusion::common::{HashMap, Result, exec_err};
@@ -123,7 +123,7 @@ impl RemoteFeedProvider {
     ) -> Result<BoxStream<'static, Result<T>>> {
         let bdr = || MetricBuilder::new(&self.metrics);
 
-        let bytes_transferred = bdr().bytes_counter("work_unit_bytes");
+        let bytes_transferred = bdr().global_bytes_counter("work_unit_bytes");
         let in_memory_transferred = bdr().global_counter("work_unit_in_memory_count");
         let msg_count = bdr().global_counter("work_unit_count");
         // Track end-to-end network latency distribution for all work units.
@@ -164,7 +164,7 @@ impl RemoteFeedProvider {
                 let timer = elapsed_compute.timer();
                 let work_unit = match work_unit_msg.body {
                     MaybeEncoded::Encoded(bytes) => {
-                        bytes_transferred.add_bytes(bytes.len());
+                        bytes_transferred.add(bytes.len());
                         T::decode(bytes.as_slice()).map_err(|err| proto_error(format!("{err}")))?
                     }
                     MaybeEncoded::Decoded(work_unit) => {

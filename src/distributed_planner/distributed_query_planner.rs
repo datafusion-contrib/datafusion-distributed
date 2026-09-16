@@ -1,4 +1,4 @@
-use crate::common::TreeNodeExt;
+use crate::common::{TreeNodeExt, require_one_child};
 use crate::distributed_planner::inject_network_boundaries::{
     CardinalityBasedNetworkBoundaryBuilder, inject_network_boundaries,
 };
@@ -18,6 +18,7 @@ use datafusion::execution::context::QueryPlanner;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_plan::analyze::AnalyzeExec;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
+use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::{
     ChildrenPropertiesMode, ExecutionPlan, ExecutionPlanProperties, ReplaceChildrenOptions,
 };
@@ -145,6 +146,21 @@ fn create_distributed_plan(
 
         plan = insert_broadcast_execs(plan, cfg)?;
         plan = insert_children_isolator_unions(plan, cfg)?;
+
+        plan = plan
+            .transform_up(|plan| {
+                let Some(repartition) = plan.downcast_ref::<RepartitionExec>() else {
+                    return Ok(Transformed::no(plan));
+                };
+                let child = require_one_child(plan.children())?;
+                let updated = RepartitionExec::try_new(
+                    child,
+                    repartition.partitioning().clone(),
+                )?
+                .with_batch_size(8192 * 10)?;
+                Ok(Transformed::yes(Arc::new(updated)))
+            })?
+            .data;
 
         if d_cfg.dynamic_task_count {
             // The task count will be decided dynamically at execution time.

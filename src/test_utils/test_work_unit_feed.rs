@@ -293,7 +293,7 @@ impl TableProvider for TestWorkUnitFeedTableProvider {
     async fn scan(
         &self,
         _state: &dyn Session,
-        projection: Option<&Vec<usize>>,
+        projection: Option<&[usize]>,
         _filters: &[Expr],
         _limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
@@ -313,7 +313,7 @@ impl TableProvider for TestWorkUnitFeedTableProvider {
             )),
             self.tag.clone(),
             self.partition_ops.len(),
-            projection.cloned(),
+            projection.map(|p| p.to_vec()),
             total_rows,
         )))
     }

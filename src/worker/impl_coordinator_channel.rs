@@ -1,4 +1,4 @@
-use crate::common::TreeNodeExt;
+use crate::common::{TreeNodeExt, require_one_child};
 use crate::dynamic_filtering::discover_dynamic_filter_consumers;
 use crate::events::{WorkerPlanRewriteEvent, WorkerPlanRewriteHandlers};
 use crate::execution_plans::SamplerExec;
@@ -10,8 +10,9 @@ use crate::{
     MaybeEncoded, SetPlanRequest, TaskCompletedDynamicFilters, TaskData, TaskDynamicFilter,
     TaskMetrics, Worker, WorkerQueryContext, WorkerToCoordinatorMsg,
 };
-use datafusion::common::tree_node::TreeNodeRecursion;
+use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{DataFusionError, Result, exec_datafusion_err};
+use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::execution::{SessionStateBuilder, TaskContext};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionConfig;
@@ -89,6 +90,20 @@ impl Worker {
 
             let task_ctx = session_state.task_ctx();
             let plan = request.plan.decode(&task_ctx)?;
+            let plan = plan
+                .transform_up(|plan| {
+                    let Some(repartition) = plan.downcast_ref::<RepartitionExec>() else {
+                        return Ok(Transformed::no(plan));
+                    };
+                    let child = require_one_child(plan.children())?;
+                    let updated = RepartitionExec::try_new(
+                        child,
+                        repartition.partitioning().clone(),
+                    )?
+                    .with_batch_size(8192 * 10)?;
+                    Ok(Transformed::yes(Arc::new(updated)))
+                })?
+                .data;
 
             let ev = WorkerPlanRewriteEvent {
                 plan,
