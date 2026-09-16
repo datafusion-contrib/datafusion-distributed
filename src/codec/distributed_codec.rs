@@ -605,12 +605,8 @@ fn new_network_hash_shuffle_exec(
 ) -> NetworkShuffleExec {
     let producer_tasks = input_stage.task_count();
     let consumer_partitions = partitioning.partition_count();
-    let salted = should_use_salted_mode(
-        producer_tasks,
-        consumer_task_count,
-        consumer_partitions,
-        max_mn_for_direct,
-    );
+    let salted =
+        should_use_salted_mode(consumer_task_count, consumer_partitions, max_mn_for_direct);
     let (mode, output_partitions) = if !salted {
         (ShuffleMode::Direct, consumer_partitions)
     } else {

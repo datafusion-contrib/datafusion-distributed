@@ -341,7 +341,6 @@ async fn _inject_network_boundaries(
         let consumer_tasks = result.consumer_task_count.as_usize();
         let consumer_partitions = consumer_partitioning.partition_count();
         let salted = should_use_salted_mode(
-            producer_tasks,
             consumer_tasks,
             consumer_partitions,
             nb_ctx.d_cfg.max_mn_for_direct,

@@ -28,7 +28,7 @@ pub const PRODUCER_SALT_DEFAULT: u64 = 0x517cc1b727220a95;
 /// Routing strategy between producer and consumer stages.
 #[derive(Debug, Clone)]
 pub enum ShuffleMode {
-    /// Hash(key, producer_task_count × consumer_partition_count): consumer reads global partitions
+    /// Hash(key, consumer_task_count × consumer_partition_count): consumer reads global partitions
     Direct,
     /// Hash(key+salt, consumer_task_count): each consumer re-partitions locally into consumer_partition_count.
     Salted { salt: u64 },
@@ -371,51 +371,13 @@ impl ExecutionPlan for NetworkShuffleExec {
     }
 }
 
-/// Returns `true` if the shuffle should use Salted (double-repartition) mode; `false` for Direct.
-///
-/// Salted mode is chosen when either the producer or consumer fan-out (`task_count × partition_count`)
-/// meets or exceeds `threshold`, to bound the number of concurrent gRPC streams.
+/// Returns `true` when the producer fan-out meets or exceeds `threshold`; beyond that point
+/// splitting into a smaller producer hash and a local consumer `RepartitionExec` is cheaper.
+#[inline(always)]
 pub(crate) fn should_use_salted_mode(
-    producer_task_count: usize,
     consumer_task_count: usize,
     consumer_partition_count: usize,
     threshold: usize,
 ) -> bool {
-    producer_task_count * consumer_partition_count >= threshold
-        || consumer_task_count * consumer_partition_count >= threshold
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn below_threshold_on_both_sides_is_direct() {
-        assert!(!should_use_salted_mode(4, 4, 4, 75));
-    }
-
-    #[test]
-    fn producer_side_at_threshold_is_salted() {
-        assert!(should_use_salted_mode(75, 1, 1, 75));
-    }
-
-    #[test]
-    fn consumer_side_at_threshold_is_salted() {
-        assert!(should_use_salted_mode(1, 75, 1, 75));
-    }
-
-    #[test]
-    fn producer_side_triggers_independently_of_consumer() {
-        assert!(should_use_salted_mode(10, 1, 8, 75));
-    }
-
-    #[test]
-    fn consumer_side_triggers_independently_of_producer() {
-        assert!(should_use_salted_mode(1, 10, 8, 75));
-    }
-
-    #[test]
-    fn one_below_threshold_is_direct() {
-        assert!(!should_use_salted_mode(1, 1, 74, 75));
-    }
+    consumer_task_count * consumer_partition_count >= threshold
 }
