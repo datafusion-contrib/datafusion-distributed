@@ -3,8 +3,8 @@ use crate::common::now_ns;
 use crate::{MaxLatencyMetric, ProducerHead, TaskCompletedDynamicFilters, TaskMetrics};
 use datafusion::common::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
+use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::metrics::{Metric, MetricValue, MetricsSet};
-use datafusion::physical_plan::{ChildrenPropertiesMode, ExecutionPlan, ReplaceChildrenOptions};
 use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::Duration;
@@ -117,16 +117,4 @@ impl TaskData {
             Err(err) => Err(DataFusionError::Shared(Arc::clone(err))),
         }
     }
-}
-
-pub(crate) fn clone_plan(plan: Arc<dyn ExecutionPlan>) -> Result<Arc<dyn ExecutionPlan>> {
-    let children = plan
-        .children()
-        .into_iter()
-        .map(|c| clone_plan(Arc::clone(c)))
-        .collect::<Result<Vec<_>>>()?;
-    plan.replace_children(
-        children,
-        ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
-    )
 }

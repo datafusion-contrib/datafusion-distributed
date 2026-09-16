@@ -5,7 +5,6 @@ use crate::execution_plans::SamplerExec;
 use crate::protocol::LocalWorkerContext;
 use crate::work_unit_feed::{RemoteWorkUnitFeedRegistry, set_work_unit_received_time};
 use crate::worker::task_data::TaskDataMetrics;
-use crate::worker::task_data::clone_plan;
 use crate::{
     CoordinatorToWorkerMsg, DistributedConfig, DistributedExt, DistributedTaskContext,
     MaybeEncoded, SetPlanRequest, TaskCompletedDynamicFilters, TaskData, TaskDynamicFilter,
@@ -96,7 +95,6 @@ impl Worker {
                 session_config: session_state.config(),
             };
             let plan = WorkerPlanRewriteHandlers::handle(ev).await?.plan;
-            let plan = clone_plan(plan)?;
             load_info_rxs =
                 SamplerExec::kick_off_first_sampler(Arc::clone(&plan), Arc::clone(&task_ctx))?;
 
