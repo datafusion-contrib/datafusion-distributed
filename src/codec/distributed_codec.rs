@@ -4,7 +4,7 @@ use crate::execution_plans::{
     BroadcastExec, ChildWeight, ChildrenIsolatorUnionExec, NetworkBroadcastExec,
     NetworkCoalesceExec, SamplerExec,
 };
-use crate::execution_plans::{NetworkShuffleExec, PRODUCER_SALT_DEFAULT, ShuffleMode};
+use crate::execution_plans::{NetworkShuffleExec, ShuffleMode};
 use crate::stage::{LocalStage, RemoteStage, Stage};
 use crate::worker::WorkerConnectionPool;
 use crate::{DistributedTaskContext, NetworkBoundary};
