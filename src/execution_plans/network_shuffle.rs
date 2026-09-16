@@ -372,7 +372,7 @@ impl ExecutionPlan for NetworkShuffleExec {
 }
 
 /// Returns `true` when the producer fan-out meets or exceeds `threshold`; beyond that point
-/// splitting into a smaller producer hash and a local consumer `RepartitionExec` is more efficnet.
+/// splitting into a smaller producer hash and a local consumer `RepartitionExec` is more efficient.
 #[inline(always)]
 pub(crate) fn should_use_salted_mode(
     consumer_task_count: usize,

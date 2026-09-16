@@ -36,9 +36,6 @@ impl WorkerChannel for InProcessWorkerClient {
         task_ctx: &Arc<TaskContext>,
     ) -> Result<BoxStream<'static, Result<WorkerToCoordinatorMsg>>> {
         // Encode the plan to bytes so the worker deserializes a fresh, independent plan tree.
-        // Without this, MaybeEncoded::Decoded passes the same Arc to every retry worker,
-        // causing kick_off_first_sampler to call execute() twice on the same one-shot nodes
-        // (e.g. RepartitionExec) and panic with "partition not used yet".
         let set_plan_request = SetPlanRequest {
             plan: MaybeEncoded::Encoded(set_plan_request.plan.encode(task_ctx)?),
             ..set_plan_request
