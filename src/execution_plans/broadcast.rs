@@ -419,7 +419,7 @@ impl<T: Clone> BroadcastQueue<T> {
     ///
     /// This method will not append the value and returns `false` if no retaining readers remain.
     fn push(&self, value: T) -> bool {
-        {
+        let reclaimed = {
             let mut queue_state = self.shared.queue_state.lock().unwrap();
 
             if queue_state.retaining_readers == 0 {
@@ -429,9 +429,13 @@ impl<T: Clone> BroadcastQueue<T> {
             queue_state.entries.push_back(value);
             queue_state.tail_sequence += 1;
             if queue_state.tail_sequence.is_multiple_of(RECLAIM_INTERVAL) {
-                Self::reclaim_processed_entries(&mut queue_state);
+                Self::reclaim_processed_entries(&mut queue_state)
+            } else {
+                Vec::new()
             }
-        }
+        };
+
+        drop(reclaimed);
 
         self.shared.notify.send_replace(());
         true
@@ -439,7 +443,7 @@ impl<T: Clone> BroadcastQueue<T> {
 
     /// Frees all entries in the queue that have been processed and updates `base_sequence` to point
     /// at the first non-freeable position.
-    fn reclaim_processed_entries(queue_state: &mut QueueState<T>) {
+    fn reclaim_processed_entries(queue_state: &mut QueueState<T>) -> Vec<T> {
         let minimum_sequence = queue_state
             .readers
             .iter()
@@ -451,13 +455,9 @@ impl<T: Clone> BroadcastQueue<T> {
             .min()
             .unwrap_or(queue_state.tail_sequence);
 
-        while queue_state.base_sequence < minimum_sequence {
-            queue_state
-                .entries
-                .pop_front()
-                .expect("broadcast sequence bounds were inconsistent");
-            queue_state.base_sequence += 1;
-        }
+        let reclaim_count = minimum_sequence - queue_state.base_sequence;
+        queue_state.base_sequence = minimum_sequence;
+        queue_state.entries.drain(..reclaim_count).collect()
     }
 }
 
@@ -499,7 +499,7 @@ impl<T: Clone> BroadcastReaders<T> {
     /// Sets all `ReaderSlot::Pending` readers to `ReaderSlot::Released`. This also cleans up newly
     /// freeable entries and cancels the producer if all readers are released.
     fn release_pending(&self) {
-        let no_readers_remain = {
+        let (no_readers_remain, reclaimed) = {
             let mut state = self.shared.queue_state.lock().unwrap();
             let mut released = 0;
             for reader in &mut state.readers {
@@ -509,9 +509,12 @@ impl<T: Clone> BroadcastReaders<T> {
                 }
             }
             state.retaining_readers -= released;
-            BroadcastQueue::<T>::reclaim_processed_entries(&mut state);
-            state.retaining_readers == 0
+            let reclaimed = BroadcastQueue::<T>::reclaim_processed_entries(&mut state);
+            (state.retaining_readers == 0, reclaimed)
         };
+
+        drop(reclaimed);
+
         if no_readers_remain {
             self.shared.cancel.cancel();
         }
@@ -582,16 +585,19 @@ impl<T: Clone> Stream for BroadcastConsumer<T> {
 
 impl<T: Clone> BroadcastShared<T> {
     fn release(&self, consumer_id: usize) {
-        let no_readers_remain = {
+        let (no_readers_remain, reclaimed) = {
             let mut state = self.queue_state.lock().unwrap();
             if matches!(state.readers[consumer_id], ReaderSlot::Released) {
                 return;
             }
             state.readers[consumer_id] = ReaderSlot::Released;
             state.retaining_readers -= 1;
-            BroadcastQueue::<T>::reclaim_processed_entries(&mut state);
-            state.retaining_readers == 0
+            let reclaimed = BroadcastQueue::<T>::reclaim_processed_entries(&mut state);
+            (state.retaining_readers == 0, reclaimed)
         };
+
+        drop(reclaimed);
+
         if no_readers_remain {
             self.cancel.cancel();
         }
