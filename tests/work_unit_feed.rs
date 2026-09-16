@@ -273,7 +273,7 @@ mod tests {
         └──────────────────────────────────────────────────
           ┌───── Stage 3 ── tasks=2, partitions=3
           │ ProjectionExec: expr=[task@2 as a_task, letter@3 as a_letter, task@0 as b_task, letter@1 as b_letter]
-          │   SortExec: expr=[task@2 ASC NULLS LAST, letter@1 ASC NULLS LAST, task@0 ASC NULLS LAST], preserve_partitioning=[true]
+          │   SortExec: expr=[task@2 ASC NULLS LAST, letter@3 ASC NULLS LAST, task@0 ASC NULLS LAST], preserve_partitioning=[true]
           │     HashJoinExec: mode=Partitioned, join_type=Inner, on=[(letter@1, letter@1)]
           │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=2
           │       [Stage 2] => NetworkShuffleExec: output_partitions=3, input_tasks=2

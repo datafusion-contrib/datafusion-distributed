@@ -699,15 +699,14 @@ mod tests {
         "#,
             )
             .await;
-        assert_snapshot!(plan_costs(plan), @r"
-        O(2) | ProjectionExec: expr=[MinTemp@0 as MinTemp, MaxTemp@2 as MaxTemp]
-         O((left_Col1+right_Col1)) | SortMergeJoinExec: join_type=Inner, on=[(RainToday@1, RainToday@1)]
-          O((Cols+Col1)*Log((Cols+Col1))) | SortExec: expr=[RainToday@1 ASC], preserve_partitioning=[true]
-           O((Cols+Col1)) | RepartitionExec: partitioning=Hash([RainToday@1], 4), input_partitions=3
-            O(out_Cols) | DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
-          O((Cols+Col1)*Log((Cols+Col1))) | SortExec: expr=[RainToday@1 ASC], preserve_partitioning=[true]
-           O((Cols+Col1)) | RepartitionExec: partitioning=Hash([RainToday@1], 4), input_partitions=3
-            O(out_Cols) | DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet
+        assert_snapshot!(plan_costs(plan), @"
+        O((left_Col1+right_Col1)) | SortMergeJoinExec: join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
+         O((Cols+Col1)*Log((Cols+Col1))) | SortExec: expr=[RainToday@1 ASC], preserve_partitioning=[true]
+          O((Cols+Col1)) | RepartitionExec: partitioning=Hash([RainToday@1], 4), input_partitions=3
+           O(out_Cols) | DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
+         O((Cols+Col1)*Log((Cols+Col1))) | SortExec: expr=[RainToday@1 ASC], preserve_partitioning=[true]
+          O((Cols+Col1)) | RepartitionExec: partitioning=Hash([RainToday@1], 4), input_partitions=3
+           O(out_Cols) | DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet
         ");
     }
 
@@ -726,7 +725,7 @@ mod tests {
         O(1) | ProjectionExec: expr=[rank() PARTITION BY [weather.RainToday] ORDER BY [weather.MaxTemp ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW@2 as rank() PARTITION BY [weather.RainToday] ORDER BY [weather.MaxTemp ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW]
          O((Cols+Col1)) | BoundedWindowAggExec: wdw=[rank() PARTITION BY [weather.RainToday] ORDER BY [weather.MaxTemp ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW: Field { "rank() PARTITION BY [weather.RainToday] ORDER BY [weather.MaxTemp ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW": UInt64 }, frame: RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW], mode=[Sorted]
           O((Cols+Col1+Col0)*Log((Cols+Col1+Col0))) | SortExec: expr=[RainToday@1 ASC NULLS LAST, MaxTemp@0 ASC NULLS LAST], preserve_partitioning=[false]
-           O(out_Cols) | DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000002.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000000.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, sort_order_for_reorder=[RainToday@1 ASC NULLS LAST, MaxTemp@0 ASC NULLS LAST]
+           O(out_Cols) | DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, sort_order_for_reorder=[RainToday@1 ASC NULLS LAST, MaxTemp@0 ASC NULLS LAST]
         "#);
     }
 
