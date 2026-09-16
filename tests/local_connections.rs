@@ -106,8 +106,8 @@ mod tests {
             Ok(TreeNodeRecursion::Continue)
         })?;
 
-        // Direct mode (M=2, N=3): 1 local from coordinator + 3 per consumer task = 7.
-        assert_eq!(local_connections_used, 7);
+        // Direct mode (M=2, N=3): 1 local from coordinator + 1 per consumer task = 3.
+        assert_eq!(local_connections_used, 3);
 
         Ok(())
     }

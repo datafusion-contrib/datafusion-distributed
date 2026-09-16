@@ -5,7 +5,7 @@ use crate::events::{
     TaskCountAnnotation,
 };
 use crate::execution_plans::{ChildWeight, ChildrenIsolatorUnionExec};
-use crate::execution_plans::{MAX_MN_FOR_DIRECT, PRODUCER_SALT_DEFAULT, ShuffleMode};
+use crate::execution_plans::{PRODUCER_SALT_DEFAULT, ShuffleMode, should_use_salted_mode};
 use crate::stage::LocalStage;
 use crate::worker_resolver::WorkerResolverExtension;
 use crate::{
@@ -338,8 +338,14 @@ async fn _inject_network_boundaries(
             .await?;
         let consumer_partitioning = result.input_properties.partitioning.clone();
         let producer_tasks = result.input_stage.task_count();
+        let consumer_tasks = result.consumer_task_count.as_usize();
         let consumer_partitions = consumer_partitioning.partition_count();
-        let salted = producer_tasks * consumer_partitions > MAX_MN_FOR_DIRECT;
+        let salted = should_use_salted_mode(
+            producer_tasks,
+            consumer_tasks,
+            consumer_partitions,
+            nb_ctx.d_cfg.max_mn_for_direct,
+        );
         let (output_partitions, mode) = if salted {
             // Hash(key+salt, M); consumer adds RepartitionExec
             (

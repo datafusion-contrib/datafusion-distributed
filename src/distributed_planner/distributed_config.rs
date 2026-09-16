@@ -50,6 +50,11 @@ extensions_options! {
         /// If set to 0, this value is the number of workers returned by the provided `WorkerResolver`.
         /// It defaults to 0.
         pub max_tasks_per_stage: usize, default = 0
+        /// Fan-out threshold for choosing between Direct and Salted shuffle modes. Salted mode
+        /// (which adds a RepartitionExec on the consumer side) is used when either
+        /// `producer_task_count * consumer_partition_count` or
+        /// `consumer_task_count * consumer_partition_count` meets or exceeds this value.
+        pub max_mn_for_direct: usize, default = 75
         /// Maximum number of times the coordinator retries establishing a coordinator channel
         /// after the initial dial fails with a retryable error. Set to 0 to disable retries.
         pub max_coordinator_channel_retries: usize, default = 3
