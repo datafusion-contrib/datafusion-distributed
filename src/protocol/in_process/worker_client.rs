@@ -1,6 +1,6 @@
 use crate::{
     CoordinatorToWorkerMsg, ExecuteTaskRequest, GetWorkerInfoRequest, GetWorkerInfoResponse,
-    SetPlanRequest, Worker, WorkerChannel, WorkerToCoordinatorMsg,
+    MaybeEncoded, SetPlanRequest, Worker, WorkerChannel, WorkerToCoordinatorMsg,
 };
 use async_trait::async_trait;
 use datafusion::arrow::array::RecordBatch;
@@ -33,8 +33,16 @@ impl WorkerChannel for InProcessWorkerClient {
         set_plan_request: SetPlanRequest,
         c2w_stream: BoxStream<'static, CoordinatorToWorkerMsg>,
         _metrics: ExecutionPlanMetricsSet,
-        _task_ctx: &Arc<TaskContext>,
+        task_ctx: &Arc<TaskContext>,
     ) -> Result<BoxStream<'static, Result<WorkerToCoordinatorMsg>>> {
+        // Encode the plan to bytes so the worker deserializes a fresh, independent plan tree.
+        // Without this, MaybeEncoded::Decoded passes the same Arc to every retry worker,
+        // causing kick_off_first_sampler to call execute() twice on the same one-shot nodes
+        // (e.g. RepartitionExec) and panic with "partition not used yet".
+        let set_plan_request = SetPlanRequest {
+            plan: MaybeEncoded::Encoded(set_plan_request.plan.encode(task_ctx)?),
+            ..set_plan_request
+        };
         self.local_worker
             .coordinator_channel(headers, set_plan_request, c2w_stream.map(Ok).boxed())
             .await
