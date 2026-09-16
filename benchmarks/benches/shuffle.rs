@@ -1,7 +1,7 @@
 //! Benchmark the `RepartitionExec -> NetworkShuffleExec` shuffle pipeline end to end.
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use datafusion_distributed::{CompressionType, ShuffleBench};
+use datafusion_distributed::{CompressionType, ShuffleBench, ShufflePartitioningMode};
 use std::time::{Duration, Instant};
 use tokio::runtime::Builder as RuntimeBuilder;
 
@@ -36,6 +36,17 @@ fn shuffle(c: &mut Criterion) {
         ShuffleBench::many_to_many_baseline(16),
         ShuffleBench::many_to_many_baseline(8).with_partitions(16),
         ShuffleBench::many_to_many_baseline(8).with_partitions(32),
+        // Range shuffle baselines and scaling scenarios
+        ShuffleBench::one_to_one_baseline().with_mode(ShufflePartitioningMode::Range),
+        ShuffleBench::many_to_one_baseline(4).with_mode(ShufflePartitioningMode::Range),
+        ShuffleBench::many_to_many_baseline(4).with_mode(ShufflePartitioningMode::Range),
+        ShuffleBench::many_to_many_baseline(8).with_mode(ShufflePartitioningMode::Range),
+        ShuffleBench::many_to_many_baseline(8)
+            .with_mode(ShufflePartitioningMode::Range)
+            .with_compression(Some(CompressionType::LZ4_FRAME)),
+        ShuffleBench::many_to_many_baseline(8)
+            .with_consumer_tasks(4)
+            .with_mode(ShufflePartitioningMode::Range),
     ];
 
     for bench in benches {

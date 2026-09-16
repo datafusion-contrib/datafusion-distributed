@@ -6,5 +6,5 @@ mod transport_bench;
 pub use local_repartition_bench::{
     LocalRepartitionBench, LocalRepartitionFixture, LocalRepartitionMode,
 };
-pub use shuffle_bench::{ShuffleBench, ShuffleFixture};
+pub use shuffle_bench::{ShuffleBench, ShuffleFixture, ShufflePartitioningMode};
 pub use transport_bench::{TransportBench, TransportBenchMode, TransportFixture};
