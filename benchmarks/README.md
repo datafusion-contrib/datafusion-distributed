@@ -2,7 +2,9 @@
 
 The crate also owns the `worker` binary deployed by the remote benchmark
 harness. Keeping that binary here makes API changes to DataFusion Distributed
-and its benchmark worker compile together from the same revision.
+and its benchmark worker compile together from the same revision. Format-specific
+worker binaries can reuse `RemoteBenchmarkWorker::builder` without adding their
+dependencies to this crate.
 
 ### Generating Benchmarking data
 

@@ -2526,6 +2526,8 @@ dependencies = [
  "datafusion-distributed-iceberg",
  "env_logger",
  "futures",
+ "log",
+ "mimalloc",
  "parquet",
  "serde_json",
  "structopt",
