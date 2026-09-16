@@ -12,9 +12,9 @@ use crate::{
 };
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{DataFusionError, Result, exec_datafusion_err};
-use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::execution::{SessionStateBuilder, TaskContext};
 use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::prelude::SessionConfig;
 use futures::stream::{BoxStream, FuturesUnordered, select_all};
 use futures::{FutureExt, StreamExt, TryStreamExt};
@@ -96,11 +96,9 @@ impl Worker {
                         return Ok(Transformed::no(plan));
                     };
                     let child = require_one_child(plan.children())?;
-                    let updated = RepartitionExec::try_new(
-                        child,
-                        repartition.partitioning().clone(),
-                    )?
-                    .with_batch_size(8192 * 10)?;
+                    let updated =
+                        RepartitionExec::try_new(child, repartition.partitioning().clone())?
+                            .with_batch_size(8192 * 10)?;
                     Ok(Transformed::yes(Arc::new(updated)))
                 })?
                 .data;

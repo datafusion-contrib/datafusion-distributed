@@ -7,12 +7,12 @@ use crate::grpc::errors::tonic_status_to_datafusion_error;
 use crate::grpc::generated::worker::FlightAppMetadata;
 use crate::grpc::on_drop_stream::on_drop_stream;
 use crate::{
-    CoordinatorToWorkerMsg, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL,
-    DistributedConfig, ExecuteTaskRequest, FirstLatencyMetric, GetWorkerInfoRequest,
-    GetWorkerInfoResponse, LatencyMetricExt, LoadInfo, MaxLatencyMetric, MaybeEncoded,
-    MinLatencyMetric, P50LatencyMetric, P95LatencyMetric, ProducerHead, SetPlanRequest,
-    TaskCompletedDynamicFilters, TaskDynamicFilter, TaskKey, TaskMetrics, WorkUnitBatch,
-    WorkUnitFeedDeclaration, WorkUnitMsg, WorkerChannel, WorkerToCoordinatorMsg,
+    CoordinatorToWorkerMsg, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedConfig,
+    ExecuteTaskRequest, FirstLatencyMetric, GetWorkerInfoRequest, GetWorkerInfoResponse,
+    LatencyMetricExt, LoadInfo, MaxLatencyMetric, MaybeEncoded, MinLatencyMetric, P50LatencyMetric,
+    P95LatencyMetric, ProducerHead, SetPlanRequest, TaskCompletedDynamicFilters, TaskDynamicFilter,
+    TaskKey, TaskMetrics, WorkUnitBatch, WorkUnitFeedDeclaration, WorkUnitMsg, WorkerChannel,
+    WorkerToCoordinatorMsg,
 };
 use arrow_flight::FlightData;
 use arrow_flight::decode::FlightRecordBatchStream;
@@ -145,7 +145,8 @@ impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSy
             gauge: max_mem_used.clone(),
         });
         // Track the total encoded size of all received messages.
-        let bytes_transferred = MetricBuilder::new(&metrics).global_bytes_counter("bytes_transferred");
+        let bytes_transferred =
+            MetricBuilder::new(&metrics).global_bytes_counter("bytes_transferred");
         let msg_count = MetricBuilder::new(&metrics).global_counter("msg_count");
         // Track end-to-end network latency distribution for messages that actually arrive.
         let mut latency_metrics = NetworkLatencyMetrics::new(&metrics);

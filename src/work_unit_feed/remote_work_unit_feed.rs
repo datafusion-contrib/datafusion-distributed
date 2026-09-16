@@ -1,7 +1,6 @@
 use crate::common::now_ns;
 use crate::{
-    CoordinatorToWorkerMsg, LatencyMetricExt, MaybeEncoded, WorkUnit,
-    WorkUnitBatch, WorkUnitMsg,
+    CoordinatorToWorkerMsg, LatencyMetricExt, MaybeEncoded, WorkUnit, WorkUnitBatch, WorkUnitMsg,
 };
 use datafusion::common::{HashMap, Result, exec_err};
 use datafusion::execution::TaskContext;
