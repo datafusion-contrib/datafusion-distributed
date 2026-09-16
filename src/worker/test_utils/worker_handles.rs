@@ -216,7 +216,6 @@ pub async fn register_plan_on_worker(
             metrics_tx: Arc::new(std::sync::Mutex::new(Some(metrics_tx))),
             completed_dynamic_filters_tx: Arc::new(std::sync::Mutex::new(Some(dynamic_filters_tx))),
             task_data_metrics: Arc::new(TaskDataMetrics::new(0)),
-            executed_partitions: Default::default(),
         }))
         .expect("failed to write to task data");
 }

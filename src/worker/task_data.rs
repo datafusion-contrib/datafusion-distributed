@@ -1,12 +1,12 @@
 use crate::common::OnceLockResult;
 use crate::common::now_ns;
 use crate::{MaxLatencyMetric, ProducerHead, TaskCompletedDynamicFilters, TaskMetrics};
-use datafusion::common::{DataFusionError, HashSet, Result};
+use datafusion::common::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::metrics::{Metric, MetricValue, MetricsSet};
 use datafusion::physical_plan::{ChildrenPropertiesMode, ExecutionPlan, ReplaceChildrenOptions};
 use std::borrow::Cow;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::oneshot;
 
@@ -30,9 +30,6 @@ pub struct TaskData {
     /// associated to a specific node, they are global to the task, like the time at which the plan
     /// was fed by the coordinator to the worker.
     pub(super) task_data_metrics: Arc<TaskDataMetrics>,
-    /// Partitions already handed to a caller; a second request for the same partition is a retry
-    /// and must receive a fresh plan so one-shot nodes (e.g. `RepartitionExec`) can re-execute.
-    pub(super) executed_partitions: Arc<Mutex<HashSet<usize>>>,
 }
 
 pub(crate) const PLAN_ADDED_AT_METRIC: &str = "plan_added_at";
@@ -119,20 +116,6 @@ impl TaskData {
             Ok(plan) => Ok(Arc::clone(plan)),
             Err(err) => Err(DataFusionError::Shared(Arc::clone(err))),
         }
-    }
-
-    /// Returns `true` if this is the first time `partition` is claimed; `false` on retry.
-    pub(crate) fn try_claim_partition(&self, partition: usize) -> bool {
-        self.executed_partitions.lock().unwrap().insert(partition)
-    }
-
-    /// Bypasses the [Self::final_plan] cache and builds a new plan instance with fresh internal
-    /// state. Deep-clones `base_plan` so inner one-shot nodes (e.g. nested `RepartitionExec`)
-    /// are recreated and can execute without panicking.
-    pub(crate) fn fresh_plan(&self, producer_head: ProducerHead) -> Result<Arc<dyn ExecutionPlan>> {
-        let producer_head =
-            producer_head.ensure_decoded(self.base_plan.schema(), &self.task_ctx)?;
-        producer_head.insert(clone_plan(Arc::clone(&self.base_plan))?)
     }
 }
 

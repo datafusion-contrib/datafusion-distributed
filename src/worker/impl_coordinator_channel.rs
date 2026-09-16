@@ -12,7 +12,7 @@ use crate::{
     TaskMetrics, Worker, WorkerQueryContext, WorkerToCoordinatorMsg,
 };
 use datafusion::common::tree_node::TreeNodeRecursion;
-use datafusion::common::{DataFusionError, HashSet, Result, exec_datafusion_err};
+use datafusion::common::{DataFusionError, Result, exec_datafusion_err};
 use datafusion::execution::{SessionStateBuilder, TaskContext};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionConfig;
@@ -114,7 +114,6 @@ impl Worker {
                     false => Arc::new(std::sync::Mutex::new(None)),
                 },
                 task_data_metrics: Arc::new(TaskDataMetrics::new(request.query_start_time_ns)),
-                executed_partitions: Arc::new(std::sync::Mutex::new(HashSet::new())),
             })
         };
 

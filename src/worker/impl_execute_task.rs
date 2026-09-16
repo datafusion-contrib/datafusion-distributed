@@ -50,15 +50,8 @@ impl Worker {
                 );
             }
 
-            // First-time callers share the cached plan; retries get a fresh one so one-shot
-            // nodes like RepartitionExec can re-execute without panicking.
-            let partition_plan = if task_data.try_claim_partition(partition) {
-                Arc::clone(&plan)
-            } else {
-                task_data.fresh_plan(request.producer_head.clone())?
-            };
-            let stream = partition_plan.execute(partition, Arc::clone(&task_ctx))?;
-            let stream_schema = partition_plan.schema();
+            let stream = plan.execute(partition, Arc::clone(&task_ctx))?;
+            let stream_schema = plan.schema();
 
             streams.push(Box::pin(RecordBatchStreamAdapter::new(stream_schema, stream)) as _);
         }

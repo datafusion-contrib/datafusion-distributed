@@ -29,7 +29,6 @@ pub const PRODUCER_SALT_DEFAULT: u64 = 0x517cc1b727220a95;
 #[derive(Debug, Clone)]
 pub enum ShuffleMode {
     /// Hash(key, producer_task_count × consumer_partition_count): consumer reads global partitions
-    /// directly, no RepartitionExec needed.
     Direct,
     /// Hash(key+salt, consumer_task_count): each consumer re-partitions locally into consumer_partition_count.
     Salted { salt: u64 },
@@ -137,9 +136,6 @@ impl NetworkShuffleExec {
         mode: ShuffleMode,
     ) -> Self {
         let consumer_partitioning = input_properties.partitioning.clone();
-        // Direct mode preserves Hash(key, N) partitioning: hash(key) % (M*N) == j*N + p implies
-        // hash(key) % N == p, so the routing guarantee holds. Salted mode uses an extra salt term
-        // that breaks the hash guarantee, so it falls back to UnknownPartitioning.
         let advertised_partitioning = match &mode {
             ShuffleMode::Direct => consumer_partitioning.clone(),
             ShuffleMode::Salted { .. } => Partitioning::UnknownPartitioning(output_partitions),
@@ -410,13 +406,11 @@ mod tests {
 
     #[test]
     fn producer_side_triggers_independently_of_consumer() {
-        // producer × partition crosses threshold; consumer side does not
         assert!(should_use_salted_mode(10, 1, 8, 75));
     }
 
     #[test]
     fn consumer_side_triggers_independently_of_producer() {
-        // consumer × partition crosses threshold; producer side does not
         assert!(should_use_salted_mode(1, 10, 8, 75));
     }
 
