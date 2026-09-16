@@ -3,7 +3,7 @@
 use datafusion::error::Result;
 use datafusion_distributed_benchmarks::run::RunOpt;
 use datafusion_distributed_iceberg_benchmarks::{
-    IcebergBenchmarkBackend, prepare::PrepareIcebergOpt,
+    backend::IcebergBenchmarkBackend, prepare::PrepareIcebergOpt,
 };
 use structopt::StructOpt;
 

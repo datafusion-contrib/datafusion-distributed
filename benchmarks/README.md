@@ -96,6 +96,5 @@ dataset uses the existing `.results/<branch>/` and `previous.json` layout.
 
 Absolute dataset paths are supported when they follow the same `<suite>/<variant>` convention.
 Iceberg runs always load manifest column statistics. For larger scale factors, increase Parquet
-generation `--partitions` to avoid oversized source files. Pass an object-store URI to preparation
-with `--output` to write portable remote metadata. See the
-[Iceberg benchmark guide](../iceberg/benchmarks/README.md#remote-benchmarks).
+generation `--partitions` to avoid oversized source files. Generated metadata contains absolute
+local locations; cloud publication and remote harness support remain separate work.

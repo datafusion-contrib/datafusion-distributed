@@ -7,12 +7,10 @@ publish = false
 
 [dependencies]
 async-trait = "0.1.89"
-bytes = "1"
 datafusion = { workspace = true, features = ["parquet", "sql"] }
 datafusion-distributed-benchmarks = { path = "../../benchmarks" }
 datafusion-distributed-iceberg = { path = ".." }
 env_logger = "0.11.8"
-iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust.git", rev = "4d83bc77dc10cff851a3ef427c451ff977bc3643", default-features = false, features = ["opendal-fs", "opendal-s3"] }
 futures = "0.3.31"
 log = "0.4.27"
 mimalloc = "0.1"

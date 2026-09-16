@@ -1,7 +1,7 @@
 use std::error::Error;
 
 use datafusion_distributed_benchmarks::remote_worker::{RemoteBenchmarkWorker, RemoteWorkerOpt};
-use datafusion_distributed_iceberg_benchmarks::IcebergBenchmarkBackend;
+use datafusion_distributed_iceberg_benchmarks::backend::IcebergBenchmarkBackend;
 use structopt::StructOpt;
 
 #[global_allocator]
