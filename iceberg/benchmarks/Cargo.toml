@@ -1,0 +1,29 @@
+[package]
+name = "datafusion-distributed-iceberg-benchmarks"
+version = "0.1.0"
+edition = "2024"
+default-run = "dfbench-iceberg"
+publish = false
+
+[dependencies]
+async-trait = "0.1.89"
+datafusion = { workspace = true, features = ["parquet", "sql"] }
+datafusion-distributed-benchmarks = { path = "../../benchmarks" }
+datafusion-distributed-iceberg = { path = ".." }
+env_logger = "0.11.8"
+futures = "0.3.31"
+log = "0.4.27"
+mimalloc = "0.1"
+parquet = "59"
+serde_json = "1"
+structopt = "0.3.26"
+tokio = { version = "1.48", features = ["full"] }
+url = "2.5.7"
+
+[[bin]]
+name = "dfbench-iceberg"
+path = "src/main.rs"
+
+[[bin]]
+name = "iceberg-worker"
+path = "src/bin/worker.rs"

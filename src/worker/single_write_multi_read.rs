@@ -1,9 +1,10 @@
 use std::fmt;
+use std::sync::Mutex;
 use std::time::Duration;
 use tokio::sync::watch;
 
-/// Synchronization primitive that allows multiple readers to wait for one writer to write
-/// a cloneable piece of data.
+/// Synchronization primitive that allows multiple readers to wait for a cloneable piece of data.
+/// Writers may replace the value until a reader starts consuming it.
 ///
 /// - If the writer writes before anyone is reading, all subsequent readers will immediately
 ///   resolve to the written piece of data.
@@ -12,6 +13,7 @@ use tokio::sync::watch;
 pub struct SingleWriteMultiRead<T: Clone> {
     tx: watch::Sender<Option<T>>,
     rx: watch::Receiver<Option<T>>,
+    read_started: Mutex<bool>,
 }
 
 impl<T: Clone> Default for SingleWriteMultiRead<T> {
@@ -42,15 +44,20 @@ impl std::error::Error for SingleWriteMultiReadError {}
 impl<T: Clone> SingleWriteMultiRead<T> {
     pub(crate) fn new() -> Self {
         let (tx, rx) = watch::channel(None);
-        Self { tx, rx }
+        Self {
+            tx,
+            rx,
+            read_started: Mutex::new(false),
+        }
     }
 
-    /// Write the value. Only the first call is meaningful;
-    /// subsequent calls overwrite silently.
+    /// Write the value. A written but unconsumed value may be replaced. Once a reader has begun
+    /// consuming the value, further writes fail.
     pub(crate) fn write(&self, item: T) -> Result<(), SingleWriteMultiReadError> {
+        let read_started = self.read_started.lock().unwrap();
         let mut already_written = false;
         self.tx.send_modify(|v| {
-            if v.is_none() {
+            if v.is_none() || !*read_started {
                 *v = Some(item);
             } else {
                 already_written = true;
@@ -65,6 +72,7 @@ impl<T: Clone> SingleWriteMultiRead<T> {
     /// Reads the current value, if any, not waiting for it to be set by a writer.
     #[cfg(feature = "grpc")]
     pub(crate) fn read_now(&self) -> Option<T> {
+        *self.read_started.lock().unwrap() = true;
         self.rx.borrow().clone()
     }
 
@@ -73,6 +81,7 @@ impl<T: Clone> SingleWriteMultiRead<T> {
         &self,
         timeout_duration: Duration,
     ) -> Result<T, SingleWriteMultiReadError> {
+        *self.read_started.lock().unwrap() = true;
         let mut rx = self.rx.clone();
         let result = tokio::time::timeout(timeout_duration, rx.wait_for(|v| v.is_some()))
             .await
@@ -118,16 +127,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn double_write() {
-        let swmr = Arc::new(SingleWriteMultiRead::new());
-        let handle = {
-            let swmr = Arc::clone(&swmr);
-            #[allow(clippy::disallowed_methods)]
-            tokio::spawn(async move { swmr.read(TIMEOUT).await.unwrap() })
-        };
+    async fn double_write_before_read_replaces_value() {
+        let swmr = SingleWriteMultiRead::new();
+        swmr.write(42).unwrap();
         swmr.write(99).unwrap();
-        swmr.write(99).unwrap_err();
-        assert_eq!(handle.await.unwrap(), 99);
+        assert_eq!(swmr.read(TIMEOUT).await.unwrap(), 99);
+    }
+
+    #[tokio::test]
+    async fn double_write_after_read_fails() {
+        let swmr = SingleWriteMultiRead::new();
+        swmr.write(42).unwrap();
+        assert_eq!(swmr.read(TIMEOUT).await.unwrap(), 42);
+        assert!(matches!(
+            swmr.write(99),
+            Err(SingleWriteMultiReadError::AlreadyWritten)
+        ));
     }
 
     #[tokio::test]

@@ -2,6 +2,7 @@ use crate::distributed_planner::ProducerHead;
 use crate::passthrough_headers::get_passthrough_headers;
 use crate::stage::RemoteStage;
 use crate::{ExecuteTaskRequest, LocalWorkerContext, TaskKey, get_distributed_channel_resolver};
+use dashmap::DashMap;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::common::runtime::SpawnedTask;
 use datafusion::common::{DataFusionError, Result, internal_datafusion_err, internal_err};
@@ -13,7 +14,7 @@ use futures::stream::BoxStream;
 use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt};
 use std::fmt::{Debug, Formatter};
 use std::ops::Range;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 /// Manages connections to remote workers.
 /// - Handles a range of partitions at a time in other to give the chance to [crate::WorkerChannel]
@@ -21,9 +22,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 ///   streams over an IO interface.
 /// - Short circuits to a local in-memory connection if the remote worker that should be reached
 ///   happens to be the same one issuing the request.
-/// - Lazy inits connections to a remote worker on first call to [WorkerConnectionPool::execute].
+/// - Lazily initializes connections per remote worker and requested partition range.
 pub(crate) struct WorkerConnectionPool {
-    lazy_stream_groups: Vec<OnceLock<SharedBoxFuture<StreamGroup>>>,
+    lazy_stream_groups: Vec<DashMap<Range<usize>, SharedBoxFuture<StreamGroup>>>,
     pub(crate) metrics: ExecutionPlanMetricsSet,
 }
 
@@ -38,7 +39,7 @@ impl WorkerConnectionPool {
     /// the provided `input_tasks`.
     pub(crate) fn new(input_tasks: usize) -> Self {
         Self {
-            lazy_stream_groups: (0..input_tasks).map(|_| OnceLock::new()).collect(),
+            lazy_stream_groups: (0..input_tasks).map(|_| Default::default()).collect(),
             metrics: ExecutionPlanMetricsSet::default(),
         }
     }
@@ -75,7 +76,9 @@ impl WorkerConnectionPool {
             );
         };
 
-        let streams_shared_future = worker_connection.get_or_init(|| {
+        let entry = worker_connection.entry(target_partitions.clone());
+
+        let streams_shared_future = entry.or_insert_with(|| {
             let metrics = self.metrics.clone();
             let ctx = Arc::clone(ctx);
 

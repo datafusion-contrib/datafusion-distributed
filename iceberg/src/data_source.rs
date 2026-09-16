@@ -25,13 +25,12 @@ use iceberg::arrow::ArrowReaderBuilder;
 use iceberg::io::FileIO;
 use iceberg::puffin::APACHE_DATASKETCHES_THETA_V1;
 use iceberg::spec::{
-    DataFile, Datum, Manifest, ManifestContentType, ManifestList, PrimitiveLiteral, PrimitiveType,
+    DataFile, Datum, ManifestContentType, ManifestList, PrimitiveLiteral, PrimitiveType,
     SnapshotRef,
 };
 use iceberg::table::Table;
 
 use crate::common::{convert_filters_to_predicate, df_err, iceberg_err};
-use crate::work_unit_wire::FileScanTaskDecoder;
 use crate::{IcebergConfig, IcebergWorkUnitFeed};
 
 /// Snapshot summary keys defined by the Iceberg table spec:
@@ -253,12 +252,11 @@ impl DataSource for IcebergDataSource {
                 .with_row_selection_enabled(config.row_selection_enabled)
                 .build();
 
-        let mut decoder = FileScanTaskDecoder::default();
         let feed = self
             .feed
             .feed(partition, context)?
-            .map(move |msg_or_err| match msg_or_err {
-                Ok(msg) => decoder.decode(msg).map_err(iceberg_err),
+            .map(|work_unit_or_err| match work_unit_or_err {
+                Ok(work_unit) => work_unit.into_task().map_err(iceberg_err),
                 Err(err) => Err(iceberg_err(err)),
             })
             .boxed();
@@ -440,22 +438,21 @@ pub async fn compute_column_stats(
                 .entries()
                 .iter()
                 .any(|f| f.content == ManifestContentType::Deletes);
-            // Collecting all of the needed paths before spawning
-            let manifest_paths: Vec<_> = manifest_list
+            // Collect all needed manifest entries before spawning.
+            let manifests: Vec<_> = manifest_list
                 .entries()
                 .iter()
-                .filter(|mf| mf.content == ManifestContentType::Data)
-                .map(|mf| mf.manifest_path.clone())
+                .filter(|manifest| manifest.content == ManifestContentType::Data)
+                .cloned()
                 .collect();
             let mut join_set = tokio::task::JoinSet::new();
 
-            for path in manifest_paths {
+            for manifest_file in manifests {
                 let table = table.clone();
                 let fields_ids = fields_ids.clone();
 
                 join_set.spawn(async move {
-                    let manifest =
-                        Manifest::parse_avro(&table.file_io().new_input(&path)?.read().await?)?;
+                    let manifest = table.manifest_reader().read(&manifest_file).await?;
 
                     let mut col_stats: Vec<Option<ColumnStatistics>> = vec![None; fields_ids.len()];
 

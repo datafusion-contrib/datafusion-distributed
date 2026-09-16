@@ -38,6 +38,7 @@ impl WorkerChannel for InProcessWorkerClient {
         self.local_worker
             .coordinator_channel(headers, set_plan_request, c2w_stream.map(Ok).boxed())
             .await
+            .map(|v| v.stream)
     }
 
     async fn execute_task(

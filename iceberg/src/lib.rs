@@ -4,7 +4,7 @@
 //!
 //! This crate ports the read path from Apache Iceberg Rust's DataFusion
 //! integration. It deliberately contains no distributed execution adaptation
-//! and no Iceberg write or commit implementation.
+//! and no production Iceberg write or commit implementation.
 
 mod common;
 mod config;
@@ -14,7 +14,6 @@ mod iceberg_ext;
 mod proto;
 mod table_provider;
 mod work_unit_feed;
-mod work_unit_wire;
 
 mod codec;
 #[doc(hidden)]

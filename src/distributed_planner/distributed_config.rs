@@ -3,7 +3,6 @@ use datafusion::common::{DataFusionError, extensions_options, plan_err};
 use datafusion::config::{ConfigExtension, ConfigOptions};
 use datafusion::execution::TaskContext;
 use datafusion::prelude::SessionConfig;
-use std::sync::Arc;
 
 extensions_options! {
     /// Configuration for the distributed planner.
@@ -51,6 +50,14 @@ extensions_options! {
         /// If set to 0, this value is the number of workers returned by the provided `WorkerResolver`.
         /// It defaults to 0.
         pub max_tasks_per_stage: usize, default = 0
+        /// Maximum number of times the coordinator retries establishing a coordinator channel
+        /// after the initial dial fails with a retryable error. Set to 0 to disable retries.
+        pub max_coordinator_channel_retries: usize, default = 3
+        /// Initial delay, in milliseconds, before retrying a coordinator channel on the same
+        /// worker. The delay doubles after each same-worker retry.
+        pub coordinator_channel_retry_initial_backoff_ms: u64, default = 100
+        /// Maximum delay, in milliseconds, between same-worker coordinator channel retries.
+        pub coordinator_channel_retry_max_backoff_ms: u64, default = 1_000
         /// Enable the PartialReduce optimization, which inserts an extra aggregation pass
         /// above hash RepartitionExec before network shuffles to reduce shuffle data size.
         /// Disabled by default because its effectiveness is workload-dependent: it helps when
@@ -97,7 +104,7 @@ impl DistributedConfig {
     }
 
     /// Gets the [DistributedConfig] from the [ConfigOptions]'s in the provided [TaskContext].
-    pub fn from_task_context(ctx: &Arc<TaskContext>) -> Result<&Self, DataFusionError> {
+    pub fn from_task_context(ctx: &TaskContext) -> Result<&Self, DataFusionError> {
         Self::from_session_config(ctx.session_config())
     }
 

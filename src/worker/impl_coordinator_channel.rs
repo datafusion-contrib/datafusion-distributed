@@ -12,7 +12,7 @@ use crate::{
 };
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{DataFusionError, Result, exec_datafusion_err};
-use datafusion::execution::SessionStateBuilder;
+use datafusion::execution::{SessionStateBuilder, TaskContext};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionConfig;
 use futures::stream::{BoxStream, FuturesUnordered, select_all};
@@ -22,13 +22,23 @@ use std::sync::{Arc, OnceLock};
 use tokio::sync::oneshot;
 use tokio::sync::oneshot::Sender;
 
+/// Return value of the [Worker::coordinator_channel] method.
+pub struct CoordinatorChannelResult {
+    /// The DataFusion's [TaskContext] built by the session builder provided in
+    /// [Worker::from_session_builder]. This [TaskContext] will contain all the user-provided
+    /// extensions plus the ones provided by this project.
+    pub task_ctx: Arc<TaskContext>,
+    /// The stream that carries messages flowing from a remote worker to the coordinator.
+    pub stream: BoxStream<'static, Result<WorkerToCoordinatorMsg>>,
+}
+
 impl Worker {
     pub async fn coordinator_channel(
         &self,
         headers: HeaderMap,
         request: SetPlanRequest,
         stream: BoxStream<'static, Result<CoordinatorToWorkerMsg>>,
-    ) -> Result<BoxStream<'static, Result<WorkerToCoordinatorMsg>>> {
+    ) -> Result<CoordinatorChannelResult> {
         let key = request.task_key;
 
         let entry = self
@@ -84,7 +94,7 @@ impl Worker {
                 plan,
                 session_config: session_state.config(),
             };
-            let plan = WorkerPlanRewriteHandlers::handle(ev)?.plan;
+            let plan = WorkerPlanRewriteHandlers::handle(ev).await?.plan;
             load_info_rxs =
                 SamplerExec::kick_off_first_sampler(Arc::clone(&plan), Arc::clone(&task_ctx))?;
 
@@ -221,13 +231,16 @@ impl Worker {
             },
         );
 
-        Ok(select_all([
-            load_info_stream.boxed(),
-            metrics_stream.boxed(),
-            dynamic_filters_stream.boxed(),
-        ])
-        .map(Ok)
-        .boxed())
+        Ok(CoordinatorChannelResult {
+            task_ctx: Arc::clone(&task_data.task_ctx),
+            stream: select_all([
+                load_info_stream.boxed(),
+                metrics_stream.boxed(),
+                dynamic_filters_stream.boxed(),
+            ])
+            .map(Ok)
+            .boxed(),
+        })
     }
 }
 

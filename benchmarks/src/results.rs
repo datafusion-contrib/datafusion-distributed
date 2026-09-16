@@ -1,7 +1,7 @@
 use crate::RESULTS_DIR;
+use crate::stats::median;
 use datafusion::common::utils::get_available_parallelism;
 use datafusion::common::{Result, internal_datafusion_err};
-use datafusion_distributed_benchmarks::stats::median;
 use serde::ser::SerializeSeq;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fs;
@@ -125,6 +125,9 @@ impl BenchmarkRun {
 }
 
 pub(crate) fn dataset_path(dataset: &str) -> PathBuf {
+    if std::path::Path::new(dataset).is_absolute() {
+        return PathBuf::from(dataset);
+    }
     let (suite, variant) = dataset.split_once('/').unwrap_or((dataset, ""));
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
@@ -133,7 +136,7 @@ pub(crate) fn dataset_path(dataset: &str) -> PathBuf {
         .join(variant)
 }
 
-fn get_current_branch() -> String {
+pub fn get_current_branch() -> String {
     let output = Command::new("git")
         .args(["rev-parse", "--abbrev-ref", "HEAD"])
         .output()

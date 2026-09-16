@@ -3,12 +3,14 @@
 set -e
 
 WORKERS=${WORKERS:-8}
+PACKAGE=${PACKAGE:-datafusion-distributed-benchmarks}
+BINARY=${BINARY:-dfbench}
 
 # https://stackoverflow.com/questions/59895/how-do-i-get-the-directory-where-a-bash-script-is-located-from-within-the-script
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
 if [ "$WORKERS" == "0" ]; then
-  cargo run -p datafusion-distributed-benchmarks --release -- run "$@"
+  cargo run -p "$PACKAGE" --bin "$BINARY" --release -- run "$@"
   exit
 fi
 
@@ -34,11 +36,11 @@ wait_for_port() {
   echo "Port $port is ready"
 }
 
-cargo build -p datafusion-distributed-benchmarks --release
+cargo build -p "$PACKAGE" --bin "$BINARY" --release
 
 trap cleanup EXIT INT TERM
 for i in $(seq 0 $((WORKERS-1))); do
-  "$SCRIPT_DIR"/../target/release/dfbench run --spawn $((8000+i)) "$@" &
+  "$SCRIPT_DIR"/../target/release/"$BINARY" run --spawn $((8000+i)) "$@" &
 done
 
 echo "Waiting for worker ports to be ready..."
@@ -46,4 +48,4 @@ for i in $(seq 0 $((WORKERS-1))); do
   wait_for_port $((8000+i))
 done
 
-"$SCRIPT_DIR"/../target/release/dfbench run --workers $(seq -s, 8000 $((8000+WORKERS-1))) "$@"
+"$SCRIPT_DIR"/../target/release/"$BINARY" run --workers $(seq -s, 8000 $((8000+WORKERS-1))) "$@"
