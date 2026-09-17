@@ -57,7 +57,7 @@ impl Worker {
         let mut load_info_rxs = vec![];
 
         let task_data = || async {
-            let mut cfg = SessionConfig::default()
+            let cfg = SessionConfig::default()
                 .with_extension(Arc::new(remote_work_unit_feed_registry.receivers))
                 .with_extension(Arc::new(DistributedTaskContext {
                     task_index: request.task_key.task_number,
@@ -73,10 +73,6 @@ impl Worker {
             let shuffle_batch_size = d_cfg.shuffle_batch_size;
             let collect_metrics = d_cfg.collect_metrics;
             let collect_dynamic_filters = d_cfg.collect_dynamic_filters;
-            if shuffle_batch_size != 0 {
-                cfg = cfg.with_batch_size(shuffle_batch_size);
-            }
-
             let session_state = self
                 .session_builder
                 .build_session_state(WorkerQueryContext {
@@ -90,18 +86,21 @@ impl Worker {
 
             let task_ctx = session_state.task_ctx();
             let plan = request.plan.decode(&task_ctx)?;
-            let plan = plan
-                .transform_up(|plan| {
+            let plan = if shuffle_batch_size != 0 {
+                plan.transform_up(|plan| {
                     let Some(repartition) = plan.downcast_ref::<RepartitionExec>() else {
                         return Ok(Transformed::no(plan));
                     };
                     let child = require_one_child(plan.children())?;
                     let updated =
                         RepartitionExec::try_new(child, repartition.partitioning().clone())?
-                            .with_batch_size(8192 * 10)?;
+                            .with_batch_size(shuffle_batch_size)?;
                     Ok(Transformed::yes(Arc::new(updated)))
                 })?
-                .data;
+                .data
+            } else {
+                plan
+            };
 
             let ev = WorkerPlanRewriteEvent {
                 plan,

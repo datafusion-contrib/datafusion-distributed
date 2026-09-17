@@ -45,7 +45,7 @@ extensions_options! {
         /// shuffle batch sizes independently of the global `datafusion.execution.batch_size`.
         ///
         /// Set to 0 (the default) to apply no override and inherit `datafusion.execution.batch_size`.
-        pub shuffle_batch_size: usize, default = 0
+        pub shuffle_batch_size: usize, default = 8192 * 50
         /// Maximum tasks that will be assigned per stage during distributed planning.
         /// If set to 0, this value is the number of workers returned by the provided `WorkerResolver`.
         /// It defaults to 0.

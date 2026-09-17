@@ -147,17 +147,21 @@ fn create_distributed_plan(
         plan = insert_broadcast_execs(plan, cfg)?;
         plan = insert_children_isolator_unions(plan, cfg)?;
 
-        plan = plan
-            .transform_up(|plan| {
-                let Some(repartition) = plan.downcast_ref::<RepartitionExec>() else {
-                    return Ok(Transformed::no(plan));
-                };
-                let child = require_one_child(plan.children())?;
-                let updated = RepartitionExec::try_new(child, repartition.partitioning().clone())?
-                    .with_batch_size(8192 * 500)?;
-                Ok(Transformed::yes(Arc::new(updated)))
-            })?
-            .data;
+        if d_cfg.shuffle_batch_size != 0 {
+            let batch_size = d_cfg.shuffle_batch_size;
+            plan = plan
+                .transform_up(|plan| {
+                    let Some(repartition) = plan.downcast_ref::<RepartitionExec>() else {
+                        return Ok(Transformed::no(plan));
+                    };
+                    let child = require_one_child(plan.children())?;
+                    let updated =
+                        RepartitionExec::try_new(child, repartition.partitioning().clone())?
+                            .with_batch_size(batch_size)?;
+                    Ok(Transformed::yes(Arc::new(updated)))
+                })?
+                .data;
+        }
 
         if d_cfg.dynamic_task_count {
             // The task count will be decided dynamically at execution time.
