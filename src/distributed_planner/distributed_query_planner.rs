@@ -154,7 +154,7 @@ fn create_distributed_plan(
                 };
                 let child = require_one_child(plan.children())?;
                 let updated = RepartitionExec::try_new(child, repartition.partitioning().clone())?
-                    .with_batch_size(8192 * 100)?;
+                    .with_batch_size(8192 * 500)?;
                 Ok(Transformed::yes(Arc::new(updated)))
             })?
             .data;
