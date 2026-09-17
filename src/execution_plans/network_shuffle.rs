@@ -108,9 +108,38 @@ pub struct NetworkShuffleExec {
 }
 
 impl NetworkShuffleExec {
+    /// Computes the properties advertised by this [NetworkShuffleExec].
+    ///
+    /// When `input_task_count > 1`, worker streams are merged concurrently via
+    /// `futures::stream::select_all`, yielding record batches non-deterministically across
+    /// upstream tasks. Therefore, any ordering guarantees or partition-local equivalence
+    /// constants from upstream tasks cannot be preserved across the network boundary and are cleared.
+    ///
+    /// When `input_task_count <= 1`, all batches are received from a single upstream task stream,
+    /// so the upstream equivalence properties and sort order are preserved.
+    pub(crate) fn compute_properties(
+        input_properties: &Arc<PlanProperties>,
+        input_task_count: usize,
+    ) -> Arc<PlanProperties> {
+        if input_task_count > 1 {
+            let mut eq_properties = input_properties.eq_properties.clone();
+            eq_properties.clear_orderings();
+            eq_properties.clear_per_partition_constants();
+            Arc::new(PlanProperties::new(
+                eq_properties,
+                input_properties.partitioning.clone(),
+                input_properties.emission_type,
+                input_properties.boundedness,
+            ))
+        } else {
+            Arc::clone(input_properties)
+        }
+    }
+
     pub(crate) fn from_stage(input_stage: Stage, input_properties: Arc<PlanProperties>) -> Self {
+        let properties = Self::compute_properties(&input_properties, input_stage.task_count());
         Self {
-            properties: input_properties,
+            properties,
             worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
             input_stage,
         }
@@ -151,6 +180,8 @@ impl NetworkBoundary for NetworkShuffleExec {
     fn with_input_stage(&self, input_stage: Stage) -> Result<Arc<dyn NetworkBoundary>> {
         let mut self_clone = self.clone();
         self_clone.worker_connections = WorkerConnectionPool::new(input_stage.task_count());
+        self_clone.properties =
+            Self::compute_properties(&self.properties, input_stage.task_count());
         self_clone.input_stage = input_stage;
         Ok(Arc::new(self_clone))
     }
@@ -264,5 +295,78 @@ impl ExecutionPlan for NetworkShuffleExec {
             self.properties.output_partitioning().partition_count(),
             self.schema(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::physical_expr::expressions::Column;
+    use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
+    use datafusion::physical_plan::empty::EmptyExec;
+    use datafusion::physical_plan::sorts::sort::SortExec;
+
+    fn sample_hash_repart(sorted: bool) -> Arc<RepartitionExec> {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
+        let empty = Arc::new(EmptyExec::new(schema));
+        let input: Arc<dyn ExecutionPlan> = if sorted {
+            let ordering = LexOrdering::new(vec![PhysicalSortExpr::new(
+                Arc::new(Column::new("a", 0)),
+                Default::default(),
+            )])
+            .unwrap();
+            Arc::new(SortExec::new(ordering, empty))
+        } else {
+            empty
+        };
+        Arc::new(
+            RepartitionExec::try_new(
+                input,
+                Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 2),
+            )
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    fn clears_output_ordering_when_multiple_input_tasks() {
+        let repart = sample_hash_repart(true);
+        assert!(repart.properties().output_ordering().is_some());
+
+        // Multiple producer tasks: ordering and per-partition constants should be cleared
+        let shuffle = NetworkShuffleExec::try_new(repart, 3).unwrap();
+        assert_eq!(shuffle.properties().output_ordering(), None);
+    }
+
+    #[test]
+    fn preserves_output_ordering_when_single_input_task() {
+        let repart = sample_hash_repart(true);
+        assert!(repart.properties().output_ordering().is_some());
+
+        // Single producer task: ordering should be preserved
+        let shuffle = NetworkShuffleExec::try_new(repart.clone(), 1).unwrap();
+        assert_eq!(
+            shuffle.properties().output_ordering(),
+            repart.properties().output_ordering()
+        );
+    }
+
+    #[test]
+    fn with_input_stage_clears_ordering_when_scaling_task_count() {
+        let repart = sample_hash_repart(true);
+        let shuffle = NetworkShuffleExec::try_new(repart.clone(), 1).unwrap();
+        assert!(shuffle.properties().output_ordering().is_some());
+
+        let scaled = shuffle
+            .with_input_stage(Stage::Local(LocalStage {
+                query_id: Uuid::nil(),
+                num: 1,
+                plan: repart,
+                tasks: 3,
+                metrics_set: Default::default(),
+            }))
+            .unwrap();
+        assert_eq!(scaled.properties().output_ordering(), None);
     }
 }
