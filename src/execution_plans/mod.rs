@@ -18,6 +18,5 @@ pub use distributed_leaf::DistributedLeafExec;
 pub(crate) use metrics::MetricsWrapperExec;
 pub use network_broadcast::NetworkBroadcastExec;
 pub use network_coalesce::NetworkCoalesceExec;
-pub(crate) use network_shuffle::should_use_salted_mode;
 pub use network_shuffle::{NetworkShuffleExec, PRODUCER_SALT_DEFAULT, ShuffleMode};
 pub use sampler::SamplerExec;

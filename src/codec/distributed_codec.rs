@@ -595,14 +595,9 @@ fn new_network_hash_shuffle_exec(
     mode: ShuffleMode,
 ) -> NetworkShuffleExec {
     let producer_tasks = input_stage.task_count();
-    let consumer_partitions = partitioning.partition_count();
-    let output_partitions = match &mode {
-        ShuffleMode::Direct => consumer_partitions,
-        ShuffleMode::Salted { .. } => producer_tasks,
-    };
     let advertised_partitioning = match &mode {
         ShuffleMode::Direct => partitioning.clone(),
-        ShuffleMode::Salted { .. } => Partitioning::UnknownPartitioning(output_partitions),
+        ShuffleMode::Salted { .. } => Partitioning::UnknownPartitioning(producer_tasks),
     };
     let properties = Arc::new(PlanProperties::new(
         equivalence_properties,
@@ -693,6 +688,8 @@ fn new_network_broadcast_exec(
 mod tests {
     use super::super::physical_plan::new_proto_converter as default_proto_converter;
     use super::*;
+
+    use crate::execution_plans::PRODUCER_SALT_DEFAULT;
 
     const DEFAULT_MODE: ShuffleMode = ShuffleMode::Direct;
     use datafusion::arrow::datatypes::{DataType, Field};
@@ -1051,6 +1048,79 @@ mod tests {
                 );
             }
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_roundtrip_salted_shuffle() -> datafusion::common::Result<()> {
+        let codec = DistributedCodec;
+        let ctx = create_context();
+
+        let schema = schema_i32("a");
+        // Use a non-default salt to confirm the exact value survives serialization.
+        let salt = PRODUCER_SALT_DEFAULT.wrapping_add(1);
+        let part = Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 4);
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(new_network_hash_shuffle_exec(
+            part,
+            EquivalenceProperties::new(schema),
+            dummy_stage(),
+            ShuffleMode::Salted { salt },
+        ));
+
+        let mut buf = Vec::new();
+        codec.try_encode(plan.clone(), &mut buf, &default_proto_converter())?;
+        let decoded = codec.try_decode(&buf, &[], &ctx, &default_proto_converter())?;
+
+        assert_eq!(repr(&plan), repr(&decoded));
+
+        let decoded_exec = decoded.downcast_ref::<NetworkShuffleExec>().unwrap();
+        assert!(
+            matches!(decoded_exec.mode, ShuffleMode::Salted { salt: s } if s == salt),
+            "salt value was not preserved through encode/decode"
+        );
+        // consumer_partitioning (Hash(_, 4)) must survive even though the advertised
+        // partitioning is UnknownPartitioning
+        assert_eq!(
+            decoded_exec.consumer_partitioning.partition_count(),
+            4,
+            "consumer_partitioning partition count was not preserved through encode/decode"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_roundtrip_salted_shuffle_with_plan() -> datafusion::common::Result<()> {
+        let codec = DistributedCodec;
+        let ctx = create_context();
+
+        let schema = schema_i32("a");
+        let salt = PRODUCER_SALT_DEFAULT;
+        let part = Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 3);
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(new_network_hash_shuffle_exec(
+            part,
+            EquivalenceProperties::new(schema),
+            dummy_stage_with_plan(),
+            ShuffleMode::Salted { salt },
+        ));
+
+        let mut buf = Vec::new();
+        codec.try_encode(plan.clone(), &mut buf, &default_proto_converter())?;
+        let decoded = codec.try_decode(&buf, &[empty_exec()], &ctx, &default_proto_converter())?;
+
+        assert_eq!(repr(&plan), repr(&decoded));
+
+        let decoded_exec = decoded.downcast_ref::<NetworkShuffleExec>().unwrap();
+        assert!(
+            matches!(decoded_exec.mode, ShuffleMode::Salted { salt: s } if s == salt),
+            "salt value was not preserved through encode/decode"
+        );
+        assert_eq!(
+            decoded_exec.consumer_partitioning.partition_count(),
+            3,
+            "consumer_partitioning partition count was not preserved through encode/decode"
+        );
 
         Ok(())
     }

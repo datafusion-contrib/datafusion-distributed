@@ -5,7 +5,7 @@ use crate::events::{
     TaskCountAnnotation,
 };
 use crate::execution_plans::{ChildWeight, ChildrenIsolatorUnionExec};
-use crate::execution_plans::{PRODUCER_SALT_DEFAULT, ShuffleMode, should_use_salted_mode};
+use crate::execution_plans::{PRODUCER_SALT_DEFAULT, ShuffleMode};
 use crate::stage::LocalStage;
 use crate::worker_resolver::WorkerResolverExtension;
 use crate::{
@@ -686,6 +686,17 @@ impl NetworkBoundaryBuilder for CardinalityBasedNetworkBoundaryBuilder {
     }
 }
 
+/// Returns `true` when the producer fan-out meets or exceeds `threshold`; beyond that point
+/// splitting into a smaller producer hash and a local consumer `RepartitionExec` is more efficient.
+#[inline(always)]
+fn should_use_salted_mode(
+    consumer_task_count: usize,
+    consumer_partition_count: usize,
+    threshold: usize,
+) -> bool {
+    consumer_task_count * consumer_partition_count >= threshold
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1355,6 +1366,52 @@ mod tests {
                 BroadcastExec: task_count=Desired(4)
                   DistributedLeafExec: task_count=Desired(4)
             DistributedLeafExec: task_count=Maximum(1)
+        ");
+    }
+
+    #[tokio::test]
+    async fn test_salted_shuffle_aggregation() {
+        let query = r#"
+        SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday"
+        "#;
+        let test_plan_builder = TestPlanBuilder::new()
+            .target_partitions(16)
+            .num_workers(20)
+            .distributed_planner(false)
+            .broadcast_joins(false);
+        let annotated = annotate_test_plan(test_plan_builder, query).await;
+        assert_snapshot!(annotated, @"
+        ProjectionExec: task_count=Desired(20)
+          AggregateExec: task_count=Desired(20)
+            RepartitionExec: task_count=Desired(20)
+              NetworkShuffleExec: task_count=Desired(20)
+                RepartitionExec: task_count=Desired(20)
+                  AggregateExec: task_count=Desired(20)
+                    DistributedLeafExec: task_count=Desired(20)
+        ");
+    }
+
+    #[tokio::test]
+    async fn test_salted_shuffle_join() {
+        let query = r#"
+        SELECT a."MinTemp", b."MaxTemp" FROM weather a LEFT JOIN weather b ON a."RainToday" = b."RainToday"
+        "#;
+        let test_plan_builder = TestPlanBuilder::new()
+            .target_partitions(16)
+            .num_workers(20)
+            .distributed_planner(false)
+            .broadcast_joins(false);
+        let annotated = annotate_test_plan(test_plan_builder, query).await;
+        assert_snapshot!(annotated, @"
+        HashJoinExec: task_count=Desired(20)
+          RepartitionExec: task_count=Desired(20)
+            NetworkShuffleExec: task_count=Desired(20)
+              RepartitionExec: task_count=Desired(20)
+                DistributedLeafExec: task_count=Desired(20)
+          RepartitionExec: task_count=Desired(20)
+            NetworkShuffleExec: task_count=Desired(20)
+              RepartitionExec: task_count=Desired(20)
+                DistributedLeafExec: task_count=Desired(20)
         ");
     }
 
