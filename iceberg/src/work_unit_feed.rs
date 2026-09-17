@@ -18,6 +18,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::common::df_err;
+use crate::partitioning::FileScanTaskRouter;
 
 #[derive(Clone, PartialEq, prost::Message)]
 struct SerializedFileScanTask {
@@ -177,9 +178,8 @@ pub struct IcebergWorkUnitFeed {
     pub(crate) projection: Option<Vec<String>>,
     /// Filters to apply to the table scan.
     pub(crate) predicates: Option<Predicate>,
-    /// Partitioning scheme to which the feeds should adhere.
-    /// TODO: Today, only Partitioning::UnknownPartitioning partitioning is supported.
-    ///  Ideally, both Range partitioning and hash partitioning should be supported.
+    /// Partitioning scheme to which the feeds should adhere. [FileScanTaskRouter] decides which
+    /// schemes are supported, and how each [FileScanTask] is routed to satisfy them.
     pub(crate) partitioning: Partitioning,
     /// Container for the lazily initialized task that scans the Iceberg table.
     /// It will start as soon as the first [IcebergWorkUnitFeed::feed] is called.
@@ -235,6 +235,11 @@ impl WorkUnitFeedProvider for IcebergWorkUnitFeed {
                 scan_builder = scan_builder.with_filter(pred.clone());
             }
             let table_scan = scan_builder.build().map_err(df_err)?;
+            let mut router = FileScanTaskRouter::try_new(
+                &self.partitioning,
+                &self.iceberg_table,
+                self.snapshot_id,
+            )?;
 
             // Fanout the FileScanTask stream across P * T output channels where:
             // - P is the number of output partitions per distributed task (`partition_count`)
@@ -260,17 +265,18 @@ impl WorkUnitFeedProvider for IcebergWorkUnitFeed {
                     }
                 };
 
-                // Round robing across output partitions.
-                // TODO: this is fine for Partitioning::UnknownPartitioning, but any other
-                //  partitioning will require smarter routing across output channels.
-                let mut i = 0;
                 while let Some(scan_task_or_err) = stream.next().await {
-                    let partition = i % txs.len();
-                    let work_unit = scan_task_or_err
-                        .map(FileScanTaskWorkUnit::new)
-                        .map_err(df_err);
-                    let _ = txs[partition].send(work_unit);
-                    i += 1;
+                    let routed = scan_task_or_err
+                        .map_err(df_err)
+                        .and_then(|task| Ok((router.route(&task, txs.len())?, task)));
+                    match routed {
+                        Ok((partition, task)) => {
+                            let _ = txs[partition].send(Ok(FileScanTaskWorkUnit::new(task)));
+                        }
+                        Err(err) => {
+                            let _ = txs[0].send(Err(err));
+                        }
+                    }
                 }
             });
 
