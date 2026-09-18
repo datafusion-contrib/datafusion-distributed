@@ -6,17 +6,14 @@ default-run = "dfbench"
 
 [dependencies]
 async-trait = "0.1.89"
-axum = "0.8"
 datafusion = { workspace = true }
 datafusion-distributed = { path = "..", features = [
   "integration",
   "system-metrics",
 ] }
 tokio = { version = "1.48", features = ["full"] }
-url = "2.5.7"
 parquet = { version = "59" }
 structopt = { version = "0.3.26" }
-log = "0.4.27"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.141"
 env_logger = "0.11.8"
@@ -28,9 +25,6 @@ tpchgen-arrow = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "f4270
 reqwest = "0.12"
 zip = "6.0"
 sketches-ddsketch = "0.3"
-object_store = { version = "0.13", features = ["aws"] }
-openssl = { version = "0.10", features = ["vendored"] }
-mimalloc = "0.1"
 
 [dev-dependencies]
 criterion = "0.5"
