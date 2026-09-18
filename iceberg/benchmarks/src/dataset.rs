@@ -4,15 +4,16 @@ use std::sync::Arc;
 
 use datafusion::arrow::compute::cast;
 use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::common::{DataFusionError, exec_err};
+use datafusion::common::{DataFusionError, exec_datafusion_err, exec_err};
 
 use datafusion::execution::context::SessionContext;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 use datafusion::prelude::ParquetReadOptions;
+use datafusion_distributed_benchmarks::datasets::output::DatasetOutput;
+use datafusion_distributed_iceberg::IcebergIntegrationOptions;
 use datafusion_distributed_iceberg::iceberg;
 use futures::StreamExt;
 use iceberg::arrow::{arrow_schema_to_schema_auto_assign_ids, schema_to_arrow_schema};
-use iceberg::io::LocalFsStorageFactory;
 use iceberg::memory::{MEMORY_CATALOG_WAREHOUSE, MemoryCatalogBuilder};
 use iceberg::spec::DataFileFormat;
 use iceberg::transaction::{ApplyTransactionAction, Transaction};
@@ -43,7 +44,7 @@ pub(super) fn output_path(input: &Path) -> PathBuf {
 /// Data is streamed one input file at a time; completion is marked last.
 pub(super) async fn convert_parquet_to_iceberg(
     source_dir: &Path,
-    output_dir: &Path,
+    output: &DatasetOutput,
     target_file_size: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if target_file_size == 0 {
@@ -52,9 +53,7 @@ pub(super) async fn convert_parquet_to_iceberg(
     if !source_dir.is_dir() {
         return Err(format!("source dataset does not exist: {}", source_dir.display()).into());
     }
-    if output_dir.exists() && fs::read_dir(output_dir)?.next().is_some() {
-        return Err(format!("output dataset is not empty: {}", output_dir.display()).into());
-    }
+    output.ensure_empty().await?;
 
     let tables = fs::read_dir(source_dir)?
         .map(|entry| entry.map(|entry| entry.path()))
@@ -72,14 +71,11 @@ pub(super) async fn convert_parquet_to_iceberg(
     if tables.is_empty() {
         return Err("conversion requires a non-empty Parquet dataset".into());
     }
-    fs::create_dir_all(output_dir)?;
-    let output_dir = output_dir.canonicalize()?;
-    let warehouse = file_uri(&output_dir)?;
     let catalog = MemoryCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
+        .with_storage_factory(IcebergIntegrationOptions::default().storage_factory)
         .load(
             "benchmark",
-            CatalogProperties::from([(MEMORY_CATALOG_WAREHOUSE.to_string(), warehouse)]),
+            CatalogProperties::from([(MEMORY_CATALOG_WAREHOUSE.to_string(), output.location())]),
         )
         .await?;
     let namespace = NamespaceIdent::new("benchmark".to_string());
@@ -105,12 +101,12 @@ pub(super) async fn convert_parquet_to_iceberg(
             table_name,
             plans,
             ctx.task_ctx(),
-            &output_dir,
+            output,
             target_file_size,
         )
         .await?;
     }
-    fs::write(output_dir.join("_SUCCESS"), b"")?;
+    output.write("_SUCCESS", Vec::new()).await?;
     Ok(())
 }
 
@@ -120,14 +116,14 @@ async fn write_table(
     table_name: &str,
     plans: Vec<Arc<dyn ExecutionPlan>>,
     task_ctx: Arc<datafusion::execution::TaskContext>,
-    output_dir: &Path,
+    output: &DatasetOutput,
     target_file_size: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let Some(first_plan) = plans.first() else {
         return Err(format!("Parquet table {table_name} contains no files").into());
     };
     let iceberg_schema = arrow_schema_to_schema_auto_assign_ids(first_plan.schema().as_ref())?;
-    let table_location = file_uri(&output_dir.join(table_name))?;
+    let table_location = format!("{}/{table_name}", output.location());
     let table = catalog
         .create_table(
             namespace,
@@ -183,10 +179,12 @@ async fn write_table(
     let action = tx.fast_append().add_data_files(data_files);
     let table = action.apply(tx)?.commit(catalog).await?;
     // These benchmark tables are immutable: keep the committed metadata at a fixed path.
-    fs::write(
-        output_dir.join(table_name).join("metadata.json"),
-        serde_json::to_vec(table.metadata())?,
-    )?;
+    output
+        .write(
+            &format!("{table_name}/metadata.json"),
+            serde_json::to_vec(table.metadata())?,
+        )
+        .await?;
     Ok(())
 }
 
@@ -209,12 +207,8 @@ pub async fn register_tables(
         }
         let name = name.replace('"', "\"\"");
         let metadata = path.join("metadata.json").canonicalize()?;
-        let location = url::Url::from_file_path(&metadata).map_err(|()| {
-            datafusion::common::exec_datafusion_err!(
-                "Invalid metadata path: {}",
-                metadata.display()
-            )
-        })?;
+        let location = url::Url::from_file_path(&metadata)
+            .map_err(|()| exec_datafusion_err!("Invalid metadata path: {}", metadata.display()))?;
         ctx.sql(&format!(
             "CREATE EXTERNAL TABLE \"{name}\" STORED AS ICEBERG LOCATION '{}'",
             location.as_str().replace('\'', "''")
@@ -274,16 +268,4 @@ fn align_batch_schema(
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(RecordBatch::try_new(schema, columns)?)
-}
-
-fn file_uri(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
-    url::Url::from_directory_path(path)
-        .map(|url| url.to_string())
-        .map_err(|()| {
-            format!(
-                "Path cannot be represented as a file URI: {}",
-                path.display()
-            )
-            .into()
-        })
 }

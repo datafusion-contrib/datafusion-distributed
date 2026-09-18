@@ -25,6 +25,11 @@ tpchgen-arrow = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "f4270
 reqwest = "0.12"
 zip = "6.0"
 sketches-ddsketch = "0.3"
+object_store = { version = "0.13", features = ["aws"] }
+aws-config = "1"
+aws-credential-types = "1"
+url = "2"
+tempfile = "3"
 
 [dev-dependencies]
 criterion = "0.5"

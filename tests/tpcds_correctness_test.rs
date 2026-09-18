@@ -12,7 +12,9 @@ mod tests {
     use datafusion_distributed::{
         DefaultSessionBuilder, DistributedExec, DistributedExt, display_plan_ascii,
     };
-    use datafusion_distributed_benchmarks::datasets::{register_tables, tpcds};
+    use datafusion_distributed_benchmarks::datasets::{
+        output::DatasetOutput, register_tables, tpcds,
+    };
     use std::fs;
     use std::path::Path;
     use std::sync::Arc;
@@ -556,7 +558,10 @@ mod tests {
         INIT_TEST_TPCDS_TABLES
             .get_or_init(|| async {
                 if !fs::exists(&data_dir).unwrap_or(false) {
-                    tpcds::generate_data(&data_dir, SF, PARQUET_PARTITIONS)
+                    let output = DatasetOutput::new(data_dir.to_str().unwrap())
+                        .await
+                        .unwrap();
+                    tpcds::generate_data(&output, SF, PARQUET_PARTITIONS)
                         .await
                         .unwrap();
                 }

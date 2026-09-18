@@ -1,11 +1,10 @@
-use super::common;
+use super::{common, output::DatasetOutput};
 use arrow::datatypes::Schema;
 use arrow::record_batch::RecordBatch;
-use datafusion::error::DataFusionError;
+use datafusion::common::{DataFusionError, exec_datafusion_err};
+use parquet::arrow::AsyncArrowWriter;
 use parquet::file::metadata::SortingColumn;
-use parquet::{arrow::arrow_writer::ArrowWriter, file::properties::WriterProperties};
-use std::fs;
-use std::path::Path;
+use parquet::file::properties::WriterProperties;
 use tpchgen::generators::{
     CustomerGenerator, LineItemGenerator, NationGenerator, OrderGenerator, PartGenerator,
     PartSuppGenerator, RegionGenerator, SupplierGenerator,
@@ -67,76 +66,60 @@ fn writer_props(
     Ok(builder.build())
 }
 
-fn generate_table<A>(
+async fn generate_table<A>(
     mut data_source: A,
     table_name: &str,
-    data_dir: &Path,
+    output: &DatasetOutput,
     sort_cols: Option<&[&str]>,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
     A: Iterator<Item = RecordBatch>,
 {
-    let output_path = data_dir.join(format!("{table_name}.parquet"));
-
     if let Some(first_batch) = data_source.next() {
-        let file = fs::File::create(&output_path)?;
+        let file = output.writer(&format!("{table_name}.parquet"));
         let props = writer_props(first_batch.schema().as_ref(), sort_cols)?;
-        let mut writer = ArrowWriter::try_new(file, first_batch.schema(), Some(props))?;
+        let mut writer = AsyncArrowWriter::try_new(file, first_batch.schema(), Some(props))?;
 
-        writer.write(&first_batch)?;
+        writer.write(&first_batch).await?;
 
         for batch in data_source {
-            writer.write(&batch)?;
+            writer.write(&batch).await?;
         }
 
-        writer.close()?;
+        writer.close().await?;
     }
 
     Ok(())
 }
 
-/// Generates all TPC-H tables as parquet files in the specified data directory.
-pub fn generate_tpch_data(
-    data_dir: &Path,
-    sf: f64,
-    parts: usize,
-) -> Result<(), Box<dyn std::error::Error>> {
-    generate_tpch_tables(data_dir, sf, parts, false)
-}
-
-/// Same generators as [`generate_tpch_data`], with table-specific Parquet
-/// `sorting_columns` metadata for the `tpch/sorted_sf*` variant.
-pub fn generate_sorted_tpch_data(
-    data_dir: &Path,
-    sf: f64,
-    parts: usize,
-) -> Result<(), Box<dyn std::error::Error>> {
-    generate_tpch_tables(data_dir, sf, parts, true)
-}
-
-fn generate_tpch_tables(
-    data_dir: &Path,
+/// Streams TPC-H Parquet files to an empty local directory or S3 prefix.
+pub async fn generate_data(
+    output: &DatasetOutput,
     sf: f64,
     parts: usize,
     sorted: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    fs::create_dir_all(data_dir)?;
+    if !sf.is_finite() || sf <= 0.0 || parts == 0 || parts > i32::MAX as usize {
+        return Err(exec_datafusion_err!(
+            "scale factor and partitions must be positive, with partitions <= i32::MAX"
+        )
+        .into());
+    }
+    output.ensure_empty().await?;
 
     macro_rules! generate_tpch_table {
         ($generator:ident, $arrow:ident, $name:literal, $parts:expr) => {{
-            let table_dir = data_dir.join($name);
             let table_parts = $parts;
-            fs::create_dir_all(&table_dir)?;
-            remove_stale_partitions(&table_dir, table_parts)?;
             let keys = if sorted { sort_keys($name) } else { None };
             for part in 1..=(table_parts as i32) {
                 generate_table(
                     $arrow::new($generator::new(sf, part, table_parts as i32))
                         .with_batch_size(1000),
-                    &format!("{part}"),
-                    &table_dir,
+                    &format!("{}/{part}", $name),
+                    output,
                     keys,
-                )?;
+                )
+                .await?;
             }
         }};
     }
@@ -151,23 +134,6 @@ fn generate_tpch_tables(
     generate_tpch_table!(PartSuppGenerator, PartSuppArrow, "partsupp", parts);
     generate_tpch_table!(OrderGenerator, OrderArrow, "orders", parts);
     generate_tpch_table!(LineItemGenerator, LineItemArrow, "lineitem", parts);
-    Ok(())
-}
-
-fn remove_stale_partitions(table_dir: &Path, parts: usize) -> std::io::Result<()> {
-    for entry in fs::read_dir(table_dir)? {
-        let path = entry?.path();
-        if path
-            .extension()
-            .is_some_and(|extension| extension == "parquet")
-            && path
-                .file_stem()
-                .and_then(|name| name.to_str())
-                .and_then(|name| name.parse::<usize>().ok())
-                .is_some_and(|part| part > parts)
-        {
-            fs::remove_file(path)?;
-        }
-    }
+    output.write("_SUCCESS", Vec::new()).await?;
     Ok(())
 }
