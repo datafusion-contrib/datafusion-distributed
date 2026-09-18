@@ -25,7 +25,7 @@ mod tests {
     const PARTITIONS: usize = 3;
     const FILE_SCAN_CONFIG_BYTES_PER_PARTITION: usize = 1;
     const CARDINALITY_TASK_COUNT_FACTOR: f64 = 2.0;
-    const SF: f64 = 0.1;
+    const SF: f64 = 1.0;
     const PARQUET_PARTITIONS: usize = 4;
 
     #[tokio::test]
@@ -596,6 +596,14 @@ mod tests {
 
         let (s_plan, s_results) = run(&s_ctx, &query_sql).await;
         let (d_plan, d_results) = run(&d_ctx, &query_sql).await;
+
+        if let Ok(batches) = s_results.as_ref()
+            && batches.iter().all(|batch| batch.num_rows() == 0)
+        {
+            return plan_err!(
+                "Query {query_id} returned no rows at TPC-DS scale factor {SF}; increase the scale factor to preserve correctness coverage"
+            );
+        }
 
         if !d_plan.is::<DistributedExec>() {
             return plan_err!("Query {query_id} did not get distributed");
