@@ -30,6 +30,17 @@ mod tests {
             .options_mut()
             .optimizer
             .hash_join_single_partition_threshold_rows = 0;
+        // DataFusion defaults `prefer_existing_sort = false`, which causes the
+        // `replace_with_order_preserving_variants` optimizer rule to insert an explicit
+        // `SortExec` above the shuffle on the worker side, masking any sort-order scrambling
+        // across input tasks. Enabling `prefer_existing_sort` ensures DataFusion trusts the
+        // ordering advertised by `NetworkShuffleExec` without inserting a downstream `SortExec`.
+        ctx.state_ref()
+            .write()
+            .config_mut()
+            .options_mut()
+            .optimizer
+            .prefer_existing_sort = true;
     }
 
     async fn register_tables(ctx: &SessionContext) -> Result<()> {
@@ -73,7 +84,6 @@ mod tests {
                 d.host
             FROM dim d
             INNER JOIN fact f ON d.d_dkey = f.f_dkey
-            WHERE d.service = 'log'
             ORDER BY f_dkey, timestamp
         "#;
 
@@ -83,11 +93,11 @@ mod tests {
         register_tables(&single_node_ctx).await?;
         let (_, single_node_results) = execute_query(&single_node_ctx, query).await?;
 
-        // Run on distributed DataFusion with 2 worker tasks
         let (mut distributed_ctx, _guard, _) =
             start_localhost_context(2, DefaultSessionBuilder).await;
         set_configs(&mut distributed_ctx, 2);
         register_tables(&distributed_ctx).await?;
+
         let (distributed_plan, distributed_results) =
             execute_query(&distributed_ctx, query).await?;
 
@@ -100,16 +110,13 @@ mod tests {
           ┌───── Stage 3 ── tasks=2, partitions=2
           │ HashJoinExec: mode=Partitioned, join_type=Inner, on=[(d_dkey@3, f_dkey@2)], projection=[f_dkey@6, timestamp@4, value@5, env@0, service@1, host@2]
           │   [Stage 1] => NetworkShuffleExec: output_partitions=2, input_tasks=2
-          │   SortExec: expr=[f_dkey@2 ASC NULLS LAST, timestamp@0 ASC NULLS LAST], preserve_partitioning=[true]
-          │     FilterExec: DynamicFilter [ empty ]
-          │       [Stage 2] => NetworkShuffleExec: output_partitions=2, input_tasks=2, sort_exprs=[f_dkey@2 ASC NULLS LAST, timestamp@0 ASC NULLS LAST]
+          │   [Stage 2] => NetworkShuffleExec: output_partitions=2, input_tasks=2, sort_exprs=[f_dkey@2 ASC NULLS LAST, timestamp@0 ASC NULLS LAST]
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=2, partitions=4
             │ RepartitionExec: partitioning=Hash([d_dkey@3], 4), input_partitions=2
-            │   FilterExec: service@1 = log
-            │     DistributedLeafExec:
-            │       t0: DataSourceExec: file_groups={2 groups: [[/testdata/join/parquet/dim/d_dkey=A/data0.parquet:<int>..<int>, /testdata/join/parquet/dim/d_dkey=B/data0.parquet:<int>..<int>], [/testdata/join/parquet/dim/d_dkey=C/data0.parquet:<int>..<int>, /testdata/join/parquet/dim/d_dkey=D/data0.parquet:<int>..<int>]]}, projection=[env, service, host, d_dkey], file_type=parquet, predicate=service@1 = log, pruning_predicate=service_null_count@2 != row_count@3 AND service_min@0 <= log AND log <= service_max@1, required_guarantees=[service in (log)]
-            │       t1: DataSourceExec: file_groups={2 groups: [[/testdata/join/parquet/dim/d_dkey=B/data0.parquet:<int>..<int>, /testdata/join/parquet/dim/d_dkey=C/data0.parquet:<int>..<int>], [/testdata/join/parquet/dim/d_dkey=D/data0.parquet:<int>..<int>]]}, projection=[env, service, host, d_dkey], file_type=parquet, predicate=service@1 = log, pruning_predicate=service_null_count@2 != row_count@3 AND service_min@0 <= log AND log <= service_max@1, required_guarantees=[service in (log)]
+            │   DistributedLeafExec:
+            │     t0: DataSourceExec: file_groups={2 groups: [[/testdata/join/parquet/dim/d_dkey=A/data0.parquet:<int>..<int>, /testdata/join/parquet/dim/d_dkey=B/data0.parquet:<int>..<int>], [/testdata/join/parquet/dim/d_dkey=C/data0.parquet:<int>..<int>, /testdata/join/parquet/dim/d_dkey=D/data0.parquet:<int>..<int>]]}, projection=[env, service, host, d_dkey], file_type=parquet
+            │     t1: DataSourceExec: file_groups={2 groups: [[/testdata/join/parquet/dim/d_dkey=B/data0.parquet:<int>..<int>, /testdata/join/parquet/dim/d_dkey=C/data0.parquet:<int>..<int>], [/testdata/join/parquet/dim/d_dkey=D/data0.parquet:<int>..<int>]]}, projection=[env, service, host, d_dkey], file_type=parquet
             └──────────────────────────────────────────────────
             ┌───── Stage 2 ── tasks=2, partitions=4
             │ RepartitionExec: partitioning=Hash([f_dkey@2], 4), input_partitions=1, maintains_sort_order=true
@@ -145,6 +152,16 @@ mod tests {
         | B      | 2023-01-01T09:12:30 | 80.0  | prod | log     | host-x |
         | B      | 2023-01-01T09:12:40 | 120.0 | prod | log     | host-x |
         | B      | 2023-01-01T09:12:50 | 92.3  | prod | log     | host-x |
+        | C      | 2023-01-01T10:00:00 | 310.5 | dev  | trace   | host-z |
+        | C      | 2023-01-01T10:00:10 | 225.7 | dev  | trace   | host-z |
+        | C      | 2023-01-01T10:00:20 | 380.2 | dev  | trace   | host-z |
+        | C      | 2023-01-01T10:00:30 | 205.8 | dev  | trace   | host-z |
+        | C      | 2023-01-01T10:00:40 | 350.0 | dev  | trace   | host-z |
+        | C      | 2023-01-01T10:12:40 | 200.0 | dev  | trace   | host-z |
+        | C      | 2023-01-01T10:12:50 | 205.4 | dev  | trace   | host-z |
+        | D      | 2023-01-01T10:00:00 | 24.8  | prod | trace   | host-x |
+        | D      | 2023-01-01T10:00:10 | 72.1  | prod | trace   | host-x |
+        | D      | 2023-01-01T10:00:20 | 42.5  | prod | trace   | host-x |
         +--------+---------------------+-------+------+---------+--------+
         ");
 
