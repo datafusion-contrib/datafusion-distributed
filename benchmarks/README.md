@@ -5,8 +5,8 @@
 Generate datasets alongside the integration-test fixtures under `testdata/`.
 For example, `tpch/sf1` is stored in `testdata/tpch/sf1`.
 TPC-H generation partitions the scalable tables, but writes `nation` (25 rows) and `region`
-(5 rows) only once. Regeneration removes surplus numbered Parquet partitions.
-Rebuild the Iceberg copy separately after regenerating Parquet; an existing copy is not updated.
+(5 rows) only once. The preparation commands require an empty output directory or S3 prefix.
+Prepare a new Iceberg copy separately after regenerating Parquet; an existing copy is not updated.
 
 ```shell
 # TPC-H (default: SCALE_FACTOR=1, PARTITIONS=16, SORTED=false - override by setting these environment variables)
@@ -24,6 +24,46 @@ small `SCALE_FACTOR` (for example `0.01`) for a cheap smoke generation; SF1 is
 the default. Files record the columns tpchgen already emits in order:
 `r_regionkey`, `n_nationkey`, `c_custkey`, `s_suppkey`, `p_partkey`,
 `ps_partkey`, `o_orderkey`, and `(l_orderkey, l_linenumber)`.
+
+### Writing datasets to S3
+
+Pass `--output` to a generation script to choose a local directory or S3 prefix:
+
+```shell
+SCALE_FACTOR=1 PARTITIONS=16 ./benchmarks/gen-tpch.sh --output s3://my-bucket/tpch/sf1
+./benchmarks/gen-tpcds.sh --output s3://my-bucket/tpcds/sf1
+PARTITION_END=1 ./benchmarks/gen-clickbench.sh --output s3://my-bucket/clickbench/0-1
+```
+
+The corresponding `dfbench prepare-* --output` commands accept the same destinations.
+Use an empty destination. `_SUCCESS` is written only after every table has finished;
+if generation fails, use a new prefix or remove the incomplete output before retrying.
+TPC-H streams generated batches directly to Parquet in the destination. TPC-DS downloads
+its SF1 source archive to temporary storage before writing the repartitioned tables.
+ClickBench uses temporary storage for one partition at a time to correct its date column.
+
+Parquet generation resolves credentials once using the official AWS SDK credential chain,
+including environment credentials, profiles, SSO, and instance roles. For SSO, sign in and select the profile before generating:
+
+```shell
+aws sso login --profile my-profile
+export AWS_PROFILE=my-profile
+export AWS_REGION=us-east-1 # use your bucket's region
+```
+
+The region is read from the environment or selected profile. Credentials must remain
+valid for the whole run; the generator does not refresh them.
+
+Iceberg's storage library supports environment credentials and instance roles. For an
+SSO session, export credentials before converting a local dataset to Iceberg:
+
+```shell
+eval "$(aws configure export-credentials --profile my-profile --format env)"
+```
+
+The destination bucket must already exist. Generation needs list, read and write access,
+including multipart upload access. Iceberg metadata and manifests are created with their
+final S3 paths; no metadata rewriting or filesystem sync is needed.
 
 ### Running Benchmarks in single-node mode
 
@@ -66,9 +106,13 @@ cargo run -p datafusion-distributed-benchmarks --release -- prepare-tpch \
   --output testdata/tpch/sf1 --scale-factor 1 --partitions 16
 cargo run -p datafusion-distributed-iceberg-benchmarks --release -- prepare \
   --input testdata/tpch/sf1
+
+# Or write the Iceberg representation directly to S3:
+cargo run -p datafusion-distributed-iceberg-benchmarks --release -- prepare \
+  --input testdata/tpch/sf1 --output s3://my-bucket/tpch/sf1_iceberg
 ```
 
-The conversion writes the sibling `testdata/tpch/sf1_iceberg/` dataset and leaves the source
+Without `--output`, the conversion writes the sibling `testdata/tpch/sf1_iceberg/` dataset and leaves the source
 unchanged. It streams one source file at a time into unpartitioned, append-only Iceberg tables.
 Source file boundaries are preserved unless `--target-file-size` requests rolling. `_SUCCESS` is
 written last, and the output directory must be empty.

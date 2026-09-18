@@ -1,17 +1,16 @@
-use super::common;
+use super::{common, output::DatasetOutput};
 use arrow::array::Array;
 use arrow::compute::cast;
 use arrow::datatypes::{DataType, Field, Schema};
-use datafusion::common::DataFusionError;
+use datafusion::common::{DataFusionError, exec_datafusion_err};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::arrow_writer::ArrowWriter;
 use parquet::file::properties::WriterProperties;
 use std::fs;
 use std::io::Write;
 use std::ops::Range;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::task::JoinSet;
 
 const URL: &str =
     "https://datasets.clickhouse.com/hits_compatible/athena_partitioned/hits_{}.parquet";
@@ -24,11 +23,11 @@ pub fn get_query(id: &str) -> Result<String, DataFusionError> {
     common::get_query("testdata/clickbench/queries", id)
 }
 
-/// Downloads the datafusion-benchmarks repository as a zip file
+/// Downloads one source ClickBench partition.
 async fn download_benchmark(
     dest_path: PathBuf,
     i: usize,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(), Box<dyn std::error::Error>> {
     if dest_path.exists() {
         return Ok(());
     }
@@ -40,7 +39,7 @@ async fn download_benchmark(
 
     // Download the file
     let response = reqwest::get(URL.replace("{}", &i.to_string())).await?;
-    let bytes = response.bytes().await?;
+    let bytes = response.error_for_status()?.bytes().await?;
 
     // Write to file
     let mut file = fs::File::create(&dest_path)?;
@@ -48,21 +47,6 @@ async fn download_benchmark(
 
     println!("Downloaded to {}", dest_path.display());
 
-    Ok(())
-}
-
-async fn download_partitioned(
-    dest_path: PathBuf,
-    range: Range<usize>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut join_set = JoinSet::new();
-    for i in range {
-        let dest_path = dest_path.clone();
-        join_set.spawn(async move {
-            download_benchmark(dest_path.join("hits").join(format!("{i}.parquet")), i).await
-        });
-    }
-    join_set.join_all().await;
     Ok(())
 }
 
@@ -148,11 +132,27 @@ async fn fix_event_dates(path: PathBuf) -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
-pub async fn generate_clickbench_data(
-    dest_path: &Path,
+/// Prepares and uploads one source partition at a time, bounding temporary disk usage.
+pub async fn generate_data(
+    output: &DatasetOutput,
     range: Range<usize>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    download_partitioned(dest_path.to_path_buf(), range).await?;
-    fix_event_dates(dest_path.to_path_buf()).await?;
+    if range.is_empty() || range.end > 100 {
+        return Err(exec_datafusion_err!(
+            "ClickBench requires a non-empty partition range within 0..100"
+        )
+        .into());
+    }
+    output.ensure_empty().await?;
+    for part in range {
+        let staging = tempfile::tempdir()?;
+        let relative = format!("hits/{part}.parquet");
+        download_benchmark(staging.path().join(&relative), part).await?;
+        fix_event_dates(staging.path().to_path_buf()).await?;
+        output
+            .copy_file(&relative, &staging.path().join(&relative))
+            .await?;
+    }
+    output.write("_SUCCESS", Vec::new()).await?;
     Ok(())
 }

@@ -15,19 +15,16 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use datafusion::error::Result;
-use datafusion_distributed_benchmarks::datasets::tpch::{
-    generate_sorted_tpch_data, generate_tpch_data,
-};
-use std::path::PathBuf;
+use datafusion::common::{Result, exec_datafusion_err};
+use datafusion_distributed_benchmarks::datasets::{output::DatasetOutput, tpch::generate_data};
 use structopt::StructOpt;
 
 /// Generate TPC-H parquet files for benchmarks
 #[derive(Debug, StructOpt)]
 pub struct PrepareTpchOpt {
-    /// Output path for generated parquet files
-    #[structopt(parse(from_os_str), required = true, short = "o", long = "output")]
-    output_path: PathBuf,
+    /// Empty local directory or s3://bucket/prefix for generated Parquet files
+    #[structopt(required = true, short = "o", long = "output")]
+    output_path: String,
 
     /// Scale factor (e.g. 1.0, 10.0, 100.0)
     #[structopt(short = "s", long = "scale-factor", default_value = "1")]
@@ -43,20 +40,16 @@ pub struct PrepareTpchOpt {
 }
 
 impl PrepareTpchOpt {
-    pub fn run(self) -> Result<()> {
+    pub async fn run(self) -> Result<()> {
         let label = if self.sorted { "sorted TPC-H" } else { "TPC-H" };
         println!(
             "Generating {label} data at scale factor {} with {} partitions in '{}'",
-            self.scale_factor,
-            self.partitions,
-            self.output_path.display()
+            self.scale_factor, self.partitions, self.output_path
         );
-        let result = if self.sorted {
-            generate_sorted_tpch_data(&self.output_path, self.scale_factor, self.partitions)
-        } else {
-            generate_tpch_data(&self.output_path, self.scale_factor, self.partitions)
-        };
-        result.map_err(|e| datafusion::error::DataFusionError::Internal(format!("{e:?}")))?;
+        let output = DatasetOutput::new(&self.output_path).await?;
+        generate_data(&output, self.scale_factor, self.partitions, self.sorted)
+            .await
+            .map_err(|e| exec_datafusion_err!("{e}"))?;
         println!("{label} data generation complete.");
         Ok(())
     }
