@@ -7,7 +7,7 @@ use datafusion_distributed::{
     DistributedExt, DistributedMetricsFormat, SessionStateBuilderExt, WorkerResolver,
     display_plan_ascii,
 };
-use datafusion_distributed_benchmarks::datasets::{register_tables, tpcds};
+use datafusion_distributed_benchmarks::datasets::{output::DatasetOutput, register_tables, tpcds};
 use futures::TryStreamExt;
 use std::error::Error;
 use std::fs;
@@ -86,7 +86,8 @@ async fn run_queries(
 
     if !fs::exists(&data_dir).unwrap_or(false) {
         println!("Generating TPC-DS data at {data_dir:?}...");
-        tpcds::generate_data(&data_dir, scale_factor, parquet_partitions).await?;
+        let output = DatasetOutput::new(data_dir.to_str().unwrap()).await?;
+        tpcds::generate_data(&output, scale_factor, parquet_partitions).await?;
     }
 
     // Create distributed context

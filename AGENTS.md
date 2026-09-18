@@ -56,6 +56,11 @@ about a user's networking or deployment stack.
 - Follow established patterns in the closest relevant code and tests before
   introducing a new abstraction or mechanism.
 - Reuse existing helpers, extension points, and test fixtures when they fit.
+- Use DataFusion's error macros instead of manually constructing error variants or
+  formatting error strings. Use `exec_err!`, `internal_err!`, etc. when returning
+  a `Result`, and `exec_datafusion_err!`, `internal_datafusion_err!`, etc. in
+  `map_err` or `ok_or_else`. Import the macros at the top of the file and use `?`
+  for errors with existing conversions. This applies to benchmark and tooling code too.
 - Introduce a new pattern only when existing ones cannot express the required
   behavior; the rationale for this should be clearly and briefly stated.
 - When claiming a performance improvement, never move a PR out of draft before

@@ -1,6 +1,6 @@
-use super::common;
+use super::{common, output::DatasetOutput};
 use arrow::datatypes::{DataType, Field};
-use datafusion::common::internal_err;
+use datafusion::common::{exec_datafusion_err, internal_err};
 use datafusion::error::DataFusionError;
 use datafusion::physical_expr::Partitioning;
 use datafusion::physical_expr::expressions::{CastExpr, Column};
@@ -12,7 +12,7 @@ use datafusion::prelude::{ParquetReadOptions, SessionContext};
 use parquet::file::properties::WriterProperties;
 use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 const URL: &str = "https://github.com/apache/datafusion-benchmarks/archive/refs/heads/main.zip";
@@ -38,7 +38,7 @@ async fn download_benchmarks(dest_path: PathBuf) -> Result<(), Box<dyn std::erro
 
     // Download the file
     let response = reqwest::get(URL).await?;
-    let bytes = response.bytes().await?;
+    let bytes = response.error_for_status()?.bytes().await?;
 
     // Write to file
     let mut file = fs::File::create(&dest_path)?;
@@ -79,7 +79,7 @@ fn unzip_benchmarks(
 
 async fn repartition_parquet_file(
     file_path: PathBuf,
-    dest_path: PathBuf,
+    output: &DatasetOutput,
     partitions: usize,
     use_dict_encoding: bool,
 ) -> Result<(), DataFusionError> {
@@ -92,13 +92,11 @@ async fn repartition_parquet_file(
     }
     let table_name = file_name.trim_end_matches(".parquet");
 
-    if let Ok(dir) = fs::read_dir(&dest_path)
-        && dir.count() >= 1
-    {
+    if output.has_files(table_name).await? {
         return Ok(());
     }
-
     let ctx = SessionContext::new();
+    output.register(&ctx);
     ctx.sql("SET datafusion.execution.target_partitions=1")
         .await?;
 
@@ -125,7 +123,7 @@ async fn repartition_parquet_file(
     let plan = RepartitionExec::try_new(plan, Partitioning::RoundRobinBatch(partitions))?;
     ctx.write_parquet(
         Arc::new(plan),
-        dest_path.to_str().unwrap(),
+        format!("{}/{table_name}/", output.location()),
         Some(
             WriterProperties::builder()
                 .set_dictionary_enabled(true)
@@ -172,7 +170,7 @@ fn project_cols_as_dict(
 
 async fn prepare_tables(
     data_path: PathBuf,
-    dest_path: PathBuf,
+    output: &DatasetOutput,
     partitions: usize,
 ) -> datafusion::common::Result<()> {
     for entry in fs::read_dir(data_path)? {
@@ -189,7 +187,7 @@ async fn prepare_tables(
 
         repartition_parquet_file(
             entry.path(),
-            dest_path.join(table_name),
+            output,
             partitions,
             DICT_ENCODING_TABLES.contains(&table_name),
         )
@@ -198,17 +196,26 @@ async fn prepare_tables(
     Ok(())
 }
 
+/// Downloads the SF1 source archive, then streams the repartitioned tables to the destination.
 pub async fn generate_data(
-    dir: &Path,
+    output: &DatasetOutput,
     sf: f64,
     partitions: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if sf != 1.0 {
-        Err("Only scale factor 1.0 is supported for TPC-DS")?;
+    if sf != 1.0 || partitions == 0 {
+        return Err(exec_datafusion_err!(
+            "TPC-DS requires scale factor 1 and a positive partition count"
+        )
+        .into());
     }
-    let base_path = dir.parent().unwrap();
-    download_benchmarks(base_path.join("main.zip")).await?;
-    unzip_benchmarks(base_path.join("main.zip"), base_path.join("downloaded"))?;
-    prepare_tables(base_path.join("downloaded"), dir.to_path_buf(), partitions).await?;
+    output.ensure_empty().await?;
+    let staging = tempfile::tempdir()?;
+    download_benchmarks(staging.path().join("main.zip")).await?;
+    unzip_benchmarks(
+        staging.path().join("main.zip"),
+        staging.path().join("downloaded"),
+    )?;
+    prepare_tables(staging.path().join("downloaded"), output, partitions).await?;
+    output.write("_SUCCESS", Vec::new()).await?;
     Ok(())
 }

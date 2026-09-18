@@ -14,9 +14,14 @@ DATA_DIR=${DATA_DIR:-${REPO_ROOT}/testdata/tpcds}
 CARGO_COMMAND=${CARGO_COMMAND:-"cargo run -p datafusion-distributed-benchmarks --release"}
 TPCDS_DIR="${DATA_DIR}/sf${SCALE_FACTOR}"
 
+if [ "$#" -gt 0 ]; then
+    if [ "$#" -ne 2 ] || [ "$1" != "--output" ]; then
+        echo "Usage: $0 [--output <directory|s3://bucket/prefix>]" >&2
+        exit 1
+    fi
+    TPCDS_DIR="$2"
+fi
+
 echo "Creating tpcds dataset at Scale Factor ${SCALE_FACTOR} in ${TPCDS_DIR}..."
 
-# Ensure the target data directory exists
-mkdir -p "${TPCDS_DIR}"
-
-$CARGO_COMMAND -- prepare-tpcds --output "${TPCDS_DIR}" --partitions "$PARTITIONS"
+$CARGO_COMMAND -- prepare-tpcds --output "${TPCDS_DIR}" --partitions "$PARTITIONS" --sf "$SCALE_FACTOR"

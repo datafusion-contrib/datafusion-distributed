@@ -36,7 +36,10 @@ pub fn main() -> Result<()> {
         Options::Compare { states, dataset } => {
             compare::run(compare::parse_comparison_args(states, dataset)?)
         }
-        Options::PrepareTpch(opt) => opt.run(),
+        Options::PrepareTpch(opt) => {
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(opt.run())
+        }
         Options::PrepareTpcds(opt) => {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(async { opt.run().await })

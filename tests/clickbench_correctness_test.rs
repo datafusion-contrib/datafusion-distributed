@@ -12,7 +12,9 @@ mod tests {
     use datafusion_distributed::{
         DefaultSessionBuilder, DistributedExec, DistributedExt, display_plan_ascii,
     };
-    use datafusion_distributed_benchmarks::datasets::{clickbench, register_tables};
+    use datafusion_distributed_benchmarks::datasets::{
+        clickbench, output::DatasetOutput, register_tables,
+    };
     use std::ops::Range;
     use std::path::Path;
     use std::sync::Arc;
@@ -271,9 +273,14 @@ mod tests {
         ));
         INIT_TEST_TPCDS_TABLES
             .get_or_init(|| async {
-                clickbench::generate_clickbench_data(&data_dir, FILE_RANGE)
-                    .await
-                    .unwrap();
+                if !data_dir.exists() {
+                    let output = DatasetOutput::new(data_dir.to_str().unwrap())
+                        .await
+                        .unwrap();
+                    clickbench::generate_data(&output, FILE_RANGE)
+                        .await
+                        .unwrap();
+                }
             })
             .await;
 

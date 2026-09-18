@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "benchmarks",
+    "benchmarks/remote-worker",
     "cli",
     "console",
     "iceberg",

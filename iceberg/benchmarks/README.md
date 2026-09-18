@@ -12,6 +12,7 @@ cargo run -p datafusion-distributed-iceberg-benchmarks --release -- prepare \
 WORKERS=2 ./iceberg/benchmarks/run.sh --dataset tpch/sf1_iceberg --threads 2 --partitions 2
 ```
 
-Preparation writes an immutable sibling dataset named `<input>_iceberg`. The source must be a
+Preparation writes an immutable sibling dataset named `<input>_iceberg` by default.
+Use `--output <directory|s3://bucket/prefix>` to choose its destination. The source must be a
 non-empty local Parquet dataset, and the destination must be empty. See the
 [benchmark guide](../../benchmarks/README.md#iceberg-benchmarks) for generation and comparison.

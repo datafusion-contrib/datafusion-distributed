@@ -20,10 +20,18 @@ else
     TPCH_DIR="${DATA_DIR}/sf${SCALE_FACTOR}"
     SORTED_FLAG=
 fi
+if [ "$#" -gt 0 ]; then
+    if [ "$#" -ne 2 ] || [ "$1" != "--output" ]; then
+        echo "Usage: $0 [--output <directory|s3://bucket/prefix>]" >&2
+        exit 1
+    fi
+    TPCH_DIR="$2"
+fi
+
 echo "Creating tpch dataset at Scale Factor ${SCALE_FACTOR} in ${TPCH_DIR}..."
 
 FILE="${TPCH_DIR}/supplier"
-if test -d "${FILE}"; then
+if [ "$#" -eq 0 ] && test -d "${FILE}"; then
     echo " parquet files exist ($FILE exists)."
 else
     echo " generating parquet files using tpchgen-rs..."

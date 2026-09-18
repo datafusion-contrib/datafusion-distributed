@@ -1,5 +1,3 @@
-use crate::backend::{BenchmarkBackend, ParquetBenchmarkBackend};
-use crate::stats::stats_estimation_q_error;
 use async_trait::async_trait;
 use axum::{Json, Router, extract::Query, http::StatusCode, routing::get};
 use datafusion::catalog::memory::DataSourceExec;
@@ -9,7 +7,8 @@ use datafusion::common::runtime::SpawnedTask;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::runtime_env::RuntimeEnv;
-use datafusion::physical_plan::execute_stream;
+use datafusion::physical_plan::metrics::MetricsSet;
+use datafusion::physical_plan::{ExecutionPlan, execute_stream};
 use datafusion::prelude::SessionContext;
 use datafusion_distributed::test_utils::work_unit_file_scan::{
     WorkUnitFileScanCodec, WorkUnitFileScanConfig, work_unit_file_scan_desired_task_count,
@@ -17,7 +16,7 @@ use datafusion_distributed::test_utils::work_unit_file_scan::{
 };
 use datafusion_distributed::{
     ChannelResolver, DistributedExt, DistributedMetricsFormat, NetworkBoundaryExt,
-    SessionStateBuilderExt, Worker, WorkerQueryContext, WorkerResolver, display_plan_ascii,
+    SessionStateBuilderExt, Stage, Worker, WorkerQueryContext, WorkerResolver, display_plan_ascii,
     get_distributed_channel_resolver, get_distributed_worker_resolver,
     rewrite_distributed_plan_with_metrics,
 };
@@ -25,6 +24,7 @@ use futures::{StreamExt, TryFutureExt};
 use log::{error, info, warn};
 use object_store::aws::AmazonS3Builder;
 use serde::Serialize;
+use sketches_ddsketch::{Config, DDSketch};
 use std::error::Error;
 use std::fmt::Display;
 use std::io;
@@ -35,36 +35,23 @@ use structopt::StructOpt;
 use tonic::transport::Server;
 use url::Url;
 
-#[allow(clippy::disallowed_types)]
-type QueryParameters = std::collections::HashMap<String, String>;
+fn configure_session(builder: SessionStateBuilder) -> SessionStateBuilder {
+    // Comment the code below in case this crate needs to stop depending on iceberg.
+    use datafusion_distributed_iceberg::{IcebergExt, IcebergIntegrationOptions};
+    let builder = builder
+        .with_iceberg_integration(IcebergIntegrationOptions::default())
+        .with_iceberg_column_stats_enabled(true);
 
-pub(crate) mod built_info {
-    // The file has been placed there by the build script.
-    include!(concat!(env!("OUT_DIR"), "/built.rs"));
+    builder
 }
 
-#[derive(Serialize)]
-struct QueryResult {
-    plan: String,
-    count: usize,
-    elapsed_ms: f64,
-    tasks: usize,
-    stats_q_error_p50: Option<f64>,
-    stats_q_error_p95: Option<f64>,
-}
-
-#[derive(Serialize)]
-struct WorkerInfo {
-    worker_urls: Vec<String>,
-    git_commit_hash: String,
-    build_time_utc: String,
-    errors: Vec<String>,
-}
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 /// Network and object-store options for the remote benchmark worker.
 #[derive(Debug, StructOpt, Clone)]
 #[structopt(about = "worker spawn command")]
-pub struct RemoteWorkerOpt {
+struct RemoteWorkerOpt {
     /// The bucket name.
     #[structopt(long, default_value = "datafusion-distributed-benchmarks")]
     bucket: String,
@@ -77,44 +64,15 @@ pub struct RemoteWorkerOpt {
     worker_dns_name: String,
 }
 
-/// Remote benchmark HTTP coordinator and distributed worker service.
-pub struct RemoteBenchmarkWorker;
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    env_logger::builder()
+        .filter_level(log::LevelFilter::Info)
+        .parse_default_env()
+        .init();
 
-impl RemoteBenchmarkWorker {
-    /// Creates a builder using the Parquet backend.
-    pub fn builder(options: RemoteWorkerOpt) -> RemoteBenchmarkWorkerBuilder {
-        RemoteBenchmarkWorkerBuilder {
-            options,
-            backend: ParquetBenchmarkBackend,
-        }
-    }
-}
+    let cmd = RemoteWorkerOpt::from_args();
 
-/// Configures and serves a remote benchmark worker.
-pub struct RemoteBenchmarkWorkerBuilder<B = ParquetBenchmarkBackend> {
-    options: RemoteWorkerOpt,
-    backend: B,
-}
-
-impl<B: BenchmarkBackend> RemoteBenchmarkWorkerBuilder<B> {
-    /// Replaces the default Parquet backend.
-    pub fn with_backend<T: BenchmarkBackend>(self, backend: T) -> RemoteBenchmarkWorkerBuilder<T> {
-        RemoteBenchmarkWorkerBuilder {
-            options: self.options,
-            backend,
-        }
-    }
-
-    /// Serves the benchmark HTTP endpoint and distributed worker until shutdown.
-    pub async fn serve(self) -> Result<(), Box<dyn Error>> {
-        serve(self.options, self.backend).await
-    }
-}
-
-async fn serve<B: BenchmarkBackend>(
-    cmd: RemoteWorkerOpt,
-    backend: B,
-) -> Result<(), Box<dyn Error>> {
     const LISTENER_ADDR: &str = "0.0.0.0:9000";
     const WORKER_ADDR: &str = "0.0.0.0:9001";
 
@@ -136,16 +94,11 @@ async fn serve<B: BenchmarkBackend>(
     let runtime_env = Arc::new(RuntimeEnv::default());
     runtime_env.register_object_store(&s3_url, s3);
 
-    let backend = Arc::new(backend);
-    let worker_backend = Arc::clone(&backend);
-    let worker = Worker::from_session_builder(move |ctx: WorkerQueryContext| {
-        let backend = Arc::clone(&worker_backend);
-        async move {
-            let builder = ctx
-                .builder
-                .with_distributed_user_codec(WorkUnitFileScanCodec);
-            Ok(backend.configure_session(builder).build())
-        }
+    let worker = Worker::from_session_builder(move |ctx: WorkerQueryContext| async move {
+        let builder = ctx
+            .builder
+            .with_distributed_user_codec(WorkUnitFileScanCodec);
+        Ok(configure_session(builder).build())
     })
     .with_runtime_env(Arc::clone(&runtime_env));
 
@@ -165,7 +118,7 @@ async fn serve<B: BenchmarkBackend>(
                 .downcast_ref::<WorkUnitFileScanConfig>()
                 .map(|v| &v.feed)
         });
-    let state = backend.configure_session(state_builder).build();
+    let state = configure_session(state_builder).build();
     let ctx = SessionContext::from(state);
     let ctx_clone = ctx.clone();
 
@@ -304,6 +257,72 @@ async fn serve<B: BenchmarkBackend>(
     }
 
     Ok(())
+}
+
+#[allow(clippy::disallowed_types)]
+type QueryParameters = std::collections::HashMap<String, String>;
+
+mod built_info {
+    // The file has been placed there by the build script.
+    include!(concat!(env!("OUT_DIR"), "/built.rs"));
+}
+
+#[derive(Serialize)]
+struct QueryResult {
+    plan: String,
+    count: usize,
+    elapsed_ms: f64,
+    tasks: usize,
+    stats_q_error_p50: Option<f64>,
+    stats_q_error_p95: Option<f64>,
+}
+
+#[derive(Serialize)]
+struct WorkerInfo {
+    worker_urls: Vec<String>,
+    git_commit_hash: String,
+    build_time_utc: String,
+    errors: Vec<String>,
+}
+
+#[derive(Clone, Copy)]
+struct StatsEstimationQError {
+    p50: f64,
+    p95: f64,
+}
+
+fn stats_estimation_q_error(plan: &Arc<dyn ExecutionPlan>) -> Option<StatsEstimationQError> {
+    let mut boundary_q_errors = DDSketch::new(Config::defaults());
+
+    let _ = plan.apply(|node| {
+        if let Some(boundary) = node.as_network_boundary()
+            && let Stage::Local(input_stage) = boundary.input_stage()
+            && let Some(sampled_bytes) = metric_total(&input_stage.metrics_set, "sampled_bytes")
+            && let Some(actual_bytes) = node
+                .metrics()
+                .and_then(|metrics| metric_total(&metrics, "output_bytes"))
+        {
+            boundary_q_errors.add(q_error(sampled_bytes, actual_bytes));
+        }
+        Ok(TreeNodeRecursion::Continue)
+    });
+
+    Some(StatsEstimationQError {
+        p50: boundary_q_errors.quantile(0.50).ok().flatten()?,
+        p95: boundary_q_errors.quantile(0.95).ok().flatten()?,
+    })
+}
+
+fn metric_total(metrics: &MetricsSet, name: &str) -> Option<usize> {
+    metrics
+        .sum(|metric| metric.value().name() == name)
+        .map(|value| value.as_usize())
+}
+
+fn q_error(estimated: usize, actual: usize) -> f64 {
+    let estimated = estimated.max(1) as f64;
+    let actual = actual.max(1) as f64;
+    (estimated / actual).max(actual / estimated)
 }
 
 struct AbortNotifier {
