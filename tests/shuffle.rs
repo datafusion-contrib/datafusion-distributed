@@ -72,6 +72,8 @@ mod tests {
         Ok((distributed_plan, distributed_results))
     }
 
+    /// Verifies that [NetworkShuffleExec] preserves sort order across multiple input worker
+    /// tasks by streaming-merge sorting rows arriving over the network.
     #[tokio::test]
     async fn test_sorted_network_shuffle() -> Result<(), Box<dyn std::error::Error>> {
         let query = r#"

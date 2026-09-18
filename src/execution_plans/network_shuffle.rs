@@ -97,6 +97,8 @@ use uuid::Uuid;
 /// - Each task in Stage N+1 gathers data from all tasks in Stage N
 /// - The total number of partitions across all tasks in Stage N+1 is equal to the
 ///   number of partitions in a single task in Stage N. (e.g. (1,2,3,4)+(5,6,7,8) = (1,2,3,4,5,6,7,8) )
+/// - When input streams carry an output ordering, each partition sort-merges incoming
+///   streams from upstream tasks to preserve that ordering across tasks.
 ///
 /// This node has two variants.
 /// 1. Pending: acts as a placeholder for the distributed optimization step to mark it as ready.
@@ -207,6 +209,7 @@ impl DisplayAs for NetworkShuffleExec {
             f,
             "[Stage {stage}] => NetworkShuffleExec: output_partitions={partitions}, input_tasks={input_tasks}",
         )?;
+        // Only display sort expressions when multiple input tasks require sort-merging.
         if let Some(ordering) = self.properties.output_ordering()
             && !ordering.is_empty()
             && input_tasks > 1
@@ -292,6 +295,7 @@ impl ExecutionPlan for NetworkShuffleExec {
         if streams.is_empty() {
             return Ok(Box::pin(EmptyRecordBatchStream::new(self.schema())));
         }
+        // When there is only one input task stream, no merging or interleaving is needed.
         if streams.len() == 1 {
             return Ok(streams.pop().unwrap());
         }
