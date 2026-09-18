@@ -90,21 +90,26 @@ fn dictionary_encode(
         "item" => &["i_brand", "i_category", "i_class", "i_color", "i_size"],
         "customer" => &["c_salutation"],
         "store" => &["s_state", "s_country"],
-        _ => return Ok(batch),
+        _ => &[],
     };
     let schema = batch.schema();
     let fields: Vec<_> = schema
         .fields()
         .iter()
         .map(|field| {
+            let field_name = canonical_column_name(table_name, field.name());
             if dictionary_columns.contains(&field.name().as_str()) {
                 Arc::new(Field::new(
-                    field.name(),
+                    field_name,
                     DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
                     field.is_nullable(),
                 ))
             } else {
-                Arc::clone(field)
+                Arc::new(Field::new(
+                    field_name,
+                    field.data_type().clone(),
+                    field.is_nullable(),
+                ))
             }
         })
         .collect();
@@ -127,6 +132,15 @@ fn dictionary_encode(
         Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone())),
         columns,
     )
+}
+
+fn canonical_column_name<'a>(table_name: &str, column_name: &'a str) -> &'a str {
+    match (table_name, column_name) {
+        ("catalog_returns", "cr_return_amount_inc_tax") => "cr_return_amt_inc_tax",
+        ("income_band", "ib_income_band_id") => "ib_income_band_sk",
+        ("reason", "r_reason_description") => "r_reason_desc",
+        _ => column_name,
+    }
 }
 
 async fn generate_tables(

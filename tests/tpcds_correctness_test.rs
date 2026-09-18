@@ -25,7 +25,7 @@ mod tests {
     const PARTITIONS: usize = 3;
     const FILE_SCAN_CONFIG_BYTES_PER_PARTITION: usize = 1;
     const CARDINALITY_TASK_COUNT_FACTOR: f64 = 2.0;
-    const SF: f64 = 1.0;
+    const SF: f64 = 0.1;
     const PARQUET_PARTITIONS: usize = 4;
 
     #[tokio::test]
