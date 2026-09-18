@@ -20,8 +20,12 @@ use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::union::UnionExec;
 use datafusion::physical_plan::{ExecutionPlan, Partitioning, PlanProperties};
 use datafusion::prelude::SessionConfig;
-use datafusion_proto::physical_plan::from_proto::parse_protobuf_partitioning;
-use datafusion_proto::physical_plan::to_proto::serialize_partitioning;
+use datafusion_proto::physical_plan::from_proto::{
+    parse_physical_sort_exprs, parse_protobuf_partitioning,
+};
+use datafusion_proto::physical_plan::to_proto::{
+    serialize_partitioning, serialize_physical_sort_exprs,
+};
 use datafusion_proto::physical_plan::{
     ComposedPhysicalExtensionCodec, PhysicalExtensionCodec, PhysicalPlanDecodeContext,
     PhysicalProtoConverterExtension,
@@ -104,6 +108,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 partitioning,
                 input_stage,
                 equivalence_classes,
+                ordering,
             }) => {
                 let schema: Schema = schema
                     .as_ref()
@@ -118,13 +123,19 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     proto_converter,
                 )?
                 .ok_or(proto_error("NetworkShuffleExec is missing partitioning"))?;
+                let sort_exprs =
+                    parse_physical_sort_exprs(&ordering, &decode_ctx, &schema, proto_converter)?;
                 let schema = Arc::new(schema);
-                let equivalence_properties = parse_equivalence_properties(
+                let mut equivalence_properties = parse_equivalence_properties(
                     equivalence_classes,
                     schema,
                     &decode_ctx,
                     proto_converter,
                 )?;
+                // Restore ordering properties so NetworkShuffleExec::execute can sort-merge incoming streams.
+                if !sort_exprs.is_empty() {
+                    equivalence_properties.add_orderings([sort_exprs]);
+                }
 
                 Ok(Arc::new(new_network_hash_shuffle_exec(
                     partitioning,
@@ -297,6 +308,16 @@ impl PhysicalExtensionCodec for DistributedCodec {
         }
 
         if let Some(node) = node.downcast_ref::<NetworkShuffleExec>() {
+            // Serialize output ordering so workers know how to sort-merge incoming streams.
+            let ordering = node
+                .properties()
+                .output_ordering()
+                .map(|ordering| {
+                    serialize_physical_sort_exprs(ordering.iter().cloned(), self, proto_converter)
+                })
+                .transpose()?
+                .unwrap_or_default();
+
             let inner = NetworkShuffleExecProto {
                 schema: Some(node.schema().try_into()?),
                 partitioning: Some(serialize_partitioning(
@@ -310,6 +331,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     self,
                     proto_converter,
                 )?,
+                ordering,
             };
 
             let wrapper = DistributedExecProto {
@@ -516,12 +538,14 @@ pub struct NetworkShuffleExecProto {
     input_stage: Option<StageProto>,
     #[prost(message, repeated, tag = "4")]
     equivalence_classes: Vec<EquivalenceClassProto>,
+    /// Sort expressions preserved across tasks and used by workers to sort-merge streams.
+    #[prost(message, repeated, tag = "5")]
+    ordering: Vec<protobuf::PhysicalSortExprNode>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct EquivalenceClassProto {
-    /// Expressions known to produce equal values. Ordering properties are intentionally
-    /// excluded because they are not generally valid across a network shuffle.
+    /// Expressions known to produce equal values.
     #[prost(message, repeated, tag = "1")]
     expressions: Vec<protobuf::PhysicalExprNode>,
 }
@@ -980,7 +1004,7 @@ mod tests {
             }
 
             let mut buf = Vec::new();
-            codec.try_encode(plan, &mut buf, &default_proto_converter())?;
+            codec.try_encode(plan.clone(), &mut buf, &default_proto_converter())?;
             let decoded = codec.try_decode(&buf, &[], &ctx, &default_proto_converter())?;
 
             assert!(
@@ -992,9 +1016,10 @@ mod tests {
                 "{name} lost the equivalence relationship"
             );
             if name == "shuffle" {
-                assert!(
-                    decoded.properties().output_ordering().is_none(),
-                    "shuffle should not preserve its input ordering"
+                assert_eq!(
+                    decoded.properties().output_ordering(),
+                    plan.properties().output_ordering(),
+                    "shuffle should preserve its input ordering"
                 );
             }
         }
