@@ -80,6 +80,57 @@ covered in
 [Distribute a custom ExecutionPlan](04-distribute-custom-plan.md).
 ```
 
+## Worker admission
+
+Use `Worker::with_admission_controller` to reject work before the worker builds a
+session, decodes a plan, or starts sampling. A rejection explicitly tells the
+coordinator whether it may retry the same worker, try a different worker, or fail
+the query.
+
+This example limits the worker to eight admitted tasks. The owned semaphore permit
+is wrapped in `WorkerAdmissionPermit`, so capacity is returned if the reservation
+is abandoned or when the committed task is cleaned up:
+
+```rust
+use std::sync::Arc;
+use async_trait::async_trait;
+use datafusion::common::DataFusionError;
+use datafusion_distributed::{
+    RetryTarget, Worker, WorkerAdmissionController, WorkerAdmissionPermit,
+    WorkerAdmissionRejection, WorkerAdmissionRequest,
+};
+use tokio::sync::Semaphore;
+
+struct LimitTasks {
+    slots: Arc<Semaphore>,
+}
+
+#[async_trait]
+impl WorkerAdmissionController for LimitTasks {
+    async fn admit(
+        &self,
+        _request: &WorkerAdmissionRequest,
+    ) -> Result<WorkerAdmissionPermit, WorkerAdmissionRejection> {
+        let permit = Arc::clone(&self.slots)
+            .try_acquire_owned()
+            .map_err(|_| WorkerAdmissionRejection::retry(
+                DataFusionError::ResourcesExhausted("worker task limit reached".into()),
+                RetryTarget::DifferentWorker,
+            ))?;
+        Ok(WorkerAdmissionPermit::new(permit))
+    }
+}
+
+let worker = Worker::default().with_admission_controller(LimitTasks {
+    slots: Arc::new(Semaphore::new(8)),
+});
+```
+
+Use `WorkerAdmissionRejection::fatal` for errors that must not be retried, such
+as failed authentication or invalid tenant configuration. Admission receives the
+task key, placement attempt ID, task count, and propagated HTTP headers, but not
+the physical plan.
+
 ## Spawning strategies
 
 Because a worker is just a Tonic service, you have some freedom in where it runs.

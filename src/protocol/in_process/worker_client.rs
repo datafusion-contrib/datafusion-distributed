@@ -1,6 +1,6 @@
 use crate::{
     CoordinatorToWorkerMsg, ExecuteTaskRequest, GetWorkerInfoRequest, GetWorkerInfoResponse,
-    SetPlanRequest, Worker, WorkerChannel, WorkerToCoordinatorMsg,
+    OpenTaskRequest, SetPlanRequest, Worker, WorkerChannel, WorkerToCoordinatorMsg,
 };
 use async_trait::async_trait;
 use datafusion::arrow::array::RecordBatch;
@@ -30,13 +30,25 @@ impl WorkerChannel for InProcessWorkerClient {
     async fn coordinator_channel(
         &mut self,
         headers: HeaderMap,
+        open_task_request: OpenTaskRequest,
         set_plan_request: SetPlanRequest,
         c2w_stream: BoxStream<'static, CoordinatorToWorkerMsg>,
         _metrics: ExecutionPlanMetricsSet,
         _task_ctx: &Arc<TaskContext>,
     ) -> Result<BoxStream<'static, Result<WorkerToCoordinatorMsg>>> {
+        let reservation = self
+            .local_worker
+            .admit_task(headers.clone(), open_task_request)
+            .await
+            .map_err(|rejection| rejection.into_datafusion_error())?;
+        let permit = reservation.commit(&set_plan_request)?;
         self.local_worker
-            .coordinator_channel(headers, set_plan_request, c2w_stream.map(Ok).boxed())
+            .coordinator_channel_with_permit(
+                headers,
+                set_plan_request,
+                c2w_stream.map(Ok).boxed(),
+                permit,
+            )
             .await
             .map(|v| v.stream)
     }

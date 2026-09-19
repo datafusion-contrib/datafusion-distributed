@@ -1,3 +1,4 @@
+mod admission;
 mod impl_coordinator_channel;
 mod impl_execute_task;
 mod session_builder;
@@ -11,6 +12,11 @@ mod worker_service;
 pub(crate) use single_write_multi_read::SingleWriteMultiRead;
 pub(crate) use worker_connection_pool::WorkerConnectionPool;
 
+pub(crate) use admission::AcceptAllAdmissionController;
+pub use admission::{
+    RetryTarget, WorkerAdmissionController, WorkerAdmissionPermit, WorkerAdmissionRejection,
+    WorkerAdmissionRequest,
+};
 pub use impl_coordinator_channel::CoordinatorChannelResult;
 pub use session_builder::{
     DefaultSessionBuilder, MappedWorkerSessionBuilder, MappedWorkerSessionBuilderExt,
