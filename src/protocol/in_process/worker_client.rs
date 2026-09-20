@@ -1,6 +1,6 @@
 use crate::{
     CoordinatorToWorkerMsg, ExecuteTaskRequest, GetWorkerInfoRequest, GetWorkerInfoResponse,
-    MaybeEncoded, SetPlanRequest, Worker, WorkerChannel, WorkerToCoordinatorMsg,
+    SetPlanRequest, Worker, WorkerChannel, WorkerToCoordinatorMsg,
 };
 use async_trait::async_trait;
 use datafusion::arrow::array::RecordBatch;
@@ -33,13 +33,8 @@ impl WorkerChannel for InProcessWorkerClient {
         set_plan_request: SetPlanRequest,
         c2w_stream: BoxStream<'static, CoordinatorToWorkerMsg>,
         _metrics: ExecutionPlanMetricsSet,
-        task_ctx: &Arc<TaskContext>,
+        _task_ctx: &Arc<TaskContext>,
     ) -> Result<BoxStream<'static, Result<WorkerToCoordinatorMsg>>> {
-        // Encode the plan to bytes so the worker deserializes a fresh, independent plan tree.
-        let set_plan_request = SetPlanRequest {
-            plan: MaybeEncoded::Encoded(set_plan_request.plan.encode(task_ctx)?),
-            ..set_plan_request
-        };
         self.local_worker
             .coordinator_channel(headers, set_plan_request, c2w_stream.map(Ok).boxed())
             .await
