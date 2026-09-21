@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Licensed to the Apache Software Foundation (ASF) under the Apache License, Version 2.0. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 550" role="img" aria-describedby="desc">
+  <desc id="desc">Two Hash Join tasks report complete predicates to a coordinator. The coordinator waits for both, merges them with OR, and sends the resulting filter to two remote Data Source tasks on the probe side.</desc>
+  <defs>
+    <marker id="data-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#8b949e"/></marker>
+    <marker id="filter-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#d74633"/></marker>
+    <style>
+      .scene{font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+      .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+      .heading{fill:#24292f;font-size:15px;font-weight:650}
+      .label{fill:#57606a;font-size:12px}
+      .small{fill:#57606a;font-size:10.5px}
+      .stage{fill:#6e7781;font-size:11px;font-weight:700;letter-spacing:.08em}
+      .panel{fill:#fff;stroke:#d8dee4;stroke-width:1.5}
+      .producer{fill:#f6f8fa;stroke:#d8dee4;stroke-width:1.5}
+      .coord{fill:#fff8f5;stroke:#d74633;stroke-width:1.5}
+      .data-flow{fill:none;stroke:#8b949e;stroke-width:1.6;stroke-dasharray:5 5;marker-end:url(#data-arrow)}
+      .filter-up{fill:none;stroke:#d74633;stroke-width:2;marker-end:url(#filter-arrow)}
+      .filter-bus{fill:none;stroke:#d74633;stroke-width:2;stroke-dasharray:7 5}
+      .filter-down{fill:none;stroke:#d74633;stroke-width:2;marker-end:url(#filter-arrow)}
+      .row rect{fill:#eef2f6;stroke:#d0d7de}.row text{fill:#24292f;font-size:11px;text-anchor:middle}
+      .keep rect{fill:#dafbe1;stroke:#4ac26b}
+      .skip rect{fill:#f6f8fa;stroke:#d8dee4}.skip text{fill:#8c959f}
+      .strike{stroke:#cf222e;stroke-width:1.3;opacity:.8}
+      .packet rect{fill:#fff1e5;stroke:#d74633;stroke-width:1.3}.packet text{fill:#9a2f22;font-size:10px;font-weight:650;text-anchor:middle}
+      .p0,.p1,.waiting,.before-filter{display:none}
+    </style>
+  </defs>
+  <g class="scene">
+    <rect width="960" height="550" rx="16" fill="#fbfcfd"/>
+
+    <text x="30" y="90" class="stage">COORDINATOR</text>
+    <rect x="300" y="30" width="360" height="115" rx="12" class="coord"/>
+    <text x="325" y="62" class="heading">Query Coordinator</text>
+    <text x="325" y="84" class="label">wait for every Hash Join task</text>
+    <g class="waiting"><circle cx="330" cy="113" r="5" fill="#d74633"/><text x="343" y="117" class="small mono">collecting F₀ and F₁</text></g>
+    <g class="merged"><circle cx="330" cy="113" r="5" fill="#2da44e"/><text x="343" y="117" class="small mono">F₀ OR F₁ = key IN (B, D)</text></g>
+
+    <text x="30" y="245" class="stage">JOIN STAGE</text>
+    <rect x="170" y="190" width="280" height="115" rx="12" class="producer"/>
+    <text x="190" y="221" class="heading">Hash Join · task 0</text>
+    <text x="190" y="244" class="label">complete build partition</text>
+    <g class="row keep" transform="translate(190 258)"><rect width="44" height="28" rx="7"/><text x="22" y="19">B</text></g>
+    <text x="250" y="277" class="small mono">F₀ = key IN (B)</text>
+
+    <rect x="510" y="190" width="280" height="115" rx="12" class="producer"/>
+    <text x="530" y="221" class="heading">Hash Join · task 1</text>
+    <text x="530" y="244" class="label">complete build partition</text>
+    <g class="row keep" transform="translate(530 258)"><rect width="44" height="28" rx="7"/><text x="22" y="19">D</text></g>
+    <text x="590" y="277" class="small mono">F₁ = key IN (D)</text>
+
+    <path d="M310 190L400 145" class="filter-up"/>
+    <path d="M650 190L560 145" class="filter-up"/>
+    <g transform="translate(280 175)"><g class="packet p0"><rect width="58" height="23" rx="7"/><text x="29" y="15">F₀ ✓</text></g></g>
+    <g transform="translate(622 175)"><g class="packet p1"><rect width="58" height="23" rx="7"/><text x="29" y="15">F₁ ✓</text></g></g>
+
+    <path d="M310 390V305" class="data-flow"/>
+    <path d="M650 390V305" class="data-flow"/>
+    <text x="325" y="330" class="small">probe rows flow up</text>
+
+    <g class="downlink">
+      <path d="M660 88H900V345H250" class="filter-bus"/>
+      <path d="M310 345V390" class="filter-down"/>
+      <path d="M650 345V390" class="filter-down"/>
+      <text x="710" y="335" class="small" fill="#9a2f22">merged filter flows down</text>
+    </g>
+
+    <text x="30" y="455" class="stage">SCAN STAGE</text>
+    <rect x="170" y="390" width="280" height="125" rx="12" class="panel"/>
+    <text x="190" y="420" class="heading">Data Source · task 0</text>
+    <text x="190" y="441" class="label">(Probe Side: <tspan class="mono">fact</tspan>)</text>
+    <g class="before-filter">
+      <text x="190" y="463" class="small mono">filter not received</text>
+      <g class="row" transform="translate(190 474)"><rect width="50" height="29" rx="7"/><text x="25" y="19">A</text></g>
+      <g class="row" transform="translate(248 474)"><rect width="50" height="29" rx="7"/><text x="25" y="19">B</text></g>
+    </g>
+    <g class="scan-filter">
+      <text x="190" y="463" class="small mono">key IN (B, D)</text>
+      <g class="row skip" transform="translate(190 474)"><rect width="50" height="29" rx="7"/><text x="25" y="19">A</text><path d="M9 23L41 6" class="strike"/></g>
+      <g class="row keep" transform="translate(248 474)"><rect width="50" height="29" rx="7"/><text x="25" y="19">B</text></g>
+    </g>
+
+    <rect x="510" y="390" width="280" height="125" rx="12" class="panel"/>
+    <text x="530" y="420" class="heading">Data Source · task 1</text>
+    <text x="530" y="441" class="label">(Probe Side: <tspan class="mono">fact</tspan>)</text>
+    <g class="before-filter">
+      <text x="530" y="463" class="small mono">filter not received</text>
+      <g class="row" transform="translate(530 474)"><rect width="50" height="29" rx="7"/><text x="25" y="19">C</text></g>
+      <g class="row" transform="translate(588 474)"><rect width="50" height="29" rx="7"/><text x="25" y="19">D</text></g>
+    </g>
+    <g class="scan-filter">
+      <text x="530" y="463" class="small mono">key IN (B, D)</text>
+      <g class="row skip" transform="translate(530 474)"><rect width="50" height="29" rx="7"/><text x="25" y="19">C</text><path d="M9 23L41 6" class="strike"/></g>
+      <g class="row keep" transform="translate(588 474)"><rect width="50" height="29" rx="7"/><text x="25" y="19">D</text></g>
+    </g>
+  </g>
+</svg>
