@@ -7,6 +7,7 @@ use datafusion::common::runtime::SpawnedTask;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::runtime_env::RuntimeEnv;
+use datafusion::object_store::aws::AmazonS3Builder;
 use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::{ExecutionPlan, execute_stream};
 use datafusion::prelude::SessionContext;
@@ -22,7 +23,6 @@ use datafusion_distributed::{
 };
 use futures::{StreamExt, TryFutureExt};
 use log::{error, info, warn};
-use object_store::aws::AmazonS3Builder;
 use serde::Serialize;
 use sketches_ddsketch::{Config, DDSketch};
 use std::error::Error;

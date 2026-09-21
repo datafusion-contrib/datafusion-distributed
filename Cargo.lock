@@ -2391,7 +2391,6 @@ dependencies = [
  "itertools 0.14.0",
  "moka",
  "num-traits",
- "object_store",
  "parquet",
  "pin-project",
  "pretty_assertions",

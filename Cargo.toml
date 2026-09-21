@@ -44,7 +44,6 @@ delegate = "0.13.4"
 dashmap = "6.0.1"
 prost = "0.14.1"
 rand = "0.9"
-object_store = "0.13"
 bytes = "1.11"
 pin-project = "1.1.10"
 tokio-stream = { version = "0.1.17", features = ["sync"] }
