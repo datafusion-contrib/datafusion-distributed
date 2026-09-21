@@ -1,9 +1,13 @@
 use crate::codec::roundtrip_pb;
 use crate::common::{TreeNodeExt, now_ns, task_ctx_with_extension};
 use crate::config_extension_ext::get_config_extension_propagation_headers;
+use crate::coordinator::DynamicFilterRegistry;
 use crate::coordinator::Store;
 use crate::coordinator::latency_metric::LatencyMetric;
-use crate::dynamic_filtering::maybe_roundtrip_plan_to_sever_in_memory_dynamic_filter_relationships;
+use crate::dynamic_filtering::{
+    dynamic_filter_remote_producer_ids, is_dynamic_filtering_enabled,
+    maybe_roundtrip_plan_to_sever_in_memory_dynamic_filter_relationships,
+};
 use crate::events::{
     RouteTaskEvent, RouteTaskEventResponse, RouteTaskHandlers, new_coordinator_to_worker_dialer,
 };
@@ -53,6 +57,7 @@ pub(super) struct QueryCoordinator {
     coordinator_to_worker_metrics: CoordinatorToWorkerMetrics,
     metrics_store: Option<Arc<Store<TaskMetrics>>>,
     completed_dynamic_filter_store: Option<Arc<Store<TaskCompletedDynamicFilters>>>,
+    dynamic_filter_registry: Arc<DynamicFilterRegistry>,
     end_stream_notifier: Arc<Notify>,
     join_set: Mutex<JoinSet<Result<()>>>,
 }
@@ -70,6 +75,7 @@ impl QueryCoordinator {
             metrics: metrics_set.clone(),
             metrics_store,
             completed_dynamic_filter_store,
+            dynamic_filter_registry: Arc::new(DynamicFilterRegistry::new(metrics_set)),
             coordinator_to_worker_metrics: CoordinatorToWorkerMetrics::new(metrics_set),
             end_stream_notifier: Arc::new(Notify::new()),
             join_set: Mutex::new(JoinSet::new()),
@@ -89,6 +95,7 @@ impl QueryCoordinator {
             metrics: &self.coordinator_to_worker_metrics,
             metrics_store: &self.metrics_store,
             completed_dynamic_filter_store: &self.completed_dynamic_filter_store,
+            dynamic_filter_registry: &self.dynamic_filter_registry,
             end_stream_notifier: &self.end_stream_notifier,
             join_set: &self.join_set,
         }
@@ -135,6 +142,7 @@ pub(super) struct StageCoordinator<'a> {
     metrics: &'a CoordinatorToWorkerMetrics,
     metrics_store: &'a Option<Arc<Store<TaskMetrics>>>,
     completed_dynamic_filter_store: &'a Option<Arc<Store<TaskCompletedDynamicFilters>>>,
+    dynamic_filter_registry: &'a Arc<DynamicFilterRegistry>,
     end_stream_notifier: &'a Arc<Notify>,
     join_set: &'a Mutex<JoinSet<Result<()>>>,
 }
@@ -156,13 +164,20 @@ impl<'a> StageCoordinator<'a> {
     )> {
         let session_config = self.task_ctx.session_config();
 
-        let (specialized, work_unit_feed_declarations) = self.task_specialized_plan(task_i)?;
+        let TaskSpecializedPlan {
+            plan,
+            work_unit_feed_declarations,
+            dynamic_filter_remote_producer_ids,
+        } = self.task_specialized_plan(task_i)?;
 
         let task_key = TaskKey {
             query_id: self.query_id,
             stage_id: self.stage_id,
             task_number: task_i,
         };
+
+        self.dynamic_filter_registry
+            .register_task(&plan, task_key)?;
 
         let mut headers = get_config_extension_propagation_headers(session_config)?;
         headers.extend(get_passthrough_headers(session_config));
@@ -201,7 +216,8 @@ impl<'a> StageCoordinator<'a> {
             let set_plan_request = SetPlanRequest {
                 task_key,
                 task_count: self.task_count,
-                plan: MaybeEncoded::Decoded(Arc::clone(&specialized)),
+                plan: MaybeEncoded::Decoded(Arc::clone(&plan)),
+                dynamic_filter_remote_producer_ids: dynamic_filter_remote_producer_ids.clone(),
                 work_unit_feed_declarations: work_unit_feed_declarations.clone(),
                 target_worker_url: url.clone(),
                 query_start_time_ns: self.metrics.instantiation_time,
@@ -246,7 +262,7 @@ impl<'a> StageCoordinator<'a> {
             task_ctx: self.task_ctx,
             metrics: self.metrics_set,
             worker_resolver: worker_resolver.as_ref(),
-            task_specialized_plan: &specialized,
+            task_specialized_plan: &plan,
             task_key,
             task_count: self.task_count,
             dialer: &dialer,
@@ -298,6 +314,7 @@ impl<'a> StageCoordinator<'a> {
         };
         let task_metrics = self.metrics_store.clone();
         let completed_dynamic_filter_store = self.completed_dynamic_filter_store.clone();
+        let dynamic_filter_registry = Arc::clone(self.dynamic_filter_registry);
         let (load_info_tx, load_info_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut load_info_tx_opt = Some(load_info_tx);
 
@@ -324,6 +341,9 @@ impl<'a> StageCoordinator<'a> {
                         if let Some(store) = &completed_dynamic_filter_store {
                             store.insert(task_key, filters);
                         }
+                    }
+                    WorkerToCoordinatorMsg::ProducedDynamicFilter(_) => {
+                        dynamic_filter_registry.record_update_received();
                     }
                 }
             }
@@ -408,14 +428,12 @@ impl<'a> StageCoordinator<'a> {
     /// trimming down any unnecessary information that the specific `task_i` task is not going to
     /// need, like unexecuted branches in [ChildrenIsolatorUnionExec], or unexecuted variants of
     /// [DistributedLeafExec].
-    fn task_specialized_plan(
-        &self,
-        task_i: usize,
-    ) -> Result<(Arc<dyn ExecutionPlan>, Vec<WorkUnitFeedDeclaration>)> {
+    fn task_specialized_plan(&self, task_i: usize) -> Result<TaskSpecializedPlan> {
         let session_config = self.task_ctx.session_config();
         let wuf_registry = session_config
             .get_extension::<WorkUnitFeedRegistry>()
             .unwrap_or_default();
+        let dynamic_filtering_enabled = is_dynamic_filtering_enabled(session_config);
 
         let mut work_unit_feed_declarations = vec![];
         let d_ctx = DistributedTaskContext {
@@ -462,16 +480,35 @@ impl<'a> StageCoordinator<'a> {
 
             Ok(Transformed::no(plan))
         })?;
-        let plan = maybe_roundtrip_plan_to_sever_in_memory_dynamic_filter_relationships(
-            Arc::clone(&transformed.data),
-            self.task_ctx,
-        )?;
-        Ok((plan, work_unit_feed_declarations))
+        let plan = if dynamic_filtering_enabled {
+            maybe_roundtrip_plan_to_sever_in_memory_dynamic_filter_relationships(
+                Arc::clone(&transformed.data),
+                self.task_ctx,
+            )?
+        } else {
+            transformed.data
+        };
+        let dynamic_filter_remote_producer_ids = if dynamic_filtering_enabled {
+            dynamic_filter_remote_producer_ids(&plan)?
+        } else {
+            vec![]
+        };
+        Ok(TaskSpecializedPlan {
+            plan,
+            work_unit_feed_declarations,
+            dynamic_filter_remote_producer_ids,
+        })
     }
 }
 
 fn keep_stream_alive<T: 'static>(notify: Arc<Notify>) -> impl Stream<Item = T> + 'static {
     futures::stream::once(notify.notified_owned()).filter_map(|()| futures::future::ready(None))
+}
+
+struct TaskSpecializedPlan {
+    plan: Arc<dyn ExecutionPlan>,
+    work_unit_feed_declarations: Vec<WorkUnitFeedDeclaration>,
+    dynamic_filter_remote_producer_ids: Vec<u64>,
 }
 
 pub(super) struct NotifyGuard(Arc<Notify>);

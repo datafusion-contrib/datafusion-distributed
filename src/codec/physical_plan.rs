@@ -49,8 +49,13 @@ pub(crate) fn roundtrip_pb(
     plan: Arc<dyn ExecutionPlan>,
     task_ctx: &TaskContext,
 ) -> Result<Arc<dyn ExecutionPlan>> {
-    let encoded = encode_execution_plan(plan, task_ctx)?;
-    decode_execution_plan(&encoded, task_ctx)
+    let encode_codec = DistributedCodec::new_combined_with_user(task_ctx.session_config());
+    let encode_converter = new_proto_converter();
+    let proto = encode_converter.execution_plan_to_proto(&plan, &encode_codec)?;
+    let decode_codec = DistributedCodec::new_combined_with_user(task_ctx.session_config());
+    let decode_ctx = PhysicalPlanDecodeContext::new(task_ctx, &decode_codec);
+    let decode_converter = new_proto_converter();
+    decode_converter.proto_to_execution_plan(&proto, &decode_ctx)
 }
 
 pub(crate) fn encode_physical_expr(

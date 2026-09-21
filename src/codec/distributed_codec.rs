@@ -14,8 +14,8 @@ use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::Result;
 use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
-use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_expr::equivalence::{EquivalenceClass, EquivalenceGroup};
+use datafusion::physical_expr::{EquivalenceProperties, PhysicalExpr};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::union::UnionExec;
 use datafusion::physical_plan::{ExecutionPlan, Partitioning, PlanProperties};
@@ -70,11 +70,17 @@ impl PhysicalExtensionCodec for DistributedCodec {
         fn parse_stage_proto(
             proto: Option<StageProto>,
             inputs: &[Arc<dyn ExecutionPlan>],
+            dynamic_filter_anchors: Vec<Arc<dyn PhysicalExpr>>,
         ) -> Result<Stage, DataFusionError> {
             let Some(proto) = proto else {
                 return Err(proto_error("Empty StageProto"));
             };
             if let Some(input) = inputs.first().cloned() {
+                if !dynamic_filter_anchors.is_empty() {
+                    return Err(proto_error(
+                        "Dynamic filter anchors require a remote input stage",
+                    ));
+                }
                 Ok(Stage::Local(LocalStage {
                     query_id: deserialize_uuid(proto.query_id.as_ref())?,
                     num: proto.num as usize,
@@ -98,6 +104,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     num: proto.num as usize,
                     workers: worker_urls,
                     runtime_stats: None,
+                    dynamic_filter_anchors,
                 }))
             }
         }
@@ -125,8 +132,19 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     proto_converter,
                 )?
                 .ok_or(proto_error("NetworkShuffleExec is missing partitioning"))?;
+
                 let sort_exprs =
                     parse_physical_sort_exprs(&ordering, &decode_ctx, &schema, proto_converter)?;
+
+                let dynamic_filter_anchors = input_stage
+                    .as_ref()
+                    .into_iter()
+                    .flat_map(|stage| stage.dynamic_filter_anchors.iter())
+                    .map(|expression| {
+                        proto_converter.proto_to_physical_expr(expression, &schema, &decode_ctx)
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+
                 let schema = Arc::new(schema);
                 let mut equivalence_properties = parse_equivalence_properties(
                     equivalence_classes,
@@ -147,7 +165,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 Ok(Arc::new(new_network_hash_shuffle_exec(
                     partitioning,
                     equivalence_properties,
-                    parse_stage_proto(input_stage, inputs)?,
+                    parse_stage_proto(input_stage, inputs, dynamic_filter_anchors)?,
                     mode,
                 )))
             }
@@ -170,6 +188,14 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     proto_converter,
                 )?
                 .ok_or(proto_error("NetworkCoalesceExec is missing partitioning"))?;
+                let dynamic_filter_anchors = input_stage
+                    .as_ref()
+                    .into_iter()
+                    .flat_map(|stage| stage.dynamic_filter_anchors.iter())
+                    .map(|expression| {
+                        proto_converter.proto_to_physical_expr(expression, &schema, &decode_ctx)
+                    })
+                    .collect::<Result<Vec<_>>>()?;
                 let schema = Arc::new(schema);
                 let equivalence_properties = parse_equivalence_properties(
                     equivalence_classes,
@@ -181,7 +207,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 Ok(Arc::new(new_network_coalesce_tasks_exec(
                     partitioning,
                     equivalence_properties,
-                    parse_stage_proto(input_stage, inputs)?,
+                    parse_stage_proto(input_stage, inputs, dynamic_filter_anchors)?,
                 )))
             }
             DistributedExecNode::NetworkBroadcast(NetworkBroadcastExecProto {
@@ -203,6 +229,14 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     proto_converter,
                 )?
                 .ok_or(proto_error("NetworkBroadcastExec is missing partitioning"))?;
+                let dynamic_filter_anchors = input_stage
+                    .as_ref()
+                    .into_iter()
+                    .flat_map(|stage| stage.dynamic_filter_anchors.iter())
+                    .map(|expression| {
+                        proto_converter.proto_to_physical_expr(expression, &schema, &decode_ctx)
+                    })
+                    .collect::<Result<Vec<_>>>()?;
                 let schema = Arc::new(schema);
                 let equivalence_properties = parse_equivalence_properties(
                     equivalence_classes,
@@ -214,7 +248,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 Ok(Arc::new(new_network_broadcast_exec(
                     partitioning,
                     equivalence_properties,
-                    parse_stage_proto(input_stage, inputs)?,
+                    parse_stage_proto(input_stage, inputs, dynamic_filter_anchors)?,
                 )))
             }
             DistributedExecNode::Broadcast(BroadcastExecProto {
@@ -292,12 +326,22 @@ impl PhysicalExtensionCodec for DistributedCodec {
         buf: &mut Vec<u8>,
         proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<()> {
-        fn encode_stage_proto(stage: &Stage) -> Result<StageProto, DataFusionError> {
+        fn encode_stage_proto(
+            stage: &Stage,
+            codec: &DistributedCodec,
+            proto_converter: &dyn PhysicalProtoConverterExtension,
+        ) -> Result<StageProto, DataFusionError> {
+            let dynamic_filter_anchors = stage
+                .dynamic_filter_anchors()
+                .iter()
+                .map(|expression| proto_converter.physical_expr_to_proto(expression, codec))
+                .collect::<Result<Vec<_>>>()?;
             Ok(match stage {
                 Stage::Local(local) => StageProto {
                     query_id: serialize_uuid(&local.query_id).into(),
                     num: local.num as u64,
                     tasks: vec![ExecutionTaskProto::default(); local.tasks],
+                    dynamic_filter_anchors,
                 },
                 Stage::Remote(remote) => {
                     let mut tasks = Vec::with_capacity(remote.workers.len());
@@ -310,6 +354,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                         query_id: serialize_uuid(&remote.query_id).into(),
                         num: remote.num as u64,
                         tasks,
+                        dynamic_filter_anchors,
                     }
                 }
             })
@@ -335,7 +380,11 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     self,
                     proto_converter,
                 )?),
-                input_stage: Some(encode_stage_proto(node.input_stage())?),
+                input_stage: Some(encode_stage_proto(
+                    node.input_stage(),
+                    self,
+                    proto_converter,
+                )?),
                 equivalence_classes: serialize_equivalence_group(
                     node.properties().equivalence_properties(),
                     self,
@@ -359,7 +408,11 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     self,
                     proto_converter,
                 )?),
-                input_stage: Some(encode_stage_proto(node.input_stage())?),
+                input_stage: Some(encode_stage_proto(
+                    node.input_stage(),
+                    self,
+                    proto_converter,
+                )?),
                 equivalence_classes: serialize_equivalence_group(
                     node.properties().equivalence_properties(),
                     self,
@@ -380,7 +433,11 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     self,
                     proto_converter,
                 )?),
-                input_stage: Some(encode_stage_proto(node.input_stage())?),
+                input_stage: Some(encode_stage_proto(
+                    node.input_stage(),
+                    self,
+                    proto_converter,
+                )?),
                 equivalence_classes: serialize_equivalence_group(
                     node.properties().equivalence_properties(),
                     self,
@@ -504,6 +561,9 @@ pub struct StageProto {
     /// the plan
     #[prost(message, repeated, tag = "3")]
     pub tasks: Vec<ExecutionTaskProto>,
+    /// Dynamic-filter consumers retained after a remote stage's plan has moved to its workers.
+    #[prost(message, repeated, tag = "4")]
+    pub dynamic_filter_anchors: Vec<protobuf::PhysicalExprNode>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -699,7 +759,9 @@ fn new_network_broadcast_exec(
 
 #[cfg(test)]
 mod tests {
-    use super::super::physical_plan::new_proto_converter as default_proto_converter;
+    use super::super::physical_plan::{
+        new_proto_converter as default_proto_converter, roundtrip_pb,
+    };
     use super::*;
 
     use crate::execution_plans::PRODUCER_SALT_DEFAULT;
@@ -708,9 +770,13 @@ mod tests {
     use datafusion::arrow::datatypes::{DataType, Field};
     use datafusion::physical_expr::{LexOrdering, PhysicalExpr};
     use datafusion::physical_plan::empty::EmptyExec;
+    use datafusion::physical_plan::filter::FilterExec;
     use datafusion::prelude::SessionContext;
     use datafusion::{
-        physical_expr::{Partitioning, PhysicalSortExpr, expressions::Column, expressions::col},
+        physical_expr::{
+            Partitioning, PhysicalSortExpr,
+            expressions::{Column, DynamicFilterPhysicalExpr, col, lit},
+        },
         physical_plan::{ExecutionPlan, displayable, sorts::sort::SortExec, union::UnionExec},
     };
 
@@ -724,6 +790,7 @@ mod tests {
             num: 0,
             workers: vec![],
             runtime_stats: None,
+            dynamic_filter_anchors: vec![],
         })
     }
 
@@ -769,6 +836,68 @@ mod tests {
         let decoded = codec.try_decode(&buf, &[], &ctx, &default_proto_converter())?;
         assert_eq!(repr(&plan), repr(&decoded));
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_roundtrip_network_dynamic_filter_anchor() -> datafusion::common::Result<()> {
+        let ctx = create_context();
+        let schema = schema_i32("a");
+        let dynamic_filter = Arc::new(DynamicFilterPhysicalExpr::new(
+            vec![Arc::new(Column::new("a", 0))],
+            lit(true),
+        )) as Arc<dyn datafusion::physical_expr::PhysicalExpr>;
+        let expected_id = dynamic_filter.expression_id();
+        let stage = Stage::Remote(RemoteStage {
+            query_id: Default::default(),
+            num: 0,
+            workers: vec![],
+            runtime_stats: None,
+            dynamic_filter_anchors: vec![Arc::clone(&dynamic_filter)],
+        });
+        let network: Arc<dyn ExecutionPlan> = Arc::new(new_network_hash_shuffle_exec(
+            Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 4),
+            EquivalenceProperties::new(schema),
+            stage,
+        ));
+
+        let mut buf = vec![];
+        DistributedCodec.try_encode(Arc::clone(&network), &mut buf, &default_proto_converter())?;
+        let encoded = DistributedExecProto::decode(buf.as_slice())
+            .map_err(|error| proto_error(format!("{error}")))?;
+        let Some(DistributedExecNode::NetworkHashShuffle(encoded)) = encoded.node else {
+            panic!("expected a network shuffle")
+        };
+        assert_eq!(
+            encoded
+                .input_stage
+                .expect("network shuffle should contain its input stage")
+                .dynamic_filter_anchors
+                .len(),
+            1,
+        );
+
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(FilterExec::try_new(dynamic_filter, network)?);
+
+        let decoded = roundtrip_pb(plan, &ctx)?;
+        let filter = decoded.downcast_ref::<FilterExec>().unwrap();
+        let predicate = filter
+            .predicate()
+            .downcast_ref::<DynamicFilterPhysicalExpr>()
+            .unwrap();
+        let network = filter.input().downcast_ref::<NetworkShuffleExec>().unwrap();
+        let anchor = network.input_stage().dynamic_filter_anchors()[0]
+            .downcast_ref::<DynamicFilterPhysicalExpr>()
+            .unwrap();
+
+        assert_eq!(predicate.expression_id(), expected_id);
+        assert_eq!(anchor.expression_id(), expected_id);
+        predicate.update(lit(false))?;
+        assert_eq!(
+            anchor.current()?.to_string(),
+            "false",
+            "the filter predicate and network anchor should share state",
+        );
         Ok(())
     }
 

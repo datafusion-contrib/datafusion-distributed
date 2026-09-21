@@ -5,6 +5,7 @@ use datafusion::common::{HashMap, Statistics, config_err};
 use datafusion::common::{exec_err, plan_err};
 use datafusion::error::Result;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::metrics::{Label, Metric, MetricsSet};
 use datafusion::physical_plan::{
@@ -114,6 +115,8 @@ pub struct RemoteStage {
     pub workers: Vec<Url>,
     /// Statistics collected at runtime, if any.
     pub runtime_stats: Option<Arc<Statistics>>,
+    /// Dynamic-filter consumers retained after the stage's plan is moved to its workers.
+    pub dynamic_filter_anchors: Vec<Arc<dyn PhysicalExpr>>,
 }
 
 impl Stage {
@@ -142,6 +145,13 @@ impl Stage {
         match &self {
             Self::Local(v) => Some(&v.plan),
             Self::Remote(_) => None,
+        }
+    }
+
+    pub(crate) fn dynamic_filter_anchors(&self) -> &[Arc<dyn PhysicalExpr>] {
+        match self {
+            Self::Local(_) => &[],
+            Self::Remote(remote) => &remote.dynamic_filter_anchors,
         }
     }
 

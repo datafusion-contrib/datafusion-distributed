@@ -9,7 +9,9 @@ use datafusion::physical_plan::collect;
 use datafusion::prelude::{SessionContext, col};
 use datafusion_distributed::test_utils::localhost::start_localhost_context;
 use datafusion_distributed::test_utils::parquet::register_parquet_tables;
-use datafusion_distributed::test_utils::routing::UrlEmitterRouteTaskHandler;
+use datafusion_distributed::test_utils::routing::{
+    ColocateAllTasksHandler, UrlEmitterRouteTaskHandler,
+};
 use datafusion_distributed::{
     DefaultSessionBuilder, DistributedExt, display_plan_ascii,
     rewrite_distributed_plan_with_dynamic_filters,
@@ -22,6 +24,7 @@ pub(crate) struct TestQuery<'a> {
     broadcast_joins: bool,
     one_task_per_leaf: bool,
     collect_dynamic_filters: bool,
+    expect_dynamic_filter_updates: bool,
 }
 
 impl<'a> TestQuery<'a> {
@@ -32,6 +35,7 @@ impl<'a> TestQuery<'a> {
             broadcast_joins: false,
             one_task_per_leaf: false,
             collect_dynamic_filters: true,
+            expect_dynamic_filter_updates: false,
         }
     }
 
@@ -59,6 +63,11 @@ impl<'a> TestQuery<'a> {
         self
     }
 
+    pub(crate) fn expect_dynamic_filter_updates(mut self) -> Self {
+        self.expect_dynamic_filter_updates = true;
+        self
+    }
+
     pub(crate) async fn execute(self) -> Result<String> {
         let (ctx, _guard, _) = start_localhost_context(2, DefaultSessionBuilder).await;
         let mut ctx = ctx
@@ -67,13 +76,15 @@ impl<'a> TestQuery<'a> {
         if self.one_task_per_leaf {
             ctx = ctx.with_distributed_desired_task_count_handler(1usize);
         }
-        if !self.broadcast_joins {
-            // Force partitioned hash joins.
+        {
             let state = ctx.state_ref();
             let mut state = state.write();
             let optimizer = &mut state.config_mut().options_mut().optimizer;
-            optimizer.hash_join_single_partition_threshold = 0;
-            optimizer.hash_join_single_partition_threshold_rows = 0;
+            if !self.broadcast_joins {
+                // Force partitioned hash joins.
+                optimizer.hash_join_single_partition_threshold = 0;
+                optimizer.hash_join_single_partition_threshold_rows = 0;
+            }
         }
         register_parquet_tables(&ctx).await?;
         execute_query_and_display(
@@ -81,6 +92,7 @@ impl<'a> TestQuery<'a> {
             self.sql,
             self.expected_rows,
             self.collect_dynamic_filters,
+            self.expect_dynamic_filter_updates,
         )
         .await
     }
@@ -89,12 +101,17 @@ impl<'a> TestQuery<'a> {
 pub(crate) async fn execute_range_partitioned_query(
     sql: &str,
     expected_rows: usize,
+    colocate_tasks: bool,
 ) -> Result<String> {
     let (ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
-    let ctx = ctx
+    let mut ctx = ctx
         .with_distributed_broadcast_joins(false)?
-        .with_distributed_desired_task_count_handler(2usize)
-        .with_distributed_route_task_handler(UrlEmitterRouteTaskHandler);
+        .with_distributed_desired_task_count_handler(2usize);
+    ctx = if colocate_tasks {
+        ctx.with_distributed_route_task_handler(ColocateAllTasksHandler::default())
+    } else {
+        ctx.with_distributed_route_task_handler(UrlEmitterRouteTaskHandler)
+    };
     {
         let state = ctx.state_ref();
         let mut state = state.write();
@@ -107,7 +124,7 @@ pub(crate) async fn execute_range_partitioned_query(
     register_range_partitioned_table(&ctx, "dim", "testdata/join/parquet/dim", "d_dkey").await?;
     register_range_partitioned_table(&ctx, "fact", "testdata/join/parquet/fact", "f_dkey").await?;
 
-    execute_query_and_display(&ctx, sql, expected_rows, true).await
+    execute_query_and_display(&ctx, sql, expected_rows, true, false).await
 }
 
 async fn register_range_partitioned_table(
@@ -139,6 +156,7 @@ async fn execute_query_and_display(
     sql: &str,
     expected_rows: usize,
     collect_dynamic_filters: bool,
+    expect_dynamic_filter_updates: bool,
 ) -> Result<String> {
     let plan = ctx.sql(sql).await?.create_physical_plan().await?;
     let task_ctx = ctx.task_ctx();
@@ -157,6 +175,18 @@ async fn execute_query_and_display(
         !collect_dynamic_filters
     );
     assert_eq!(display_plan_ascii(plan.as_ref(), false), original_display);
+
+    if expect_dynamic_filter_updates {
+        let updates = plan
+            .metrics()
+            .expect("DistributedExec has metrics")
+            .sum(|metric| metric.value().name() == "dynamic_filter_updates_received")
+            .map_or(0, |metric| metric.as_usize());
+        assert!(
+            updates > 0,
+            "expected dynamic_filter_updates_received > 0, got {updates}"
+        );
+    }
 
     Ok(display_plan_ascii(
         plan_with_dynamic_filters.as_ref(),

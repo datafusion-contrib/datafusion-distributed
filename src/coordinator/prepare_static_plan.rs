@@ -1,6 +1,7 @@
 use crate::common::TreeNodeExt;
 use crate::coordinator::distributed::PreparedPlan;
 use crate::coordinator::query_coordinator::QueryCoordinator;
+use crate::dynamic_filtering::orphan_dynamic_filter_consumers;
 use crate::stage::RemoteStage;
 use crate::{NetworkBoundaryExt, Stage};
 use datafusion::common::tree_node::Transformed;
@@ -31,6 +32,7 @@ pub(super) async fn prepare_static_plan(
         let Stage::Local(stage) = plan.input_stage() else {
             return exec_err!("Input stage from network boundary was not in Local state");
         };
+        let dynamic_filter_anchors = orphan_dynamic_filter_consumers(&stage.plan)?;
 
         let mut stage_coordinator = query_coordinator.stage_coordinator(stage);
         let mut futures = Vec::with_capacity(stage.tasks);
@@ -52,6 +54,7 @@ pub(super) async fn prepare_static_plan(
                 num: stage.num,
                 workers,
                 runtime_stats: None,
+                dynamic_filter_anchors,
             },
         ))?))
     });

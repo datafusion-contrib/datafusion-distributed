@@ -17,7 +17,7 @@ use datafusion::physical_plan::sorts::streaming_merge::StreamingMergeBuilder;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, EmptyRecordBatchStream, ExecutionPlan, PlanProperties,
-    Statistics, StatisticsArgs,
+    Statistics, StatisticsArgs, apply_expression_roots,
 };
 use std::fmt::Formatter;
 use std::sync::Arc;
@@ -280,9 +280,9 @@ impl ExecutionPlan for NetworkShuffleExec {
 
     fn apply_expressions(
         &self,
-        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
     ) -> Result<TreeNodeRecursion> {
-        Ok(TreeNodeRecursion::Continue)
+        apply_expression_roots(self.input_stage.dynamic_filter_anchors().iter(), f)
     }
 
     fn with_new_children(

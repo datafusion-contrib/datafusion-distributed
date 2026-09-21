@@ -1,26 +1,34 @@
 use crate::common::TreeNodeExt;
-use crate::dynamic_filtering::discover_dynamic_filter_consumers;
+use crate::dynamic_filtering::{
+    discover_dynamic_filter_consumers, discover_dynamic_filter_producers,
+};
 use crate::events::{WorkerPlanRewriteEvent, WorkerPlanRewriteHandlers};
 use crate::execution_plans::SamplerExec;
 use crate::protocol::LocalWorkerContext;
+#[cfg(feature = "integration")]
+use crate::protocol::grpc::on_drop_stream;
 use crate::work_unit_feed::{RemoteWorkUnitFeedRegistry, set_work_unit_received_time};
 use crate::worker::task_data::TaskDataMetrics;
 use crate::{
     CoordinatorToWorkerMsg, DistributedConfig, DistributedExt, DistributedTaskContext,
-    MaybeEncoded, SetPlanRequest, TaskCompletedDynamicFilters, TaskData, TaskDynamicFilter,
-    TaskMetrics, Worker, WorkerQueryContext, WorkerToCoordinatorMsg,
+    MaybeEncoded, ProducedDynamicFilter, SetPlanRequest, TaskCompletedDynamicFilters, TaskData,
+    TaskDynamicFilter, TaskMetrics, Worker, WorkerQueryContext, WorkerToCoordinatorMsg,
 };
 use datafusion::common::tree_node::TreeNodeRecursion;
-use datafusion::common::{DataFusionError, Result, exec_datafusion_err};
+use datafusion::common::{DataFusionError, HashSet, Result, exec_datafusion_err};
 use datafusion::execution::{SessionStateBuilder, TaskContext};
+use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_expr::expressions::DynamicFilterPhysicalExpr;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionConfig;
 use futures::stream::{BoxStream, FuturesUnordered, select_all};
 use futures::{FutureExt, StreamExt, TryStreamExt};
 use http::HeaderMap;
+#[cfg(feature = "integration")]
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, OnceLock};
-use tokio::sync::oneshot;
 use tokio::sync::oneshot::Sender;
+use tokio::sync::{oneshot, watch};
 
 /// Return value of the [Worker::coordinator_channel] method.
 pub struct CoordinatorChannelResult {
@@ -123,6 +131,16 @@ impl Worker {
 
         let task_data = task_data_result.map_err(DataFusionError::Shared)?;
 
+        let dynamic_filter_remote_producer_ids: HashSet<_> = request
+            .dynamic_filter_remote_producer_ids
+            .iter()
+            .copied()
+            .collect();
+        let producer_filters = discover_dynamic_filter_producers(&task_data.base_plan)?
+            .into_iter()
+            .filter(|producer| dynamic_filter_remote_producer_ids.contains(&producer.id));
+        let (producer_cancel_tx, producer_cancel_rx) = watch::channel(false);
+
         // Continue reading remaining messages (work unit feed data) in the background.
         let mut work_unit_senders = Some(remote_work_unit_feed_registry.senders);
         let task_data_entries = Arc::clone(&self.task_data_entries);
@@ -175,8 +193,13 @@ impl Worker {
                 }
             }
 
+            // Cancel any dynamic filter producce streams that did not complete for any reason.
+            // It's expected that dynamic filters should complete and send their updates before
+            // task execution ends.
+            producer_cancel_tx.send_replace(true);
+
             // Send metrics and completed dynamic filters if enabled.
-            // TODO(#686): handle errors
+
             let metrics_tx = task_data.metrics_tx.lock().unwrap().take();
             let dynamic_filters_tx = task_data
                 .completed_dynamic_filters_tx
@@ -231,17 +254,78 @@ impl Worker {
             },
         );
 
+        let produced_dynamic_filters_stream =
+            select_all(producer_filters.into_iter().map(|producer| {
+                produced_dynamic_filter_stream(
+                    producer.id,
+                    producer.expression,
+                    producer_cancel_rx.clone(),
+                )
+            }));
+
+        let stream = select_all([
+            produced_dynamic_filters_stream.boxed(),
+            load_info_stream.boxed(),
+            metrics_stream.boxed(),
+            dynamic_filters_stream.boxed(),
+        ])
+        .map(Ok)
+        .boxed();
+
+        #[cfg(feature = "integration")]
+        let stream = self.track_worker_to_coordinator_stream(stream);
+
         Ok(CoordinatorChannelResult {
             task_ctx: Arc::clone(&task_data.task_ctx),
-            stream: select_all([
-                load_info_stream.boxed(),
-                metrics_stream.boxed(),
-                dynamic_filters_stream.boxed(),
-            ])
-            .map(Ok)
-            .boxed(),
+            stream,
         })
     }
+
+    #[cfg(feature = "integration")]
+    fn track_worker_to_coordinator_stream(
+        &self,
+        stream: BoxStream<'static, Result<WorkerToCoordinatorMsg>>,
+    ) -> BoxStream<'static, Result<WorkerToCoordinatorMsg>> {
+        self.coordinator_channels_running
+            .fetch_add(1, Ordering::SeqCst);
+        let channels_running = Arc::clone(&self.coordinator_channels_running);
+        on_drop_stream(stream, move || {
+            channels_running.fetch_sub(1, Ordering::SeqCst);
+        })
+        .boxed()
+    }
+}
+
+/// Streams updates from one dynamic-filter producer until it completes or cancellation is detected.
+fn produced_dynamic_filter_stream(
+    expression_id: u64,
+    expression: Arc<dyn PhysicalExpr>,
+    cancel_rx: watch::Receiver<bool>,
+) -> BoxStream<'static, WorkerToCoordinatorMsg> {
+    futures::stream::unfold(Some((expression, cancel_rx)), move |state| async move {
+        let (expression, mut cancel_rx) = state?;
+        let dynamic_filter = expression
+            .downcast_ref::<DynamicFilterPhysicalExpr>()
+            .expect("producer discovery returns DynamicFilterPhysicalExpr");
+
+        // `wait_update()` uses a Tokio watch channel, so multiple generations can
+        // are natively "deduped" into just one update. This helps avoid too many
+        // update messages. If this becomes an issue, we can introduce an artificial
+        // backoff.
+        let completed = tokio::select! {
+            _ = dynamic_filter.wait_update() => false,
+            _ = dynamic_filter.wait_complete() => true,
+            _ = cancel_rx.wait_for(|cancelled| *cancelled) => return None,
+        };
+        let message =
+            WorkerToCoordinatorMsg::ProducedDynamicFilter(Box::new(ProducedDynamicFilter {
+                expression_id,
+                expression: MaybeEncoded::Decoded(Arc::clone(&expression)),
+            }));
+        let next = (!completed).then_some((expression, cancel_rx));
+        Some((message, next))
+    })
+    .boxed()
 }
 
 /// Finds all consumed dynamic filters for the completed task report.
@@ -256,7 +340,7 @@ fn build_task_completed_dynamic_filters(
     plan: &Arc<dyn ExecutionPlan>,
 ) -> Result<TaskCompletedDynamicFilters> {
     let mut filters = vec![];
-    for consumer in discover_dynamic_filter_consumers(plan)? {
+    for consumer in discover_dynamic_filter_consumers(plan)?.consumers {
         filters.push(TaskDynamicFilter {
             expression_id: consumer.id,
             expression: MaybeEncoded::Decoded(consumer.expression),
