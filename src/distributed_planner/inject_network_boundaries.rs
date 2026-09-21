@@ -493,6 +493,10 @@ impl InjectNetworkBoundaryContext<'_> {
                             salt: PRODUCER_SALT_DEFAULT,
                         },
                     ));
+                    self.set_task_count(
+                        &(Arc::clone(&salted_shuffle) as Arc<dyn ExecutionPlan>),
+                        task_count,
+                    );
                     let r_exec = Arc::new(RepartitionExec::try_new(
                         salted_shuffle,
                         shuffle.consumer_partitioning.clone(),
