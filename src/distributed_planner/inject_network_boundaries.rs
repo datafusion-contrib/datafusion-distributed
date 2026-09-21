@@ -336,39 +336,19 @@ async fn _inject_network_boundaries(
             .nb_builder
             .build(input_stage, TypeId::of::<NetworkShuffleExec>(), nb_ctx)
             .await?;
-        let consumer_partitioning = result.input_properties.partitioning.clone();
-        let producer_tasks = result.input_stage.task_count();
-        let consumer_tasks = result.consumer_task_count.as_usize();
-        let consumer_partitions = consumer_partitioning.partition_count();
-        let salted = should_use_salted_mode(
-            consumer_tasks,
-            consumer_partitions,
-            nb_ctx.d_cfg.max_mn_for_direct,
-        );
-        let (output_partitions, mode) = if salted {
-            // Hash(key+salt, M); consumer adds RepartitionExec
-            (
-                producer_tasks,
-                ShuffleMode::Salted {
-                    salt: PRODUCER_SALT_DEFAULT,
-                },
-            )
-        } else {
-            // Hash(key, M×N); consumer reads global partitions directly
-            (consumer_partitions, ShuffleMode::Direct)
-        };
+        // Create a Direct-mode shuffle as a placeholder. The final consumer task count
+        // is not yet known here — sibling branches may still raise it during the
+        // bottom-up walk. The salted/direct decision is deferred to
+        // propagate_task_count_until_network_boundaries, which runs after the full
+        // reconciliation and has the actual final count.
+        let consumer_partitions = result.input_properties.partitioning.partition_count();
         let shuffle = Arc::new(NetworkShuffleExec::from_stage(
             result.input_stage,
             result.input_properties,
-            output_partitions,
-            mode,
+            consumer_partitions,
+            ShuffleMode::Direct,
         ));
-        let plan: Arc<dyn ExecutionPlan> = if salted {
-            Arc::new(RepartitionExec::try_new(shuffle, consumer_partitioning)?)
-        } else {
-            shuffle
-        };
-        Ok(nb_ctx.plan_with_task_count(plan, result.consumer_task_count))
+        Ok(nb_ctx.plan_with_task_count(shuffle, result.consumer_task_count))
     }
     // Upon reaching a broadcast, we need to introduce a network broadcast right above it.
     else if let Some(_b_exec) = plan.downcast_ref::<BroadcastExec>() {
@@ -492,6 +472,34 @@ impl InjectNetworkBoundaryContext<'_> {
 
         // Handle network boundaries.
         } else if plan.is_network_boundary() {
+            // Direct-mode NetworkShuffleExec: now that task_count is the final reconciled
+            // consumer count (sibling merges are complete), decide whether salted mode is
+            // warranted. If so, rebuild as Salted and wrap in a fresh RepartitionExec.
+            if let Some(shuffle) = plan.downcast_ref::<NetworkShuffleExec>()
+                && matches!(shuffle.mode, ShuffleMode::Direct)
+            {
+                let consumer_partitions = shuffle.consumer_partitioning.partition_count();
+                let producer_tasks = shuffle.input_stage.task_count();
+                if should_use_salted_mode(
+                    task_count.as_usize(),
+                    consumer_partitions,
+                    self.d_cfg.max_mn_for_direct,
+                ) {
+                    let salted_shuffle = Arc::new(NetworkShuffleExec::from_stage(
+                        shuffle.input_stage.clone(),
+                        Arc::clone(&shuffle.properties),
+                        producer_tasks,
+                        ShuffleMode::Salted {
+                            salt: PRODUCER_SALT_DEFAULT,
+                        },
+                    ));
+                    let r_exec = Arc::new(RepartitionExec::try_new(
+                        salted_shuffle,
+                        shuffle.consumer_partitioning.clone(),
+                    )?);
+                    return Ok(self.plan_with_task_count(r_exec, task_count));
+                }
+            }
             // Just annotate the network boundary and stop recursion here.
             Ok(self.plan_with_task_count(Arc::clone(plan), task_count))
 

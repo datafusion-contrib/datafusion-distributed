@@ -25,8 +25,9 @@ use datafusion::common::tree_node::{Transformed, TreeNodeRecursion};
 use datafusion::common::{DataFusionError, internal_err};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr_common::metrics::{ExecutionPlanMetricsSet, Label, MetricBuilder};
-use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::metrics::Count;
+use datafusion::physical_plan::repartition::RepartitionExec;
+use datafusion::physical_plan::{ChildrenPropertiesMode, ExecutionPlan, ReplaceChildrenOptions};
 use datafusion::prelude::SessionConfig;
 use futures::{Stream, StreamExt, TryStreamExt};
 use std::ops::DerefMut;
@@ -448,6 +449,15 @@ impl<'a> StageCoordinator<'a> {
             if let Some(dle) = plan.downcast_ref::<DistributedLeafExec>() {
                 let specialized = dle.to_task_specialized(d_ctx.task_index);
                 return Ok(Transformed::yes(specialized));
+            }
+
+            if plan.downcast_ref::<RepartitionExec>().is_some() {
+                let children = plan.children().into_iter().map(Arc::clone).collect();
+                let new_r_exec = plan.replace_children(
+                    children,
+                    ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+                )?;
+                return Ok(Transformed::yes(new_r_exec));
             }
 
             Ok(Transformed::no(plan))
