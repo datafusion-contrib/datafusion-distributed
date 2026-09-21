@@ -859,6 +859,7 @@ mod tests {
             Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 4),
             EquivalenceProperties::new(schema),
             stage,
+            ShuffleMode::Direct,
         ));
 
         let mut buf = vec![];
