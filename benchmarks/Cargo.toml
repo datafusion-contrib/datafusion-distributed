@@ -35,6 +35,7 @@ tempfile = "3"
 [dev-dependencies]
 criterion = "0.5"
 sysinfo = "0.30"
+tempfile = "3"
 
 [build-dependencies]
 built = { version = "0.8", features = ["git2", "chrono"] }
@@ -58,3 +59,8 @@ harness = false
 [[bench]]
 name = "transport"
 harness = false
+
+[[bench]]
+name = "range_join_scenarios"
+harness = false
+

@@ -15,11 +15,18 @@ use std::sync::atomic::Ordering::Relaxed;
 /// Extension trait for DataFusion's metric system that adds support for byte count metrics
 /// that display using human-readable byte sizes (KB, MB, GB) instead of plain count notation.
 pub trait BytesMetricExt {
-    fn bytes_counter(self, name: impl Into<Cow<'static, str>>) -> BytesCounterMetric;
+    fn bytes_counter_metric(self, name: impl Into<Cow<'static, str>>) -> BytesCounterMetric;
+
+    fn bytes_counter(self, name: impl Into<Cow<'static, str>>) -> BytesCounterMetric
+    where
+        Self: Sized,
+    {
+        self.bytes_counter_metric(name)
+    }
 }
 
 impl BytesMetricExt for MetricBuilder<'_> {
-    fn bytes_counter(self, name: impl Into<Cow<'static, str>>) -> BytesCounterMetric {
+    fn bytes_counter_metric(self, name: impl Into<Cow<'static, str>>) -> BytesCounterMetric {
         let value = BytesCounterMetric::default();
         self.build(MetricValue::Custom {
             name: name.into(),

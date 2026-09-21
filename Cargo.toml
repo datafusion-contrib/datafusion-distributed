@@ -9,8 +9,9 @@ members = [
 ]
 
 [workspace.dependencies]
-datafusion = { version = "55", default-features = false }
-datafusion-proto = { version = "55", default-features = false }
+datafusion = { git = "https://github.com/paradedb/datafusion.git", branch = "stuhood.branch-55-range-scaling", default-features = false }
+datafusion-proto = { git = "https://github.com/paradedb/datafusion.git", branch = "stuhood.branch-55-range-scaling", default-features = false }
+datafusion-cli = { git = "https://github.com/paradedb/datafusion.git", branch = "stuhood.branch-55-range-scaling", default-features = false }
 
 [package]
 name = "datafusion-distributed"

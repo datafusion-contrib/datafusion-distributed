@@ -1,6 +1,6 @@
 use crate::common::require_one_child;
 use crate::distributed_planner::ProducerHead;
-use crate::execution_plans::common::scale_partitioning;
+use crate::execution_plans::common::scale_shuffle_partitioning;
 use crate::stage::{LocalStage, Stage};
 use crate::worker::WorkerConnectionPool;
 use crate::{DistributedTaskContext, MaybeEncoded, NetworkBoundary};
@@ -110,6 +110,7 @@ pub struct NetworkShuffleExec {
     pub(crate) properties: Arc<PlanProperties>,
     pub(crate) input_stage: Stage,
     pub(crate) worker_connections: WorkerConnectionPool,
+    pub(crate) partitioning: Partitioning,
 }
 
 impl NetworkShuffleExec {
@@ -141,11 +142,13 @@ impl NetworkShuffleExec {
     }
 
     pub(crate) fn from_stage(input_stage: Stage, input_properties: Arc<PlanProperties>) -> Self {
+        let partitioning = input_properties.partitioning.clone();
         let properties = Self::compute_properties(&input_properties, input_stage.task_count());
         Self {
             properties,
             worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
             input_stage,
+            partitioning,
         }
     }
 
@@ -155,8 +158,13 @@ impl NetworkShuffleExec {
         let Some(r_exec) = input.downcast_ref::<RepartitionExec>() else {
             return plan_err!("The input of a NetworkShuffleExec can only be a RepartitionExec");
         };
-        if !matches!(r_exec.partitioning(), Partitioning::Hash(_, _)) {
-            return plan_err!("The input of a NetworkShuffleExec must be hash partitioned");
+        if !matches!(
+            r_exec.partitioning(),
+            Partitioning::Hash(_, _) | Partitioning::Range(_)
+        ) {
+            return plan_err!(
+                "The input of a NetworkShuffleExec must be hash or range partitioned"
+            );
         }
 
         let input_properties = Arc::clone(input.properties());
@@ -192,9 +200,9 @@ impl NetworkBoundary for NetworkShuffleExec {
 
     fn producer_head(&self, consumer_task_count: usize) -> Result<ProducerHead> {
         Ok(ProducerHead::RepartitionExec {
-            partitioning: MaybeEncoded::Decoded(scale_partitioning(
-                &self.properties.partitioning,
-                |prev| prev * consumer_task_count,
+            partitioning: MaybeEncoded::Decoded(scale_shuffle_partitioning(
+                &self.partitioning,
+                consumer_task_count,
             )?),
         })
     }
@@ -339,5 +347,80 @@ impl ExecutionPlan for NetworkShuffleExec {
             self.properties.output_partitioning().partition_count(),
             self.schema(),
         )
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::common::ScalarValue;
+    use datafusion::physical_expr::expressions::Column;
+    use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr, RangePartitioning, SplitPoint};
+    use datafusion::physical_plan::empty::EmptyExec;
+
+    fn sample_range_partitioning() -> RangePartitioning {
+        let ordering = LexOrdering::new(vec![PhysicalSortExpr::new(
+            Arc::new(Column::new("a", 0)),
+            Default::default(),
+        )])
+        .unwrap();
+        let splits = vec![
+            SplitPoint::new(vec![ScalarValue::Int64(Some(10))]),
+            SplitPoint::new(vec![ScalarValue::Int64(Some(20))]),
+        ];
+        RangePartitioning::try_new(ordering, splits).unwrap()
+    }
+
+    #[test]
+    fn producer_head_preserves_range_when_task_count_matches() {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
+        let range = sample_range_partitioning();
+        let empty = Arc::new(EmptyExec::new(schema));
+        let repart = Arc::new(RepartitionExec::try_new(empty, Partitioning::Range(range)).unwrap());
+        let shuffle = NetworkShuffleExec::try_new(repart, 3).unwrap();
+
+        let head = shuffle.producer_head(3).unwrap();
+        match head {
+            ProducerHead::RepartitionExec { partitioning } => {
+                let decoded = partitioning.try_decoded().unwrap();
+                assert!(matches!(decoded, Partitioning::Range(_)));
+                assert_eq!(decoded.partition_count(), 3);
+            }
+            _ => panic!("expected RepartitionExec producer head"),
+        }
+    }
+
+    #[test]
+    fn producer_head_scales_range_when_task_count_smaller() {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
+        let range = sample_range_partitioning();
+        let empty = Arc::new(EmptyExec::new(schema));
+        let repart = Arc::new(RepartitionExec::try_new(empty, Partitioning::Range(range)).unwrap());
+        let shuffle = NetworkShuffleExec::try_new(repart, 3).unwrap();
+
+        let head = shuffle.producer_head(2).unwrap();
+        match head {
+            ProducerHead::RepartitionExec { partitioning } => {
+                let decoded = partitioning.try_decoded().unwrap();
+                assert!(matches!(decoded, Partitioning::Range(_)));
+                assert_eq!(decoded.partition_count(), 2);
+            }
+            _ => panic!("expected RepartitionExec producer head"),
+        }
+    }
+
+    #[test]
+    fn producer_head_errors_when_task_count_exceeds_max_range() {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
+        let range = sample_range_partitioning();
+        let empty = Arc::new(EmptyExec::new(schema));
+        let repart = Arc::new(RepartitionExec::try_new(empty, Partitioning::Range(range)).unwrap());
+        let shuffle = NetworkShuffleExec::try_new(repart, 3).unwrap();
+
+        let err = shuffle.producer_head(4).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Range partitioning partition count 4 exceeds maximum 3")
+        );
     }
 }
