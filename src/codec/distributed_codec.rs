@@ -110,6 +110,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 equivalence_classes,
                 salted,
                 salt,
+                ordering,
             }) => {
                 let schema: Schema = schema
                     .as_ref()
@@ -319,6 +320,14 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 ShuffleMode::Direct => (false, 0u64),
                 ShuffleMode::Salted { salt } => (true, *salt),
             };
+            let ordering = node
+                .properties()
+                .output_ordering()
+                .map(|ordering| {
+                    serialize_physical_sort_exprs(ordering.iter().cloned(), self, proto_converter)
+                })
+                .transpose()?
+                .unwrap_or_default();
             let inner = NetworkShuffleExecProto {
                 schema: Some(node.schema().try_into()?),
                 partitioning: Some(serialize_partitioning(
@@ -334,6 +343,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 )?,
                 salted,
                 salt,
+                ordering,
             };
 
             let wrapper = DistributedExecProto {
@@ -545,6 +555,9 @@ pub struct NetworkShuffleExecProto {
     /// Salt value used in Salted mode; ignored when `salted` is false.
     #[prost(uint64, tag = "6")]
     salt: u64,
+    /// Sort expressions preserved across tasks and used by workers to sort-merge streams.
+    #[prost(message, repeated, tag = "7")]
+    ordering: Vec<protobuf::PhysicalSortExprNode>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]

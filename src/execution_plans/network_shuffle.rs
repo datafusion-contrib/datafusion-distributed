@@ -10,8 +10,8 @@ use datafusion::error::DataFusionError;
 use datafusion::execution::memory_pool::MemoryConsumer;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::{Partitioning, PhysicalExpr};
-use datafusion::physical_expr_common::metrics::MetricsSet;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet};
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::streaming_merge::StreamingMergeBuilder;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
@@ -129,6 +129,33 @@ pub struct NetworkShuffleExec {
 }
 
 impl NetworkShuffleExec {
+    /// Computes the properties advertised by this [NetworkShuffleExec].
+    ///
+    /// When `input_task_count > 1`, partition-local equivalence constants from individual
+    /// upstream tasks cannot be assumed to hold across tasks and are cleared.
+    /// Output ordering is preserved across tasks because [Self::execute] sort-merges incoming
+    /// worker streams when sort expressions are present.
+    ///
+    /// When `input_task_count <= 1`, all batches are received from a single upstream task stream,
+    /// so the upstream equivalence properties and constants are preserved as-is.
+    pub(crate) fn compute_properties(
+        input_properties: &Arc<PlanProperties>,
+        input_task_count: usize,
+    ) -> Arc<PlanProperties> {
+        if input_task_count > 1 {
+            let mut eq_properties = input_properties.eq_properties.clone();
+            eq_properties.clear_per_partition_constants();
+            Arc::new(PlanProperties::new(
+                eq_properties,
+                input_properties.partitioning.clone(),
+                input_properties.emission_type,
+                input_properties.boundedness,
+            ))
+        } else {
+            Arc::clone(input_properties)
+        }
+    }
+
     pub(crate) fn from_stage(
         input_stage: Stage,
         input_properties: Arc<PlanProperties>,
@@ -290,7 +317,8 @@ impl ExecutionPlan for NetworkShuffleExec {
         let task_index = task_context.task_index;
         let producer_task_count = remote_stage.workers.len();
 
-        let streams = if matches!(self.mode, ShuffleMode::Direct) {
+        let schema = self.schema();
+        let mut streams: Vec<SendableRecordBatchStream> = if matches!(self.mode, ShuffleMode::Direct) {
             // Read global partition task_index*partition_count+p from all producer tasks.
             // All partitions for this consumer task share the same range key so the connection
             // pool returns the same cached stream group for every partition call.
@@ -299,26 +327,32 @@ impl ExecutionPlan for NetworkShuffleExec {
             let global_partition = off + partition;
             let mut streams = Vec::with_capacity(producer_task_count);
             for input_task_index in 0..producer_task_count {
-                streams.push(self.worker_connections.execute(
+                let stream = self.worker_connections.execute(
                     remote_stage,
                     off..(off + partition_count),
                     input_task_index,
                     global_partition,
                     self.producer_head(task_context.task_count)?,
                     &context,
-                )?);
+                )?;
+                streams.push(
+                    Box::pin(RecordBatchStreamAdapter::new(schema.clone(), stream))
+                        as SendableRecordBatchStream,
+                );
             }
             streams
         } else {
             // Salted: one producer per output partition.
-            vec![self.worker_connections.execute(
+            let stream = self.worker_connections.execute(
                 remote_stage,
                 task_index..task_index + 1,
                 partition,
                 task_index,
                 self.producer_head(task_context.task_count)?,
                 &context,
-            )?]
+            )?;
+            vec![Box::pin(RecordBatchStreamAdapter::new(schema.clone(), stream))
+                as SendableRecordBatchStream]
         };
 
         if streams.is_empty() {
