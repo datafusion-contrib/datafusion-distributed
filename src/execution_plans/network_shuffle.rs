@@ -318,42 +318,45 @@ impl ExecutionPlan for NetworkShuffleExec {
         let producer_task_count = remote_stage.workers.len();
 
         let schema = self.schema();
-        let mut streams: Vec<SendableRecordBatchStream> = if matches!(self.mode, ShuffleMode::Direct) {
-            // Read global partition task_index*partition_count+p from all producer tasks.
-            // All partitions for this consumer task share the same range key so the connection
-            // pool returns the same cached stream group for every partition call.
-            let partition_count = self.properties.partitioning.partition_count();
-            let off = task_index * partition_count;
-            let global_partition = off + partition;
-            let mut streams = Vec::with_capacity(producer_task_count);
-            for input_task_index in 0..producer_task_count {
+        let mut streams: Vec<SendableRecordBatchStream> =
+            if matches!(self.mode, ShuffleMode::Direct) {
+                // Read global partition task_index*partition_count+p from all producer tasks.
+                // All partitions for this consumer task share the same range key so the connection
+                // pool returns the same cached stream group for every partition call.
+                let partition_count = self.properties.partitioning.partition_count();
+                let off = task_index * partition_count;
+                let global_partition = off + partition;
+                let mut streams = Vec::with_capacity(producer_task_count);
+                for input_task_index in 0..producer_task_count {
+                    let stream = self.worker_connections.execute(
+                        remote_stage,
+                        off..(off + partition_count),
+                        input_task_index,
+                        global_partition,
+                        self.producer_head(task_context.task_count)?,
+                        &context,
+                    )?;
+                    streams.push(
+                        Box::pin(RecordBatchStreamAdapter::new(schema.clone(), stream))
+                            as SendableRecordBatchStream,
+                    );
+                }
+                streams
+            } else {
+                // Salted: one producer per output partition.
                 let stream = self.worker_connections.execute(
                     remote_stage,
-                    off..(off + partition_count),
-                    input_task_index,
-                    global_partition,
+                    task_index..task_index + 1,
+                    partition,
+                    task_index,
                     self.producer_head(task_context.task_count)?,
                     &context,
                 )?;
-                streams.push(
+                vec![
                     Box::pin(RecordBatchStreamAdapter::new(schema.clone(), stream))
                         as SendableRecordBatchStream,
-                );
-            }
-            streams
-        } else {
-            // Salted: one producer per output partition.
-            let stream = self.worker_connections.execute(
-                remote_stage,
-                task_index..task_index + 1,
-                partition,
-                task_index,
-                self.producer_head(task_context.task_count)?,
-                &context,
-            )?;
-            vec![Box::pin(RecordBatchStreamAdapter::new(schema.clone(), stream))
-                as SendableRecordBatchStream]
-        };
+                ]
+            };
 
         if streams.is_empty() {
             return Ok(Box::pin(EmptyRecordBatchStream::new(self.schema())));
