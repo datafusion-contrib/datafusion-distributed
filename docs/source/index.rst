@@ -99,6 +99,13 @@ side of the screen for the answer.
 
 .. toctree::
    :maxdepth: 1
+   :caption: Blog
+   :hidden:
+
+   blog/2026-09-20-distributed-dynamic-filtering
+
+.. toctree::
+   :maxdepth: 1
    :caption: Contributor Guide
    :hidden:
 
