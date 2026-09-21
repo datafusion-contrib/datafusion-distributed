@@ -277,10 +277,12 @@ async fn gather_runtime_statistics(
         // legitimately-empty stages (which would otherwise report `rows_pulled_from_leaves == 0` and
         // make the completion fraction 0, blowing up the `ready / fraction` extrapolation below).
         1.0
-    } else if let Some(estimated_driver_path_leaf_rows) = estimated_driver_path_leaf_rows(plan) {
+    } else if let Some(estimated_driver_path_leaf_rows) = estimated_driver_path_leaf_rows(plan)
+        && rows_pulled_from_leaves > 0
+    {
         // The stage is still producing. Estimate how far along it is from the fraction of the
         // driver-path leaf rows consumed so far.
-        (rows_pulled_from_leaves as f32 / estimated_driver_path_leaf_rows as f32).min(1.0)
+        (rows_pulled_from_leaves as f32 / estimated_driver_path_leaf_rows.max(1) as f32).min(1.0)
     } else {
         // We can't measure progress (no leaf-row estimate, or nothing pulled from the leaves
         // yet even though we're not at EOS): fall back rather than dividing by ~0.

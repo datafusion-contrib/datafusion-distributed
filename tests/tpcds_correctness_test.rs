@@ -597,6 +597,14 @@ mod tests {
         let (s_plan, s_results) = run(&s_ctx, &query_sql).await;
         let (d_plan, d_results) = run(&d_ctx, &query_sql).await;
 
+        if let Ok(batches) = s_results.as_ref()
+            && batches.iter().all(|batch| batch.num_rows() == 0)
+        {
+            return plan_err!(
+                "Query {query_id} returned no rows at TPC-DS scale factor {SF}; increase the scale factor to preserve correctness coverage"
+            );
+        }
+
         if !d_plan.is::<DistributedExec>() {
             return plan_err!("Query {query_id} did not get distributed");
         }

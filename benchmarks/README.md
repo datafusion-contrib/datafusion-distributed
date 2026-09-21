@@ -15,7 +15,7 @@ Prepare a new Iceberg copy separately after regenerating Parquet; an existing co
 # Sorted TPC-H (same generators, Parquet sorting_columns metadata)
 SORTED=true ./gen-tpch.sh
 
-# TPC-DS (only SCALE_FACTOR=1 is supported)
+# TPC-DS (default: SCALE_FACTOR=1, PARTITIONS=16 - override with environment variables)
 ./gen-tpcds.sh
 ```
 
@@ -38,8 +38,7 @@ PARTITION_END=1 ./benchmarks/gen-clickbench.sh --output s3://my-bucket/clickbenc
 The corresponding `dfbench prepare-* --output` commands accept the same destinations.
 Use an empty destination. `_SUCCESS` is written only after every table has finished;
 if generation fails, use a new prefix or remove the incomplete output before retrying.
-TPC-H streams generated batches directly to Parquet in the destination. TPC-DS downloads
-its SF1 source archive to temporary storage before writing the repartitioned tables.
+TPC-H and TPC-DS stream generated batches directly to Parquet in the destination.
 ClickBench uses temporary storage for one partition at a time to correct its date column.
 
 Parquet generation resolves credentials once using the official AWS SDK credential chain,
