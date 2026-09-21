@@ -69,6 +69,7 @@ mod tests {
             "#,
         )
         .with_broadcast_joins()
+        .expect_dynamic_filter_updates()
         .execute()
         .await?;
         assert_snapshot!(display, @r"
