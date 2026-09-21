@@ -27,13 +27,15 @@ pub(crate) fn is_dynamic_filtering_enabled(session_config: &SessionConfig) -> bo
 ///
 /// ## TopK Dynamic Filters
 ///
-///     Stage 2 Tasks: M
-///     └── SortPreservingMergeExec: fetch=10 (global TopK)
-///         └── NetworkCoalesceExec
-///             
-///     Stage 1 Tasks: N
-///     └── SortExec: fetch=10 (local TopK and dynamic-filter producer)
-///         └── DataSourceExec: dynamic-filter consumer
+/// ```text
+/// Stage 2 Tasks: M
+/// └── SortPreservingMergeExec: fetch=10 (global TopK)
+///     └── NetworkCoalesceExec
+///
+/// Stage 1 Tasks: N
+/// └── SortExec: fetch=10 (local TopK and dynamic-filter producer)
+///     └── DataSourceExec: dynamic-filter consumer
+/// ```
 ///
 /// Each `SortExec` may push its task-local TopK bound into its own input. It still emits the local
 /// TopK candidates, which the `SortPreservingMergeExec` reduces to the global TopK in the parent
@@ -41,27 +43,31 @@ pub(crate) fn is_dynamic_filtering_enabled(session_config: &SessionConfig) -> bo
 ///
 /// ## Min/Max Dynamic Filters in Partial Aggregates with No Group
 ///
-///     Stage 2 Tasks: M
-///     └── AggregateExec: mode=FinalPartitioned, gby=[], aggr=[max(foo)] (global max)
-///         └── NetworkShuffleExec
-///             
-///     Stage 1 Tasks: N
-///     └── RepartitionExec
-///         └── AggregateExec: mode=Partial, gby=[], aggr=[max(foo)] (local max and dynamic filter producer)
-///             └── DataSourceExec: dynamic-filter consumer
+/// ```text
+/// Stage 2 Tasks: M
+/// └── AggregateExec: mode=FinalPartitioned, gby=[], aggr=[max(foo)] (global max)
+///     └── NetworkShuffleExec
+///
+/// Stage 1 Tasks: N
+/// └── RepartitionExec
+///     └── AggregateExec: mode=Partial, gby=[], aggr=[max(foo)] (local max and dynamic filter producer)
+///         └── DataSourceExec: dynamic-filter consumer
+/// ```
 ///
 /// The partial aggregate may push its task-local min/max bound into its own input. It still emits
 /// the local min/max, which the final aggregate reduces to the global min/max in the parent stage.
 ///
 /// ## CollectLeft Joins
 ///
-///     Stage Y Tasks: M
+/// ```text
+/// Stage Y Tasks: M
 ///
-///     HashJoinExec: mode=CollectLeft
-///     ├── build: CoalescePartitionsExec
-///     │   └── all build partitions (the complete build side)
-///     └── probe:
-///         └── DataSourceExec: dynamic-filter consumer
+/// HashJoinExec: mode=CollectLeft
+/// ├── build: CoalescePartitionsExec
+/// │   └── all build partitions (the complete build side)
+/// └── probe:
+///     └── DataSourceExec: dynamic-filter consumer
+/// ```
 ///
 /// A `CollectLeft` hash join collects the complete build side in every task (by broadcasting or
 /// otherwise) and pushes it down to every probe partition. Since every probe partition sees
@@ -71,11 +77,13 @@ pub(crate) fn is_dynamic_filtering_enabled(session_config: &SessionConfig) -> bo
 ///
 /// A partitioned hash join builds per-partition predicates from the task-local hash table.
 ///
-///     Stage Y Task i
+/// ```text
+/// Stage Y Task i
 ///
-///     HashJoinExec: mode=Partitioned
-///     ├── build partition i  → producer predicate P(i)
-///     └── probe partition i  → consumer of P(i)
+/// HashJoinExec: mode=Partitioned
+/// ├── build partition i  → producer predicate P(i)
+/// └── probe partition i  → consumer of P(i)
+/// ```
 ///
 /// The build and probe execute corresponding partitions in the same task, so the probe
 /// gets the correct/complete filter from it's corresponding build side.
