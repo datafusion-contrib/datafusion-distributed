@@ -1012,6 +1012,7 @@ mod tests {
                 num: 0,
                 workers: vec![],
                 runtime_stats: None,
+                dynamic_filter_anchors: vec![],
             }))
             .unwrap()
     }
