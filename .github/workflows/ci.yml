@@ -9,7 +9,6 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  TPCDS_SCALE_FACTOR: 0.5 # 0.5 scale factor produces a data dir which is 124MB
 
 concurrency:
   group: ${{ github.ref }}
@@ -71,10 +70,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
-      - uses: actions/cache@v4
-        with:
-          path: testdata/tpcds/main.zip
-          key: "main.zip"
       - run: cargo test --features tpcds --test tpcds_correctness_test shard${{ matrix.shard }}
         env:
           ADAPTIVE: ${{ matrix.planning_mode == 'adaptive' }}
@@ -84,10 +79,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
-      - uses: actions/cache@v4
-        with:
-          path: testdata/tpcds/main.zip
-          key: "main.zip"
       - run: cargo test --features tpcds --test tpcds_plans_test
 
   clickbench-correctness-test:

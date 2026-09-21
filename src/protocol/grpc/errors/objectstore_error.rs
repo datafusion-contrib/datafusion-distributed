@@ -1,3 +1,5 @@
+use datafusion::object_store;
+
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ObjectStoreErrorProto {
     #[prost(
@@ -265,7 +267,7 @@ fn parse_store(store: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use object_store::Error as ObjectStoreError;
+    use datafusion::object_store::Error as ObjectStoreError;
     use prost::Message;
     use std::io::ErrorKind;
 

@@ -3,12 +3,12 @@ use std::sync::Arc;
 
 use aws_credential_types::provider::ProvideCredentials;
 use datafusion::common::{Result, exec_datafusion_err, exec_err};
+use datafusion::object_store::aws::{AmazonS3Builder, AwsCredential};
+use datafusion::object_store::buffered::BufWriter;
+use datafusion::object_store::local::LocalFileSystem;
+use datafusion::object_store::path::Path as ObjectPath;
+use datafusion::object_store::{ObjectStore, ObjectStoreExt, StaticCredentialProvider};
 use futures::TryStreamExt;
-use object_store::aws::{AmazonS3Builder, AwsCredential};
-use object_store::buffered::BufWriter;
-use object_store::local::LocalFileSystem;
-use object_store::path::Path as ObjectPath;
-use object_store::{ObjectStore, ObjectStoreExt, StaticCredentialProvider};
 use tokio::io::AsyncWriteExt;
 use url::Url;
 

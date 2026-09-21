@@ -22,8 +22,9 @@ arrow = { version = "59", features = ["test_utils"] }
 tonic = { version = "0.14.1", features = ["transport"] }
 tpchgen = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "f42708c32e7fd816b8ad8d2a880c1802a71b669f" }
 tpchgen-arrow = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "f42708c32e7fd816b8ad8d2a880c1802a71b669f" }
+tpcdsgen = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "f42708c32e7fd816b8ad8d2a880c1802a71b669f" }
+tpcdsgen-arrow = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "f42708c32e7fd816b8ad8d2a880c1802a71b669f" }
 reqwest = "0.12"
-zip = "6.0"
 sketches-ddsketch = "0.3"
 object_store = { version = "0.13", features = ["aws"] }
 aws-config = "1"
