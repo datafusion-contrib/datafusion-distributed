@@ -38,13 +38,11 @@ fn calculate_task_count(
     total_bytes: usize,
     bytes_per_partition: usize,
     target_partitions: usize,
-) -> Result<usize> {
+) -> Result<f64> {
     let bytes_per_partition = non_zero_divisor(bytes_per_partition, "bytes per partition")?;
     let target_partitions = non_zero_divisor(target_partitions, "target partitions")?;
 
-    Ok(total_bytes
-        .div_ceil(bytes_per_partition.get())
-        .div_ceil(target_partitions.get()))
+    Ok(total_bytes as f64 / bytes_per_partition.get() as f64 / target_partitions.get() as f64)
 }
 
 fn non_zero_divisor(value: usize, name: &str) -> Result<NonZeroUsize> {
@@ -57,16 +55,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn calculates_exact_rounded_and_boundary_task_counts() {
-        assert_eq!(task_count(24, 4, 3), 2);
-        assert_eq!(task_count(25, 4, 3), 3);
-        assert_eq!(task_count(usize::MAX, usize::MAX, 2), 1);
-        assert_eq!(task_count(usize::MAX, 1, 1), usize::MAX);
+    fn calculates_fractional_and_boundary_task_counts() {
+        assert_eq!(task_count(24, 4, 3), 2.0);
+        assert_eq!(task_count(30, 4, 3), 2.5);
+        assert_eq!(task_count(usize::MAX, usize::MAX, 2), 0.5);
+        assert_eq!(task_count(usize::MAX, 1, 1), usize::MAX as f64);
     }
 
     #[test]
     fn zero_bytes_require_zero_tasks() {
-        assert_eq!(task_count(0, 1, 1), 0);
+        assert_eq!(task_count(0, 1, 1), 0.0);
     }
 
     #[test]
@@ -75,11 +73,7 @@ mod tests {
         assert!(calculate_task_count(1, 1, 0).is_err());
     }
 
-    fn task_count(
-        total_bytes: usize,
-        bytes_per_partition: usize,
-        target_partitions: usize,
-    ) -> usize {
+    fn task_count(total_bytes: usize, bytes_per_partition: usize, target_partitions: usize) -> f64 {
         calculate_task_count(total_bytes, bytes_per_partition, target_partitions)
             .expect("test task count should be valid")
     }

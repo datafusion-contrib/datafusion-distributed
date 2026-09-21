@@ -74,8 +74,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn empty_table_needs_no_tasks() -> Result<()> {
-        assert_task_count(empty_metadata(), None, Some(0)).await
+    async fn empty_table_uses_minimum_task_count() -> Result<()> {
+        assert_task_count(empty_metadata(), None, Some(1)).await
     }
 
     #[tokio::test]

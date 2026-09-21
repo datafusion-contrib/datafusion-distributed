@@ -121,9 +121,10 @@ fn sharded_scan_desired_task_count(
 
 What the return value means:
 
-- `DesiredTaskCountEventResponse::desired(n)` — a **soft** hint. The planner may land on a
-  different number: within a stage the largest `desired` wins, and the count is
-  capped at the number of available workers.
+- `DesiredTaskCountEventResponse::desired(n)` — a **soft** `f64` hint. Fractional hints from
+  isolated union children are added before the final value is rounded up. The planner may land on
+  a different number: within a stage the largest `desired` wins, and the count is capped at the
+  number of available workers.
 - `DesiredTaskCountEventResponse::maximum(n)` — a **hard** cap. `maximum(1)` means "this node
   cannot be distributed."
 - `None` — defer to the other registered handlers (and finally the built-in
