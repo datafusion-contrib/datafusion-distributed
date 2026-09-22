@@ -32,12 +32,14 @@ use datafusion::physical_expr_common::metrics::{ExecutionPlanMetricsSet, Label, 
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::metrics::Count;
 use datafusion::prelude::SessionConfig;
-use futures::{Stream, StreamExt, TryStreamExt};
+use futures::StreamExt;
 use std::ops::DerefMut;
 use std::sync::{Arc, Mutex};
-use tokio::sync::Notify;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{
+    Receiver, Sender, UnboundedReceiver, UnboundedSender, channel, unbounded_channel,
+};
 use tokio_stream::wrappers::UnboundedReceiverStream;
+use tokio_util::sync::{CancellationToken, DropGuard};
 use url::Url;
 use uuid::Uuid;
 
@@ -57,7 +59,8 @@ pub(super) struct QueryCoordinator {
     metrics_store: Option<Arc<Store<TaskMetrics>>>,
     completed_dynamic_filter_store: Option<Arc<Store<TaskCompletedDynamicFilters>>>,
     dynamic_filter_registry: Arc<DynamicFilterRegistry>,
-    end_stream_notifier: Arc<Notify>,
+    query_finished: CancellationToken,
+    error_tx: Sender<DataFusionError>,
     join_set: Mutex<JoinSet<Result<()>>>,
 }
 
@@ -68,17 +71,25 @@ impl QueryCoordinator {
         metrics_set: &ExecutionPlanMetricsSet,
         metrics_store: Option<Arc<Store<TaskMetrics>>>,
         completed_dynamic_filter_store: Option<Arc<Store<TaskCompletedDynamicFilters>>>,
-    ) -> Self {
-        Self {
+    ) -> (Self, Receiver<DataFusionError>) {
+        let (error_tx, error_rx) = channel(1);
+        let query_finished = CancellationToken::new();
+        let coordinator = Self {
             task_ctx,
             metrics: metrics_set.clone(),
             metrics_store,
             completed_dynamic_filter_store,
-            dynamic_filter_registry: Arc::new(DynamicFilterRegistry::new(metrics_set)),
+            dynamic_filter_registry: Arc::new(DynamicFilterRegistry::new(
+                metrics_set,
+                error_tx.clone(),
+                query_finished.clone(),
+            )),
             coordinator_to_worker_metrics: CoordinatorToWorkerMetrics::new(metrics_set),
-            end_stream_notifier: Arc::new(Notify::new()),
+            query_finished,
+            error_tx,
             join_set: Mutex::new(JoinSet::new()),
-        }
+        };
+        (coordinator, error_rx)
     }
 
     /// Builds a new [StageCoordinator] that will manage coordinator-worker connections for the given
@@ -95,7 +106,8 @@ impl QueryCoordinator {
             metrics_store: &self.metrics_store,
             completed_dynamic_filter_store: &self.completed_dynamic_filter_store,
             dynamic_filter_registry: &self.dynamic_filter_registry,
-            end_stream_notifier: &self.end_stream_notifier,
+            query_finished: &self.query_finished,
+            error_tx: &self.error_tx,
             join_set: &self.join_set,
         }
     }
@@ -108,11 +120,8 @@ impl QueryCoordinator {
     /// returns a guard that, when dropped, it signals all the coordinator->worker connections that
     /// the query is finished, ending them, and propagating the EOS to the workers so that they can
     /// clean up any remaining state.
-    pub(super) fn end_query_guard(&self) -> NotifyGuard {
-        NotifyGuard {
-            notify: Arc::clone(&self.end_stream_notifier),
-            dynamic_filter_registry: Arc::clone(&self.dynamic_filter_registry),
-        }
+    pub(super) fn end_query_guard(&self) -> DropGuard {
+        self.query_finished.clone().drop_guard()
     }
 
     /// Blocks until all background tasks have finished (e.g., sending WorkUnit feeds, or collecting
@@ -145,7 +154,8 @@ pub(super) struct StageCoordinator<'a> {
     metrics_store: &'a Option<Arc<Store<TaskMetrics>>>,
     completed_dynamic_filter_store: &'a Option<Arc<Store<TaskCompletedDynamicFilters>>>,
     dynamic_filter_registry: &'a Arc<DynamicFilterRegistry>,
-    end_stream_notifier: &'a Arc<Notify>,
+    query_finished: &'a CancellationToken,
+    error_tx: &'a Sender<DataFusionError>,
     join_set: &'a Mutex<JoinSet<Result<()>>>,
 }
 
@@ -192,8 +202,7 @@ impl<'a> StageCoordinator<'a> {
         let coordinator_to_worker_tx_slot = Mutex::new(None);
 
         let dialer = new_coordinator_to_worker_dialer(|url| {
-            let (coordinator_to_worker_tx, coordinator_to_worker_rx) =
-                tokio::sync::mpsc::unbounded_channel();
+            let (coordinator_to_worker_tx, coordinator_to_worker_rx) = unbounded_channel();
             coordinator_to_worker_tx_slot
                 .lock()
                 .unwrap()
@@ -202,17 +211,8 @@ impl<'a> StageCoordinator<'a> {
             let coordinator_to_worker_stream =
                 UnboundedReceiverStream::new(coordinator_to_worker_rx)
                     .map(set_work_unit_send_time)
-                    // Keep the request side of the channel open until the query ends: this tail emits
-                    // no messages and only completes, once the `Notify` fires. Workers interpret this
-                    // EOS of this stream as a query finished/aborted signal. The flow looks like this:
-                    // 1. The query ends normally, as all Arrow RecordBatches are already streamed.
-                    // 2. The end stream notifier guard is dropped in `DistributedExec::execute()`.
-                    // 3. Here, `end_stream_notifier` fires and the coordinator->worker channel is
-                    //    gracefully ended.
-                    // 4. The coordinator->worker channel EOS is received in `impl_coordinator_channel.rs`.
-                    // 5. The metrics and final dynamic filters are sent back in the
-                    //    worker->coordinator channel, and then that channel is closed.
-                    .chain(keep_stream_alive(Arc::clone(self.end_stream_notifier)))
+                    // Keep the channel open after work-unit delivery until the query finishes.
+                    .take_until(self.query_finished.clone().cancelled_owned())
                     .boxed();
 
             let set_plan_request = SetPlanRequest {
@@ -276,12 +276,19 @@ impl<'a> StageCoordinator<'a> {
         };
         metrics.plan_send_latency.record(&start);
 
-        let (worker_to_coordinator_tx, worker_to_coordinator_rx) =
-            tokio::sync::mpsc::unbounded_channel();
+        let (worker_to_coordinator_tx, worker_to_coordinator_rx) = unbounded_channel();
 
         let mut worker_to_coordinator_stream = response.worker_to_coordinator_stream;
+        let error_tx = self.error_tx.clone();
         self.join_set.lock().unwrap().spawn(async move {
-            while let Some(msg) = worker_to_coordinator_stream.try_next().await? {
+            while let Some(msg) = worker_to_coordinator_stream.next().await {
+                let msg = match msg {
+                    Ok(msg) => msg,
+                    Err(error) => {
+                        let _ = error_tx.try_send(error);
+                        break;
+                    }
+                };
                 if worker_to_coordinator_tx.send(msg).is_err() {
                     break; // receiver dropped
                 }
@@ -324,7 +331,7 @@ impl<'a> StageCoordinator<'a> {
         let completed_dynamic_filter_store = self.completed_dynamic_filter_store.clone();
         let dynamic_filter_registry = Arc::clone(self.dynamic_filter_registry);
         let task_ctx = Arc::clone(self.task_ctx);
-        let (load_info_tx, load_info_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (load_info_tx, load_info_rx) = unbounded_channel();
         let mut load_info_tx_opt = Some(load_info_tx);
 
         // Cannot use self.join_set because that's tied to the lifetime of the query, and the
@@ -502,26 +509,10 @@ impl<'a> StageCoordinator<'a> {
     }
 }
 
-fn keep_stream_alive<T: 'static>(notify: Arc<Notify>) -> impl Stream<Item = T> + 'static {
-    futures::stream::once(notify.notified_owned()).filter_map(|()| futures::future::ready(None))
-}
-
 struct TaskSpecializedPlan {
     plan: Arc<dyn ExecutionPlan>,
     work_unit_feed_declarations: Vec<WorkUnitFeedDeclaration>,
     dynamic_filter_remote_producer_ids: Vec<u64>,
-}
-
-pub(super) struct NotifyGuard {
-    notify: Arc<Notify>,
-    dynamic_filter_registry: Arc<DynamicFilterRegistry>,
-}
-
-impl Drop for NotifyGuard {
-    fn drop(&mut self) {
-        self.dynamic_filter_registry.clear_senders();
-        self.notify.notify_waiters();
-    }
 }
 
 /// Metrics that measure network details about communications between [DistributedExec] and a worker.
