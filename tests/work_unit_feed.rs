@@ -521,7 +521,7 @@ mod tests {
         )
         .await?;
 
-        assert_snapshot!(plan + &results, @"
+        assert_snapshot!(plan + &results, @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [tag@0 ASC NULLS LAST, letter@1 ASC NULLS LAST]
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
@@ -573,7 +573,7 @@ mod tests {
         )
         .await?;
 
-        assert_snapshot!(plan + &results, @"
+        assert_snapshot!(plan + &results, @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [a_tag@0 ASC NULLS LAST, letter@1 ASC NULLS LAST, cnt@2 ASC NULLS LAST]
         │   [Stage 3] => NetworkCoalesceExec: output_partitions=6, input_tasks=2

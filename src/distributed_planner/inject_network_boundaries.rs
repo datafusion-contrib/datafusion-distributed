@@ -4,8 +4,8 @@ use crate::events::{
     DesiredTaskCountEvent, DesiredTaskCountHandlers, ScaleUpLeafNodeEvent, ScaleUpLeafNodeHandlers,
     TaskCountAnnotation,
 };
+use crate::execution_plans::ShuffleMode;
 use crate::execution_plans::{ChildWeight, ChildrenIsolatorUnionExec};
-use crate::execution_plans::{PRODUCER_SALT_DEFAULT, ShuffleMode};
 use crate::stage::LocalStage;
 use crate::worker_resolver::WorkerResolverExtension;
 use crate::{
@@ -336,13 +336,9 @@ async fn _inject_network_boundaries(
             .nb_builder
             .build(input_stage, TypeId::of::<NetworkShuffleExec>(), nb_ctx)
             .await?;
-        // Placeholder: salted/direct decision is deferred to propagate_task_count_until_network_boundaries.
-        let consumer_partitions = result.input_properties.partitioning.partition_count();
         let shuffle = Arc::new(NetworkShuffleExec::from_stage(
             result.input_stage,
             result.input_properties,
-            consumer_partitions,
-            ShuffleMode::Direct,
         ));
         Ok(nb_ctx.plan_with_task_count(shuffle, result.consumer_task_count))
     }
@@ -471,32 +467,22 @@ impl InjectNetworkBoundaryContext<'_> {
             if let Some(shuffle) = plan.downcast_ref::<NetworkShuffleExec>()
                 && matches!(shuffle.mode, ShuffleMode::Direct)
             {
-                let consumer_partitions = shuffle.consumer_partitioning.partition_count();
-                let producer_tasks = shuffle.input_stage.task_count();
+                let consumer_partitions = shuffle.producer_partitioning.partition_count();
                 // now that task_count is the final reconciled consumer count,
-                // decide whether salted mode is warranted.
+                // decide whether TwoPhase mode is warranted.
                 if should_use_salted_mode(
                     task_count.as_usize(),
                     consumer_partitions,
-                    self.d_cfg.max_mn_for_direct,
+                    self.d_cfg.two_step_shuffle_fanout_threshold,
                 ) {
-                    let salted_shuffle = Arc::new(NetworkShuffleExec::from_stage(
-                        shuffle.input_stage.clone(),
-                        Arc::clone(&shuffle.properties),
-                        producer_tasks,
-                        ShuffleMode::Salted {
-                            salt: PRODUCER_SALT_DEFAULT,
-                        },
-                    ));
-                    self.set_task_count(
-                        &(Arc::clone(&salted_shuffle) as Arc<dyn ExecutionPlan>),
-                        task_count,
-                    );
-                    let r_exec = Arc::new(RepartitionExec::try_new(
-                        salted_shuffle,
-                        shuffle.consumer_partitioning.clone(),
-                    )?);
-                    return Ok(self.plan_with_task_count(r_exec, task_count));
+                    let two_phase_shuffle: Arc<dyn ExecutionPlan> =
+                        Arc::new(shuffle.to_two_phase_salted());
+                    self.set_task_count(&two_phase_shuffle, task_count);
+                    let consumer_repartition = Arc::new(RepartitionExec::try_new(
+                        two_phase_shuffle,
+                        shuffle.producer_partitioning.clone(),
+                    )?) as Arc<dyn ExecutionPlan>;
+                    return Ok(self.plan_with_task_count(consumer_repartition, task_count));
                 }
             }
             // Just annotate the network boundary and stop recursion here.

@@ -30,8 +30,9 @@ pub const PRODUCER_SALT_DEFAULT: u64 = 0x517cc1b727220a95;
 pub enum ShuffleMode {
     /// Hash(key, consumer_task_count × consumer_partition_count): consumer reads global partitions
     Direct,
-    /// Hash(key+salt, consumer_task_count): each consumer re-partitions locally into consumer_partition_count.
-    Salted { salt: u64 },
+    /// Two-phase: producer hashes (key+salt) into consumer_task_count buckets; each consumer then
+    /// re-partitions locally into consumer_partition_count partitions via a RepartitionExec.
+    TwoPhase { salt: u64 },
 }
 
 /// [ExecutionPlan] implementation that shuffles data across the network in a distributed context.
@@ -120,9 +121,9 @@ pub enum ShuffleMode {
 pub struct NetworkShuffleExec {
     /// the properties we advertise for this execution plan
     pub(crate) properties: Arc<PlanProperties>,
-    /// the consumer's hash partitioning; in Salted mode `properties` advertises UnknownPartitioning
-    /// since salting breaks hash guarantees, so we keep the original partitioning here
-    pub(crate) consumer_partitioning: Partitioning,
+    /// producer's output partitioning; in TwoPhase mode `properties` advertises UnknownPartitioning
+    /// since the salt breaks hash guarantees, so we stash the original here.
+    pub(crate) producer_partitioning: Partitioning,
     pub(crate) input_stage: Stage,
     pub(crate) worker_connections: WorkerConnectionPool,
     pub(crate) mode: ShuffleMode,
@@ -156,29 +157,42 @@ impl NetworkShuffleExec {
         }
     }
 
-    pub(crate) fn from_stage(
-        input_stage: Stage,
-        input_properties: Arc<PlanProperties>,
-        output_partitions: usize,
-        mode: ShuffleMode,
-    ) -> Self {
-        let consumer_partitioning = input_properties.partitioning.clone();
-        let advertised_partitioning = match &mode {
-            ShuffleMode::Direct => consumer_partitioning.clone(),
-            ShuffleMode::Salted { .. } => Partitioning::UnknownPartitioning(output_partitions),
-        };
+    pub(crate) fn from_stage(input_stage: Stage, input_properties: Arc<PlanProperties>) -> Self {
+        let producer_partitioning = input_properties.partitioning.clone();
         let properties = Arc::new(PlanProperties::new(
             input_properties.equivalence_properties().clone(),
-            advertised_partitioning,
+            producer_partitioning.clone(),
             EmissionType::Incremental,
             Boundedness::Bounded,
         ));
         Self {
             properties,
-            consumer_partitioning,
+            producer_partitioning,
             worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
             input_stage,
-            mode,
+            mode: ShuffleMode::Direct,
+        }
+    }
+
+    /// Returns a copy of this node switched to [ShuffleMode::TwoPhase]. The advertised
+    /// partitioning becomes `UnknownPartitioning` since the salt breaks hash guarantees;
+    /// a downstream `RepartitionExec` is expected to restore the final partitioning.
+    pub(crate) fn to_two_phase_salted(&self) -> Self {
+        let output_partitions = self.input_stage.task_count();
+        let properties = Arc::new(PlanProperties::new(
+            self.properties.equivalence_properties().clone(),
+            Partitioning::UnknownPartitioning(output_partitions),
+            EmissionType::Incremental,
+            Boundedness::Bounded,
+        ));
+        Self {
+            properties,
+            producer_partitioning: self.producer_partitioning.clone(),
+            worker_connections: self.worker_connections.clone(),
+            input_stage: self.input_stage.clone(),
+            mode: ShuffleMode::TwoPhase {
+                salt: PRODUCER_SALT_DEFAULT,
+            },
         }
     }
 
@@ -205,10 +219,6 @@ impl NetworkShuffleExec {
                 metrics_set: Default::default(),
             }),
             input_properties,
-            1,
-            ShuffleMode::Salted {
-                salt: PRODUCER_SALT_DEFAULT,
-            },
         ))
     }
 }
@@ -230,10 +240,10 @@ impl NetworkBoundary for NetworkShuffleExec {
     fn producer_head(&self, consumer_task_count: usize) -> Result<ProducerHead> {
         let partitioning = match &self.mode {
             ShuffleMode::Direct => {
-                scale_partitioning(&self.consumer_partitioning, |n| n * consumer_task_count)?
+                scale_partitioning(&self.producer_partitioning, |n| n * consumer_task_count)?
             }
-            ShuffleMode::Salted { salt } => {
-                salted_partitioning(&self.consumer_partitioning, *salt, consumer_task_count)?
+            ShuffleMode::TwoPhase { salt } => {
+                salted_partitioning(&self.producer_partitioning, *salt, consumer_task_count)?
             }
         };
         Ok(ProducerHead::RepartitionExec {
@@ -343,7 +353,7 @@ impl ExecutionPlan for NetworkShuffleExec {
                 }
                 streams
             } else {
-                // Salted: one producer per output partition.
+                // TwoPhase: each consumer task reads from exactly one producer task.
                 let stream = self.worker_connections.execute(
                     remote_stage,
                     task_index..task_index + 1,

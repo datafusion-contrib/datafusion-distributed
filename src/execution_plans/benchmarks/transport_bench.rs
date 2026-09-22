@@ -272,7 +272,7 @@ impl TransportFixture {
 
         let mut join_set = JoinSet::default();
         for task_index in 0..self.bench.consumer_tasks {
-            let consumer_partitioning =
+            let producer_partitioning =
                 Partitioning::Hash(vec![Arc::new(Column::new("id", 0))], self.bench.partitions);
             let shuffle = NetworkShuffleExec {
                 properties: Arc::new(PlanProperties::new(
@@ -281,12 +281,12 @@ impl TransportFixture {
                     EmissionType::Incremental,
                     Boundedness::Bounded,
                 )),
-                consumer_partitioning,
+                producer_partitioning,
                 input_stage: input_stage.clone(),
                 worker_connections: crate::worker::WorkerConnectionPool::new(
                     self.bench.producer_tasks,
                 ),
-                mode: ShuffleMode::Salted {
+                mode: ShuffleMode::TwoPhase {
                     salt: PRODUCER_SALT_DEFAULT,
                 },
             };
@@ -298,7 +298,7 @@ impl TransportFixture {
                 },
             ));
 
-            for partition in 0..shuffle.consumer_partitioning.partition_count() {
+            for partition in 0..shuffle.producer_partitioning.partition_count() {
                 let stream = shuffle.execute(partition, Arc::clone(&task_ctx))?;
                 join_set.spawn(async move {
                     let batches = stream.try_collect::<Vec<_>>().await?;

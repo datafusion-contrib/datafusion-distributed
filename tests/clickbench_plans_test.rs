@@ -95,7 +95,7 @@ mod tests {
     #[tokio::test]
     async fn test_clickbench_4() -> Result<()> {
         let display = test_clickbench_query("q4").await?;
-        assert_snapshot!(display, @"
+        assert_snapshot!(display, @r"
         ┌───── DistributedExec
         │ ProjectionExec: expr=[count(alias1)@0 as count(DISTINCT hits.UserID)]
         │   AggregateExec: mode=Final, gby=[], aggr=[count(alias1)]
@@ -123,7 +123,7 @@ mod tests {
     #[tokio::test]
     async fn test_clickbench_5() -> Result<()> {
         let display = test_clickbench_query("q5").await?;
-        assert_snapshot!(display, @"
+        assert_snapshot!(display, @r"
         ┌───── DistributedExec
         │ ProjectionExec: expr=[count(alias1)@0 as count(DISTINCT hits.SearchPhrase)]
         │   AggregateExec: mode=Final, gby=[], aggr=[count(alias1)]
@@ -450,7 +450,7 @@ mod tests {
     #[tokio::test]
     async fn test_clickbench_17() -> Result<()> {
         let display = test_clickbench_query("q17").await?;
-        assert_snapshot!(display, @"
+        assert_snapshot!(display, @r"
         ┌───── DistributedExec
         │ ProjectionExec: expr=[UserID@0 as UserID, SearchPhrase@1 as SearchPhrase, count(Int64(1))@2 as count(*)]
         │   CoalescePartitionsExec: fetch=10
@@ -842,7 +842,7 @@ mod tests {
     #[tokio::test]
     async fn test_clickbench_34() -> Result<()> {
         let display = test_clickbench_query("q34").await?;
-        assert_snapshot!(display, @"
+        assert_snapshot!(display, @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [c@2 DESC], fetch=10
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
@@ -869,7 +869,7 @@ mod tests {
     #[tokio::test]
     async fn test_clickbench_35() -> Result<()> {
         let display = test_clickbench_query("q35").await?;
-        assert_snapshot!(display, @"
+        assert_snapshot!(display, @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [c@4 DESC], fetch=10
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=9, input_tasks=3

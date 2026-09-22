@@ -20,7 +20,7 @@ mod tests {
         .with_broadcast_joins()
         .execute()
         .await?;
-        assert_snapshot!(display, @"
+        assert_snapshot!(display, @r"
         ┌───── DistributedExec
         │ ProjectionExec: expr=[count(Int64(1))@0 as count(*)]
         │   AggregateExec: mode=Final, gby=[], aggr=[count(Int64(1))]
@@ -72,7 +72,7 @@ mod tests {
         .expect_dynamic_filter_updates()
         .execute()
         .await?;
-        assert_snapshot!(display, @"
+        assert_snapshot!(display, @r"
         ┌───── DistributedExec
         │ ProjectionExec: expr=[count(Int64(1))@0 as count(*)]
         │   AggregateExec: mode=Final, gby=[], aggr=[count(Int64(1))]
@@ -140,7 +140,7 @@ mod tests {
         .with_one_task_per_leaf()
         .execute()
         .await?;
-        assert_snapshot!(display, @"
+        assert_snapshot!(display, @r"
         ┌───── DistributedExec
         │ ProjectionExec: expr=[count(Int64(1))@0 as count(*)]
         │   AggregateExec: mode=Final, gby=[], aggr=[count(Int64(1))]

@@ -502,6 +502,19 @@ pub trait DistributedExt: Sized {
         max_tasks_per_stage: usize,
     ) -> Result<(), DataFusionError>;
 
+    /// Sets the `consumer_task_count × consumer_partition_count` threshold at which the planner
+    /// switches from Direct to TwoPhase shuffle mode. Defaults to 50.
+    fn with_distributed_two_step_shuffle_fanout_threshold(
+        self,
+        threshold: usize,
+    ) -> Result<Self, DataFusionError>;
+
+    /// Same as [DistributedExt::with_distributed_two_step_shuffle_fanout_threshold] but with an in-place mutation.
+    fn set_distributed_two_step_shuffle_fanout_threshold(
+        &mut self,
+        threshold: usize,
+    ) -> Result<(), DataFusionError>;
+
     /// Enables or disables the PartialReduce optimization, which inserts an extra aggregation
     /// pass above hash RepartitionExec before network shuffles to reduce shuffle data size.
     /// Disabled by default because its effectiveness is workload-dependent: it helps when
@@ -882,6 +895,15 @@ impl DistributedExt for SessionConfig {
         Ok(())
     }
 
+    fn set_distributed_two_step_shuffle_fanout_threshold(
+        &mut self,
+        threshold: usize,
+    ) -> Result<(), DataFusionError> {
+        let d_cfg = DistributedConfig::from_config_options_mut(self.options_mut())?;
+        d_cfg.two_step_shuffle_fanout_threshold = threshold;
+        Ok(())
+    }
+
     fn set_distributed_partial_reduce(&mut self, enabled: bool) -> Result<(), DataFusionError> {
         let d_cfg = DistributedConfig::from_config_options_mut(self.options_mut())?;
         d_cfg.partial_reduce = enabled;
@@ -1010,6 +1032,10 @@ impl DistributedExt for SessionConfig {
             #[call(set_distributed_max_tasks_per_stage)]
             #[expr($?;Ok(self))]
             fn with_distributed_max_tasks_per_stage(mut self, max_tasks_per_stage: usize) -> Result<Self, DataFusionError>;
+
+            #[call(set_distributed_two_step_shuffle_fanout_threshold)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_two_step_shuffle_fanout_threshold(mut self, threshold: usize) -> Result<Self, DataFusionError>;
 
             #[call(set_distributed_partial_reduce)]
             #[expr($?;Ok(self))]
@@ -1148,6 +1174,11 @@ impl DistributedExt for SessionStateBuilder {
             #[call(set_distributed_max_tasks_per_stage)]
             #[expr($?;Ok(self))]
             fn with_distributed_max_tasks_per_stage(mut self, max_tasks_per_stage: usize) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_two_step_shuffle_fanout_threshold(&mut self, threshold: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_two_step_shuffle_fanout_threshold)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_two_step_shuffle_fanout_threshold(mut self, threshold: usize) -> Result<Self, DataFusionError>;
 
             fn set_distributed_partial_reduce(&mut self, enabled: bool) -> Result<(), DataFusionError>;
             #[call(set_distributed_partial_reduce)]
@@ -1304,6 +1335,11 @@ impl DistributedExt for SessionState {
             #[expr($?;Ok(self))]
             fn with_distributed_max_tasks_per_stage(mut self, max_tasks_per_stage: usize) -> Result<Self, DataFusionError>;
 
+            fn set_distributed_two_step_shuffle_fanout_threshold(&mut self, threshold: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_two_step_shuffle_fanout_threshold)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_two_step_shuffle_fanout_threshold(mut self, threshold: usize) -> Result<Self, DataFusionError>;
+
             fn set_distributed_partial_reduce(&mut self, enabled: bool) -> Result<(), DataFusionError>;
             #[call(set_distributed_partial_reduce)]
             #[expr($?;Ok(self))]
@@ -1451,6 +1487,11 @@ impl DistributedExt for SessionContext {
             #[call(set_distributed_max_tasks_per_stage)]
             #[expr($?;Ok(self))]
             fn with_distributed_max_tasks_per_stage(self, max_tasks_per_stage: usize) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_two_step_shuffle_fanout_threshold(&mut self, threshold: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_two_step_shuffle_fanout_threshold)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_two_step_shuffle_fanout_threshold(self, threshold: usize) -> Result<Self, DataFusionError>;
 
             fn set_distributed_partial_reduce(&mut self, enabled: bool) -> Result<(), DataFusionError>;
             #[call(set_distributed_partial_reduce)]

@@ -115,7 +115,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 partitioning,
                 input_stage,
                 equivalence_classes,
-                salted,
+                two_phase,
                 salt,
                 ordering,
             }) => {
@@ -157,8 +157,8 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     equivalence_properties.add_orderings([sort_exprs]);
                 }
 
-                let mode = if salted {
-                    ShuffleMode::Salted { salt }
+                let mode = if two_phase {
+                    ShuffleMode::TwoPhase { salt }
                 } else {
                     ShuffleMode::Direct
                 };
@@ -361,9 +361,9 @@ impl PhysicalExtensionCodec for DistributedCodec {
         }
 
         if let Some(node) = node.downcast_ref::<NetworkShuffleExec>() {
-            let (salted, salt) = match &node.mode {
+            let (two_phase, salt) = match &node.mode {
                 ShuffleMode::Direct => (false, 0u64),
-                ShuffleMode::Salted { salt } => (true, *salt),
+                ShuffleMode::TwoPhase { salt } => (true, *salt),
             };
             let ordering = node
                 .properties()
@@ -376,7 +376,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
             let inner = NetworkShuffleExecProto {
                 schema: Some(node.schema().try_into()?),
                 partitioning: Some(serialize_partitioning(
-                    &node.consumer_partitioning,
+                    &node.producer_partitioning,
                     self,
                     proto_converter,
                 )?),
@@ -390,7 +390,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     self,
                     proto_converter,
                 )?,
-                salted,
+                two_phase,
                 salt,
                 ordering,
             };
@@ -611,8 +611,8 @@ pub struct NetworkShuffleExecProto {
     #[prost(message, repeated, tag = "4")]
     equivalence_classes: Vec<EquivalenceClassProto>,
     #[prost(bool, tag = "5")]
-    salted: bool,
-    /// Salt value used in Salted mode; ignored when `salted` is false.
+    two_phase: bool,
+    /// Salt value used in TwoPhase mode; ignored when `two_phase` is false.
     #[prost(uint64, tag = "6")]
     salt: u64,
     /// Sort expressions preserved across tasks and used by workers to sort-merge streams.
@@ -670,7 +670,7 @@ fn new_network_hash_shuffle_exec(
     let producer_tasks = input_stage.task_count();
     let advertised_partitioning = match &mode {
         ShuffleMode::Direct => partitioning.clone(),
-        ShuffleMode::Salted { .. } => Partitioning::UnknownPartitioning(producer_tasks),
+        ShuffleMode::TwoPhase { .. } => Partitioning::UnknownPartitioning(producer_tasks),
     };
     let properties = Arc::new(PlanProperties::new(
         equivalence_properties,
@@ -680,7 +680,7 @@ fn new_network_hash_shuffle_exec(
     ));
     NetworkShuffleExec {
         properties,
-        consumer_partitioning: partitioning,
+        producer_partitioning: partitioning,
         worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
         input_stage,
         mode,
@@ -1208,7 +1208,7 @@ mod tests {
             part,
             EquivalenceProperties::new(schema),
             dummy_stage(),
-            ShuffleMode::Salted { salt },
+            ShuffleMode::TwoPhase { salt },
         ));
 
         let mut buf = Vec::new();
@@ -1219,15 +1219,15 @@ mod tests {
 
         let decoded_exec = decoded.downcast_ref::<NetworkShuffleExec>().unwrap();
         assert!(
-            matches!(decoded_exec.mode, ShuffleMode::Salted { salt: s } if s == salt),
+            matches!(decoded_exec.mode, ShuffleMode::TwoPhase { salt: s } if s == salt),
             "salt value was not preserved through encode/decode"
         );
-        // consumer_partitioning (Hash(_, 4)) must survive even though the advertised
+        // producer_partitioning (Hash(_, 4)) must survive even though the advertised
         // partitioning is UnknownPartitioning
         assert_eq!(
-            decoded_exec.consumer_partitioning.partition_count(),
+            decoded_exec.producer_partitioning.partition_count(),
             4,
-            "consumer_partitioning partition count was not preserved through encode/decode"
+            "producer_partitioning partition count was not preserved through encode/decode"
         );
 
         Ok(())
@@ -1245,7 +1245,7 @@ mod tests {
             part,
             EquivalenceProperties::new(schema),
             dummy_stage_with_plan(),
-            ShuffleMode::Salted { salt },
+            ShuffleMode::TwoPhase { salt },
         ));
 
         let mut buf = Vec::new();
@@ -1256,13 +1256,13 @@ mod tests {
 
         let decoded_exec = decoded.downcast_ref::<NetworkShuffleExec>().unwrap();
         assert!(
-            matches!(decoded_exec.mode, ShuffleMode::Salted { salt: s } if s == salt),
+            matches!(decoded_exec.mode, ShuffleMode::TwoPhase { salt: s } if s == salt),
             "salt value was not preserved through encode/decode"
         );
         assert_eq!(
-            decoded_exec.consumer_partitioning.partition_count(),
+            decoded_exec.producer_partitioning.partition_count(),
             3,
-            "consumer_partitioning partition count was not preserved through encode/decode"
+            "producer_partitioning partition count was not preserved through encode/decode"
         );
 
         Ok(())
