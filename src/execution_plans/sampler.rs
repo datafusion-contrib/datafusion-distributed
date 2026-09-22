@@ -173,7 +173,8 @@ impl SamplerExec {
             };
             let (sampling_start_tx, sampling_start_rx) = watch::channel(false);
             for partition_sampler in &sampler.partition_samplers {
-                let rx = partition_sampler.kick_off(Arc::clone(&ctx), sampling_start_rx.clone())?;
+                let rx =
+                    partition_sampler.spawn_sampler(Arc::clone(&ctx), sampling_start_rx.clone())?;
                 receivers.push(rx);
             }
             sampling_start_tx_opt = Some(sampling_start_tx);
@@ -245,7 +246,7 @@ impl PartitionSampler {
         self.stream.lock().unwrap().take()
     }
 
-    fn kick_off(
+    fn spawn_sampler(
         &self,
         ctx: Arc<TaskContext>,
         mut sampling_start_rx: watch::Receiver<bool>,
