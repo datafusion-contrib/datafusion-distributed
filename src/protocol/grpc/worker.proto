@@ -24,8 +24,12 @@ message CoordinatorToWorkerMsg {
     // Signals an EOS for WorkUnits. After this message is received, no more WorkUnits will be sent.
     bool work_unit_eos = 3;
     // Signals the worker to begin sampling during adaptive query execution.
-    bool kick_off_sampling = 4;
+    KickOffSampling kick_off_sampling = 4;
   }
+}
+
+message KickOffSampling {
+
 }
 
 message WorkerToCoordinatorMsg {

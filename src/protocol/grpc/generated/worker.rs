@@ -21,10 +21,12 @@ pub mod coordinator_to_worker_msg {
         #[prost(bool, tag = "3")]
         WorkUnitEos(bool),
         /// Signals the worker to begin sampling during adaptive query execution.
-        #[prost(bool, tag = "4")]
-        KickOffSampling(bool),
+        #[prost(message, tag = "4")]
+        KickOffSampling(super::KickOffSampling),
     }
 }
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct KickOffSampling {}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WorkerToCoordinatorMsg {
     #[prost(oneof = "worker_to_coordinator_msg::Inner", tags = "1, 2, 3, 4")]
