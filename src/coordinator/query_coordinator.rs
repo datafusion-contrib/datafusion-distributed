@@ -471,11 +471,11 @@ impl<'a> StageCoordinator<'a> {
 
             if plan.downcast_ref::<RepartitionExec>().is_some() {
                 let children = plan.children().into_iter().map(Arc::clone).collect();
-                let new_r_exec = plan.replace_children(
+                let local_repartion_exec = plan.replace_children(
                     children,
                     ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
                 )?;
-                return Ok(Transformed::yes(new_r_exec));
+                return Ok(Transformed::yes(local_repartion_exec));
             }
 
             Ok(Transformed::no(plan))

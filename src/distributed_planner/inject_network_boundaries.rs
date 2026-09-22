@@ -337,8 +337,7 @@ async fn _inject_network_boundaries(
             .build(input_stage, TypeId::of::<NetworkShuffleExec>(), nb_ctx)
             .await?;
         // Create a Direct-mode shuffle as a placeholder. The final consumer task count
-        // is not yet known here — sibling branches may still raise it during the
-        // bottom-up walk. The salted/direct decision is deferred to
+        // is not yet known here. The salted/direct decision is deferred to
         // propagate_task_count_until_network_boundaries, which runs after the full
         // reconciliation and has the actual final count.
         let consumer_partitions = result.input_properties.partitioning.partition_count();
@@ -472,9 +471,6 @@ impl InjectNetworkBoundaryContext<'_> {
 
         // Handle network boundaries.
         } else if plan.is_network_boundary() {
-            // Direct-mode NetworkShuffleExec: now that task_count is the final reconciled
-            // consumer count (sibling merges are complete), decide whether salted mode is
-            // warranted. If so, rebuild as Salted and wrap in a fresh RepartitionExec.
             if let Some(shuffle) = plan.downcast_ref::<NetworkShuffleExec>()
                 && matches!(shuffle.mode, ShuffleMode::Direct)
             {
