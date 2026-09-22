@@ -142,7 +142,6 @@ pub(crate) struct TestPlanBuilder {
     distributed_partial_reduce: Option<bool>,
     distributed_children_isolator_unions: Option<bool>,
     distributed_max_tasks_per_stage: Option<usize>,
-    distributed_two_step_shuffle_fanout_threshold: Option<usize>,
     prefer_hash_join: Option<bool>,
     hash_join_single_partition_threshold: Option<usize>,
     hash_join_single_partition_threshold_rows: Option<usize>,
@@ -163,7 +162,6 @@ impl TestPlanBuilder {
             distributed_partial_reduce: None,
             distributed_children_isolator_unions: None,
             distributed_max_tasks_per_stage: None,
-            distributed_two_step_shuffle_fanout_threshold: None,
             prefer_hash_join: None,
             hash_join_single_partition_threshold: None,
             hash_join_single_partition_threshold_rows: None,
@@ -243,11 +241,6 @@ impl TestPlanBuilder {
         self
     }
 
-    pub fn distributed_two_step_shuffle_fanout_threshold(mut self, n: usize) -> Self {
-        self.distributed_two_step_shuffle_fanout_threshold = Some(n);
-        self
-    }
-
     fn build_config(&self) -> SessionConfig {
         let mut d_cfg = DistributedConfig {
             broadcast_joins: self.broadcast_joins,
@@ -268,9 +261,6 @@ impl TestPlanBuilder {
         }
         if let Some(n) = self.distributed_max_tasks_per_stage {
             d_cfg.max_tasks_per_stage = n
-        }
-        if let Some(n) = self.distributed_two_step_shuffle_fanout_threshold {
-            d_cfg.two_step_shuffle_fanout_threshold = n;
         }
 
         let mut config = SessionConfig::new();
@@ -366,7 +356,6 @@ impl Default for TestPlanBuilder {
             distributed_partial_reduce: None,
             distributed_children_isolator_unions: None,
             distributed_max_tasks_per_stage: None,
-            distributed_two_step_shuffle_fanout_threshold: None,
             prefer_hash_join: None,
             hash_join_single_partition_threshold: None,
             hash_join_single_partition_threshold_rows: None,
