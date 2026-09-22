@@ -480,7 +480,7 @@ impl<'a> StageCoordinator<'a> {
                 )?;
                 return Ok(Transformed::yes(local_repartion_exec));
             }
-            // we are explicitly not retransforming the enitre plan. if other operators cause shared state errors they will error out.
+            // we are explicitly not retransforming the entire plan. if other operators cause shared state errors they will error out.
             Ok(Transformed::no(plan))
         })?;
         let plan = if dynamic_filtering_enabled {
