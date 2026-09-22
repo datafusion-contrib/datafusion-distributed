@@ -222,27 +222,34 @@ impl ExecutionPlan for DistributedExec {
         let prepared_plan = Arc::clone(&self.prepared_plan);
         let collect_dynamic_filters = self.completed_dynamic_filter_store.is_some();
 
-        let query_coordinator = Arc::new(QueryCoordinator::new(
+        let (query_coordinator, mut errors) = QueryCoordinator::new(
             Arc::clone(&context),
             &self.metrics,
             self.metrics_store.clone(),
             self.completed_dynamic_filter_store.clone(),
-        ));
+        );
+        let query_coordinator = Arc::new(query_coordinator);
 
         let mut builder = RecordBatchReceiverStreamBuilder::new(self.schema(), 1);
         let tx = builder.tx();
+
+        // Handle coordinator errors on the execution stream.
+        builder.spawn(async move {
+            match errors.recv().await {
+                Some(error) => Err(error),
+                None => Ok(()),
+            }
+        });
 
         builder.spawn(async move {
             // Dropping this `guard` is what signals the coordinator->worker channel to be dropped,
             // which triggers a chain reaction that ends up also gracefully closing the
             // worker->coordinator channel. The flow looks like this:
             // 1. The query ends normally, as all Arrow RecordBatches are already streamed.
-            // 2. The `guard` here is dropped.
-            // 3. In StageCoordinator::send_plan_task(), `end_stream_notifier` fires and the
-            //    coordinator->worker channel is gracefully ended.
-            // 4. The coordinator->worker channel EOS is received in `impl_coordinator_channel.rs`.
-            // 5. The metrics are send back in the worker->coordinator channel, and then that
-            //    channel is closed.
+            // 2. The `guard` here is dropped, ending the coordinator->worker stream.
+            // 3. The worker observes end-of-stream in `impl_coordinator_channel.rs`.
+            // 4. The worker sends final metrics and completed dynamic filters, if enabled.
+            // 5. The the worker->coordinator response stream ends.
             let guard = query_coordinator.end_query_guard();
 
             let d_cfg = DistributedConfig::from_config_options(context.session_config().options())?;

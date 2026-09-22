@@ -26,8 +26,8 @@ use datafusion::execution::TaskContext;
 use datafusion::execution::memory_pool::MemoryConsumer;
 use datafusion::physical_expr_common::metrics::{Count, Label, MetricBuilder, MetricValue, Time};
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, Gauge};
-use futures::future::ready;
-use futures::stream::BoxStream;
+use futures::future::{Either, pending, ready};
+use futures::stream::{BoxStream, select};
 use futures::{FutureExt, Stream, StreamExt, TryStreamExt};
 use http::{Extensions, HeaderMap};
 use pin_project::{pin_project, pinned_drop};
@@ -39,8 +39,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Poll};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::Notify;
-use tokio::sync::mpsc::UnboundedSender;
-use tokio_stream::wrappers::UnboundedReceiverStream;
+use tokio::sync::mpsc::{UnboundedSender, channel};
+use tokio_stream::wrappers::{ReceiverStream, UnboundedReceiverStream};
 use tokio_util::sync::CancellationToken;
 use tonic::metadata::MetadataMap;
 use tonic::{Code, Request, Status};
@@ -58,6 +58,9 @@ impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSy
         let set_plan_request = encode_set_plan_request(set_plan_request, ctx)?;
         let plan_bytes_sent = set_plan_request.plan_proto.len();
         let task_ctx = Arc::clone(ctx);
+        // Tonic request streams cannot yield errors, so return encoding failures through
+        // the response stream instead. Only the first failure matters.
+        let (error_tx, mut error_rx) = channel(1);
         let input_stream = futures::stream::once(async move {
             pb::CoordinatorToWorkerMsg {
                 inner: Some(pb::coordinator_to_worker_msg::Inner::SetPlanRequest(
@@ -65,19 +68,28 @@ impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSy
                 )),
             }
         })
-        .chain(
-            c2w_stream
-                .filter_map(move |msg| ready(encode_coordinator_to_worker_msg(msg, &task_ctx))),
-        );
+        .chain(c2w_stream.then(move |msg| {
+            match encode_coordinator_to_worker_msg(msg, &task_ctx) {
+                Ok(msg) => Either::Left(ready(msg)),
+                Err(error) => {
+                    let _ = error_tx.try_send(error);
+                    // Retain the receiver until the error is observed.
+                    Either::Right(pending())
+                }
+            }
+        }));
 
-        let output_stream = self
-            .coordinator_channel(Request::from_parts(
+        let response = tokio::select! {
+            biased;
+            Some(error) = error_rx.recv() => return Err(error),
+            response = self.coordinator_channel(Request::from_parts(
                 MetadataMap::from_headers(headers),
                 Extensions::default(),
                 input_stream,
             ))
-            .boxed()
-            .await
+            .boxed() => response,
+        };
+        let output_stream = response
             .map_err(|err| {
                 if let Some(err) = tonic_status_to_datafusion_error(&err) {
                     return err;
@@ -123,7 +135,9 @@ impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSy
             .bytes_counter("plan_bytes_sent")
             .add_bytes(plan_bytes_sent);
 
-        Ok(output_stream)
+        // The worker may finish its response before the request ends (e.g. with metrics
+        // disabled). Continue observing request-side errors until both streams finish.
+        Ok(select(output_stream, ReceiverStream::new(error_rx).map(Err)).boxed())
     }
 
     async fn execute_task(
@@ -468,8 +482,8 @@ pub(super) fn encode_producer_head(
 fn encode_coordinator_to_worker_msg(
     msg: CoordinatorToWorkerMsg,
     task_ctx: &Arc<TaskContext>,
-) -> Option<pb::CoordinatorToWorkerMsg> {
-    Some(pb::CoordinatorToWorkerMsg {
+) -> Result<pb::CoordinatorToWorkerMsg> {
+    Ok(pb::CoordinatorToWorkerMsg {
         inner: Some(match msg {
             CoordinatorToWorkerMsg::KickOffSampling => {
                 pb::coordinator_to_worker_msg::Inner::KickOffSampling(pb::KickOffSampling {})
@@ -483,8 +497,7 @@ fn encode_coordinator_to_worker_msg(
             CoordinatorToWorkerMsg::ApplyDynamicFilter(filter) => {
                 pb::coordinator_to_worker_msg::Inner::ApplyDynamicFilter(pb::ApplyDynamicFilter {
                     expression_id: filter.expression_id,
-                    // TODO: Handle this error.
-                    expression_proto: filter.expression.encode(task_ctx).ok()?,
+                    expression_proto: filter.expression.encode(task_ctx)?,
                 })
             }
         }),
