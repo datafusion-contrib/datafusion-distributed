@@ -470,11 +470,9 @@ impl InjectNetworkBoundaryContext<'_> {
                 let consumer_partitions = shuffle.producer_partitioning.partition_count();
                 // now that task_count is the final reconciled consumer count,
                 // decide whether TwoPhase mode is warranted.
-                if should_use_salted_mode(
-                    task_count.as_usize(),
-                    consumer_partitions,
-                    self.d_cfg.two_step_shuffle_fanout_threshold,
-                ) {
+                if task_count.as_usize() * consumer_partitions
+                    >= self.d_cfg.two_step_shuffle_fanout_threshold
+                {
                     let two_phase_shuffle: Arc<dyn ExecutionPlan> =
                         Arc::new(shuffle.to_two_phase_salted());
                     self.set_task_count(&two_phase_shuffle, task_count);
@@ -678,17 +676,6 @@ impl NetworkBoundaryBuilder for CardinalityBasedNetworkBoundaryBuilder {
             input_properties,
         })
     }
-}
-
-/// Returns `true` when the producer fan-out meets or exceeds `threshold`; beyond that point
-/// splitting into a smaller producer hash and a local consumer `RepartitionExec` is more efficient.
-#[inline(always)]
-fn should_use_salted_mode(
-    consumer_task_count: usize,
-    consumer_partition_count: usize,
-    threshold: usize,
-) -> bool {
-    consumer_task_count * consumer_partition_count >= threshold
 }
 
 #[cfg(test)]
