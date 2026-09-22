@@ -153,8 +153,8 @@ impl Worker {
         // is the following:
         // 1. The query ends normally, as all Arrow RecordBatches are already streamed.
         // 2. In DistributedExec::execute(), the end query guard is dropped.
-        // 3. In StageCoordinator::send_plan_task(), `end_stream_notifier` fires and the
-        //    coordinator->worker channel is gracefully ended.
+        // 3. The query's cancellation token ends the coordinator->worker stream, regardless
+        //    of any senders retained by the dynamic filter registry.
         // 4. The coordinator->worker channel EOS is received by this same function, ending the
         //    while loop inside this `tokio::spawn` below.
         // 5. The metrics and final dynamic filters are sent back in the worker->coordinator
