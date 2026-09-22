@@ -14,16 +14,21 @@ use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::Result;
 use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
-use datafusion::physical_expr::EquivalenceProperties;
+use datafusion::physical_expr::equivalence::{EquivalenceClass, EquivalenceGroup};
+use datafusion::physical_expr::{EquivalenceProperties, PhysicalExpr};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::union::UnionExec;
 use datafusion::physical_plan::{ExecutionPlan, Partitioning, PlanProperties};
 use datafusion::prelude::SessionConfig;
-use datafusion_proto::physical_plan::from_proto::parse_protobuf_partitioning;
-use datafusion_proto::physical_plan::to_proto::serialize_partitioning;
+use datafusion_proto::physical_plan::from_proto::{
+    parse_physical_sort_exprs, parse_protobuf_partitioning,
+};
+use datafusion_proto::physical_plan::to_proto::{
+    serialize_partitioning, serialize_physical_sort_exprs,
+};
 use datafusion_proto::physical_plan::{
-    ComposedPhysicalExtensionCodec, DefaultPhysicalProtoConverter, PhysicalExtensionCodec,
-    PhysicalPlanDecodeContext,
+    ComposedPhysicalExtensionCodec, PhysicalExtensionCodec, PhysicalPlanDecodeContext,
+    PhysicalProtoConverterExtension,
 };
 use datafusion_proto::protobuf;
 use datafusion_proto::protobuf::proto_error;
@@ -51,6 +56,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
         buf: &[u8],
         inputs: &[Arc<dyn ExecutionPlan>],
         ctx: &TaskContext,
+        proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
         let DistributedExecProto {
             node: Some(distributed_exec_node),
@@ -64,11 +70,17 @@ impl PhysicalExtensionCodec for DistributedCodec {
         fn parse_stage_proto(
             proto: Option<StageProto>,
             inputs: &[Arc<dyn ExecutionPlan>],
+            dynamic_filter_anchors: Vec<Arc<dyn PhysicalExpr>>,
         ) -> Result<Stage, DataFusionError> {
             let Some(proto) = proto else {
                 return Err(proto_error("Empty StageProto"));
             };
             if let Some(input) = inputs.first().cloned() {
+                if !dynamic_filter_anchors.is_empty() {
+                    return Err(proto_error(
+                        "Dynamic filter anchors require a remote input stage",
+                    ));
+                }
                 Ok(Stage::Local(LocalStage {
                     query_id: deserialize_uuid(proto.query_id.as_ref())?,
                     num: proto.num as usize,
@@ -92,6 +104,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     num: proto.num as usize,
                     workers: worker_urls,
                     runtime_stats: None,
+                    dynamic_filter_anchors,
                 }))
             }
         }
@@ -101,75 +114,133 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 schema,
                 partitioning,
                 input_stage,
+                equivalence_classes,
+                ordering,
             }) => {
                 let schema: Schema = schema
                     .as_ref()
                     .map(|s| s.try_into())
                     .ok_or(proto_error("NetworkShuffleExec is missing schema"))??;
 
-                let decode_ctx = PhysicalPlanDecodeContext::new(ctx, &DistributedCodec {});
+                let decode_ctx = PhysicalPlanDecodeContext::new(ctx, self);
                 let partitioning = parse_protobuf_partitioning(
                     partitioning.as_ref(),
                     &decode_ctx,
                     &schema,
-                    &DefaultPhysicalProtoConverter {},
+                    proto_converter,
                 )?
                 .ok_or(proto_error("NetworkShuffleExec is missing partitioning"))?;
 
+                let sort_exprs =
+                    parse_physical_sort_exprs(&ordering, &decode_ctx, &schema, proto_converter)?;
+
+                let dynamic_filter_anchors = input_stage
+                    .as_ref()
+                    .into_iter()
+                    .flat_map(|stage| stage.dynamic_filter_anchors.iter())
+                    .map(|expression| {
+                        proto_converter.proto_to_physical_expr(expression, &schema, &decode_ctx)
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+
+                let schema = Arc::new(schema);
+                let mut equivalence_properties = parse_equivalence_properties(
+                    equivalence_classes,
+                    schema,
+                    &decode_ctx,
+                    proto_converter,
+                )?;
+                // Restore ordering properties so NetworkShuffleExec::execute can sort-merge incoming streams.
+                if !sort_exprs.is_empty() {
+                    equivalence_properties.add_orderings([sort_exprs]);
+                }
+
                 Ok(Arc::new(new_network_hash_shuffle_exec(
                     partitioning,
-                    Arc::new(schema),
-                    parse_stage_proto(input_stage, inputs)?,
+                    equivalence_properties,
+                    parse_stage_proto(input_stage, inputs, dynamic_filter_anchors)?,
                 )))
             }
             DistributedExecNode::NetworkCoalesceTasks(NetworkCoalesceExecProto {
                 schema,
                 partitioning,
                 input_stage,
+                equivalence_classes,
             }) => {
                 let schema: Schema = schema
                     .as_ref()
                     .map(|s| s.try_into())
                     .ok_or(proto_error("NetworkCoalesceExec is missing schema"))??;
 
-                let decode_ctx = PhysicalPlanDecodeContext::new(ctx, &DistributedCodec {});
+                let decode_ctx = PhysicalPlanDecodeContext::new(ctx, self);
                 let partitioning = parse_protobuf_partitioning(
                     partitioning.as_ref(),
                     &decode_ctx,
                     &schema,
-                    &DefaultPhysicalProtoConverter {},
+                    proto_converter,
                 )?
                 .ok_or(proto_error("NetworkCoalesceExec is missing partitioning"))?;
+                let dynamic_filter_anchors = input_stage
+                    .as_ref()
+                    .into_iter()
+                    .flat_map(|stage| stage.dynamic_filter_anchors.iter())
+                    .map(|expression| {
+                        proto_converter.proto_to_physical_expr(expression, &schema, &decode_ctx)
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let schema = Arc::new(schema);
+                let equivalence_properties = parse_equivalence_properties(
+                    equivalence_classes,
+                    schema,
+                    &decode_ctx,
+                    proto_converter,
+                )?;
 
                 Ok(Arc::new(new_network_coalesce_tasks_exec(
                     partitioning,
-                    Arc::new(schema),
-                    parse_stage_proto(input_stage, inputs)?,
+                    equivalence_properties,
+                    parse_stage_proto(input_stage, inputs, dynamic_filter_anchors)?,
                 )))
             }
             DistributedExecNode::NetworkBroadcast(NetworkBroadcastExecProto {
                 schema,
                 partitioning,
                 input_stage,
+                equivalence_classes,
             }) => {
                 let schema: Schema = schema
                     .as_ref()
                     .map(|s| s.try_into())
                     .ok_or(proto_error("NetworkBroadcastExec is missing schema"))??;
 
-                let decode_ctx = PhysicalPlanDecodeContext::new(ctx, &DistributedCodec {});
+                let decode_ctx = PhysicalPlanDecodeContext::new(ctx, self);
                 let partitioning = parse_protobuf_partitioning(
                     partitioning.as_ref(),
                     &decode_ctx,
                     &schema,
-                    &DefaultPhysicalProtoConverter {},
+                    proto_converter,
                 )?
                 .ok_or(proto_error("NetworkBroadcastExec is missing partitioning"))?;
+                let dynamic_filter_anchors = input_stage
+                    .as_ref()
+                    .into_iter()
+                    .flat_map(|stage| stage.dynamic_filter_anchors.iter())
+                    .map(|expression| {
+                        proto_converter.proto_to_physical_expr(expression, &schema, &decode_ctx)
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let schema = Arc::new(schema);
+                let equivalence_properties = parse_equivalence_properties(
+                    equivalence_classes,
+                    schema,
+                    &decode_ctx,
+                    proto_converter,
+                )?;
 
                 Ok(Arc::new(new_network_broadcast_exec(
                     partitioning,
-                    Arc::new(schema),
-                    parse_stage_proto(input_stage, inputs)?,
+                    equivalence_properties,
+                    parse_stage_proto(input_stage, inputs, dynamic_filter_anchors)?,
                 )))
             }
             DistributedExecNode::Broadcast(BroadcastExecProto {
@@ -241,13 +312,28 @@ impl PhysicalExtensionCodec for DistributedCodec {
         }
     }
 
-    fn try_encode(&self, node: Arc<dyn ExecutionPlan>, buf: &mut Vec<u8>) -> Result<()> {
-        fn encode_stage_proto(stage: &Stage) -> Result<StageProto, DataFusionError> {
+    fn try_encode(
+        &self,
+        node: Arc<dyn ExecutionPlan>,
+        buf: &mut Vec<u8>,
+        proto_converter: &dyn PhysicalProtoConverterExtension,
+    ) -> Result<()> {
+        fn encode_stage_proto(
+            stage: &Stage,
+            codec: &DistributedCodec,
+            proto_converter: &dyn PhysicalProtoConverterExtension,
+        ) -> Result<StageProto, DataFusionError> {
+            let dynamic_filter_anchors = stage
+                .dynamic_filter_anchors()
+                .iter()
+                .map(|expression| proto_converter.physical_expr_to_proto(expression, codec))
+                .collect::<Result<Vec<_>>>()?;
             Ok(match stage {
                 Stage::Local(local) => StageProto {
                     query_id: serialize_uuid(&local.query_id).into(),
                     num: local.num as u64,
                     tasks: vec![ExecutionTaskProto::default(); local.tasks],
+                    dynamic_filter_anchors,
                 },
                 Stage::Remote(remote) => {
                     let mut tasks = Vec::with_capacity(remote.workers.len());
@@ -260,20 +346,41 @@ impl PhysicalExtensionCodec for DistributedCodec {
                         query_id: serialize_uuid(&remote.query_id).into(),
                         num: remote.num as u64,
                         tasks,
+                        dynamic_filter_anchors,
                     }
                 }
             })
         }
 
         if let Some(node) = node.downcast_ref::<NetworkShuffleExec>() {
+            // Serialize output ordering so workers know how to sort-merge incoming streams.
+            let ordering = node
+                .properties()
+                .output_ordering()
+                .map(|ordering| {
+                    serialize_physical_sort_exprs(ordering.iter().cloned(), self, proto_converter)
+                })
+                .transpose()?
+                .unwrap_or_default();
+
             let inner = NetworkShuffleExecProto {
                 schema: Some(node.schema().try_into()?),
                 partitioning: Some(serialize_partitioning(
                     node.properties().output_partitioning(),
-                    &DistributedCodec {},
-                    &DefaultPhysicalProtoConverter {},
+                    self,
+                    proto_converter,
                 )?),
-                input_stage: Some(encode_stage_proto(node.input_stage())?),
+                input_stage: Some(encode_stage_proto(
+                    node.input_stage(),
+                    self,
+                    proto_converter,
+                )?),
+                equivalence_classes: serialize_equivalence_group(
+                    node.properties().equivalence_properties(),
+                    self,
+                    proto_converter,
+                )?,
+                ordering,
             };
 
             let wrapper = DistributedExecProto {
@@ -286,10 +393,19 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 schema: Some(node.schema().try_into()?),
                 partitioning: Some(serialize_partitioning(
                     node.properties().output_partitioning(),
-                    &DistributedCodec {},
-                    &DefaultPhysicalProtoConverter {},
+                    self,
+                    proto_converter,
                 )?),
-                input_stage: Some(encode_stage_proto(node.input_stage())?),
+                input_stage: Some(encode_stage_proto(
+                    node.input_stage(),
+                    self,
+                    proto_converter,
+                )?),
+                equivalence_classes: serialize_equivalence_group(
+                    node.properties().equivalence_properties(),
+                    self,
+                    proto_converter,
+                )?,
             };
 
             let wrapper = DistributedExecProto {
@@ -302,10 +418,19 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 schema: Some(node.schema().try_into()?),
                 partitioning: Some(serialize_partitioning(
                     node.properties().output_partitioning(),
-                    &DistributedCodec {},
-                    &DefaultPhysicalProtoConverter {},
+                    self,
+                    proto_converter,
                 )?),
-                input_stage: Some(encode_stage_proto(node.input_stage())?),
+                input_stage: Some(encode_stage_proto(
+                    node.input_stage(),
+                    self,
+                    proto_converter,
+                )?),
+                equivalence_classes: serialize_equivalence_group(
+                    node.properties().equivalence_properties(),
+                    self,
+                    proto_converter,
+                )?,
             };
 
             let wrapper = DistributedExecProto {
@@ -369,6 +494,49 @@ impl PhysicalExtensionCodec for DistributedCodec {
     }
 }
 
+fn serialize_equivalence_group(
+    properties: &EquivalenceProperties,
+    codec: &dyn PhysicalExtensionCodec,
+    proto_converter: &dyn PhysicalProtoConverterExtension,
+) -> Result<Vec<EquivalenceClassProto>> {
+    properties
+        .eq_group()
+        .iter()
+        .map(|class| {
+            class
+                .iter()
+                .map(|expr| proto_converter.physical_expr_to_proto(expr, codec))
+                .collect::<Result<Vec<_>>>()
+                .map(|expressions| EquivalenceClassProto { expressions })
+        })
+        .collect()
+}
+
+fn parse_equivalence_properties(
+    equivalence_classes: Vec<EquivalenceClassProto>,
+    schema: SchemaRef,
+    decode_ctx: &PhysicalPlanDecodeContext<'_>,
+    proto_converter: &dyn PhysicalProtoConverterExtension,
+) -> Result<EquivalenceProperties> {
+    let classes = equivalence_classes
+        .into_iter()
+        .map(|class| {
+            class
+                .expressions
+                .iter()
+                .map(|expr| {
+                    proto_converter.proto_to_physical_expr(expr, schema.as_ref(), decode_ctx)
+                })
+                .collect::<Result<Vec<_>>>()
+                .map(EquivalenceClass::new)
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let mut properties = EquivalenceProperties::new(schema);
+    properties.add_equivalence_group(EquivalenceGroup::new(classes))?;
+    Ok(properties)
+}
+
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct StageProto {
     /// Our query id
@@ -381,6 +549,9 @@ pub struct StageProto {
     /// the plan
     #[prost(message, repeated, tag = "3")]
     pub tasks: Vec<ExecutionTaskProto>,
+    /// Dynamic-filter consumers retained after a remote stage's plan has moved to its workers.
+    #[prost(message, repeated, tag = "4")]
+    pub dynamic_filter_anchors: Vec<protobuf::PhysicalExprNode>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -425,6 +596,18 @@ pub struct NetworkShuffleExecProto {
     partitioning: Option<protobuf::Partitioning>,
     #[prost(message, optional, tag = "3")]
     input_stage: Option<StageProto>,
+    #[prost(message, repeated, tag = "4")]
+    equivalence_classes: Vec<EquivalenceClassProto>,
+    /// Sort expressions preserved across tasks and used by workers to sort-merge streams.
+    #[prost(message, repeated, tag = "5")]
+    ordering: Vec<protobuf::PhysicalSortExprNode>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct EquivalenceClassProto {
+    /// Expressions known to produce equal values.
+    #[prost(message, repeated, tag = "1")]
+    expressions: Vec<protobuf::PhysicalExprNode>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -463,12 +646,12 @@ pub struct ChildIdxWithTaskContextProto {
 
 fn new_network_hash_shuffle_exec(
     partitioning: Partitioning,
-    schema: SchemaRef,
+    equivalence_properties: EquivalenceProperties,
     input_stage: Stage,
 ) -> NetworkShuffleExec {
     NetworkShuffleExec {
         properties: Arc::new(PlanProperties::new(
-            EquivalenceProperties::new(schema),
+            equivalence_properties,
             partitioning,
             EmissionType::Incremental,
             Boundedness::Bounded,
@@ -489,16 +672,18 @@ pub struct NetworkCoalesceExecProto {
     partitioning: Option<protobuf::Partitioning>,
     #[prost(message, optional, tag = "3")]
     input_stage: Option<StageProto>,
+    #[prost(message, repeated, tag = "4")]
+    equivalence_classes: Vec<EquivalenceClassProto>,
 }
 
 fn new_network_coalesce_tasks_exec(
     partitioning: Partitioning,
-    schema: SchemaRef,
+    equivalence_properties: EquivalenceProperties,
     input_stage: Stage,
 ) -> NetworkCoalesceExec {
     NetworkCoalesceExec {
         properties: Arc::new(PlanProperties::new(
-            EquivalenceProperties::new(schema),
+            equivalence_properties,
             partitioning,
             EmissionType::Incremental,
             Boundedness::Bounded,
@@ -516,6 +701,8 @@ pub struct NetworkBroadcastExecProto {
     partitioning: Option<protobuf::Partitioning>,
     #[prost(message, optional, tag = "3")]
     input_stage: Option<StageProto>,
+    #[prost(message, repeated, tag = "4")]
+    equivalence_classes: Vec<EquivalenceClassProto>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -529,12 +716,12 @@ pub struct SamplerExecProto {}
 
 fn new_network_broadcast_exec(
     partitioning: Partitioning,
-    schema: SchemaRef,
+    equivalence_properties: EquivalenceProperties,
     input_stage: Stage,
 ) -> NetworkBroadcastExec {
     NetworkBroadcastExec {
         properties: Arc::new(PlanProperties::new(
-            EquivalenceProperties::new(schema),
+            equivalence_properties,
             partitioning,
             EmissionType::Incremental,
             Boundedness::Bounded,
@@ -546,13 +733,20 @@ fn new_network_broadcast_exec(
 
 #[cfg(test)]
 mod tests {
+    use super::super::physical_plan::{
+        new_proto_converter as default_proto_converter, roundtrip_pb,
+    };
     use super::*;
     use datafusion::arrow::datatypes::{DataType, Field};
-    use datafusion::physical_expr::LexOrdering;
+    use datafusion::physical_expr::{LexOrdering, PhysicalExpr};
     use datafusion::physical_plan::empty::EmptyExec;
+    use datafusion::physical_plan::filter::FilterExec;
     use datafusion::prelude::SessionContext;
     use datafusion::{
-        physical_expr::{Partitioning, PhysicalSortExpr, expressions::Column, expressions::col},
+        physical_expr::{
+            Partitioning, PhysicalSortExpr,
+            expressions::{Column, DynamicFilterPhysicalExpr, col, lit},
+        },
         physical_plan::{ExecutionPlan, displayable, sorts::sort::SortExec, union::UnionExec},
     };
 
@@ -566,6 +760,7 @@ mod tests {
             num: 0,
             workers: vec![],
             runtime_stats: None,
+            dynamic_filter_anchors: vec![],
         })
     }
 
@@ -598,15 +793,80 @@ mod tests {
 
         let schema = schema_i32("a");
         let part = Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 4);
-        let plan: Arc<dyn ExecutionPlan> =
-            Arc::new(new_network_hash_shuffle_exec(part, schema, dummy_stage()));
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(new_network_hash_shuffle_exec(
+            part,
+            EquivalenceProperties::new(schema),
+            dummy_stage(),
+        ));
 
         let mut buf = Vec::new();
-        codec.try_encode(plan.clone(), &mut buf)?;
+        codec.try_encode(plan.clone(), &mut buf, &default_proto_converter())?;
 
-        let decoded = codec.try_decode(&buf, &[], &ctx)?;
+        let decoded = codec.try_decode(&buf, &[], &ctx, &default_proto_converter())?;
         assert_eq!(repr(&plan), repr(&decoded));
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_roundtrip_network_dynamic_filter_anchor() -> datafusion::common::Result<()> {
+        let ctx = create_context();
+        let schema = schema_i32("a");
+        let dynamic_filter = Arc::new(DynamicFilterPhysicalExpr::new(
+            vec![Arc::new(Column::new("a", 0))],
+            lit(true),
+        )) as Arc<dyn datafusion::physical_expr::PhysicalExpr>;
+        let expected_id = dynamic_filter.expression_id();
+        let stage = Stage::Remote(RemoteStage {
+            query_id: Default::default(),
+            num: 0,
+            workers: vec![],
+            runtime_stats: None,
+            dynamic_filter_anchors: vec![Arc::clone(&dynamic_filter)],
+        });
+        let network: Arc<dyn ExecutionPlan> = Arc::new(new_network_hash_shuffle_exec(
+            Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 4),
+            EquivalenceProperties::new(schema),
+            stage,
+        ));
+
+        let mut buf = vec![];
+        DistributedCodec.try_encode(Arc::clone(&network), &mut buf, &default_proto_converter())?;
+        let encoded = DistributedExecProto::decode(buf.as_slice())
+            .map_err(|error| proto_error(format!("{error}")))?;
+        let Some(DistributedExecNode::NetworkHashShuffle(encoded)) = encoded.node else {
+            panic!("expected a network shuffle")
+        };
+        assert_eq!(
+            encoded
+                .input_stage
+                .expect("network shuffle should contain its input stage")
+                .dynamic_filter_anchors
+                .len(),
+            1,
+        );
+
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(FilterExec::try_new(dynamic_filter, network)?);
+
+        let decoded = roundtrip_pb(plan, &ctx)?;
+        let filter = decoded.downcast_ref::<FilterExec>().unwrap();
+        let predicate = filter
+            .predicate()
+            .downcast_ref::<DynamicFilterPhysicalExpr>()
+            .unwrap();
+        let network = filter.input().downcast_ref::<NetworkShuffleExec>().unwrap();
+        let anchor = network.input_stage().dynamic_filter_anchors()[0]
+            .downcast_ref::<DynamicFilterPhysicalExpr>()
+            .unwrap();
+
+        assert_eq!(predicate.expression_id(), expected_id);
+        assert_eq!(anchor.expression_id(), expected_id);
+        predicate.update(lit(false))?;
+        assert_eq!(
+            anchor.current()?.to_string(),
+            "false",
+            "the filter predicate and network anchor should share state",
+        );
         Ok(())
     }
 
@@ -618,12 +878,12 @@ mod tests {
         let schema = schema_i32("c");
         let left = Arc::new(new_network_hash_shuffle_exec(
             Partitioning::RoundRobinBatch(2),
-            schema.clone(),
+            EquivalenceProperties::new(schema.clone()),
             dummy_stage(),
         ));
         let right = Arc::new(new_network_hash_shuffle_exec(
             Partitioning::RoundRobinBatch(2),
-            schema.clone(),
+            EquivalenceProperties::new(schema.clone()),
             dummy_stage(),
         ));
 
@@ -632,9 +892,9 @@ mod tests {
             Arc::new(NetworkCoalesceExec::try_new(union.clone(), 1, 1)?);
 
         let mut buf = Vec::new();
-        codec.try_encode(plan.clone(), &mut buf)?;
+        codec.try_encode(plan.clone(), &mut buf, &default_proto_converter())?;
 
-        let decoded = codec.try_decode(&buf, &[union], &ctx)?;
+        let decoded = codec.try_decode(&buf, &[union], &ctx, &default_proto_converter())?;
         assert_eq!(repr(&plan), repr(&decoded));
 
         Ok(())
@@ -648,7 +908,7 @@ mod tests {
         let schema = schema_i32("d");
         let flight = Arc::new(new_network_hash_shuffle_exec(
             Partitioning::UnknownPartitioning(1),
-            schema.clone(),
+            EquivalenceProperties::new(schema.clone()),
             dummy_stage(),
         ));
 
@@ -665,9 +925,9 @@ mod tests {
             Arc::new(NetworkCoalesceExec::try_new(sort.clone(), 1, 1)?);
 
         let mut buf = Vec::new();
-        codec.try_encode(plan.clone(), &mut buf)?;
+        codec.try_encode(plan.clone(), &mut buf, &default_proto_converter())?;
 
-        let decoded = codec.try_decode(&buf, &[sort], &ctx)?;
+        let decoded = codec.try_decode(&buf, &[sort], &ctx, &default_proto_converter())?;
         assert_eq!(repr(&plan), repr(&decoded));
 
         Ok(())
@@ -681,14 +941,14 @@ mod tests {
         let schema = schema_i32("e");
         let plan: Arc<dyn ExecutionPlan> = Arc::new(new_network_coalesce_tasks_exec(
             Partitioning::RoundRobinBatch(3),
-            schema,
+            EquivalenceProperties::new(schema),
             dummy_stage(),
         ));
 
         let mut buf = Vec::new();
-        codec.try_encode(plan.clone(), &mut buf)?;
+        codec.try_encode(plan.clone(), &mut buf, &default_proto_converter())?;
 
-        let decoded = codec.try_decode(&buf, &[], &ctx)?;
+        let decoded = codec.try_decode(&buf, &[], &ctx, &default_proto_converter())?;
         assert_eq!(repr(&plan), repr(&decoded));
 
         Ok(())
@@ -703,14 +963,14 @@ mod tests {
         let part = Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 4);
         let plan: Arc<dyn ExecutionPlan> = Arc::new(new_network_hash_shuffle_exec(
             part,
-            schema,
+            EquivalenceProperties::new(schema),
             dummy_stage_with_plan(),
         ));
 
         let mut buf = Vec::new();
-        codec.try_encode(plan.clone(), &mut buf)?;
+        codec.try_encode(plan.clone(), &mut buf, &default_proto_converter())?;
 
-        let decoded = codec.try_decode(&buf, &[empty_exec()], &ctx)?;
+        let decoded = codec.try_decode(&buf, &[empty_exec()], &ctx, &default_proto_converter())?;
         assert_eq!(repr(&plan), repr(&decoded));
 
         Ok(())
@@ -724,14 +984,14 @@ mod tests {
         let schema = schema_i32("e");
         let plan: Arc<dyn ExecutionPlan> = Arc::new(new_network_coalesce_tasks_exec(
             Partitioning::RoundRobinBatch(3),
-            schema,
+            EquivalenceProperties::new(schema),
             dummy_stage_with_plan(),
         ));
 
         let mut buf = Vec::new();
-        codec.try_encode(plan.clone(), &mut buf)?;
+        codec.try_encode(plan.clone(), &mut buf, &default_proto_converter())?;
 
-        let decoded = codec.try_decode(&buf, &[empty_exec()], &ctx)?;
+        let decoded = codec.try_decode(&buf, &[empty_exec()], &ctx, &default_proto_converter())?;
         assert_eq!(repr(&plan), repr(&decoded));
 
         Ok(())
@@ -745,7 +1005,7 @@ mod tests {
         let schema = schema_i32("f");
         let flight = Arc::new(new_network_coalesce_tasks_exec(
             Partitioning::UnknownPartitioning(1),
-            schema,
+            EquivalenceProperties::new(schema),
             dummy_stage(),
         ));
 
@@ -753,9 +1013,9 @@ mod tests {
             Arc::new(NetworkCoalesceExec::try_new(flight.clone(), 1, 1)?);
 
         let mut buf = Vec::new();
-        codec.try_encode(plan.clone(), &mut buf)?;
+        codec.try_encode(plan.clone(), &mut buf, &default_proto_converter())?;
 
-        let decoded = codec.try_decode(&buf, &[flight], &ctx)?;
+        let decoded = codec.try_decode(&buf, &[flight], &ctx, &default_proto_converter())?;
         assert_eq!(repr(&plan), repr(&decoded));
 
         Ok(())
@@ -769,12 +1029,12 @@ mod tests {
         let schema = schema_i32("g");
         let left = Arc::new(new_network_coalesce_tasks_exec(
             Partitioning::RoundRobinBatch(2),
-            schema.clone(),
+            EquivalenceProperties::new(schema.clone()),
             dummy_stage(),
         ));
         let right = Arc::new(new_network_coalesce_tasks_exec(
             Partitioning::RoundRobinBatch(2),
-            schema.clone(),
+            EquivalenceProperties::new(schema.clone()),
             dummy_stage(),
         ));
 
@@ -783,9 +1043,9 @@ mod tests {
             Arc::new(NetworkCoalesceExec::try_new(union.clone(), 1, 1)?);
 
         let mut buf = Vec::new();
-        codec.try_encode(plan.clone(), &mut buf)?;
+        codec.try_encode(plan.clone(), &mut buf, &default_proto_converter())?;
 
-        let decoded = codec.try_decode(&buf, &[union], &ctx)?;
+        let decoded = codec.try_decode(&buf, &[union], &ctx, &default_proto_converter())?;
         assert_eq!(repr(&plan), repr(&decoded));
 
         Ok(())
@@ -799,12 +1059,12 @@ mod tests {
         let schema = schema_i32("h");
         let left = Arc::new(new_network_hash_shuffle_exec(
             Partitioning::RoundRobinBatch(2),
-            schema.clone(),
+            EquivalenceProperties::new(schema.clone()),
             dummy_stage(),
         )) as Arc<dyn ExecutionPlan>;
         let right = Arc::new(new_network_hash_shuffle_exec(
             Partitioning::RoundRobinBatch(2),
-            schema.clone(),
+            EquivalenceProperties::new(schema.clone()),
             dummy_stage(),
         )) as Arc<dyn ExecutionPlan>;
 
@@ -816,10 +1076,82 @@ mod tests {
             )?);
 
         let mut buf = Vec::new();
-        codec.try_encode(plan.clone(), &mut buf)?;
+        codec.try_encode(plan.clone(), &mut buf, &default_proto_converter())?;
 
-        let decoded = codec.try_decode(&buf, &[left, right], &ctx)?;
+        let decoded = codec.try_decode(&buf, &[left, right], &ctx, &default_proto_converter())?;
         assert_eq!(repr(&plan), repr(&decoded));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_roundtrip_network_boundaries_preserves_equivalence_group()
+    -> datafusion::common::Result<()> {
+        let codec = DistributedCodec;
+        let ctx = create_context();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Int32, false),
+            Field::new("b", DataType::Int32, false),
+        ]));
+        let a: Arc<dyn PhysicalExpr> = Arc::new(Column::new("a", 0));
+        let b: Arc<dyn PhysicalExpr> = Arc::new(Column::new("b", 1));
+
+        let mut equivalence_properties = EquivalenceProperties::new(schema.clone());
+        equivalence_properties.add_equal_conditions(a.clone(), b.clone())?;
+        equivalence_properties.add_ordering([PhysicalSortExpr::new_default(a.clone())]);
+
+        let plans: Vec<(&str, Arc<dyn ExecutionPlan>)> = vec![
+            (
+                "shuffle",
+                Arc::new(new_network_hash_shuffle_exec(
+                    Partitioning::UnknownPartitioning(1),
+                    equivalence_properties.clone(),
+                    dummy_stage(),
+                )),
+            ),
+            (
+                "coalesce",
+                Arc::new(new_network_coalesce_tasks_exec(
+                    Partitioning::UnknownPartitioning(1),
+                    equivalence_properties.clone(),
+                    dummy_stage(),
+                )),
+            ),
+            (
+                "broadcast",
+                Arc::new(new_network_broadcast_exec(
+                    Partitioning::UnknownPartitioning(1),
+                    equivalence_properties,
+                    dummy_stage(),
+                )),
+            ),
+        ];
+
+        for (name, plan) in plans {
+            if name == "shuffle" {
+                assert!(plan.properties().output_ordering().is_some());
+            }
+
+            let mut buf = Vec::new();
+            codec.try_encode(plan.clone(), &mut buf, &default_proto_converter())?;
+            let decoded = codec.try_decode(&buf, &[], &ctx, &default_proto_converter())?;
+
+            assert!(
+                decoded
+                    .properties()
+                    .equivalence_properties()
+                    .eq_group()
+                    .exprs_equal(&a, &b),
+                "{name} lost the equivalence relationship"
+            );
+            if name == "shuffle" {
+                assert_eq!(
+                    decoded.properties().output_ordering(),
+                    plan.properties().output_ordering(),
+                    "shuffle should preserve its input ordering"
+                );
+            }
+        }
 
         Ok(())
     }

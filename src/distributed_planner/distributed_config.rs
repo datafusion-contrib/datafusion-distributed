@@ -3,7 +3,6 @@ use datafusion::common::{DataFusionError, extensions_options, plan_err};
 use datafusion::config::{ConfigExtension, ConfigOptions};
 use datafusion::execution::TaskContext;
 use datafusion::prelude::SessionConfig;
-use std::sync::Arc;
 
 extensions_options! {
     /// Configuration for the distributed planner.
@@ -18,7 +17,7 @@ extensions_options! {
         /// - If a node is increasing the cardinality of the data, this factor will increase.
         /// - If a node reduces the cardinality of the data, this factor will decrease.
         /// - In any other situation, this factor is left intact.
-        pub cardinality_task_count_factor: f64, default = cardinality_task_count_factor_default()
+        pub cardinality_task_count_factor: f64, default = 1.0
         /// When encountering a UNION operation, isolate its children depending on the task context.
         /// For example, on a UNION operation with 3 children running in 3 distributed tasks,
         /// instead of executing the 3 children in each 3 tasks with a DistributedTaskContext of
@@ -30,6 +29,10 @@ extensions_options! {
         /// Propagate collected metrics from all nodes in the plan across network boundaries
         /// so that they can be reconstructed on the head node of the plan.
         pub collect_metrics: bool, default = true
+        /// Collect completed dynamic filters from worker tasks so that they can be displayed in
+        /// the distributed plan. This does not control whether dynamic filtering is used during
+        /// query execution.
+        pub collect_dynamic_filters: bool, default = true
         /// Enable broadcast joins for CollectLeft hash joins. When enabled, the build side of
         /// a CollectLeft join is broadcast to all consumer tasks.
         pub broadcast_joins: bool, default = true
@@ -47,6 +50,14 @@ extensions_options! {
         /// If set to 0, this value is the number of workers returned by the provided `WorkerResolver`.
         /// It defaults to 0.
         pub max_tasks_per_stage: usize, default = 0
+        /// Maximum number of times the coordinator retries establishing a coordinator channel
+        /// after the initial dial fails with a retryable error. Set to 0 to disable retries.
+        pub max_coordinator_channel_retries: usize, default = 3
+        /// Initial delay, in milliseconds, before retrying a coordinator channel on the same
+        /// worker. The delay doubles after each same-worker retry.
+        pub coordinator_channel_retry_initial_backoff_ms: u64, default = 100
+        /// Maximum delay, in milliseconds, between same-worker coordinator channel retries.
+        pub coordinator_channel_retry_max_backoff_ms: u64, default = 1_000
         /// Enable the PartialReduce optimization, which inserts an extra aggregation pass
         /// above hash RepartitionExec before network shuffles to reduce shuffle data size.
         /// Disabled by default because its effectiveness is workload-dependent: it helps when
@@ -68,14 +79,6 @@ extensions_options! {
         /// If `dynamic_task_count` is enabled, this value is the amount of bytes each
         /// partition is expected to handle. Lower values will result in greater parallelism.
         pub dynamic_bytes_per_partition: usize, default = 16 * 1024 * 1024
-    }
-}
-
-fn cardinality_task_count_factor_default() -> f64 {
-    if cfg!(test) || cfg!(feature = "integration") {
-        1.5
-    } else {
-        1.0
     }
 }
 
@@ -101,7 +104,7 @@ impl DistributedConfig {
     }
 
     /// Gets the [DistributedConfig] from the [ConfigOptions]'s in the provided [TaskContext].
-    pub fn from_task_context(ctx: &Arc<TaskContext>) -> Result<&Self, DataFusionError> {
+    pub fn from_task_context(ctx: &TaskContext) -> Result<&Self, DataFusionError> {
         Self::from_session_config(ctx.session_config())
     }
 

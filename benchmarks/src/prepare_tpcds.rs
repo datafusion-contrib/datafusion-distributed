@@ -1,14 +1,13 @@
-use datafusion::error::DataFusionError;
-use datafusion_distributed_benchmarks::datasets::tpcds;
-use std::path::{Path, PathBuf};
+use datafusion::common::exec_datafusion_err;
+use datafusion_distributed_benchmarks::datasets::{output::DatasetOutput, tpcds};
 use structopt::StructOpt;
 
 /// Prepare TPC-DS parquet files for benchmarks
 #[derive(Debug, StructOpt)]
 pub struct PrepareTpcdsOpt {
-    /// Output path
-    #[structopt(parse(from_os_str), required = true, short = "o", long = "output")]
-    output_path: PathBuf,
+    /// Empty local directory or s3://bucket/prefix
+    #[structopt(required = true, short = "o", long = "output")]
+    output_path: String,
 
     /// Number of partitions to produce. By default, uses only 1 partition.
     #[structopt(short = "n", long = "partitions", default_value = "1")]
@@ -21,8 +20,12 @@ pub struct PrepareTpcdsOpt {
 
 impl PrepareTpcdsOpt {
     pub async fn run(self) -> datafusion::common::Result<()> {
-        tpcds::generate_data(Path::new(&self.output_path), self.sf, self.partitions)
-            .await
-            .map_err(|e| DataFusionError::Internal(format!("{e:?}")))
+        tpcds::generate_data(
+            &DatasetOutput::new(&self.output_path).await?,
+            self.sf,
+            self.partitions,
+        )
+        .await
+        .map_err(|e| exec_datafusion_err!("{e}"))
     }
 }

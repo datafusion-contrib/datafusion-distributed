@@ -1,10 +1,13 @@
-use crate::worker::{LocalWorkerContext, SingleWriteMultiRead, WorkerSessionBuilder};
+use crate::protocol::LocalWorkerContext;
+use crate::worker::{SingleWriteMultiRead, WorkerSessionBuilder};
 use crate::{DefaultSessionBuilder, TaskData, TaskKey};
 use datafusion::common::DataFusionError;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use moka::future::Cache;
 use std::borrow::Cow;
 use std::sync::Arc;
+#[cfg(feature = "integration")]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use url::Url;
 
@@ -23,6 +26,8 @@ pub struct Worker {
     pub(super) session_builder: Arc<dyn WorkerSessionBuilder + Send + Sync>,
     pub(crate) max_message_size: Option<usize>,
     pub(super) version: Cow<'static, str>,
+    #[cfg(feature = "integration")]
+    pub(super) coordinator_channels_running: Arc<AtomicUsize>,
 }
 
 impl Default for Worker {
@@ -34,6 +39,8 @@ impl Default for Worker {
             session_builder: Arc::new(DefaultSessionBuilder),
             max_message_size: Some(usize::MAX),
             version: Cow::Borrowed(""),
+            #[cfg(feature = "integration")]
+            coordinator_channels_running: Arc::new(AtomicUsize::new(0)),
         }
     }
 }
@@ -89,7 +96,7 @@ impl Worker {
     /// unnecessary network hops.
     pub fn to_local_worker_context(&self, self_url: Url) -> LocalWorkerContext {
         LocalWorkerContext {
-            task_data_entries: Arc::clone(&self.task_data_entries),
+            local_worker: self.clone(),
             self_url,
         }
     }
@@ -101,5 +108,11 @@ impl Worker {
         // `entry_count()` task data.
         self.task_data_entries.run_pending_tasks().await;
         self.task_data_entries.entry_count() as usize
+    }
+
+    /// Returns the number of live worker-to-coordinator streams.
+    #[cfg(feature = "integration")]
+    pub fn coordinator_channels_running(&self) -> usize {
+        self.coordinator_channels_running.load(Ordering::SeqCst)
     }
 }

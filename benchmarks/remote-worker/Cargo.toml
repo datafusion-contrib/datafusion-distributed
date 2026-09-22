@@ -1,0 +1,35 @@
+[package]
+name = "datafusion-distributed-remote-worker"
+version = "0.1.0"
+edition = "2024"
+default-run = "worker"
+publish = false
+
+[dependencies]
+async-trait = "0.1.89"
+axum = "0.8"
+datafusion = { workspace = true }
+openssl = { version = "0.10", features = ["vendored"] }
+datafusion-distributed = { path = "../..", features = [
+  "integration",
+  "system-metrics",
+] }
+datafusion-distributed-iceberg = { path = "../../iceberg" }
+env_logger = "0.11.8"
+futures = "0.3.31"
+log = "0.4.27"
+mimalloc = "0.1"
+object_store = { version = "0.13", features = ["aws"] }
+serde = { version = "1.0.219", features = ["derive"] }
+sketches-ddsketch = "0.3"
+structopt = "0.3.26"
+tokio = { version = "1.48", features = ["full"] }
+tonic = { version = "0.14.1", features = ["transport"] }
+url = "2.5.7"
+
+[build-dependencies]
+built = { version = "0.8", features = ["git2", "chrono"] }
+
+[[bin]]
+name = "worker"
+path = "src/main.rs"

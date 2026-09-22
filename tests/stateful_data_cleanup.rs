@@ -1,19 +1,23 @@
 #[cfg(all(feature = "integration", feature = "tpch", test))]
 mod tests {
-    use datafusion::common::instant::Instant;
-    use datafusion::error::Result;
+    use datafusion::common::{Result, instant::Instant};
     use datafusion::physical_plan::execute_stream;
     use datafusion::prelude::SessionContext;
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::{DefaultSessionBuilder, DistributedExt, Worker};
-    use datafusion_distributed_benchmarks::datasets::{register_tables, tpch};
+    use datafusion_distributed_benchmarks::datasets::{
+        output::DatasetOutput, register_tables, tpch,
+    };
     use futures::TryStreamExt;
     use std::fs;
     use std::path::Path;
     use std::time::Duration;
     use test_case::test_case;
-    use tokio::sync::OnceCell;
-    use tokio::time::timeout;
+    use tokio::{
+        spawn,
+        sync::OnceCell,
+        time::{sleep, timeout},
+    };
 
     const NUM_WORKERS: usize = 4;
     const TPCH_SCALE_FACTOR: f64 = 1.0;
@@ -60,10 +64,48 @@ mod tests {
         Ok(())
     }
 
-    /// Polls until every worker reports 0 running tasks, or fails after 5s. Task entries are
-    /// torn down asynchronously once the coordinator->worker channel disconnects (shortly after
-    /// the query's output stream is dropped), so cleanup is not observable synchronously the
-    /// instant the query future resolves — hence the poll rather than an immediate assert.
+    #[test_case((false, false); "metrics_disabled_static_planner")]
+    #[test_case((true, false); "metrics_enabled_static_planner")]
+    #[test_case((false, true); "metrics_disabled_dynamic_planner")]
+    #[test_case((true, true); "metrics_enabled_dynamic_planner")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cancellation_closes_coordinator_channels(
+        (collect_metrics, adaptive): (bool, bool),
+    ) -> Result<()> {
+        let (mut d_ctx, _guard, workers) =
+            start_localhost_context(NUM_WORKERS, DefaultSessionBuilder).await;
+        d_ctx.set_distributed_metrics_collection(collect_metrics)?;
+        d_ctx.set_distributed_dynamic_task_count(adaptive)?;
+
+        #[allow(clippy::disallowed_methods)]
+        let execution = spawn(run_tpch_query(d_ctx, "q2"));
+
+        timeout(Duration::from_secs(10), async {
+            while coordinator_channels_running(&workers) == 0 {
+                assert!(
+                    !execution.is_finished(),
+                    "query completed before opening a coordinator channel"
+                );
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("query did not open a coordinator channel within 10 seconds");
+        assert!(coordinator_channels_running(&workers) > 0);
+        execution.abort();
+        let error = timeout(Duration::from_secs(1), execution)
+            .await
+            .expect("cancelled query did not stop within one second")
+            .expect_err("query completed before it was cancelled");
+        assert!(error.is_cancelled());
+        assert_no_tasks_running_eventually(&workers).await;
+
+        Ok(())
+    }
+
+    /// Polls until every worker reports 0 running tasks and worker-to-coordinator streams, or fails
+    /// after 5s. Cleanup is asynchronous after the query output is dropped, so it is not observable
+    /// synchronously when the query future resolves.
     async fn assert_no_tasks_running_eventually(workers: &[Worker]) {
         let start = Instant::now();
         loop {
@@ -71,15 +113,24 @@ mod tests {
             for worker in workers {
                 tasks_running += worker.tasks_running().await;
             }
-            if tasks_running == 0 {
+            let channels_running = coordinator_channels_running(workers);
+            if tasks_running == 0 && channels_running == 0 {
                 return;
             }
             assert!(
                 start.elapsed() < Duration::from_secs(5),
-                "Expected 0 tasks running across workers, but still had {tasks_running} after 5s"
+                "Expected no running tasks or coordinator channels, but still had \
+                 {tasks_running} tasks and {channels_running} channels after 5s"
             );
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            sleep(Duration::from_millis(50)).await;
         }
+    }
+
+    fn coordinator_channels_running(workers: &[Worker]) -> usize {
+        workers
+            .iter()
+            .map(Worker::coordinator_channels_running)
+            .sum()
     }
 
     async fn run_tpch_query(d_ctx: SessionContext, query_id: &str) -> Result<()> {
@@ -111,7 +162,11 @@ mod tests {
         INIT_TEST_TPCH_TABLES
             .get_or_init(|| async {
                 if !fs::exists(&data_dir).unwrap() {
-                    tpch::generate_tpch_data(&data_dir, sf, parts)
+                    let output = DatasetOutput::new(data_dir.to_str().unwrap())
+                        .await
+                        .unwrap();
+                    tpch::generate_data(&output, sf, parts, false)
+                        .await
                         .expect("Failed to generate TPC-H data");
                 }
             })

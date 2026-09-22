@@ -116,10 +116,10 @@ mod tests {
         "#,
             )
             .await;
-        assert_snapshot!(plan_memory(plan), @r"
+        assert_snapshot!(plan_memory(plan), @"
         M(left_Cols) | HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
          M(0) | DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
-         M(0) | DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ]
+         M(0) | DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
         ");
     }
 
@@ -169,9 +169,9 @@ mod tests {
             .target_partitions(1)
             .physical_plan(r#"SELECT * FROM weather ORDER BY "WindGustDir" LIMIT 10"#)
             .await;
-        assert_snapshot!(plan_memory(topk), @r"
+        assert_snapshot!(plan_memory(topk), @"
         M(out_Cols) | SortExec: TopK(fetch=10), expr=[WindGustDir@5 ASC NULLS LAST], preserve_partitioning=[false]
-         M(0) | DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MinTemp, MaxTemp, Rainfall, Evaporation, Sunshine, WindGustDir, WindGustSpeed, WindDir9am, WindDir3pm, WindSpeed9am, WindSpeed3pm, Humidity9am, Humidity3pm, Pressure9am, Pressure3pm, Cloud9am, Cloud3pm, Temp9am, Temp3pm, RainToday, RISK_MM, RainTomorrow], file_type=parquet, predicate=DynamicFilter [ empty ], sort_order_for_reorder=[WindGustDir@5 ASC NULLS LAST]
+         M(0) | DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MinTemp, MaxTemp, Rainfall, Evaporation, Sunshine, WindGustDir, WindGustSpeed, WindDir9am, WindDir3pm, WindSpeed9am, WindSpeed3pm, Humidity9am, Humidity3pm, Pressure9am, Pressure3pm, Cloud9am, Cloud3pm, Temp9am, Temp3pm, RainToday, RISK_MM, RainTomorrow], file_type=parquet, predicate=DynamicFilter [ empty ], sort_order_for_reorder=[WindGustDir@5 ASC NULLS LAST], dynamic_rg_pruning=eligible
         ");
     }
 

@@ -121,6 +121,14 @@ pub fn df_metric_to_proto(metric: Arc<Metric>) -> Result<pb::Metric, DataFusionE
             partition,
             labels,
         }),
+        MetricValue::PeakMemoryUsage { name, gauge } => Ok(pb::Metric {
+            value: Some(pb::metric::Value::PeakMemoryUsage(pb::PeakMemoryUsage {
+                name: name.to_string(),
+                value: gauge.value() as u64
+            })),
+            partition,
+            labels,
+        }),
         MetricValue::Time { name, time } => Ok(pb::Metric {
             value: Some(pb::metric::Value::Time(pb::NamedTime {
                 name: name.to_string(),
@@ -364,6 +372,18 @@ pub fn metric_proto_to_df(metric: pb::Metric) -> Result<Arc<Metric>, DataFusionE
             Ok(Arc::new(Metric::new_with_labels(
                 MetricValue::Gauge {
                     name: Cow::Owned(named_gauge.name),
+                    gauge,
+                },
+                partition,
+                labels,
+            )))
+        }
+        Some(pb::metric::Value::PeakMemoryUsage(peak_memory_usage)) => {
+            let gauge = Gauge::new();
+            gauge.set(peak_memory_usage.value as usize);
+            Ok(Arc::new(Metric::new_with_labels(
+                MetricValue::PeakMemoryUsage {
+                    name: Cow::Owned(peak_memory_usage.name),
                     gauge,
                 },
                 partition,
@@ -673,6 +693,19 @@ mod tests {
                     assert_eq!(g1.value(), g2.value());
                 }
                 (
+                    MetricValue::PeakMemoryUsage {
+                        name: n1,
+                        gauge: g1,
+                    },
+                    MetricValue::PeakMemoryUsage {
+                        name: n2,
+                        gauge: g2,
+                    },
+                ) => {
+                    assert_eq!(n1.as_ref(), n2.as_ref());
+                    assert_eq!(g1.value(), g2.value());
+                }
+                (
                     MetricValue::Time { name: n1, time: t1 },
                     MetricValue::Time { name: n2, time: t2 },
                 ) => {
@@ -863,6 +896,23 @@ mod tests {
             labels,
         )));
         test_roundtrip_helper(metrics_set, "named_gauge");
+    }
+
+    #[test]
+    fn test_peak_memory_usage_roundtrip() {
+        let mut metrics_set = MetricsSet::new();
+        let gauge = Gauge::new();
+        gauge.set(4096);
+        let labels = vec![Label::new("resource", "memory")];
+        metrics_set.push(Arc::new(Metric::new_with_labels(
+            MetricValue::PeakMemoryUsage {
+                name: Cow::Borrowed("peak_memory_usage"),
+                gauge,
+            },
+            Some(8),
+            labels,
+        )));
+        test_roundtrip_helper(metrics_set, "peak_memory_usage");
     }
 
     #[test]

@@ -207,12 +207,14 @@ pub async fn register_plan_on_worker(
         .get_with(task_key, async { Default::default() })
         .await;
     let (metrics_tx, _metrics_rx) = tokio::sync::oneshot::channel();
+    let (dynamic_filters_tx, _dynamic_filters_rx) = tokio::sync::oneshot::channel();
     swmr_task_data
         .write(Ok(TaskData {
             task_ctx,
             base_plan: plan,
             final_plan: Default::default(),
             metrics_tx: Arc::new(std::sync::Mutex::new(Some(metrics_tx))),
+            completed_dynamic_filters_tx: Arc::new(std::sync::Mutex::new(Some(dynamic_filters_tx))),
             task_data_metrics: Arc::new(TaskDataMetrics::new(0)),
         }))
         .expect("failed to write to task data");

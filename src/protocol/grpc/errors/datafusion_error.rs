@@ -304,8 +304,8 @@ mod tests {
     use datafusion::arrow::error::ArrowError;
     use datafusion::common::{DataFusionError, SchemaError};
     use datafusion::logical_expr::sqlparser::parser::ParserError;
+    use datafusion::object_store::Error as ObjectStoreError;
     use datafusion::parquet::errors::ParquetError;
-    use object_store::Error as ObjectStoreError;
     use prost::Message;
     use std::io::{Error as IoError, ErrorKind};
     use std::sync::Arc;

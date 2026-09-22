@@ -17,7 +17,12 @@ fn shuffle(c: &mut Criterion) {
     let benches = vec![
         ShuffleBench::one_to_one_baseline(),
         ShuffleBench::one_to_one_baseline().with_compression(Some(CompressionType::LZ4_FRAME)),
+        ShuffleBench::many_to_one_baseline(2),
+        ShuffleBench::many_to_one_baseline(4),
         ShuffleBench::many_to_one_baseline(8),
+        ShuffleBench::many_to_one_baseline(16),
+        ShuffleBench::many_to_one_baseline(8).with_partitions(16),
+        ShuffleBench::many_to_one_baseline(8).with_partitions(32),
         ShuffleBench::one_to_many_baseline(8),
         ShuffleBench::one_to_many_baseline(16)
             .with_partitions(16)
@@ -26,7 +31,11 @@ fn shuffle(c: &mut Criterion) {
             .with_partitions(16)
             .with_total_rows(2_000_000)
             .with_compression(Some(CompressionType::LZ4_FRAME)),
+        ShuffleBench::many_to_many_baseline(4),
         ShuffleBench::many_to_many_baseline(8),
+        ShuffleBench::many_to_many_baseline(16),
+        ShuffleBench::many_to_many_baseline(8).with_partitions(16),
+        ShuffleBench::many_to_many_baseline(8).with_partitions(32),
     ];
 
     for bench in benches {

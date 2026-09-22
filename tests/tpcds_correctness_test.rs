@@ -12,7 +12,9 @@ mod tests {
     use datafusion_distributed::{
         DefaultSessionBuilder, DistributedExec, DistributedExt, display_plan_ascii,
     };
-    use datafusion_distributed_benchmarks::datasets::{register_tables, tpcds};
+    use datafusion_distributed_benchmarks::datasets::{
+        output::DatasetOutput, register_tables, tpcds,
+    };
     use std::fs;
     use std::path::Path;
     use std::sync::Arc;
@@ -556,7 +558,10 @@ mod tests {
         INIT_TEST_TPCDS_TABLES
             .get_or_init(|| async {
                 if !fs::exists(&data_dir).unwrap_or(false) {
-                    tpcds::generate_data(&data_dir, SF, PARQUET_PARTITIONS)
+                    let output = DatasetOutput::new(data_dir.to_str().unwrap())
+                        .await
+                        .unwrap();
+                    tpcds::generate_data(&output, SF, PARQUET_PARTITIONS)
                         .await
                         .unwrap();
                 }
@@ -591,6 +596,14 @@ mod tests {
 
         let (s_plan, s_results) = run(&s_ctx, &query_sql).await;
         let (d_plan, d_results) = run(&d_ctx, &query_sql).await;
+
+        if let Ok(batches) = s_results.as_ref()
+            && batches.iter().all(|batch| batch.num_rows() == 0)
+        {
+            return plan_err!(
+                "Query {query_id} returned no rows at TPC-DS scale factor {SF}; increase the scale factor to preserve correctness coverage"
+            );
+        }
 
         if !d_plan.is::<DistributedExec>() {
             return plan_err!("Query {query_id} did not get distributed");

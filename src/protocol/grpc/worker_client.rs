@@ -2,15 +2,17 @@ use super::channel_resolver::BoxCloneSyncChannel;
 use super::errors::{map_flight_to_datafusion_error, map_status_to_datafusion_error};
 use super::generated::worker as pb;
 use super::metrics_proto::metrics_set_proto_to_df;
-use crate::common::serialize_uuid;
+use crate::common::{RetryOutcome, serialize_uuid};
+use crate::grpc::errors::tonic_status_to_datafusion_error;
 use crate::grpc::generated::worker::FlightAppMetadata;
 use crate::grpc::on_drop_stream::on_drop_stream;
 use crate::{
-    BytesMetricExt, CoordinatorToWorkerMsg, DistributedConfig, ExecuteTaskRequest,
-    FirstLatencyMetric, GetWorkerInfoRequest, GetWorkerInfoResponse, LatencyMetricExt, LoadInfo,
-    MaxLatencyMetric, MinLatencyMetric, P50LatencyMetric, P95LatencyMetric, ProducerHeadSpec,
-    SetPlanRequest, TaskKey, TaskMetrics, WorkUnitBatch, WorkUnitFeedDeclaration, WorkUnitMsg,
-    WorkerChannel, WorkerToCoordinatorMsg,
+    BytesMetricExt, CoordinatorToWorkerMsg, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL,
+    DistributedConfig, ExecuteTaskRequest, FirstLatencyMetric, GetWorkerInfoRequest,
+    GetWorkerInfoResponse, LatencyMetricExt, LoadInfo, MaxLatencyMetric, MaybeEncoded,
+    MinLatencyMetric, P50LatencyMetric, P95LatencyMetric, ProducedDynamicFilter, ProducerHead,
+    SetPlanRequest, TaskCompletedDynamicFilters, TaskDynamicFilter, TaskKey, TaskMetrics,
+    WorkUnitBatch, WorkUnitFeedDeclaration, WorkUnitMsg, WorkerChannel, WorkerToCoordinatorMsg,
 };
 use arrow_flight::FlightData;
 use arrow_flight::decode::FlightRecordBatchStream;
@@ -22,8 +24,8 @@ use datafusion::common::runtime::SpawnedTask;
 use datafusion::common::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
 use datafusion::execution::memory_pool::MemoryConsumer;
-use datafusion::physical_expr_common::metrics::{Count, MetricBuilder, MetricValue, Time};
-use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
+use datafusion::physical_expr_common::metrics::{Count, Label, MetricBuilder, MetricValue, Time};
+use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, Gauge};
 use futures::stream::BoxStream;
 use futures::{FutureExt, Stream, StreamExt, TryStreamExt};
 use http::{Extensions, HeaderMap};
@@ -40,16 +42,28 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_util::sync::CancellationToken;
 use tonic::metadata::MetadataMap;
-use tonic::{Request, Status};
+use tonic::{Code, Request, Status};
 
 #[async_trait]
 impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSyncChannel> {
     async fn coordinator_channel(
         &mut self,
         headers: HeaderMap,
+        set_plan_request: SetPlanRequest,
         c2w_stream: BoxStream<'static, CoordinatorToWorkerMsg>,
+        metrics: ExecutionPlanMetricsSet,
+        ctx: &Arc<TaskContext>,
     ) -> Result<BoxStream<'static, Result<WorkerToCoordinatorMsg>>> {
-        let input_stream = c2w_stream.map(encode_coordinator_to_worker_msg);
+        let set_plan_request = encode_set_plan_request(set_plan_request, ctx)?;
+        let plan_bytes_sent = set_plan_request.plan_proto.len();
+        let input_stream = futures::stream::once(async move {
+            pb::CoordinatorToWorkerMsg {
+                inner: Some(pb::coordinator_to_worker_msg::Inner::SetPlanRequest(
+                    set_plan_request,
+                )),
+            }
+        })
+        .chain(c2w_stream.map(encode_coordinator_to_worker_msg));
 
         let output_stream = self
             .coordinator_channel(Request::from_parts(
@@ -59,11 +73,50 @@ impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSy
             ))
             .boxed()
             .await
-            .map_err(map_status_to_datafusion_error)?
+            .map_err(|err| {
+                if let Some(err) = tonic_status_to_datafusion_error(&err) {
+                    return err;
+                }
+                let code = err.code();
+                let err = DataFusionError::External(Box::new(err));
+                match code {
+                    // https://grpc.io/docs/guides/status-codes/#deadline-exceeded
+                    // The worker may be slow or wedged, so retry a different URL.
+                    Code::DeadlineExceeded => RetryOutcome::OtherUrl.tag(err),
+                    // https://grpc.io/docs/guides/status-codes/#resource-exhausted
+                    // Admission pressure is local to this worker, so retry a different URL.
+                    Code::ResourceExhausted => RetryOutcome::OtherUrl.tag(err),
+                    // https://grpc.io/docs/guides/status-codes/#aborted
+                    // Routing retries this task setup at the higher level on the same URL.
+                    Code::Aborted => RetryOutcome::SameUrl.tag(err),
+                    // https://grpc.io/docs/guides/status-codes/#unavailable
+                    // If the worker died abruptly (e.g. OOM or SIGKILL), this is what the client
+                    // sees, so a different worker must be attempted.
+                    Code::Unavailable => RetryOutcome::OtherUrl.tag(err),
+                    Code::Ok => err,
+                    Code::Cancelled => err,
+                    Code::Unknown => err,
+                    Code::InvalidArgument => err,
+                    Code::NotFound => err,
+                    Code::AlreadyExists => err,
+                    Code::PermissionDenied => err,
+                    Code::FailedPrecondition => err,
+                    Code::OutOfRange => err,
+                    Code::Unimplemented => err,
+                    Code::Internal => err,
+                    Code::DataLoss => err,
+                    Code::Unauthenticated => err,
+                }
+            })?
             .into_inner()
             .map_err(map_status_to_datafusion_error)
             .map(|msg| decode_worker_to_coordinator_msg(msg?))
             .boxed();
+
+        MetricBuilder::new(&metrics)
+            .with_label(Label::new(DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, "0"))
+            .bytes_counter("plan_bytes_sent")
+            .add_bytes(plan_bytes_sent);
 
         Ok(output_stream)
     }
@@ -84,10 +137,14 @@ impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSy
             Arc::new(MemoryConsumer::new("WorkerConnection").register(ctx.memory_pool()));
         let memory_reservation_clone = Arc::clone(&memory_reservation);
 
-        // Track the maximum memory used to buffer recieved messages.
+        // Track the maximum memory used to buffer received messages.
         let mut curr_max_mem = 0;
-        let max_mem_used = MetricBuilder::new(&metrics).global_gauge("max_mem_used");
-        // Track the total encoded size of all recieved messages.
+        let max_mem_used = Gauge::new();
+        MetricBuilder::new(&metrics).build(MetricValue::PeakMemoryUsage {
+            name: "max_mem_used".into(),
+            gauge: max_mem_used.clone(),
+        });
+        // Track the total encoded size of all received messages.
         let bytes_transferred = MetricBuilder::new(&metrics).bytes_counter("bytes_transferred");
         let msg_count = MetricBuilder::new(&metrics).global_counter("msg_count");
         // Track end-to-end network latency distribution for messages that actually arrive.
@@ -102,7 +159,7 @@ impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSy
             task_key: Some(encode_task_key(request.task_key)),
             target_partition_start: request.target_partition_start as u64,
             target_partition_end: request.target_partition_end as u64,
-            producer_head: Some(encode_producer_head_spec(request.producer_head_spec)),
+            producer_head: Some(encode_producer_head(request.producer_head, ctx)?),
         };
         let metadata = MetadataMap::from_headers(headers);
 
@@ -384,31 +441,30 @@ impl NetworkLatencyMetricValues {
     }
 }
 
-pub(super) fn encode_producer_head_spec(
-    head: ProducerHeadSpec,
-) -> pb::execute_task_request::ProducerHead {
-    match head {
-        ProducerHeadSpec::None => pb::execute_task_request::ProducerHead::None(pb::NoneHead {}),
-        ProducerHeadSpec::BroadcastExec { output_partitions } => {
+pub(super) fn encode_producer_head(
+    head: ProducerHead,
+    ctx: &Arc<TaskContext>,
+) -> Result<pb::execute_task_request::ProducerHead> {
+    Ok(match head {
+        ProducerHead::None => pb::execute_task_request::ProducerHead::None(pb::NoneHead {}),
+        ProducerHead::BroadcastExec { output_partitions } => {
             pb::execute_task_request::ProducerHead::Broadcast(pb::BroadcastExecHead {
                 output_partitions: output_partitions as u64,
             })
         }
-        ProducerHeadSpec::RepartitionExec { partitioning } => {
+        ProducerHead::RepartitionExec { partitioning } => {
             pb::execute_task_request::ProducerHead::Repartition(pb::RepartitionExecHead {
-                partitioning,
+                partitioning: partitioning.encode(ctx)?,
             })
         }
-    }
+    })
 }
 
 fn encode_coordinator_to_worker_msg(msg: CoordinatorToWorkerMsg) -> pb::CoordinatorToWorkerMsg {
     pb::CoordinatorToWorkerMsg {
         inner: Some(match msg {
-            CoordinatorToWorkerMsg::SetPlanRequest(request) => {
-                pb::coordinator_to_worker_msg::Inner::SetPlanRequest(encode_set_plan_request(
-                    request,
-                ))
+            CoordinatorToWorkerMsg::KickOffSampling => {
+                pb::coordinator_to_worker_msg::Inner::KickOffSampling(pb::KickOffSampling {})
             }
             CoordinatorToWorkerMsg::WorkUnitBatch(batch) => {
                 pb::coordinator_to_worker_msg::Inner::WorkUnitBatch(encode_work_unit_batch(batch))
@@ -420,11 +476,15 @@ fn encode_coordinator_to_worker_msg(msg: CoordinatorToWorkerMsg) -> pb::Coordina
     }
 }
 
-fn encode_set_plan_request(request: SetPlanRequest) -> pb::SetPlanRequest {
-    pb::SetPlanRequest {
+fn encode_set_plan_request(
+    request: SetPlanRequest,
+    ctx: &Arc<TaskContext>,
+) -> Result<pb::SetPlanRequest> {
+    let plan_proto = request.plan.encode(ctx)?;
+    Ok(pb::SetPlanRequest {
         task_key: Some(encode_task_key(request.task_key)),
         task_count: request.task_count as u64,
-        plan_proto: request.plan_proto,
+        plan_proto,
         work_unit_feed_declarations: request
             .work_unit_feed_declarations
             .into_iter()
@@ -432,7 +492,8 @@ fn encode_set_plan_request(request: SetPlanRequest) -> pb::SetPlanRequest {
             .collect(),
         target_worker_url: request.target_worker_url.to_string(),
         query_start_time_ns: request.query_start_time_ns as u64,
-    }
+        dynamic_filter_remote_producer_ids: request.dynamic_filter_remote_producer_ids,
+    })
 }
 
 fn encode_work_unit_batch(batch: WorkUnitBatch) -> pb::WorkUnitBatch {
@@ -445,7 +506,10 @@ fn encode_work_unit(work_unit: WorkUnitMsg) -> pb::WorkUnit {
     pb::WorkUnit {
         id: serialize_uuid(&work_unit.id),
         partition: work_unit.partition as u64,
-        body: work_unit.body,
+        body: match work_unit.body {
+            MaybeEncoded::Encoded(body) => body,
+            MaybeEncoded::Decoded(body) => body.encode_to_bytes(),
+        },
         created_timestamp_unix_nanos: work_unit.created_timestamp_unix_nanos as u64,
         sent_timestamp_unix_nanos: work_unit.sent_timestamp_unix_nanos as u64,
         received_timestamp_unix_nanos: work_unit.received_timestamp_unix_nanos as u64,
@@ -487,8 +551,42 @@ fn decode_worker_to_coordinator_msg(
             pb::worker_to_coordinator_msg::Inner::LoadInfoEos(_) => {
                 WorkerToCoordinatorMsg::LoadInfoEos
             }
+            pb::worker_to_coordinator_msg::Inner::TaskCompletedDynamicFilters(filters) => {
+                WorkerToCoordinatorMsg::TaskCompletedDynamicFilters(
+                    decode_task_completed_dynamic_filters(filters)?,
+                )
+            }
+            pb::worker_to_coordinator_msg::Inner::ProducedDynamicFilter(filter) => {
+                WorkerToCoordinatorMsg::ProducedDynamicFilter(Box::new(
+                    decode_produced_dynamic_filter(filter)?,
+                ))
+            }
         },
     )
+}
+
+fn decode_produced_dynamic_filter(
+    filter: pb::ProducedDynamicFilter,
+) -> Result<ProducedDynamicFilter> {
+    Ok(ProducedDynamicFilter {
+        expression_id: filter.expression_id,
+        expression: MaybeEncoded::Encoded(filter.expression_proto),
+    })
+}
+
+fn decode_task_completed_dynamic_filters(
+    filters: pb::TaskCompletedDynamicFilters,
+) -> Result<TaskCompletedDynamicFilters> {
+    Ok(TaskCompletedDynamicFilters {
+        filters: filters
+            .filters
+            .into_iter()
+            .map(|filter| TaskDynamicFilter {
+                expression_id: filter.expression_id,
+                expression: MaybeEncoded::Encoded(filter.expression_proto),
+            })
+            .collect(),
+    })
 }
 
 fn decode_task_metrics(task_metrics: pb::TaskMetrics) -> Result<TaskMetrics> {
@@ -684,6 +782,7 @@ impl<O, F: Future<Output = O>> Future for ElapsedComputeFuture<F> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use datafusion_proto::protobuf::PhysicalExprNode;
     use futures::StreamExt;
     use futures::stream::unfold;
 
@@ -758,5 +857,28 @@ mod tests {
         println!("expensive future: {}", expensive_time.value());
 
         assert!(expensive_time.value() > cheap_time.value());
+    }
+
+    #[test]
+    fn decode_produced_dynamic_filter() -> Result<()> {
+        let expression = PhysicalExprNode::default();
+        let decoded = decode_worker_to_coordinator_msg(pb::WorkerToCoordinatorMsg {
+            inner: Some(pb::worker_to_coordinator_msg::Inner::ProducedDynamicFilter(
+                pb::ProducedDynamicFilter {
+                    expression_id: 42,
+                    expression_proto: expression.encode_to_vec(),
+                },
+            )),
+        })?;
+
+        let WorkerToCoordinatorMsg::ProducedDynamicFilter(decoded) = decoded else {
+            panic!("expected produced dynamic filter");
+        };
+        assert_eq!(decoded.expression_id, 42);
+        let MaybeEncoded::Encoded(decoded_expression) = decoded.expression else {
+            panic!("expected encoded dynamic filter");
+        };
+        assert_eq!(decoded_expression, expression.encode_to_vec());
+        Ok(())
     }
 }

@@ -1,11 +1,13 @@
 use crate::common::now_ns;
 use crate::{
-    BytesMetricExt, CoordinatorToWorkerMsg, LatencyMetricExt, WorkUnit, WorkUnitBatch, WorkUnitMsg,
+    BytesMetricExt, CoordinatorToWorkerMsg, LatencyMetricExt, MaybeEncoded, WorkUnit,
+    WorkUnitBatch, WorkUnitMsg,
 };
 use datafusion::common::{HashMap, Result, exec_err};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr_common::metrics::MetricBuilder;
 use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
+use datafusion_proto::protobuf::proto_error;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use std::sync::{Arc, Mutex};
@@ -68,7 +70,7 @@ pub(crate) fn build_work_unit_batch_msg(
                 Ok(WorkUnitMsg {
                     id: *id,
                     partition,
-                    body: work_unit?.encode_to_bytes(),
+                    body: MaybeEncoded::Decoded(work_unit?),
                     created_timestamp_unix_nanos: now_ns(),
                     sent_timestamp_unix_nanos: 0,
                     received_timestamp_unix_nanos: 0,
@@ -122,6 +124,7 @@ impl RemoteFeedProvider {
         let bdr = || MetricBuilder::new(&self.metrics);
 
         let bytes_transferred = bdr().bytes_counter("work_unit_bytes");
+        let in_memory_transferred = bdr().global_counter("work_unit_in_memory_count");
         let msg_count = bdr().global_counter("work_unit_count");
         // Track end-to-end network latency distribution for all work units.
         let send_latency_max = bdr().max_latency("work_unit_send_latency_max");
@@ -159,11 +162,26 @@ impl RemoteFeedProvider {
             .map(move |work_unit_msg_or_err| {
                 let mut work_unit_msg = work_unit_msg_or_err?;
                 let timer = elapsed_compute.timer();
-                let work_unit = T::decode(work_unit_msg.body.as_slice())
-                    .map_err(|err| datafusion_proto::protobuf::proto_error(format!("{err}")));
+                let work_unit = match work_unit_msg.body {
+                    MaybeEncoded::Encoded(bytes) => {
+                        bytes_transferred.add_bytes(bytes.len());
+                        T::decode(bytes.as_slice()).map_err(|err| proto_error(format!("{err}")))?
+                    }
+                    MaybeEncoded::Decoded(work_unit) => {
+                        let work_unit = work_unit.into_any();
+                        let Ok(work_unit) = work_unit.downcast::<T>() else {
+                            return exec_err!(
+                                "Expected WorkUnit of type {}",
+                                std::any::type_name::<T>()
+                            );
+                        };
+                        in_memory_transferred.add(1);
+                        *work_unit
+                    }
+                };
+
                 timer.done();
                 work_unit_msg.processed_timestamp_unix_nanos = now_ns();
-                let body_len = work_unit_msg.body.len();
 
                 let WorkUnitMsg {
                     created_timestamp_unix_nanos: base,
@@ -173,7 +191,6 @@ impl RemoteFeedProvider {
                     ..
                 } = work_unit_msg;
 
-                bytes_transferred.add_bytes(body_len);
                 msg_count.add(1);
 
                 send_latency_max.add_nanos(sent_timestamp_unix_nanos - base);
@@ -185,7 +202,7 @@ impl RemoteFeedProvider {
                 processed_latency_max.add_nanos(processed_timestamp_unix_nanos - base);
                 processed_latency_p50.add_nanos(processed_timestamp_unix_nanos - base);
 
-                work_unit
+                Ok(work_unit)
             })
             .boxed())
     }

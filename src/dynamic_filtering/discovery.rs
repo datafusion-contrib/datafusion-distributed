@@ -1,0 +1,491 @@
+use crate::NetworkBoundaryExt;
+use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
+use datafusion::common::{HashMap, HashSet, Result, internal_err};
+use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_expr::expressions::DynamicFilterPhysicalExpr;
+use datafusion::physical_plan::ExecutionPlan;
+use std::sync::Arc;
+
+/// A dynamic filter produced by an [`ExecutionPlan`].
+#[derive(Clone)]
+pub(crate) struct DiscoveredDynamicFilterProducer {
+    pub(crate) id: u64,
+    pub(crate) expression: Arc<dyn PhysicalExpr>,
+}
+
+/// A dynamic-filter consumer discovered in an execution plan along with the schema it is evaluated
+/// against.
+#[derive(Clone)]
+pub(crate) struct DiscoveredDynamicFilter {
+    pub(crate) id: u64,
+    pub(crate) expression: Arc<DynamicFilterPhysicalExpr>,
+    pub(crate) input_schema: SchemaRef,
+}
+
+/// An anchor is an artificial dynamic filter consumer injected into network boundaries
+/// to keep consumer references alive when they are moved across network boundaries.
+///
+/// TODO(#697): remove anchors in df-56.
+#[derive(Clone)]
+pub(crate) struct DiscoveredDynamicFilterAnchor {
+    pub(crate) id: u64,
+    pub(crate) expression: Arc<dyn PhysicalExpr>,
+}
+
+pub(crate) struct DiscoveredDynamicFilterConsumers {
+    // Real consumers, ordered by expression id.
+    pub(crate) consumers: Vec<DiscoveredDynamicFilter>,
+    // Artificial consumers. Dynamic filters in network boundaries. Also ordered by expression id.
+    pub(crate) anchors: Vec<DiscoveredDynamicFilterAnchor>,
+}
+
+/// Finds dynamic-filter consumers and network-boundary anchors in `plan`, deduplicated by
+/// expression ID within each category.
+pub(crate) fn discover_dynamic_filter_consumers(
+    plan: &Arc<dyn ExecutionPlan>,
+) -> Result<DiscoveredDynamicFilterConsumers> {
+    let mut consumers = HashMap::new();
+    let mut anchors = HashMap::new();
+
+    plan.apply(|node| {
+        let produced_ids: HashSet<_> = node
+            .dynamic_expressions_produced()
+            .into_iter()
+            .map(|produced| {
+                let Some(id) = produced.expression_id() else {
+                    return internal_err!(
+                        "{}::dynamic_expressions_produced returned an expression without an expression ID",
+                        node.name()
+                    );
+                };
+                Ok(id)
+            })
+            .collect::<Result<_>>()?;
+        let input_schema = node
+            .children()
+            .first()
+            .map(|child| child.schema())
+            .unwrap_or_else(|| node.schema());
+        let is_network_boundary = node.is_network_boundary();
+
+        node.apply_expressions(&mut |root| {
+            root.apply(|expression| {
+                let expression = Arc::clone(expression);
+                let Ok(expression) = Arc::downcast::<DynamicFilterPhysicalExpr>(expression) else {
+                    return Ok(TreeNodeRecursion::Continue);
+                };
+
+                let Some(id) = expression.expression_id() else {
+                    return internal_err!(
+                        "DynamicFilterPhysicalExpr did not have an expression ID"
+                    );
+                };
+                if is_network_boundary {
+                    // Network-boundary expressions are metadata-only dependencies, not expressions
+                    // evaluated by the node.
+                    anchors
+                        .entry(id)
+                        .or_insert_with(|| DiscoveredDynamicFilterAnchor {
+                            id,
+                            expression: expression.clone(),
+                        });
+                } else if !produced_ids.contains(&id) {
+                    consumers
+                        .entry(id)
+                        .or_insert_with(|| DiscoveredDynamicFilter {
+                            id,
+                            expression,
+                            input_schema: Arc::clone(&input_schema),
+                        });
+                }
+
+                Ok(TreeNodeRecursion::Continue)
+            })
+        })?;
+        Ok(TreeNodeRecursion::Continue)
+    })?;
+
+    let mut consumers: Vec<_> = consumers.into_values().collect();
+    consumers.sort_unstable_by_key(|consumer| consumer.id);
+    let mut anchors: Vec<_> = anchors.into_values().collect();
+    anchors.sort_unstable_by_key(|anchor| anchor.id);
+    Ok(DiscoveredDynamicFilterConsumers { consumers, anchors })
+}
+
+/// Finds dynamic-filter producers in `plan`, deduplicated and ordered by expression ID.
+pub(crate) fn discover_dynamic_filter_producers(
+    plan: &Arc<dyn ExecutionPlan>,
+) -> Result<Vec<DiscoveredDynamicFilterProducer>> {
+    let mut producers = HashMap::new();
+    plan.apply(|node| {
+        for expression in node.dynamic_expressions_produced() {
+            if expression
+                .downcast_ref::<DynamicFilterPhysicalExpr>()
+                .is_none()
+            {
+                continue;
+            }
+            let Some(id) = expression.expression_id() else {
+                return internal_err!("DynamicFilterPhysicalExpr did not have an expression ID");
+            };
+            producers
+                .entry(id)
+                .or_insert_with(|| DiscoveredDynamicFilterProducer { id, expression });
+        }
+        Ok(TreeNodeRecursion::Continue)
+    })?;
+
+    let mut producers: Vec<_> = producers.into_values().collect();
+    producers.sort_unstable_by_key(|producer| producer.id);
+    Ok(producers)
+}
+
+/// Returns producer IDs with at least one remote consumer.
+///
+/// If a producer ID is present in the dynamic-filter anchors of any [`NetworkBoundary`], the plan
+/// contains at least one remote consumer and the producer's updates must be forwarded to the
+/// coordinator.
+///
+/// [`NetworkBoundary`]: crate::NetworkBoundary
+pub(crate) fn dynamic_filter_remote_producer_ids(
+    plan: &Arc<dyn ExecutionPlan>,
+) -> Result<Vec<u64>> {
+    let producer_ids: HashSet<_> = discover_dynamic_filter_producers(plan)?
+        .into_iter()
+        .map(|producer| producer.id)
+        .collect();
+    let anchor_ids: HashSet<_> = discover_dynamic_filter_consumers(plan)?
+        .anchors
+        .into_iter()
+        .map(|anchor| anchor.id)
+        .collect();
+
+    let mut remote_producer_ids: Vec<_> = producer_ids.intersection(&anchor_ids).copied().collect();
+    remote_producer_ids.sort_unstable();
+    Ok(remote_producer_ids)
+}
+
+/// Finds consumers whose producer does not occur in `plan`. These consumers become orphaned
+/// from their producer when the producer is moved behind a remote network boundary. These
+/// orphans become network boundary anchors, artificially keeping the producers alive.
+///
+/// TODO(697): remove anchors in df-56
+pub(crate) fn orphan_dynamic_filter_consumers(
+    plan: &Arc<dyn ExecutionPlan>,
+) -> Result<Vec<Arc<dyn PhysicalExpr>>> {
+    let produced_here: HashSet<_> = discover_dynamic_filter_producers(plan)?
+        .into_iter()
+        .map(|producer| producer.id)
+        .collect();
+    let discovered = discover_dynamic_filter_consumers(plan)?;
+    // Include anchors here because we want anchors to work recursively. For example,
+    // if a producer is in stage 4 and its consumer is in stage 1, an
+    // anchor should exist in stage 4. The easiest way to guarantee that is to ensure
+    // the anchor exists in stages 2, 3, and 4 recursively via this function.
+    let orphaned: HashMap<_, _> = discovered
+        .consumers
+        .into_iter()
+        .map(|consumer| (consumer.id, consumer.expression as Arc<dyn PhysicalExpr>))
+        .chain(
+            discovered
+                .anchors
+                .into_iter()
+                .map(|anchor| (anchor.id, anchor.expression)),
+        )
+        .filter(|(id, _)| !produced_here.contains(id))
+        .collect();
+    let mut orphaned: Vec<_> = orphaned.into_iter().collect();
+    orphaned.sort_unstable_by_key(|(id, _)| *id);
+    Ok(orphaned
+        .into_iter()
+        .map(|(_, expression)| expression)
+        .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::localhost::start_localhost_context;
+    use crate::test_utils::parquet::register_parquet_tables;
+    use crate::{
+        DefaultSessionBuilder, DistributedExt, RouteTaskEvent, RouteTaskEventResponse,
+        RouteTaskHandler, assert_snapshot,
+    };
+    use async_trait::async_trait;
+    use datafusion::physical_plan::collect;
+    use itertools::Itertools;
+    use std::collections::BTreeSet;
+    use std::fmt::Write;
+    use tokio::sync::Mutex;
+
+    #[tokio::test]
+    async fn discovers_dynamic_filters_in_sql_plan() -> Result<()> {
+        let display = display_query(
+            r#"
+                    SELECT COUNT(*)
+                    FROM (
+                        SELECT DISTINCT "RainToday" AS key
+                        FROM weather
+                    ) build
+                    JOIN weather probe ON build.key = probe."RainToday"
+                    JOIN (
+                        SELECT DISTINCT "RainTomorrow" AS key
+                        FROM weather
+                    ) other_build ON other_build.key = probe."RainTomorrow"
+                    WHERE probe."MinTemp" > 0
+                "#,
+        )
+        .await?;
+        assert_snapshot!(display, @r"
+        Stage 5 remote_producers=[1]
+          AggregateExec
+            HashJoinExec producers=[1]
+              NetworkShuffleExec
+              AggregateExec
+                NetworkShuffleExec anchors=[1]
+        Stage 4
+          RepartitionExec
+            AggregateExec
+              DataSourceExec consumers=[1]
+        Stage 3 remote_producers=[2]
+          RepartitionExec
+            HashJoinExec producers=[2]
+              NetworkShuffleExec
+              AggregateExec
+                NetworkShuffleExec anchors=[2]
+        Stage 2
+          RepartitionExec
+            AggregateExec
+              DataSourceExec consumers=[2]
+        Stage 1
+          RepartitionExec
+            FilterExec
+              DataSourceExec
+        ");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn passes_anchor_through_two_shuffles() -> Result<()> {
+        let display = display_query(
+            r#"
+                SELECT COUNT(*)
+                FROM (
+                    SELECT DISTINCT "RainToday" AS key
+                    FROM weather
+                ) build
+                JOIN (
+                    SELECT "RainTomorrow" AS key, SUM(n) AS total
+                    FROM (
+                        SELECT "RainTomorrow", "RainToday", COUNT(*) AS n
+                        FROM weather
+                        GROUP BY "RainTomorrow", "RainToday"
+                    ) grouped
+                    GROUP BY "RainTomorrow"
+                ) probe ON build.key = probe.key
+            "#,
+        )
+        .await?;
+        assert_snapshot!(display, @r"
+        Stage 4 remote_producers=[1]
+          AggregateExec
+            HashJoinExec producers=[1]
+              AggregateExec
+                NetworkShuffleExec
+              ProjectionExec
+                AggregateExec
+                  NetworkShuffleExec anchors=[1]
+        Stage 3
+          RepartitionExec
+            AggregateExec
+              ProjectionExec
+                AggregateExec
+                  NetworkShuffleExec anchors=[1]
+        Stage 2
+          RepartitionExec
+            AggregateExec
+              DataSourceExec consumers=[1]
+        Stage 1
+          RepartitionExec
+            AggregateExec
+              DataSourceExec
+        ");
+        Ok(())
+    }
+
+    async fn display_query(sql: &str) -> Result<String> {
+        let captured_plans = CapturePlans::default();
+        let (ctx, _guard, _) = start_localhost_context(2, DefaultSessionBuilder).await;
+        let ctx = ctx
+            .with_distributed_broadcast_joins(false)?
+            .with_distributed_route_task_handler(captured_plans.clone());
+        {
+            let state = ctx.state_ref();
+            let mut state = state.write();
+            let optimizer = &mut state.config_mut().options_mut().optimizer;
+            optimizer.hash_join_single_partition_threshold = 0;
+            optimizer.hash_join_single_partition_threshold_rows = 0;
+        }
+        register_parquet_tables(&ctx).await?;
+        let plan = ctx.sql(sql).await?.create_physical_plan().await?;
+        collect(plan, ctx.task_ctx()).await?;
+        let captured_plans = captured_plans.0.lock().await;
+        display_dynamic_filter_discovery(&captured_plans)
+    }
+
+    /// Captures the first task of each stage for displaying purposes.
+    #[derive(Clone, Default)]
+    struct CapturePlans(Arc<Mutex<HashMap<usize, Arc<dyn ExecutionPlan>>>>);
+
+    #[async_trait]
+    impl RouteTaskHandler for CapturePlans {
+        async fn handle(
+            &self,
+            event: RouteTaskEvent<'_>,
+        ) -> Option<Result<RouteTaskEventResponse>> {
+            if event.task_key.task_number == 0 {
+                self.0.lock().await.insert(
+                    event.task_key.stage_id,
+                    Arc::clone(event.task_specialized_plan),
+                );
+            }
+            None
+        }
+    }
+
+    /// Map random dynamic filter expression ids to monotonic numbers 1, 2, 3...
+    /// for stable snapshots.
+    #[derive(Default)]
+    struct IdNormalizer(HashMap<u64, usize>);
+
+    impl IdNormalizer {
+        fn annotation(&mut self, name: &str, ids: BTreeSet<u64>) -> Option<String> {
+            (!ids.is_empty()).then(|| {
+                let ids = ids
+                    .into_iter()
+                    .map(|id| {
+                        let next = self.0.len() + 1;
+                        self.0.entry(id).or_insert(next).to_string()
+                    })
+                    .join(", ");
+                format!("{name}=[{ids}]")
+            })
+        }
+    }
+
+    struct DynamicFilterIds {
+        consumers: BTreeSet<u64>,
+        anchors: BTreeSet<u64>,
+        producers: BTreeSet<u64>,
+    }
+
+    fn dynamic_filter_annotations(
+        node: &dyn ExecutionPlan,
+        discovered: &DynamicFilterIds,
+        normalizer: &mut IdNormalizer,
+    ) -> Result<String> {
+        let producers = node
+            .dynamic_expressions_produced()
+            .iter()
+            .filter_map(dynamic_filter_id)
+            .filter(|id| discovered.producers.contains(id))
+            .collect::<BTreeSet<_>>();
+        let is_network_boundary = node.is_network_boundary();
+        let mut anchors = BTreeSet::new();
+        let mut consumers = BTreeSet::new();
+        node.apply_expressions(&mut |root| {
+            root.apply(|expression| {
+                if let Some(id) = dynamic_filter_id(expression) {
+                    if is_network_boundary && discovered.anchors.contains(&id) {
+                        anchors.insert(id);
+                    } else if discovered.consumers.contains(&id) && !producers.contains(&id) {
+                        consumers.insert(id);
+                    }
+                }
+                Ok(TreeNodeRecursion::Continue)
+            })
+        })?;
+
+        let annotations = [
+            ("anchors", anchors),
+            ("consumers", consumers),
+            ("producers", producers),
+        ]
+        .into_iter()
+        .filter_map(|(name, ids)| normalizer.annotation(name, ids))
+        .join(" ");
+        Ok(if annotations.is_empty() {
+            String::new()
+        } else {
+            format!(" {annotations}")
+        })
+    }
+
+    fn dynamic_filter_id(expression: &Arc<dyn PhysicalExpr>) -> Option<u64> {
+        expression.downcast_ref::<DynamicFilterPhysicalExpr>()?;
+        Some(
+            expression
+                .expression_id()
+                .expect("dynamic filters always have an expression ID"),
+        )
+    }
+
+    fn display_dynamic_filter_discovery(
+        plans: &HashMap<usize, Arc<dyn ExecutionPlan>>,
+    ) -> Result<String> {
+        fn render(
+            node: &dyn ExecutionPlan,
+            depth: usize,
+            discovered: &DynamicFilterIds,
+            normalizer: &mut IdNormalizer,
+            output: &mut String,
+        ) -> Result<()> {
+            writeln!(
+                output,
+                "{}{}{}",
+                "  ".repeat(depth),
+                node.name(),
+                dynamic_filter_annotations(node, discovered, normalizer)?,
+            )
+            .expect("writing to String cannot fail");
+            for child in node.children() {
+                render(child.as_ref(), depth + 1, discovered, normalizer, output)?;
+            }
+            Ok(())
+        }
+
+        let mut output = String::new();
+        let mut normalizer = IdNormalizer::default();
+        for stage_id in plans.keys().sorted().rev() {
+            let plan = &plans[stage_id];
+            let remote_producers = dynamic_filter_remote_producer_ids(plan)?
+                .into_iter()
+                .collect();
+            let remote_producers = normalizer
+                .annotation("remote_producers", remote_producers)
+                .map_or_else(String::new, |annotation| format!(" {annotation}"));
+            writeln!(output, "Stage {stage_id}{remote_producers}")
+                .expect("writing to String cannot fail");
+            let consumers = discover_dynamic_filter_consumers(plan)?;
+            let discovered = DynamicFilterIds {
+                consumers: consumers
+                    .consumers
+                    .into_iter()
+                    .map(|consumer| consumer.id)
+                    .collect(),
+                anchors: consumers
+                    .anchors
+                    .into_iter()
+                    .map(|anchor| anchor.id)
+                    .collect(),
+                producers: discover_dynamic_filter_producers(plan)?
+                    .into_iter()
+                    .map(|producer| producer.id)
+                    .collect(),
+            };
+            render(plan.as_ref(), 1, &discovered, &mut normalizer, &mut output)?;
+        }
+        Ok(output)
+    }
+}

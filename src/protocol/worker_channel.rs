@@ -1,7 +1,10 @@
+use crate::{MaybeEncoded, ProducerHead, WorkUnit};
 use async_trait::async_trait;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::Result;
 use datafusion::execution::TaskContext;
+use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricsSet};
 use futures::stream::BoxStream;
 use http::HeaderMap;
@@ -21,7 +24,10 @@ pub trait WorkerChannel: Send + Sync {
     async fn coordinator_channel(
         &mut self,
         headers: HeaderMap,
+        set_plan_request: SetPlanRequest,
         c2w_stream: BoxStream<'static, CoordinatorToWorkerMsg>,
+        metrics: ExecutionPlanMetricsSet,
+        task_ctx: &Arc<TaskContext>,
     ) -> Result<BoxStream<'static, Result<WorkerToCoordinatorMsg>>>;
 
     /// Executes the requested partition range of a subplan previously sent by the coordinator channel.
@@ -41,9 +47,8 @@ pub trait WorkerChannel: Send + Sync {
 }
 
 pub enum CoordinatorToWorkerMsg {
-    /// Sends a subplan to a worker so that a future ExecuteTask call can actually execute it.
-    /// The plan is identified by a TaskKey.
-    SetPlanRequest(SetPlanRequest),
+    /// Gives the worker to go ahead for starting to sample during adaptive query execution.
+    KickOffSampling,
     /// A batch of messages from a work unit feed belonging to different partitions from one node from the plan set in
     /// set_plan_request. A work unit feed is a per-partition stream of information that tells the node what should
     /// be executed within a partition, for example, a stream of file addresses that should be read.
@@ -62,6 +67,7 @@ pub struct TaskKey {
     pub task_number: usize,
 }
 
+#[derive(Clone, Copy)]
 pub struct WorkUnitFeedDeclaration {
     /// Unique identifier of the node to which work unit feeds are expected to be streamed.
     pub id: Uuid,
@@ -75,10 +81,10 @@ pub struct SetPlanRequest {
     /// The amount of tasks that share the same subplan. Necessary for building the DistributedTaskContext during execution.
     pub task_count: usize,
     /// The subplan the worker is expected to execute.
-    // TODO: this still forces implementations to pass a serialized plan. In-memory implementations
-    //  might want to omit the serde step, so there should be a way to pass here a normal plan, and
-    //  pass the serializer/deserialized separately instead of being coupled to protobuf serialization
-    pub plan_proto: Vec<u8>,
+    pub plan: MaybeEncoded<Arc<dyn ExecutionPlan>>,
+    /// Producer expression IDs whose consumers cross a network boundary. Workers observe and
+    /// report updates to the coordinator.
+    pub dynamic_filter_remote_producer_ids: Vec<u64>,
     /// Information about all the work unit feeds that will be streamed from coordinator to worker.
     /// This information is needed here because at the moment of setting the plan, all the appropriate
     /// channels for the incoming work unit feeds need to be constructed.
@@ -104,7 +110,7 @@ pub struct WorkUnitMsg {
     /// The partition index within the node to which the work unit feed belongs to.
     pub partition: usize,
     /// Arbitrary user-defined data (e.g., a file address) necessary during execution.
-    pub body: Vec<u8>,
+    pub body: MaybeEncoded<Box<dyn WorkUnit>>,
     /// Unix timestamp in nanoseconds at which this message was created in the coordinator.
     pub created_timestamp_unix_nanos: usize,
     /// Unix timestamp in nanoseconds at which this message was sent by the coordinator.
@@ -121,10 +127,41 @@ pub enum WorkerToCoordinatorMsg {
     /// ensuring metrics are never lost due to early stream termination.
     /// metrics[i] is the set of metrics for plan node i in pre-order traversal order.
     TaskMetrics(TaskMetrics),
+    /// Sends the final dynamic filters used by dynamic filter consumers back to the coorindator
+    /// for displaying.
+    TaskCompletedDynamicFilters(TaskCompletedDynamicFilters),
+    /// Sends an observed producer dynamic-filter state to the coordinator. This update
+    /// is to be used for runtime dynamic filtering.
+    ProducedDynamicFilter(Box<ProducedDynamicFilter>),
     /// Load information reported by a task. This information is used for dynamically
     /// sizing the number of workers involved in a query.
     LoadInfo(LoadInfo),
     LoadInfoEos,
+}
+
+/// A dynamic filter state update produced by a plan node in a task to be sent to the coordinator.
+#[derive(Clone, Debug)]
+pub struct ProducedDynamicFilter {
+    pub expression_id: u64,
+    /// Note that sending an update via a live pointer could mean that the dynamic filter updates during
+    /// transport. This means that observations at the coordinator may repeat or skip generations, but never
+    /// regress. Since the worker monitors updates and completion, it's guaranteed that the completed
+    /// filter state will not be missed.
+    pub expression: MaybeEncoded<Arc<dyn PhysicalExpr>>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct TaskCompletedDynamicFilters {
+    /// Final expressions keyed by their DataFusion physical-expression ID. The TaskKey is
+    /// implicit from the coordinator channel that carried this message.
+    pub filters: Vec<TaskDynamicFilter>,
+}
+
+#[derive(Clone, Debug)]
+pub struct TaskDynamicFilter {
+    pub expression_id: u64,
+    /// A `DynamicFilterPhysicalExpr` containing its final predicate and completion state.
+    pub expression: MaybeEncoded<Arc<dyn PhysicalExpr>>,
 }
 
 #[derive(Clone, Debug)]
@@ -173,17 +210,7 @@ pub struct ExecuteTaskRequest {
     /// - A RepartitionExecHead implies a RepartitionExec at the head of the task.
     /// - A BroadcastExecHead implies a BroadcastExec at the head of the task.
     /// - A NoneHead does not need any specific head.
-    pub producer_head_spec: ProducerHeadSpec,
-}
-
-#[derive(Clone)]
-pub enum ProducerHeadSpec {
-    /// No specific head node is necessary.
-    None,
-    /// The head node should be a [BroadcastExec].
-    BroadcastExec { output_partitions: usize },
-    /// The head node should be a [RepartitionExec].
-    RepartitionExec { partitioning: Vec<u8> },
+    pub producer_head: ProducerHead,
 }
 
 pub struct GetWorkerInfoRequest {}

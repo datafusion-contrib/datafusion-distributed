@@ -4,21 +4,36 @@ set -e
 
 SCALE_FACTOR=${SCALE_FACTOR:-1}
 PARTITIONS=${PARTITIONS:-16}
+SORTED=${SORTED:-false}
 
-echo "Generating TPCH dataset with SCALE_FACTOR=${SCALE_FACTOR} and PARTITIONS=${PARTITIONS}"
+echo "Generating TPCH dataset with SCALE_FACTOR=${SCALE_FACTOR}, PARTITIONS=${PARTITIONS} and SORTED=${SORTED}"
 
 # https://stackoverflow.com/questions/59895/how-do-i-get-the-directory-where-a-bash-script-is-located-from-within-the-script
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 REPO_ROOT=$(cd "${SCRIPT_DIR}/.." && pwd)
 DATA_DIR=${DATA_DIR:-${REPO_ROOT}/testdata/tpch}
 CARGO_COMMAND=${CARGO_COMMAND:-"cargo run -p datafusion-distributed-benchmarks --release"}
-TPCH_DIR="${DATA_DIR}/sf${SCALE_FACTOR}"
+if [ "${SORTED}" = "true" ]; then
+    TPCH_DIR="${DATA_DIR}/sorted_sf${SCALE_FACTOR}"
+    SORTED_FLAG=--sorted
+else
+    TPCH_DIR="${DATA_DIR}/sf${SCALE_FACTOR}"
+    SORTED_FLAG=
+fi
+if [ "$#" -gt 0 ]; then
+    if [ "$#" -ne 2 ] || [ "$1" != "--output" ]; then
+        echo "Usage: $0 [--output <directory|s3://bucket/prefix>]" >&2
+        exit 1
+    fi
+    TPCH_DIR="$2"
+fi
+
 echo "Creating tpch dataset at Scale Factor ${SCALE_FACTOR} in ${TPCH_DIR}..."
 
 FILE="${TPCH_DIR}/supplier"
-if test -d "${FILE}"; then
+if [ "$#" -eq 0 ] && test -d "${FILE}"; then
     echo " parquet files exist ($FILE exists)."
 else
     echo " generating parquet files using tpchgen-rs..."
-    $CARGO_COMMAND -- prepare-tpch --output "${TPCH_DIR}" --scale-factor "${SCALE_FACTOR}" --partitions "$PARTITIONS"
+    $CARGO_COMMAND -- prepare-tpch --output "${TPCH_DIR}" --scale-factor "${SCALE_FACTOR}" --partitions "$PARTITIONS" ${SORTED_FLAG}
 fi

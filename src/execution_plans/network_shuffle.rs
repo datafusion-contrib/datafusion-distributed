@@ -3,16 +3,20 @@ use crate::distributed_planner::ProducerHead;
 use crate::execution_plans::common::scale_partitioning;
 use crate::stage::{LocalStage, Stage};
 use crate::worker::WorkerConnectionPool;
-use crate::{DistributedTaskContext, NetworkBoundary};
+use crate::{DistributedTaskContext, MaybeEncoded, NetworkBoundary};
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{Result, not_impl_err, plan_err};
 use datafusion::error::DataFusionError;
+use datafusion::execution::memory_pool::MemoryConsumer;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
-use datafusion::physical_expr::Partitioning;
-use datafusion::physical_expr_common::metrics::MetricsSet;
+use datafusion::physical_expr::{Partitioning, PhysicalExpr};
+use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet};
 use datafusion::physical_plan::repartition::RepartitionExec;
+use datafusion::physical_plan::sorts::streaming_merge::StreamingMergeBuilder;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, Statistics,
+    DisplayAs, DisplayFormatType, EmptyRecordBatchStream, ExecutionPlan, PlanProperties,
+    Statistics, StatisticsArgs, apply_expression_roots,
 };
 use std::fmt::Formatter;
 use std::sync::Arc;
@@ -93,6 +97,8 @@ use uuid::Uuid;
 /// - Each task in Stage N+1 gathers data from all tasks in Stage N
 /// - The total number of partitions across all tasks in Stage N+1 is equal to the
 ///   number of partitions in a single task in Stage N. (e.g. (1,2,3,4)+(5,6,7,8) = (1,2,3,4,5,6,7,8) )
+/// - When input streams carry an output ordering, each partition sort-merges incoming
+///   streams from upstream tasks to preserve that ordering across tasks.
 ///
 /// This node has two variants.
 /// 1. Pending: acts as a placeholder for the distributed optimization step to mark it as ready.
@@ -107,9 +113,37 @@ pub struct NetworkShuffleExec {
 }
 
 impl NetworkShuffleExec {
+    /// Computes the properties advertised by this [NetworkShuffleExec].
+    ///
+    /// When `input_task_count > 1`, partition-local equivalence constants from individual
+    /// upstream tasks cannot be assumed to hold across tasks and are cleared.
+    /// Output ordering is preserved across tasks because [Self::execute] sort-merges incoming
+    /// worker streams when sort expressions are present.
+    ///
+    /// When `input_task_count <= 1`, all batches are received from a single upstream task stream,
+    /// so the upstream equivalence properties and constants are preserved as-is.
+    pub(crate) fn compute_properties(
+        input_properties: &Arc<PlanProperties>,
+        input_task_count: usize,
+    ) -> Arc<PlanProperties> {
+        if input_task_count > 1 {
+            let mut eq_properties = input_properties.eq_properties.clone();
+            eq_properties.clear_per_partition_constants();
+            Arc::new(PlanProperties::new(
+                eq_properties,
+                input_properties.partitioning.clone(),
+                input_properties.emission_type,
+                input_properties.boundedness,
+            ))
+        } else {
+            Arc::clone(input_properties)
+        }
+    }
+
     pub(crate) fn from_stage(input_stage: Stage, input_properties: Arc<PlanProperties>) -> Self {
+        let properties = Self::compute_properties(&input_properties, input_stage.task_count());
         Self {
-            properties: input_properties,
+            properties,
             worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
             input_stage,
         }
@@ -150,16 +184,19 @@ impl NetworkBoundary for NetworkShuffleExec {
     fn with_input_stage(&self, input_stage: Stage) -> Result<Arc<dyn NetworkBoundary>> {
         let mut self_clone = self.clone();
         self_clone.worker_connections = WorkerConnectionPool::new(input_stage.task_count());
+        self_clone.properties =
+            Self::compute_properties(&self.properties, input_stage.task_count());
         self_clone.input_stage = input_stage;
         Ok(Arc::new(self_clone))
     }
 
-    fn producer_head(&self, consumer_task_count: usize) -> ProducerHead {
-        ProducerHead::RepartitionExec {
-            partitioning: scale_partitioning(&self.properties.partitioning, |prev| {
-                prev * consumer_task_count
-            }),
-        }
+    fn producer_head(&self, consumer_task_count: usize) -> Result<ProducerHead> {
+        Ok(ProducerHead::RepartitionExec {
+            partitioning: MaybeEncoded::Decoded(scale_partitioning(
+                &self.properties.partitioning,
+                |prev| prev * consumer_task_count,
+            )?),
+        })
     }
 }
 
@@ -171,7 +208,15 @@ impl DisplayAs for NetworkShuffleExec {
         write!(
             f,
             "[Stage {stage}] => NetworkShuffleExec: output_partitions={partitions}, input_tasks={input_tasks}",
-        )
+        )?;
+        // Only display sort expressions when multiple input tasks require sort-merging.
+        if let Some(ordering) = self.properties.output_ordering()
+            && !ordering.is_empty()
+            && input_tasks > 1
+        {
+            write!(f, ", sort_exprs=[{ordering}]")?;
+        }
+        Ok(())
     }
 }
 
@@ -189,6 +234,13 @@ impl ExecutionPlan for NetworkShuffleExec {
             Some(v) => vec![v],
             None => vec![],
         }
+    }
+
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        apply_expression_roots(self.input_stage.dynamic_filter_anchors().iter(), f)
     }
 
     fn with_new_children(
@@ -223,31 +275,67 @@ impl ExecutionPlan for NetworkShuffleExec {
         let out_partitions = self.properties.partitioning.partition_count();
         let off = out_partitions * task_context.task_index;
 
+        let schema = self.schema();
         let mut streams = Vec::with_capacity(remote_stage.workers.len());
         for input_task_index in 0..remote_stage.workers.len() {
-            streams.push(self.worker_connections.execute(
+            let stream = self.worker_connections.execute(
                 remote_stage,
                 off..(off + self.properties.partitioning.partition_count()),
                 input_task_index,
                 off + partition,
-                self.producer_head(task_context.task_count),
+                self.producer_head(task_context.task_count)?,
                 &context,
-            )?);
+            )?;
+            streams.push(
+                Box::pin(RecordBatchStreamAdapter::new(schema.clone(), stream))
+                    as SendableRecordBatchStream,
+            );
         }
 
-        Ok(Box::pin(RecordBatchStreamAdapter::new(
-            self.schema(),
-            futures::stream::select_all(streams),
-        )))
+        if streams.is_empty() {
+            return Ok(Box::pin(EmptyRecordBatchStream::new(self.schema())));
+        }
+        // When there is only one input task stream, no merging or interleaving is needed.
+        if streams.len() == 1 {
+            return Ok(streams.pop().unwrap());
+        }
+
+        if let Some(ordering) = self.properties.output_ordering()
+            && !ordering.is_empty()
+        {
+            let reservation = MemoryConsumer::new(format!("NetworkShuffleExec[{partition}]"))
+                .register(&context.runtime_env().memory_pool);
+            let batch_size = context.session_config().batch_size();
+            // StreamingMergeBuilder requires BaselineMetrics (panics if not provided).
+            // Pass an isolated metrics set to avoid double-counting into worker_connections.metrics.
+            let metrics = BaselineMetrics::new(&ExecutionPlanMetricsSet::new(), partition);
+            StreamingMergeBuilder::new()
+                .with_streams(streams)
+                .with_schema(self.schema())
+                .with_expressions(ordering)
+                .with_metrics(metrics)
+                .with_batch_size(batch_size)
+                .with_reservation(reservation)
+                .build()
+        } else {
+            Ok(Box::pin(RecordBatchStreamAdapter::new(
+                self.schema(),
+                futures::stream::select_all(streams),
+            )))
+        }
     }
 
     fn metrics(&self) -> Option<MetricsSet> {
         Some(self.worker_connections.metrics.clone_inner())
     }
 
-    fn partition_statistics(&self, partition: Option<usize>) -> Result<Arc<Statistics>> {
+    fn statistics_from_inputs(
+        &self,
+        _input_stats: &[Arc<Statistics>],
+        args: &StatisticsArgs,
+    ) -> Result<Arc<Statistics>> {
         self.input_stage.partition_statistics(
-            partition,
+            args.partition(),
             self.properties.output_partitioning().partition_count(),
             self.schema(),
         )

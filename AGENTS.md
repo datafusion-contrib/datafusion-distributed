@@ -56,11 +56,19 @@ about a user's networking or deployment stack.
 - Follow established patterns in the closest relevant code and tests before
   introducing a new abstraction or mechanism.
 - Reuse existing helpers, extension points, and test fixtures when they fit.
+- Use DataFusion's error macros instead of manually constructing error variants or
+  formatting error strings. Use `exec_err!`, `internal_err!`, etc. when returning
+  a `Result`, and `exec_datafusion_err!`, `internal_datafusion_err!`, etc. in
+  `map_err` or `ok_or_else`. Import the macros at the top of the file and use `?`
+  for errors with existing conversions. This applies to benchmark and tooling code too.
 - Introduce a new pattern only when existing ones cannot express the required
   behavior; the rationale for this should be clearly and briefly stated.
 - When claiming a performance improvement, never move a PR out of draft before
   first qualifying the performance benefits following the guidelines in
   `docs/source/contributor-guide/04-benchmarks.md`.
+- Prefer adding `use` statements at the top of the file. Only use fully
+  qualified import paths inside a code block for disambiguating between 
+  functions also present in the standard library (e.g., `tokio::time::sleep`).
 - When submitting PRs, make sure they are scoped to one thing, and that they
   fall in one of these categories:
     - Feature additions (PR prefixed with `feat:`)
@@ -88,3 +96,26 @@ documents the full validation matrix.
 
 Read the code-review guide and the closest scoped `AGENTS.md`. Report concrete
 correctness risks, not style issues covered by CI.
+
+### Publishing AI review drafts
+
+When asked to review a GitHub PR, first render every proposed review comment in
+the response, including its file and line or line range. Then ask the user if
+they want to create a pending review containing those exact comments. Do not
+make a GitHub write until the user answers affirmatively. If the user asks to
+revise the comments, render the revised set and ask again.
+
+After affirmative confirmation, create exactly one *pending* review. Never
+submit, approve, or request changes autonomously. Create the review with its
+event omitted and with no review-summary body, then confirm that GitHub reports
+its state as `PENDING`. If there are no findings, render that result and ask
+whether the user wants an empty pending review.
+
+Every publishable finding must be an inline comment attached to one PR-diff
+line or one contiguous range of PR-diff lines. Do not use issue comments, PR
+conversation comments, standalone review-comment endpoints, or a review
+summary. Each inline comment must include a non-empty body, `path`, `line`, and
+`side`; ranges must also include both `start_line` and `start_side`. If a
+finding cannot be attached to a PR-diff line, report it locally and say why it
+cannot be posted. After confirmation, publish only the rendered, attachable
+comments.

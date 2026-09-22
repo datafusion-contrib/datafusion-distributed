@@ -4,14 +4,15 @@ use super::metrics_proto::df_metrics_set_to_proto;
 use super::spawn_select_all::spawn_select_all;
 
 use crate::common::{deserialize_uuid, now_ns};
-use crate::protocol::ProducerHeadSpec;
 use crate::protocol::grpc::{ObservabilityServiceImpl, ObservabilityServiceServer};
 use crate::{
-    CoordinatorToWorkerMsg, DistributedConfig, ExecuteTaskRequest, LoadInfo, SetPlanRequest,
-    TaskKey, TaskMetrics, WorkUnitBatch, WorkUnitFeedDeclaration, WorkUnitMsg, Worker,
-    WorkerResolver, WorkerToCoordinatorMsg,
+    CoordinatorToWorkerMsg, DistributedConfig, ExecuteTaskRequest, LoadInfo, MaybeEncoded,
+    ProducedDynamicFilter, ProducerHead, SetPlanRequest, TaskCompletedDynamicFilters, TaskKey,
+    TaskMetrics, WorkUnitBatch, WorkUnitFeedDeclaration, WorkUnitMsg, Worker, WorkerResolver,
+    WorkerToCoordinatorMsg,
 };
 
+use crate::worker::CoordinatorChannelResult;
 use arrow_flight::FlightData;
 use arrow_flight::encode::{DictionaryHandling, FlightDataEncoder, FlightDataEncoderBuilder};
 use arrow_flight::error::FlightError;
@@ -21,7 +22,7 @@ use datafusion::arrow::array::{Array, AsArray, RecordBatch, RecordBatchOptions};
 use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::ipc::writer::IpcWriteOptions;
 use datafusion::common::DataFusionError;
-use datafusion::execution::SendableRecordBatchStream;
+use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use futures::stream::BoxStream;
 use futures::{StreamExt, TryStreamExt};
 use prost::Message;
@@ -93,7 +94,21 @@ impl pb::worker_service_server::WorkerService for Worker {
         &self,
         request: Request<Streaming<pb::CoordinatorToWorkerMsg>>,
     ) -> Result<Response<Self::CoordinatorChannelStream>, Status> {
-        let (metadata, _ext, body) = request.into_parts();
+        let (metadata, _ext, mut body) = request.into_parts();
+
+        let msg = body
+            .message()
+            .await?
+            .ok_or_else(empty("Coordinator stream"))?
+            .inner
+            .ok_or_else(missing("CoordinatorToWorkerMsg.inner"))?;
+        let pb::coordinator_to_worker_msg::Inner::SetPlanRequest(set_plan_request) = msg else {
+            return Err(Status::invalid_argument(
+                "First Coordinator to Worker message must be SetPlanRequest",
+            ));
+        };
+
+        let set_plan_request = decode_set_plan_request(set_plan_request)?;
 
         let input_stream = body
             .map_err(map_status_to_datafusion_error)
@@ -102,12 +117,14 @@ impl pb::worker_service_server::WorkerService for Worker {
             })
             .boxed();
 
-        let output_stream = self
-            .coordinator_channel(metadata.into_headers(), input_stream)
+        let CoordinatorChannelResult { task_ctx, stream } = self
+            .coordinator_channel(metadata.into_headers(), set_plan_request, input_stream)
             .await
-            .map_err(datafusion_error_to_tonic_status)?
-            .map(|msg| match msg {
-                Ok(msg) => encode_worker_to_coordinator_msg(msg),
+            .map_err(datafusion_error_to_tonic_status)?;
+
+        let output_stream = stream
+            .map(move |msg| match msg {
+                Ok(msg) => encode_worker_to_coordinator_msg(msg, &task_ctx),
                 Err(err) => Err(datafusion_error_to_tonic_status(err)),
             })
             .boxed();
@@ -188,14 +205,19 @@ fn decode_coordinator_to_worker_msg(
             .inner
             .ok_or_else(missing("CoordinatorToWorkerMsg.inner"))?
         {
-            pb::coordinator_to_worker_msg::Inner::SetPlanRequest(request) => {
-                CoordinatorToWorkerMsg::SetPlanRequest(decode_set_plan_request(request)?)
+            pb::coordinator_to_worker_msg::Inner::SetPlanRequest(_) => {
+                return Err(Status::invalid_argument(
+                    "SetPlanRequest must be the first coordinator message",
+                ));
             }
             pb::coordinator_to_worker_msg::Inner::WorkUnitBatch(batch) => {
                 CoordinatorToWorkerMsg::WorkUnitBatch(decode_work_unit_batch(batch)?)
             }
             pb::coordinator_to_worker_msg::Inner::WorkUnitEos(_) => {
                 CoordinatorToWorkerMsg::WorkUnitEos
+            }
+            pb::coordinator_to_worker_msg::Inner::KickOffSampling(_) => {
+                CoordinatorToWorkerMsg::KickOffSampling
             }
         },
     )
@@ -205,7 +227,7 @@ fn decode_set_plan_request(request: pb::SetPlanRequest) -> Result<SetPlanRequest
     Ok(SetPlanRequest {
         task_key: decode_task_key(request.task_key.ok_or_else(missing("task_key"))?)?,
         task_count: request.task_count as usize,
-        plan_proto: request.plan_proto,
+        plan: MaybeEncoded::Encoded(request.plan_proto),
         work_unit_feed_declarations: request
             .work_unit_feed_declarations
             .into_iter()
@@ -213,6 +235,7 @@ fn decode_set_plan_request(request: pb::SetPlanRequest) -> Result<SetPlanRequest
             .collect::<Result<_, _>>()?,
         target_worker_url: parse_url(&request.target_worker_url, "target_worker_url")?,
         query_start_time_ns: request.query_start_time_ns as usize,
+        dynamic_filter_remote_producer_ids: request.dynamic_filter_remote_producer_ids,
     })
 }
 
@@ -223,30 +246,27 @@ async fn decode_execute_task_request(
         task_key: decode_task_key(request.task_key.ok_or_else(missing("task_key"))?)?,
         target_partition_start: request.target_partition_start as usize,
         target_partition_end: request.target_partition_end as usize,
-        producer_head_spec: decode_producer_head_spec(
+        producer_head: decode_producer_head(
             request.producer_head.ok_or_else(missing("producer_head"))?,
         ),
     })
 }
 
-pub(super) fn decode_producer_head_spec(
-    proto: pb::execute_task_request::ProducerHead,
-) -> ProducerHeadSpec {
+pub(super) fn decode_producer_head(proto: pb::execute_task_request::ProducerHead) -> ProducerHead {
     match proto {
-        pb::execute_task_request::ProducerHead::None(_) => ProducerHeadSpec::None,
-        pb::execute_task_request::ProducerHead::Broadcast(v) => ProducerHeadSpec::BroadcastExec {
+        pb::execute_task_request::ProducerHead::None(_) => ProducerHead::None,
+        pb::execute_task_request::ProducerHead::Broadcast(v) => ProducerHead::BroadcastExec {
             output_partitions: v.output_partitions as usize,
         },
-        pb::execute_task_request::ProducerHead::Repartition(v) => {
-            ProducerHeadSpec::RepartitionExec {
-                partitioning: v.partitioning,
-            }
-        }
+        pb::execute_task_request::ProducerHead::Repartition(v) => ProducerHead::RepartitionExec {
+            partitioning: MaybeEncoded::Encoded(v.partitioning),
+        },
     }
 }
 
 fn encode_worker_to_coordinator_msg(
     msg: WorkerToCoordinatorMsg,
+    task_ctx: &Arc<TaskContext>,
 ) -> Result<pb::WorkerToCoordinatorMsg, Status> {
     Ok(pb::WorkerToCoordinatorMsg {
         inner: Some(match msg {
@@ -261,7 +281,51 @@ fn encode_worker_to_coordinator_msg(
             WorkerToCoordinatorMsg::LoadInfoEos => {
                 pb::worker_to_coordinator_msg::Inner::LoadInfoEos(true)
             }
+            WorkerToCoordinatorMsg::TaskCompletedDynamicFilters(filters) => {
+                pb::worker_to_coordinator_msg::Inner::TaskCompletedDynamicFilters(
+                    encode_task_completed_dynamic_filters(filters, task_ctx)?,
+                )
+            }
+            WorkerToCoordinatorMsg::ProducedDynamicFilter(filter) => {
+                pb::worker_to_coordinator_msg::Inner::ProducedDynamicFilter(
+                    encode_produced_dynamic_filter(*filter, task_ctx)?,
+                )
+            }
         }),
+    })
+}
+
+fn encode_produced_dynamic_filter(
+    filter: ProducedDynamicFilter,
+    task_ctx: &Arc<TaskContext>,
+) -> Result<pb::ProducedDynamicFilter, Status> {
+    Ok(pb::ProducedDynamicFilter {
+        expression_id: filter.expression_id,
+        expression_proto: filter
+            .expression
+            .encode(task_ctx)
+            .map_err(datafusion_error_to_tonic_status)?,
+    })
+}
+
+fn encode_task_completed_dynamic_filters(
+    filters: TaskCompletedDynamicFilters,
+    task_ctx: &Arc<TaskContext>,
+) -> Result<pb::TaskCompletedDynamicFilters, Status> {
+    Ok(pb::TaskCompletedDynamicFilters {
+        filters: filters
+            .filters
+            .into_iter()
+            .map(|filter| {
+                Ok(pb::DynamicFilter {
+                    expression_id: filter.expression_id,
+                    expression_proto: filter
+                        .expression
+                        .encode(task_ctx)
+                        .map_err(datafusion_error_to_tonic_status)?,
+                })
+            })
+            .collect::<Result<_, Status>>()?,
     })
 }
 
@@ -311,7 +375,7 @@ fn decode_work_unit(work_unit: pb::WorkUnit) -> Result<WorkUnitMsg, Status> {
     Ok(WorkUnitMsg {
         id: deserialize_uuid(&work_unit.id).map_err(datafusion_error_to_tonic_status)?,
         partition: work_unit.partition as usize,
-        body: work_unit.body,
+        body: MaybeEncoded::Encoded(work_unit.body),
         created_timestamp_unix_nanos: work_unit.created_timestamp_unix_nanos as usize,
         sent_timestamp_unix_nanos: work_unit.sent_timestamp_unix_nanos as usize,
         received_timestamp_unix_nanos: work_unit.received_timestamp_unix_nanos as usize,
@@ -339,6 +403,10 @@ fn decode_task_key(task_key: pb::TaskKey) -> Result<TaskKey, Status> {
 fn parse_url(value: &str, field: &'static str) -> Result<Url, Status> {
     Url::parse(value)
         .map_err(|err| Status::invalid_argument(format!("Invalid field '{field}': {err}")))
+}
+
+fn empty(stream_name: &'static str) -> impl FnOnce() -> Status {
+    move || Status::invalid_argument(format!("Empty {stream_name}"))
 }
 
 fn missing(field: &'static str) -> impl FnOnce() -> Status {
@@ -415,4 +483,36 @@ fn garbage_collect_arrays(
         arrays,
         &RecordBatchOptions::new().with_row_count(Some(row_count)),
     )?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use datafusion::physical_expr::expressions::lit;
+    use datafusion::prelude::SessionContext;
+
+    #[test]
+    fn encode_produced_dynamic_filter() {
+        let expression = lit(true);
+        let task_ctx = SessionContext::new().task_ctx();
+        let expected = MaybeEncoded::Decoded(Arc::clone(&expression))
+            .encode(&task_ctx)
+            .unwrap();
+        let encoded = encode_worker_to_coordinator_msg(
+            WorkerToCoordinatorMsg::ProducedDynamicFilter(Box::new(ProducedDynamicFilter {
+                expression_id: 42,
+                expression: MaybeEncoded::Decoded(expression),
+            })),
+            &task_ctx,
+        )
+        .unwrap();
+
+        let Some(pb::worker_to_coordinator_msg::Inner::ProducedDynamicFilter(encoded)) =
+            encoded.inner
+        else {
+            panic!("expected produced dynamic filter");
+        };
+        assert_eq!(encoded.expression_id, 42);
+        assert_eq!(encoded.expression_proto, expected);
+    }
 }

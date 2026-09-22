@@ -1,5 +1,5 @@
 use crate::ExecuteTaskRequest;
-use crate::worker::worker_service::{TaskDataEntries, Worker};
+use crate::worker::worker_service::Worker;
 use datafusion::common::exec_datafusion_err;
 use datafusion::common::{Result, exec_err};
 use datafusion::error::DataFusionError;
@@ -20,14 +20,8 @@ impl Worker {
         &self,
         request: ExecuteTaskRequest,
     ) -> Result<(Vec<SendableRecordBatchStream>, Arc<TaskContext>)> {
-        Self::execute_task_static(Arc::clone(&self.task_data_entries), request).await
-    }
-
-    pub(crate) async fn execute_task_static(
-        task_data_entries: Arc<TaskDataEntries>,
-        request: ExecuteTaskRequest,
-    ) -> Result<(Vec<SendableRecordBatchStream>, Arc<TaskContext>)> {
-        let entry = task_data_entries
+        let entry = self
+            .task_data_entries
             .get_with(request.task_key, async { Default::default() })
             .await;
 
@@ -40,7 +34,7 @@ impl Worker {
             .map_err(DataFusionError::Shared)?;
         task_data.task_data_metrics.mark_execution_started_once();
 
-        let plan = task_data.plan(&request.producer_head_spec)?;
+        let plan = task_data.plan(request.producer_head)?;
         let task_ctx = task_data.task_ctx;
         let partition_count = plan.properties().partitioning.partition_count();
         let plan_name = plan.name();

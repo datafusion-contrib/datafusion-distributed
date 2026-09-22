@@ -84,6 +84,11 @@ mod tests {
         "#;
 
         let s_ctx = SessionContext::default();
+        // This test during local connections might prune some rows using dynamic filters
+        // differently in distributed vs single-node. Disabling dynamic filters prevents this
+        // from happening.
+        disable_dynamic_filters(&s_ctx);
+        disable_dynamic_filters(&d_ctx);
         let (s_physical, mut d_physical) = execute(&s_ctx, &d_ctx, query).await?;
         d_physical = rewrite_with_metrics(d_physical.clone(), format).await;
         println!("{}", display_plan_ascii(s_physical.as_ref(), true));
@@ -455,5 +460,18 @@ mod tests {
             "Sum of metric values is 0. Either the metric {metric_name} is not present or the test is too trivial"
         );
         summed
+    }
+
+    fn disable_dynamic_filters(ctx: &SessionContext) {
+        let session_state = ctx.state_ref();
+        let mut session_state = session_state.write();
+        let config = session_state.config_mut();
+        let options = config.options_mut();
+        options
+            .set(
+                "datafusion.optimizer.enable_dynamic_filter_pushdown",
+                "false",
+            )
+            .expect("static dynamic-filter setting should be valid");
     }
 }

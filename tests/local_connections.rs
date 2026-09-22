@@ -48,4 +48,74 @@ mod tests {
 
         Ok(())
     }
+
+    #[tokio::test]
+    async fn half_coordinator_connections_are_local() -> Result<(), Box<dyn std::error::Error>> {
+        let (ctx, _guard, _) = start_localhost_context(2, DefaultSessionBuilder).await;
+        register_parquet_tables(&ctx).await?;
+
+        let query =
+            r#"SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)"#;
+
+        let plan = ctx.sql(query).await?.create_physical_plan().await?;
+        collect(Arc::clone(&plan), ctx.task_ctx()).await?;
+
+        let metrics = plan.metrics().expect("DistributedExec has metrics");
+        let metric_value = |name| {
+            metrics
+                .sum(|metric| metric.value().name() == name)
+                .map(|metric| metric.as_usize())
+                .unwrap_or_default()
+        };
+
+        // The plan above has two stages, with two tasks each, so 4 tasks in total. Assuming the
+        // coordinator is the worker 0, the coordinator->worker channels are the following:
+        // - coordinator worker 0 -> stage 0, worker 0 | local
+        // - coordinator worker 0 -> stage 0, worker 1 | remote
+        // - coordinator worker 0 -> stage 1, worker 0 | local
+        // - coordinator worker 0 -> stage 1, worker 1 | remote
+        assert_eq!(metric_value("local_coordinator_channels"), 2);
+        assert_eq!(metric_value("remote_coordinator_channels"), 2);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn network_boundaries_use_local_connections() -> Result<(), Box<dyn std::error::Error>> {
+        let (ctx, _guard, _) = start_localhost_context(2, DefaultSessionBuilder).await;
+        register_parquet_tables(&ctx).await?;
+
+        let query =
+            r#"SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)"#;
+
+        let plan = ctx.sql(query).await?.create_physical_plan().await?;
+        collect(Arc::clone(&plan), ctx.task_ctx()).await?;
+        let plan =
+            rewrite_distributed_plan_with_metrics(plan, DistributedMetricsFormat::Aggregated)
+                .await?;
+
+        let mut local_connections_used = 0;
+        plan.apply(|node| {
+            if node.is_network_boundary() {
+                local_connections_used += node
+                    .metrics()
+                    .unwrap_or_default()
+                    .sum(|metric| metric.value().name() == "local_connections_used")
+                    .map_or(0, |metric| metric.as_usize());
+            }
+            Ok(TreeNodeRecursion::Continue)
+        })?;
+
+        // The plan above has two stages, with two tasks each, so 4 tasks in total. Assuming the
+        // coordinator is the worker 0, the network boundary->worker channels are the following:
+        // - coordinator worker 0 -> stage 1, worker 0 | local
+        // - coordinator worker 0 -> stage 1, worker 1 | remote
+        // - stage 1, worker 0 -> stage 0, worker 0    | local
+        // - stage 1, worker 0 -> stage 0, worker 1    | remote
+        // - stage 1, worker 1 -> stage 0, worker 0    | remote
+        // - stage 1, worker 1 -> stage 0, worker 1    | local
+        assert_eq!(local_connections_used, 3);
+
+        Ok(())
+    }
 }

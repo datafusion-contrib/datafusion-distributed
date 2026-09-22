@@ -63,10 +63,10 @@ async fn run_app(
         terminal.draw(|frame| ui::render(frame, app))?;
 
         // Check for keyboard input (16ms timeout ~ 60fps responsiveness)
-        if event::poll(Duration::from_millis(16))? {
-            if let Event::Key(key) = event::read()? {
-                input::handle_key_event(app, key);
-            }
+        if event::poll(Duration::from_millis(16))?
+            && let Event::Key(key) = event::read()?
+        {
+            input::handle_key_event(app, key);
         }
 
         if app.should_quit {

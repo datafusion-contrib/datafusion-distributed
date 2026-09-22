@@ -1,41 +1,54 @@
-use crate::results::{BenchResult, print_comparison_total};
+use crate::results::{BenchResult, get_current_branch, print_comparison_total};
 use datafusion::common::{Result, internal_err};
-use structopt::StructOpt;
 
-/// Compare different runs of the tpch benchmarks.
-#[derive(Debug, StructOpt, Clone)]
-#[structopt(verbatim_doc_comment)]
-pub struct CompareOpt {
-    /// Query number. If not specified, runs all queries
-    #[structopt(name = "BRANCHES", required = true)]
-    pub branches: Vec<String>,
-
-    /// Path to data files
-    #[structopt(long)]
-    dataset: String,
+/// One saved benchmark state, independent of how the CLI selected it.
+pub struct BenchmarkState {
+    pub dataset: String,
+    pub branch: String,
 }
 
-impl CompareOpt {
-    pub fn run(&self) -> Result<()> {
-        let (base, new) = match self.branches.as_slice() {
-            [one, two] => (one, two),
-            rest => {
-                return internal_err!("Exactly two branches must be specified, got: {rest:?}");
-            }
+pub fn parse_comparison_args(
+    states: Vec<String>,
+    dataset: Option<String>,
+) -> Result<[BenchmarkState; 2]> {
+    let [base, new]: [String; 2] = states.try_into().map_err(|states| {
+        datafusion::common::internal_datafusion_err!(
+            "Exactly two states must be specified, got: {states:?}"
+        )
+    })?;
+    let state = |value: String| {
+        let (dataset, branch) = match &dataset {
+            Some(dataset) => (dataset.clone(), value),
+            None => match value.rsplit_once('@') {
+                Some((dataset, branch)) => (dataset.to_owned(), branch.to_owned()),
+                None => (value, get_current_branch()),
+            },
         };
-        println!(
-            "=== Comparing {} results from branch '{}' [prev] with '{}' [new] ===",
-            self.dataset, base, new
-        );
-        let base = BenchResult::load_many(&self.dataset, base);
-        let new = BenchResult::load_many(&self.dataset, new);
-        for query in new.iter() {
-            let Some(prev) = base.iter().find(|v| v.id == query.id) else {
-                continue;
-            };
-            query.compare(prev)
+        if dataset.is_empty() || branch.is_empty() {
+            return datafusion::common::internal_err!("Dataset and branch must not be empty");
         }
-        print_comparison_total(&base, &new);
-        Ok(())
+        Ok(BenchmarkState { dataset, branch })
+    };
+    Ok([state(base)?, state(new)?])
+}
+
+pub fn run([base, new]: [BenchmarkState; 2]) -> Result<()> {
+    println!(
+        "=== Comparing {} results from branch '{}' [prev] with {} results from branch '{}' [new] ===",
+        base.dataset, base.branch, new.dataset, new.branch
+    );
+    let base_results = BenchResult::load_many(&base.dataset, &base.branch);
+    let new_results = BenchResult::load_many(&new.dataset, &new.branch);
+    // Preserve the existing empty-result behavior for same-dataset branch comparisons.
+    if base.dataset != new.dataset && (base_results.is_empty() || new_results.is_empty()) {
+        return internal_err!("Missing saved benchmark results; run both sides before comparing");
     }
+    for query in new_results.iter() {
+        let Some(prev) = base_results.iter().find(|v| v.id == query.id) else {
+            continue;
+        };
+        query.compare(prev)
+    }
+    print_comparison_total(&base_results, &new_results);
+    Ok(())
 }

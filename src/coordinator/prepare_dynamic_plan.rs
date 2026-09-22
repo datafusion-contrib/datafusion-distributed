@@ -5,13 +5,14 @@ use crate::distributed_planner::{
     InjectNetworkBoundaryContext, NetworkBoundaryBuilderResult, ProducerHead, calculate_cost,
     inject_network_boundaries,
 };
+use crate::dynamic_filtering::orphan_dynamic_filter_consumers;
 use crate::events::DynamicStageBuiltHandlers;
 use crate::events::TaskCountAnnotation::{Desired, Maximum};
 use crate::execution_plans::SamplerExec;
 use crate::stage::{LocalStage, RemoteStage};
 use crate::{
-    BytesCounterMetric, DynamicStageBuiltEvent, LoadInfo, MaxGaugeMetric, NetworkBoundaryExt,
-    NetworkCoalesceExec, Stage,
+    BytesCounterMetric, CoordinatorToWorkerMsg, DynamicStageBuiltEvent, LoadInfo, MaxGaugeMetric,
+    NetworkBoundaryExt, NetworkCoalesceExec, Stage,
 };
 use dashmap::DashMap;
 use datafusion::common::stats::Precision;
@@ -19,7 +20,8 @@ use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{Result, exec_err, plan_err};
 use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::{
-    ColumnStatistics, ExecutionPlan, ExecutionPlanProperties, Statistics,
+    ColumnStatistics, ExecutionPlan, ExecutionPlanProperties, Statistics, StatisticsArgs,
+    StatisticsContext,
 };
 use futures::{Stream, StreamExt};
 use std::any::TypeId;
@@ -27,7 +29,7 @@ use std::sync::Arc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 pub(super) async fn prepare_dynamic_plan(
-    query_coordinator: &QueryCoordinator,
+    query_coordinator: &Arc<QueryCoordinator>,
     base_plan: &Arc<dyn ExecutionPlan>,
 ) -> Result<PreparedPlan> {
     let plans_for_viz = Arc::new(PlanReconstructor::default());
@@ -60,13 +62,14 @@ pub(super) async fn prepare_dynamic_plan(
                 "network_cost",
                 *cost.network.get_value().unwrap_or(&0),
             ));
-            let compute_based_task_count = cost
-                .cpu
-                .get_value()
-                .unwrap_or(&0)
-                .div_ceil(nb_ctx.d_cfg.dynamic_bytes_per_partition.max(1))
-                .div_ceil(input_stage.plan.output_partitioning().partition_count())
-                .clamp(1, nb_ctx.max_tasks()?);
+            let compute_based_task_count = *cost.cpu.get_value().unwrap_or(&0) as f64
+                / nb_ctx.d_cfg.dynamic_bytes_per_partition.max(1) as f64
+                / input_stage
+                    .plan
+                    .output_partitioning()
+                    .partition_count()
+                    .max(1) as f64;
+            let compute_based_task_count = compute_based_task_count.min(nb_ctx.max_tasks()? as f64);
             let task_count = nb_ctx
                 .task_count(&input_stage.plan)?
                 .merge(Desired(compute_based_task_count));
@@ -89,38 +92,46 @@ pub(super) async fn prepare_dynamic_plan(
             // In order to infer the compute the cost of the stage above this one, here a sampler
             // is injected to gather runtime statistics.
             input_stage.plan = ProducerHead::insert_sampler(input_stage.plan)?;
+            let dynamic_filter_anchors = orphan_dynamic_filter_consumers(&input_stage.plan)?;
 
-            let mut stage_coordinator = query_coordinator.stage_coordinator(&input_stage);
-
-            let mut workers = Vec::with_capacity(input_stage.tasks);
             let mut load_info_rxs = Vec::with_capacity(input_stage.tasks);
 
-            let routed_urls = stage_coordinator.routed_urls()?;
-
-            for (i, routed_url) in routed_urls.into_iter().enumerate() {
-                workers.push(routed_url.clone());
-                // Spawns the task that feeds this subplan to this worker. There will be as
-                // many as this spawned tasks as workers.
-                let (worker_tx, worker_rx) = stage_coordinator.send_plan_task(i, routed_url)?;
-                load_info_rxs.push({
-                    let rx = stage_coordinator.worker_to_coordinator_task(i, worker_rx);
-                    UnboundedReceiverStream::new(rx)
-                });
-                stage_coordinator.coordinator_to_worker_task(i, worker_tx)?;
-            }
-
+            let query_coordinator = Arc::clone(query_coordinator);
             let plans_for_viz = Arc::clone(&plans_for_viz);
+
             Ok(async move {
+                let mut stage_coordinator = query_coordinator.stage_coordinator(&input_stage);
+
+                let mut futures = Vec::with_capacity(input_stage.tasks);
+                for task_i in 0..input_stage.tasks {
+                    futures.push(stage_coordinator.init_bidirectional_stream(task_i));
+                }
+                let results = futures::future::try_join_all(futures).await?;
+
+                let mut workers = Vec::with_capacity(input_stage.tasks);
+                for (task_i, (url, worker_tx, worker_rx)) in results.into_iter().enumerate() {
+                    workers.push(url);
+                    load_info_rxs.push({
+                        let rx = stage_coordinator.worker_to_coordinator_task(task_i, worker_rx);
+                        UnboundedReceiverStream::new(rx)
+                    });
+                    let _ = worker_tx.send(CoordinatorToWorkerMsg::KickOffSampling);
+                    stage_coordinator.coordinator_to_worker_task(task_i, worker_tx)?;
+                }
+
                 let (stats, consumer_tc) = if nb_type == TypeId::of::<NetworkCoalesceExec>() {
                     (None, Maximum(1))
                 } else {
                     let (stats, new_metrics) =
                         gather_runtime_statistics(load_info_rxs, &input_stage.plan).await?;
                     metrics.extend(new_metrics);
-                    // returning Desired(1) here is our way to tell the planner that we don't care
+                    // returning Desired(0) here is our way to tell the planner that we don't care
                     // about the task count assigned to the network boundary in the consumer stage,
-                    // and we don't want it to affect other task count decisions.
-                    (Some(Arc::new(stats)), Desired(1))
+                    // and we don't want it to affect other task count decisions. A 0.0 hint does
+                    // not mask smaller fractional values via max-merge, and does not inflate
+                    // UNION sums when this boundary sits under a child of a
+                    // ChildrenIsolatorUnionExec.
+                    (Some(Arc::new(stats)), Desired(0.0))
                 };
 
                 // Capture the output partitioning of the (rescaled, sampler-wrapped) input plan
@@ -135,6 +146,7 @@ pub(super) async fn prepare_dynamic_plan(
                         num: input_stage.num,
                         workers,
                         runtime_stats: stats,
+                        dynamic_filter_anchors,
                     }),
                     input_properties,
                 })
@@ -185,7 +197,7 @@ impl PlanReconstructor {
             };
             let (plan_for_viz, metrics_set) = entry;
 
-            let plan_for_viz = nb.producer_head(tc).insert(plan_for_viz)?;
+            let plan_for_viz = nb.producer_head(tc)?.insert(plan_for_viz)?;
 
             let nb = nb.with_input_stage(Stage::Local(LocalStage {
                 query_id: input_stage.query_id(),
@@ -217,7 +229,7 @@ async fn gather_runtime_statistics(
 
     let mut new_metrics = MetricsSet::new();
     let Some(sampler) = find_sampler(plan) else {
-        return plan_err!("Mising SamplerExec while gathering load report");
+        return plan_err!("Missing SamplerExec while gathering load report");
     };
     let n_cols = sampler.schema().fields.len();
 
@@ -233,7 +245,7 @@ async fn gather_runtime_statistics(
     let mut partitions_done = 0;
     let mut partitions_reached_eos = 0;
     let mut rows_ready = 0;
-    let mut rows_pulled_from_leafs = 0;
+    let mut rows_pulled_from_leaves = 0;
     let mut per_col_bytes_ready = vec![0usize; n_cols];
 
     let mut ndv_pct = vec![];
@@ -242,7 +254,7 @@ async fn gather_runtime_statistics(
     let mut load_info_stream = futures::stream::select_all(per_task_load_info_stream);
     while let Some(load_info) = load_info_stream.next().await {
         rows_ready += load_info.rows_ready;
-        rows_pulled_from_leafs += load_info.rows_pulled_from_leaf;
+        rows_pulled_from_leaves += load_info.rows_pulled_from_leaf;
         per_col_bytes_ready =
             element_wise_sum(per_col_bytes_ready, &load_info.per_column_bytes_ready)?;
         ndv_pct.push(load_info.per_column_ndv_percentage);
@@ -275,19 +287,21 @@ async fn gather_runtime_statistics(
         partitions_done,
     );
     let rows_ready = rows_ready * total_partitions / partitions_done;
-    let rows_pulled_from_leafs = rows_pulled_from_leafs * total_partitions / partitions_done;
+    let rows_pulled_from_leaves = rows_pulled_from_leaves * total_partitions / partitions_done;
 
     let estimated_pct_sampled = if partitions_reached_eos == partitions_done {
         // Every sampled partition's stream reached end-of-stream, so `rows_ready` /
         // `per_col_bytes_ready` are the partitions' final output rather than a partial snapshot —
         // the stage is fully sampled. This is the reliable "done" signal, and it correctly covers
-        // legitimately-empty stages (which would otherwise report `rows_pulled_from_leafs == 0` and
+        // legitimately-empty stages (which would otherwise report `rows_pulled_from_leaves == 0` and
         // make the completion fraction 0, blowing up the `ready / fraction` extrapolation below).
         1.0
-    } else if let Some(estimated_driver_path_leaf_rows) = estimated_driver_path_leaf_rows(plan) {
+    } else if let Some(estimated_driver_path_leaf_rows) = estimated_driver_path_leaf_rows(plan)
+        && rows_pulled_from_leaves > 0
+    {
         // The stage is still producing. Estimate how far along it is from the fraction of the
         // driver-path leaf rows consumed so far.
-        (rows_pulled_from_leafs as f32 / estimated_driver_path_leaf_rows as f32).min(1.0)
+        (rows_pulled_from_leaves as f32 / estimated_driver_path_leaf_rows.max(1) as f32).min(1.0)
     } else {
         // We can't measure progress (no leaf-row estimate, or nothing pulled from the leaves
         // yet even though we're not at EOS): fall back rather than dividing by ~0.
@@ -347,7 +361,7 @@ fn estimated_driver_path_leaf_rows(plan: &Arc<dyn ExecutionPlan>) -> Option<usiz
     let mut total_rows = None;
     let _ = plan.apply_driver_path(|plan| {
         if plan.children().is_empty() {
-            let stats = plan.partition_statistics(None)?;
+            let stats = StatisticsContext::new().compute(plan.as_ref(), &StatisticsArgs::new())?;
             if let Some(num_rows) = stats.num_rows.get_value() {
                 if let Some(total_rows) = &mut total_rows {
                     *total_rows += *num_rows;

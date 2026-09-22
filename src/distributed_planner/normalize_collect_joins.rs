@@ -8,7 +8,9 @@ use datafusion::physical_expr::Partitioning;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::joins::{HashJoinExec, NestedLoopJoinExec, PartitionMode};
 use datafusion::physical_plan::repartition::RepartitionExec;
-use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
+use datafusion::physical_plan::{
+    ChildrenPropertiesMode, ExecutionPlan, ExecutionPlanProperties, ReplaceChildrenOptions,
+};
 
 use super::DistributedConfig;
 use super::insert_broadcast::is_left_broadcast_safe;
@@ -138,12 +140,12 @@ pub(super) fn normalize_collect_joins(
                 && coalesce.fetch().is_none()
             {
                 Arc::clone(&node)
-                    .with_new_children(vec![
-                        Arc::clone(coalesce.input()),
-                        Arc::clone(join.right()),
-                    ])?
+                    .replace_children(
+                        vec![Arc::clone(coalesce.input()), Arc::clone(join.right())],
+                        ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+                    )?
                     .downcast_ref::<NestedLoopJoinExec>()
-                    .expect("with_new_children changed the node type")
+                    .expect("replace_children changed the node type")
                     .swap_inputs()?
             } else {
                 join.swap_inputs()?
@@ -231,7 +233,7 @@ mod tests {
           RepartitionExec: partitioning=Hash([RainToday@1], 3), input_partitions=3
             DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
           RepartitionExec: partitioning=Hash([RainToday@1], 3), input_partitions=3
-            DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ]
+            DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
         ");
     }
 
@@ -346,10 +348,11 @@ mod tests {
         // DynamicFilterPhysicalExpr equality is pointer-based on the shared inner state, so
         // this holds only if the converted join kept the original filter (the same instance
         // the probe-side scan subscribes to), not a lookalike replacement.
-        assert_eq!(
-            original.dynamic_filter_expr().unwrap(),
-            converted.dynamic_filter_expr().unwrap()
-        );
+        let original_dynamic = original.dynamic_expressions_produced();
+        let converted_dynamic = converted.dynamic_expressions_produced();
+        assert_eq!(original_dynamic.len(), 1);
+        assert_eq!(converted_dynamic.len(), 1);
+        assert!(Arc::ptr_eq(&original_dynamic[0], &converted_dynamic[0]));
     }
 
     async fn test_plan(broadcast_enabled: bool) -> TestPlan {

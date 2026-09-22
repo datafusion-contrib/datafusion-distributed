@@ -4,7 +4,9 @@ mod tests {
     use datafusion::prelude::SessionContext;
     use datafusion_distributed::test_utils::in_memory_channel_resolver::start_in_memory_context;
     use datafusion_distributed::{DefaultSessionBuilder, DistributedExt};
-    use datafusion_distributed_benchmarks::datasets::{register_tables, tpch};
+    use datafusion_distributed_benchmarks::datasets::{
+        output::DatasetOutput, register_tables, tpch,
+    };
     use futures::TryStreamExt;
     use std::error::Error;
     use std::fmt::Display;
@@ -209,7 +211,11 @@ mod tests {
         INIT_TEST_TPCH_TABLES
             .get_or_init(|| async {
                 if !fs::exists(&data_dir).unwrap() {
-                    tpch::generate_tpch_data(&data_dir, sf, parts)
+                    let output = DatasetOutput::new(data_dir.to_str().unwrap())
+                        .await
+                        .unwrap();
+                    tpch::generate_data(&output, sf, parts, false)
+                        .await
                         .expect("Failed to generate TPC-H data");
                 }
             })
