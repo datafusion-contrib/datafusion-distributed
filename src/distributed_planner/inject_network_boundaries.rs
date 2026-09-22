@@ -336,10 +336,7 @@ async fn _inject_network_boundaries(
             .nb_builder
             .build(input_stage, TypeId::of::<NetworkShuffleExec>(), nb_ctx)
             .await?;
-        // Create a Direct-mode shuffle as a placeholder. The final consumer task count
-        // is not yet known here. The salted/direct decision is deferred to
-        // propagate_task_count_until_network_boundaries, which runs after the full
-        // reconciliation and has the actual final count.
+        // Placeholder: salted/direct decision is deferred to propagate_task_count_until_network_boundaries.
         let consumer_partitions = result.input_properties.partitioning.partition_count();
         let shuffle = Arc::new(NetworkShuffleExec::from_stage(
             result.input_stage,
@@ -476,6 +473,8 @@ impl InjectNetworkBoundaryContext<'_> {
             {
                 let consumer_partitions = shuffle.consumer_partitioning.partition_count();
                 let producer_tasks = shuffle.input_stage.task_count();
+                // now that task_count is the final reconciled consumer count,
+                // decide whether salted mode is warranted.
                 if should_use_salted_mode(
                     task_count.as_usize(),
                     consumer_partitions,
