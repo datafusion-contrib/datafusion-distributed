@@ -37,10 +37,9 @@ pub(super) struct PlannedDynamicFilter {
     // Note that it is not guaranteed that every task within a stage produces / consumes dynamic filters. For
     // example, a distributed union may prevent a dynamic filter from appearing in all tasks. So, we
     // store task keys rather than stage ids.
-    pub(super) producer_tasks: HashSet<TaskKey>,
+    /// Registered producers and their latest accepted snapshots, if any.
+    pub(super) producers: HashMap<TaskKey, Option<PhysicalDynamicFilterNode>>,
     pub(super) consumer_tasks: HashSet<TaskKey>,
-    /// Latest accepted snapshot from each producer task.
-    pub(super) producer_filters: HashMap<TaskKey, PhysicalDynamicFilterNode>,
     /// Full dynamic filter containing the merged predicate and its completion state.
     pub(super) merged: Option<PhysicalDynamicFilterNode>,
 }
@@ -138,7 +137,7 @@ impl DynamicFilterRegistry {
                 Some(existing) => existing,
                 None => merge_mode,
             });
-            filter.producer_tasks.insert(task_key);
+            filter.producers.entry(task_key).or_insert(None);
         }
         for consumer in consumers {
             state
@@ -186,23 +185,24 @@ impl DynamicFilterRegistry {
         let Some(filter) = state.filters.get_mut(&report.expression_id) else {
             return;
         };
-        if !filter.producer_tasks.contains(&task_key)
-            || (filter.merge_mode != Some(DynamicFilterMergeMode::Incremental)
-                && !dynamic_filter.is_complete)
-            || filter
-                .producer_filters
-                .get(&task_key)
+        let Some(previous) = filter.producers.get_mut(&task_key) else {
+            return;
+        };
+        if (filter.merge_mode != Some(DynamicFilterMergeMode::Incremental)
+            && !dynamic_filter.is_complete)
+            || previous
+                .as_ref()
                 .is_some_and(|previous| previous.is_complete || previous == dynamic_filter.as_ref())
         {
             return;
         }
-        filter.producer_filters.insert(task_key, *dynamic_filter);
+        *previous = Some(*dynamic_filter);
         Self::merge(&mut state, report.expression_id);
     }
 
     /// Merges partial dynamic filters together for the provided dynamic filter
     /// id only if there are enough updates present.
-    fn try_merge(state: &mut DynamicFilterRegistryState, id: u64) -> bool {
+    fn merge(state: &mut DynamicFilterRegistryState, id: u64) -> bool {
         let Some(filter) = state.filters.get_mut(&id) else {
             return false;
         };
@@ -213,19 +213,20 @@ impl DynamicFilterRegistry {
         let Some(mode) = filter.merge_mode else {
             return false;
         };
-        let all_complete = !filter.producer_tasks.is_empty()
-            && filter.producer_tasks.iter().all(|task| {
+        let all_complete = !filter.producers.is_empty()
+            && filter.producers.iter().all(|(task, report)| {
                 state.sealed_stages.contains(&task.stage_id)
-                    && filter
-                        .producer_filters
-                        .get(task)
-                        .is_some_and(|f| f.is_complete)
+                    && report.as_ref().is_some_and(|report| report.is_complete)
             });
         if mode == DynamicFilterMergeMode::AllProducersComplete && !all_complete {
             return false;
         }
 
-        let mut reports: Vec<_> = filter.producer_filters.iter().collect();
+        let mut reports: Vec<_> = filter
+            .producers
+            .iter()
+            .filter_map(|(task, report)| report.as_ref().map(|report| (task, report)))
+            .collect();
         reports.sort_unstable_by_key(|(key, _)| (key.stage_id, key.task_number));
         if mode == DynamicFilterMergeMode::FirstProducerComplete {
             reports.truncate(1);
