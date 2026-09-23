@@ -228,13 +228,14 @@ Figure 4
 
 #### MIN/MAX aggregate
 
-A partial `MIN` turns each observed value into an upper bound; later, lower
-values only tighten it. `MAX` works symmetrically. The coordinator therefore
-uses `Incremental`, ORs the latest bound from every producer, and publishes each
-new generation immediately.
+A partial `MIN` turns each observed value into an independently safe upper
+bound; later, lower values only tighten it. `MAX` works symmetrically. The
+coordinator therefore uses `Incremental`, ANDs the latest bounds from every
+producer, and publishes each new generation immediately. A final aggregate in
+the next stage still combines the partial values to produce the global result.
 
 ```{figure} ../_static/images/dynamic-filtering/remote-min-aggregate.svg
-:alt: Two partial MIN aggregates report successively lower values, which the coordinator merges into safe upper bounds for remote scans.
+:alt: Two partial MIN aggregates send their local minima through a final aggregate while reporting successively lower bounds, which the coordinator intersects with AND and sends to remote scans.
 :width: 100%
 
 Figure 5
@@ -242,12 +243,14 @@ Figure 5
 
 #### TopK sort
 
-For a descending TopK, each generation raises a lower bound. As with MIN/MAX,
-the coordinator uses `Incremental`. OR keeps the least strict current bound,
-ensuring that a row still useful to any producer passes the remote scan.
+For a descending TopK, each local sort retains its best K candidates, so its
+Kth value is an independently safe lower bound. Each generation can only raise
+that bound. As with MIN/MAX, the coordinator uses `Incremental` and ANDs the
+latest bounds, keeping the strictest one. A `SortPreservingMergeExec` in the
+next stage merges the locally sorted candidates into the global TopK.
 
 ```{figure} ../_static/images/dynamic-filtering/remote-topk-sort.svg
-:alt: Two TopK tasks report increasingly strict score bounds, which the coordinator ORs and sends back to remote scans so progressively more low scores are removed.
+:alt: Two local TopK sorts send sorted candidates through a SortPreservingMerge while reporting increasingly strict bounds, which the coordinator intersects with AND and sends to remote scans.
 :width: 100%
 
 Figure 6
@@ -497,38 +500,17 @@ approximately one million aggregate/join rows to the single final result. The
 distinction matters: seeing a final dynamic predicate proves delivery, while
 operator metrics reveal whether it actually avoided work.
 
-## Tradeoffs and Future Work
-
-OR-merging is deliberately general: the coordinator does not need to know the
-internal shapes of range, set, or partition-aware predicates. The cost is that
-the serialized and evaluated expression grows with the number of producer
-tasks. First-class union support in DataFusion could compact compatible ranges,
-sets, and `CASE` branches without brittle expression surgery in the distributed
-engine.
-
-The remote path is conservative only where correctness requires it:
-partitioned hash-join filters wait for all producers, while TopK and MIN/MAX
-bounds are sent incrementally. A future improvement could coalesce or
-rate-limit very frequent generations, compact compatible bounds before
-serialization, and extend incremental delivery to other producers with
-monotonic predicates.
-
-There is also more observability work to do. Useful metrics include filter
-arrival time, serialized size, number of producer predicates merged,
-selectivity, row groups and files pruned, and shuffle bytes avoided. These will
-make it easier to distinguish a filter that was unselective from one that
-arrived after most of the scan had already completed.
-
 ## Conclusion
 
 Dynamic filtering begins as a simple shared-state technique: a producer updates
 an expression and a scan reads it. A distributed plan turns that shared state
 into an explicit dataflow. Distributed DataFusion discovers expression
 relationships while the whole plan is available, preserves them across stage
-boundaries with stable IDs, collects complete task predicates, merges them with
-`OR`, and routes the result back to remote scans. For TopK and MIN/MAX, it also
-routes useful intermediate generations so scans can become more selective while
-the query is still running.
+boundaries with stable IDs, and routes merged predicates back to remote scans.
+It unions join build-side predicates with `OR`, while intersecting independently
+safe TopK and MIN/MAX bounds with `AND`. For TopK and MIN/MAX, it also routes
+useful intermediate generations so scans can become more selective while the
+query is still running.
 
 The result preserves DataFusion's existing scan pushdown machinery and its
 extensible physical plan model. Local filters still use the fast in-memory
