@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Licensed to the Apache Software Foundation (ASF) under the Apache License, Version 2.0. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 390" role="img" aria-describedby="desc">
+  <desc id="desc">Build keys B and D flow from the dim data source into a hash join. All fact rows A through F then flow to the join, where A, C, E, and F are rejected.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0 0L8 4L0 8Z" fill="#8b949e"/>
+    </marker>
+    <style>
+      .scene{font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+      .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+      .heading{fill:#24292f;font-size:16px;font-weight:650}
+      .label{fill:#57606a;font-size:12px}
+      .small{fill:#57606a;font-size:11px}
+      .tiny{fill:#57606a;font-size:10px}
+      .panel{fill:#fff;stroke:#d8dee4;stroke-width:1.5}
+      .join{fill:#f6f8fa;stroke:#8b949e;stroke-width:1.5}
+      .flow{fill:none;stroke:#8b949e;stroke-width:1.8;marker-end:url(#arrow)}
+      .step{fill:#0969da}
+      .step-number{fill:#fff;font-size:13px;font-weight:700;text-anchor:middle}
+      .row rect{fill:#eef2f6;stroke:#d0d7de}
+      .row text{fill:#24292f;font-size:11px;text-anchor:middle}
+      .keep rect{fill:#dafbe1;stroke:#4ac26b}
+      .reject rect{fill:#ffebe9;stroke:#ff8182}
+      .reject text{fill:#cf222e}
+      .packet rect{fill:#eef2f6;stroke:#8b949e}.packet text{fill:#24292f;font-size:10px;font-weight:650;text-anchor:middle}
+      .build-packet rect{fill:#dafbe1;stroke:#4ac26b}
+      .build-ready,.probe-result{opacity:0}
+      .build-ready{animation:buildReady 6s ease-in-out infinite}
+      .probe-result{animation:probeResult 6s ease-in-out infinite}
+      .build-packet{opacity:0;animation:buildUp 6s ease-in-out infinite}
+      .probe-packet{opacity:0;animation:probeUp 6s ease-in-out infinite}
+      @keyframes buildReady{0%,27%{opacity:0}33%,94%{opacity:1}100%{opacity:0}}
+      @keyframes probeResult{0%,62%{opacity:0}68%,94%{opacity:1}100%{opacity:0}}
+      @keyframes buildUp{0%,5%{opacity:0;transform:translate(0,0)}9%,17%{opacity:1;transform:translate(0,0)}28%{opacity:1;transform:translate(170px,-50px)}32%,100%{opacity:0;transform:translate(170px,-50px)}}
+      @keyframes probeUp{0%,41%{opacity:0;transform:translate(0,0)}45%,53%{opacity:1;transform:translate(0,0)}64%{opacity:1;transform:translate(-75px,-48px)}68%,100%{opacity:0;transform:translate(-75px,-48px)}}
+      @media(prefers-reduced-motion:reduce){*{animation:none!important}.build-packet,.probe-packet{opacity:0}.build-ready,.probe-result{opacity:1}}
+    </style>
+  </defs>
+  <g class="scene">
+    <rect width="960" height="390" rx="16" fill="#fbfcfd"/>
+
+    <rect x="235" y="30" width="490" height="155" rx="12" class="join"/>
+    <circle cx="265" cy="61" r="15" class="step"/>
+    <text x="265" y="66" class="step-number">3</text>
+    <text x="290" y="66" class="heading">Hash Join</text>
+    <text x="290" y="120" class="small mono">Build-side rows</text>
+    <g class="build-ready">
+      <g class="row keep" transform="translate(430 101)"><rect width="42" height="27" rx="7"/><text x="21" y="18">B</text></g>
+      <g class="row keep" transform="translate(480 101)"><rect width="42" height="27" rx="7"/><text x="21" y="18">D</text></g>
+    </g>
+    <g class="probe-result">
+      <text x="290" y="158" class="small mono">Rejected rows</text>
+      <g class="row reject" transform="translate(430 139)"><rect width="42" height="27" rx="7"/><text x="21" y="18">A</text></g>
+      <g class="row reject" transform="translate(480 139)"><rect width="42" height="27" rx="7"/><text x="21" y="18">C</text></g>
+      <g class="row reject" transform="translate(530 139)"><rect width="42" height="27" rx="7"/><text x="21" y="18">E</text></g>
+      <g class="row reject" transform="translate(580 139)"><rect width="42" height="27" rx="7"/><text x="21" y="18">F</text></g>
+    </g>
+
+    <path d="M230 235C260 215 335 202 390 185" class="flow"/>
+    <path d="M675 235C665 214 620 201 570 185" class="flow"/>
+    <g transform="translate(205 215)"><g class="packet build-packet"><rect width="54" height="22" rx="7"/><text x="27" y="15">B · D</text></g></g>
+    <g transform="translate(645 215)"><g class="packet probe-packet"><rect width="110" height="22" rx="7"/><text x="55" y="15">A · B · C · D · E · F</text></g></g>
+
+    <rect x="65" y="235" width="330" height="115" rx="12" class="panel"/>
+    <circle cx="95" cy="266" r="15" class="step"/>
+    <text x="95" y="271" class="step-number">1</text>
+    <text x="120" y="271" class="heading">Build Side (<tspan class="mono">dim</tspan> table)</text>
+    <text x="120" y="293" class="label">Filter region = 'EMEA'</text>
+    <g class="row keep" transform="translate(120 307)"><rect width="52" height="30" rx="8"/><text x="26" y="20">B</text></g>
+    <g class="row keep" transform="translate(180 307)"><rect width="52" height="30" rx="8"/><text x="26" y="20">D</text></g>
+    <text x="245" y="327" class="tiny mono">only 2 rows are emitted</text>
+
+    <rect x="435" y="235" width="460" height="115" rx="12" class="panel"/>
+    <circle cx="465" cy="266" r="15" class="step"/>
+    <text x="465" y="271" class="step-number">2</text>
+    <text x="490" y="271" class="heading">Probe Side (<tspan class="mono">fact</tspan> table)</text>
+    <text x="490" y="293" class="label">all rows are scanned and emitted</text>
+    <g class="row" transform="translate(490 307)"><rect width="50" height="30" rx="8"/><text x="25" y="20">A</text></g>
+    <g class="row" transform="translate(548 307)"><rect width="50" height="30" rx="8"/><text x="25" y="20">B</text></g>
+    <g class="row" transform="translate(606 307)"><rect width="50" height="30" rx="8"/><text x="25" y="20">C</text></g>
+    <g class="row" transform="translate(664 307)"><rect width="50" height="30" rx="8"/><text x="25" y="20">D</text></g>
+    <g class="row" transform="translate(722 307)"><rect width="50" height="30" rx="8"/><text x="25" y="20">E</text></g>
+    <g class="row" transform="translate(780 307)"><rect width="50" height="30" rx="8"/><text x="25" y="20">F</text></g>
+  </g>
+</svg>

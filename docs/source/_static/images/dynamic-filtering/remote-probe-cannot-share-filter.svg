@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Licensed to the Apache Software Foundation (ASF) under the Apache License, Version 2.0. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 430" role="img" aria-describedby="desc">
+  <desc id="desc">A hash join runs on Worker A, its build-side data source runs on Worker B, and its probe-side data source runs on Worker C. The join's atomic shared-memory update stops at the process boundary, so the remote probe emits every row.</desc>
+  <defs>
+    <marker id="data-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0 0L8 4L0 8Z" fill="#8b949e"/>
+    </marker>
+    <marker id="update-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0 0L8 4L0 8Z" fill="#cf222e"/>
+    </marker>
+    <style>
+      .scene{font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+      .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+      .worker-title{fill:#57606a;font-size:13px;font-weight:700;letter-spacing:.04em;text-transform:uppercase}
+      .heading{fill:#24292f;font-size:16px;font-weight:650}
+      .label{fill:#57606a;font-size:12px}
+      .small{fill:#57606a;font-size:11px}
+      .tiny{fill:#57606a;font-size:10px}
+      .worker{fill:#fff;stroke:#d8dee4;stroke-width:1.5}
+      .join{fill:#f6f8fa;stroke:#8b949e;stroke-width:1.5}
+      .source{fill:#fff;stroke:#d8dee4;stroke-width:1.5}
+      .flow{fill:none;stroke:#8b949e;stroke-width:1.8;marker-end:url(#data-arrow)}
+      .update-flow{fill:none;stroke:#cf222e;stroke-width:2;stroke-dasharray:6 5;marker-end:url(#update-arrow);animation:dashFlow .7s linear infinite}
+      .blocked{stroke:#cf222e;stroke-width:3;stroke-linecap:round}
+      .blocked-label{fill:#cf222e;font-size:11px;font-weight:650}
+      .step{fill:#0969da}
+      .step-number{fill:#fff;font-size:13px;font-weight:700;text-anchor:middle}
+      .row rect{fill:#eef2f6;stroke:#d0d7de}
+      .row text{fill:#24292f;font-size:11px;text-anchor:middle}
+      .keep rect{fill:#dafbe1;stroke:#4ac26b}
+      .skip rect{fill:#f6f8fa;stroke:#d8dee4}
+      .skip text{fill:#8c959f}
+      .strike{stroke:#cf222e;stroke-width:1.3;opacity:.8}
+      .packet rect{fill:#ddf4ff;stroke:#54aeff}
+      .packet text{fill:#0969da;font-size:10px;font-weight:650;text-anchor:middle}
+      .build-packet rect{fill:#dafbe1;stroke:#4ac26b}
+      .build-packet text{fill:#24292f}
+      .join-build{opacity:0;animation:joinBuild 6s ease-in-out infinite}
+      .join-probe{opacity:0;animation:joinProbe 6s ease-in-out infinite}
+      .attempt{opacity:0;animation:attempt 6s ease-in-out infinite}
+      .build-packet{opacity:0;animation:buildUp 6s ease-in-out infinite}
+      .probe-packet{opacity:0;animation:probeUp 6s ease-in-out infinite}
+      @keyframes joinBuild{0%,24%{opacity:0}30%,94%{opacity:1}100%{opacity:0}}
+      @keyframes attempt{0%,32%{opacity:0}38%,94%{opacity:1}100%{opacity:0}}
+      @keyframes joinProbe{0%,78%{opacity:0}84%,94%{opacity:1}100%{opacity:0}}
+      @keyframes buildUp{0%,5%{opacity:0;transform:translate(0,0)}9%,16%{opacity:1;transform:translate(0,0)}26%{opacity:1;transform:translate(123px,-40px)}30%,100%{opacity:0;transform:translate(123px,-40px)}}
+      @keyframes probeUp{0%,52%{opacity:0;transform:translate(0,0)}57%,64%{opacity:1;transform:translate(0,0)}74%{opacity:1;transform:translate(-95px,-40px)}76%,100%{opacity:0;transform:translate(-95px,-40px)}}
+      @keyframes dashFlow{to{stroke-dashoffset:-22}}
+      @media(prefers-reduced-motion:reduce){*{animation:none!important}.build-packet,.probe-packet{opacity:0}.join-build,.join-probe,.attempt{opacity:1}}
+    </style>
+  </defs>
+
+  <g class="scene">
+    <rect width="960" height="430" rx="16" fill="#fbfcfd"/>
+
+    <rect x="235" y="15" width="490" height="210" rx="14" class="worker"/>
+    <text x="260" y="43" class="worker-title">Worker A · join task</text>
+    <rect x="30" y="240" width="430" height="175" rx="14" class="worker"/>
+    <text x="55" y="268" class="worker-title">Worker B · build scan</text>
+    <rect x="500" y="240" width="430" height="175" rx="14" class="worker"/>
+    <text x="525" y="268" class="worker-title">Worker C · probe scan</text>
+
+    <rect x="270" y="60" width="420" height="140" rx="12" class="join"/>
+    <circle cx="300" cy="91" r="15" class="step"/>
+    <text x="300" y="96" class="step-number">3</text>
+    <text x="325" y="96" class="heading">Hash Join</text>
+    <text x="300" y="132" class="small mono">Build-side rows</text>
+    <g class="join-build">
+      <g class="row keep" transform="translate(425 113)"><rect width="38" height="25" rx="7"/><text x="19" y="17">B</text></g>
+      <g class="row keep" transform="translate(467 113)"><rect width="38" height="25" rx="7"/><text x="19" y="17">D</text></g>
+    </g>
+    <g class="join-probe">
+      <text x="300" y="174" class="small mono">Probe rows</text>
+      <g class="row skip" transform="translate(425 156)"><rect width="38" height="25" rx="7"/><text x="19" y="17">A</text><path d="M7 20L31 5" class="strike"/></g>
+      <g class="row keep" transform="translate(467 156)"><rect width="38" height="25" rx="7"/><text x="19" y="17">B</text></g>
+      <g class="row skip" transform="translate(509 156)"><rect width="38" height="25" rx="7"/><text x="19" y="17">C</text><path d="M7 20L31 5" class="strike"/></g>
+      <g class="row keep" transform="translate(551 156)"><rect width="38" height="25" rx="7"/><text x="19" y="17">D</text></g>
+      <g class="row skip" transform="translate(593 156)"><rect width="38" height="25" rx="7"/><text x="19" y="17">E</text><path d="M7 20L31 5" class="strike"/></g>
+      <g class="row skip" transform="translate(635 156)"><rect width="38" height="25" rx="7"/><text x="19" y="17">F</text><path d="M7 20L31 5" class="strike"/></g>
+    </g>
+
+    <path d="M245 285C270 240 335 218 390 200" class="flow"/>
+    <path d="M715 285C700 240 630 218 570 200" class="flow"/>
+    <text x="75" y="229" class="tiny">build rows cross the network</text>
+    <text x="755" y="229" class="tiny">probe rows cross the network</text>
+    <g transform="translate(245 228)"><g class="packet build-packet"><rect width="54" height="22" rx="7"/><text x="27" y="15">B · D</text></g></g>
+    <g transform="translate(660 228)"><g class="packet probe-packet"><rect width="54" height="22" rx="7"/><text x="27" y="15">A–F</text></g></g>
+
+    <g class="attempt">
+      <circle cx="705" cy="92" r="15" class="step"/>
+      <text x="705" y="97" class="step-number">4</text>
+      <path d="M690 130H720" class="update-flow"/>
+      <path d="M718 123L732 137M732 123L718 137" class="blocked"/>
+      <text x="748" y="112" class="blocked-label">shared memory stops here</text>
+      <text x="748" y="129" class="tiny">the remote probe has separate memory</text>
+    </g>
+
+    <rect x="55" y="285" width="380" height="105" rx="12" class="source"/>
+    <circle cx="85" cy="316" r="15" class="step"/>
+    <text x="85" y="321" class="step-number">1</text>
+    <text x="110" y="318" class="heading">Data Source</text>
+    <text x="110" y="339" class="label">Build Side: <tspan class="mono">dim</tspan> · region = 'EMEA'</text>
+    <g class="row keep" transform="translate(110 350)"><rect width="50" height="28" rx="8"/><text x="25" y="19">B</text></g>
+    <g class="row keep" transform="translate(168 350)"><rect width="50" height="28" rx="8"/><text x="25" y="19">D</text></g>
+    <text x="230" y="369" class="tiny mono">2 rows</text>
+
+    <rect x="525" y="285" width="380" height="105" rx="12" class="source"/>
+    <circle cx="555" cy="316" r="15" class="step"/>
+    <text x="555" y="321" class="step-number">2</text>
+    <text x="580" y="318" class="heading">Data Source</text>
+    <text x="580" y="339" class="label">Probe Side: <tspan class="mono">fact</tspan></text>
+    <text x="705" y="339" class="blocked-label">no filter · all rows emitted</text>
+    <g class="row" transform="translate(580 350)"><rect width="30" height="26" rx="7"/><text x="15" y="18">A</text></g>
+    <g class="row" transform="translate(617 350)"><rect width="30" height="26" rx="7"/><text x="15" y="18">B</text></g>
+    <g class="row" transform="translate(654 350)"><rect width="30" height="26" rx="7"/><text x="15" y="18">C</text></g>
+    <g class="row" transform="translate(691 350)"><rect width="30" height="26" rx="7"/><text x="15" y="18">D</text></g>
+    <g class="row" transform="translate(728 350)"><rect width="30" height="26" rx="7"/><text x="15" y="18">E</text></g>
+    <g class="row" transform="translate(765 350)"><rect width="30" height="26" rx="7"/><text x="15" y="18">F</text></g>
+  </g>
+</svg>
