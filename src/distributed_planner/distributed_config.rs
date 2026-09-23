@@ -56,6 +56,7 @@ extensions_options! {
         /// producer-side hash to `consumer_task_count` buckets and adding a local RepartitionExec
         /// on the consumer side.
         pub two_step_shuffle_fanout_threshold: usize, default = 128
+
         /// Maximum number of times the coordinator retries establishing a coordinator channel
         /// after the initial dial fails with a retryable error. Set to 0 to disable retries.
         pub max_coordinator_channel_retries: usize, default = 3
