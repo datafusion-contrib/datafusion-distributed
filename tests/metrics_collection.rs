@@ -9,6 +9,7 @@ mod tests {
     use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
     use datafusion::physical_plan::{ExecutionPlan, execute_stream};
     use datafusion::prelude::SessionContext;
+    use datafusion_distributed::DistributedExec;
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::parquet::register_parquet_tables;
     use datafusion_distributed::test_utils::test_work_unit_feed::{
@@ -22,6 +23,7 @@ mod tests {
     };
     use futures::TryStreamExt;
     use std::sync::Arc;
+    use std::time::Duration;
     use test_case::test_case;
 
     #[test_case(DistributedMetricsFormat::Aggregated ; "aggregated_metrics")]
@@ -377,6 +379,120 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    /// Regression test for https://github.com/datafusion-contrib/datafusion-distributed/issues/739
+    ///
+    /// In a partitioned hash join whose build side is empty, DataFusion completes the join
+    /// without ever polling the probe side. The probe-side worker tasks are therefore planned
+    /// (they receive the plan through the coordinator channel) but never executed, so they never
+    /// produce a `TaskMetrics` report. Metrics finalization must not wait for them forever.
+    #[tokio::test]
+    async fn test_metrics_collection_with_unexecuted_probe_side_tasks()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (mut d_ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+        d_ctx.set_distributed_dynamic_task_count(true)?;
+        register_parquet_tables(&d_ctx).await?;
+        force_partitioned_hash_joins(&d_ctx);
+
+        let query = r#"
+        SELECT a."MinTemp", b."MaxTemp"
+        FROM weather a
+        JOIN weather b ON a."RainToday" = b."RainToday"
+        WHERE a."MinTemp" > 1000000
+        "#;
+
+        let plan = d_ctx.sql(query).await?.create_physical_plan().await?;
+        let batches = execute_stream(plan.clone(), d_ctx.task_ctx())?
+            .try_collect::<Vec<_>>()
+            .await?;
+        assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 0);
+
+        let with_filters = tokio::time::timeout(
+            Duration::from_secs(10),
+            datafusion_distributed::rewrite_distributed_plan_with_dynamic_filters(
+                plan.clone(),
+                &d_ctx.task_ctx(),
+            ),
+        )
+        .await??;
+        rewrite_with_metrics_within_timeout(with_filters).await?;
+        let snapshot = plan
+            .downcast_ref::<DistributedExec>()
+            .unwrap()
+            .metrics_snapshot()
+            .unwrap();
+        assert!(
+            snapshot.all_reported(),
+            "unexpected lost report: {:?}",
+            snapshot.missing_reports
+        );
+        let unexecuted = snapshot.unexecuted_tasks();
+        assert!(!unexecuted.is_empty(), "AQE did not skip any task");
+        assert!(
+            unexecuted.iter().any(|key| {
+                snapshot.reported[key]
+                    .pre_order_plan_metrics
+                    .iter()
+                    .flat_map(|set| set.iter())
+                    .any(|metric| {
+                        metric.value().name() == "files_opened" && metric.value().as_usize() > 0
+                    })
+            }),
+            "skipped AQE tasks lost their actual sampling I/O metrics"
+        );
+        Ok(())
+    }
+
+    /// Regression test for https://github.com/datafusion-contrib/datafusion-distributed/issues/739
+    ///
+    /// A static multi-task scan with `LIMIT 1` can be satisfied before every planned task
+    /// executes. Metrics finalization must still complete.
+    ///
+    /// Whether a task is skipped is timing dependent; the worker-channel unit test covers that
+    /// case deterministically, while this test exercises the public rewrite after a static LIMIT.
+    #[tokio::test]
+    async fn test_metrics_collection_with_limit_short_circuiting_static_tasks()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (mut d_ctx, _guard, _) = start_localhost_context(8, DefaultSessionBuilder).await;
+        d_ctx.set_distributed_file_scan_config_bytes_per_partition(1024 * 1024)?;
+        register_parquet_tables(&d_ctx).await?;
+
+        let plan = d_ctx
+            .sql(r#"SELECT "FL_DATE" FROM flights_1m LIMIT 1"#)
+            .await?
+            .create_physical_plan()
+            .await?;
+        assert!(plan.is::<DistributedExec>(), "expected a distributed scan");
+        let batches = execute_stream(plan.clone(), d_ctx.task_ctx())?
+            .try_collect::<Vec<_>>()
+            .await?;
+        assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 1);
+        rewrite_with_metrics_within_timeout(plan).await?;
+        Ok(())
+    }
+
+    /// Rewrites the plan with metrics, failing if it does not finish within a generous timeout
+    /// instead of hanging the test suite.
+    async fn rewrite_with_metrics_within_timeout(
+        plan: Arc<dyn ExecutionPlan>,
+    ) -> Result<Arc<dyn ExecutionPlan>, Box<dyn std::error::Error>> {
+        let rewrite =
+            rewrite_distributed_plan_with_metrics(plan, DistributedMetricsFormat::PerTask);
+        match tokio::time::timeout(Duration::from_secs(10), rewrite).await {
+            Ok(result) => Ok(result?),
+            Err(_) => {
+                Err("metrics finalization did not complete: a task never became terminal".into())
+            }
+        }
+    }
+
+    fn force_partitioned_hash_joins(ctx: &SessionContext) {
+        let session_state = ctx.state_ref();
+        let mut session_state = session_state.write();
+        let options = session_state.config_mut().options_mut();
+        options.optimizer.hash_join_single_partition_threshold = 0;
+        options.optimizer.hash_join_single_partition_threshold_rows = 0;
     }
 
     /// Looks for an [ExecutionPlan] that matches the provided type parameter `T1` in

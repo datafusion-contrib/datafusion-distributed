@@ -40,7 +40,9 @@ impl DistributedMetricsFormat {
 /// Rewrites a distributed plan with metrics. Does nothing if the root node is not a [DistributedExec].
 /// Returns an error if the distributed plan was not executed.
 ///
-/// Waits for all worker task metrics to arrive before rewriting, so the result is always complete.
+/// Waits for every worker task to report (including sampled and skipped tasks) before rewriting.
+/// Returns an error rather than silently discarding accounting metrics if a channel closes
+/// without a report or the finalization timeout elapses.
 pub async fn rewrite_distributed_plan_with_metrics(
     plan: Arc<dyn ExecutionPlan>,
     format: DistributedMetricsFormat,
@@ -54,9 +56,7 @@ pub async fn rewrite_distributed_plan_with_metrics(
     }
 
     let head_stage = distributed_exec.head_stage()?;
-    let Some(metrics_collection) = distributed_exec.wait_for_metrics().await else {
-        return internal_err!("metrics were enabled but the execution was not prepared");
-    };
+    let metrics_collection = distributed_exec.complete_metrics().await?;
     let task_metrics = collect_plan_metrics(&head_stage)?;
 
     // Rewrite the DistributedExec's child plan with metrics.
@@ -110,8 +110,7 @@ fn stage_metrics(
         };
         let Some(task_metrics) = metrics_collection.get(&task_key) else {
             return internal_err!(
-                "not enough metrics provided to rewrite task: missing metrics for task {} in stage {}",
-                task_number,
+                "missing metrics report for task {task_number} in stage {}",
                 stage.num
             );
         };
@@ -271,11 +270,17 @@ pub fn stage_metrics_rewriter(
         };
         let Some(task_metrics) = metrics_collection.get(&task_key) else {
             return internal_err!(
-                "not enough metrics provided to rewrite task: missing metrics for task {} in stage {}",
-                task_id,
+                "missing metrics report for task {task_id} in stage {}",
                 stage.num
             );
         };
+
+        // A statically planned task may never receive ExecuteTask. Its lifecycle was reported,
+        // but there are no node execution metrics to attach. AQE tasks that sampled data do
+        // provide the actual sampled node metrics and are rewritten below.
+        if task_metrics.was_not_executed() && task_metrics.pre_order_plan_metrics.is_empty() {
+            continue;
+        }
 
         let mut per_task_counter = 0usize;
         stage.plan.apply_with_dt_ctx(d_ctx, |node, _ctx| {
@@ -347,6 +352,7 @@ mod tests {
     use datafusion::prelude::SessionConfig;
     use datafusion::prelude::SessionContext;
     use itertools::Itertools;
+    use std::borrow::Cow;
     use std::sync::Arc;
     use test_case::test_case;
     use uuid::Uuid;
@@ -590,6 +596,82 @@ mod tests {
             format,
         )
         .await;
+    }
+
+    /// A skipped task has a lifecycle report but contributes no fabricated node metrics.
+    #[tokio::test]
+    async fn test_stage_metrics_rewriter_with_skipped_task() {
+        let ctx = make_test_ctx().await;
+        let plan = ctx
+            .sql("SELECT id, COUNT(*) as count FROM table1 WHERE id > 1 GROUP BY id")
+            .await
+            .unwrap()
+            .create_physical_plan()
+            .await
+            .unwrap();
+        let mut stage = make_test_stage(plan.clone());
+        stage.tasks = 2;
+        let num_nodes = count_plan_nodes_up_to_network_boundary(&plan);
+
+        let task_key = |task_number| TaskKey {
+            query_id: stage.query_id,
+            stage_id: stage.num,
+            task_number,
+        };
+        let count = Count::new();
+        count.add(1);
+        let mut skipped_metrics = MetricsSet::new();
+        skipped_metrics.push(Arc::new(Metric::new(
+            MetricValue::Count {
+                name: Cow::Borrowed(crate::metrics::TASK_NOT_EXECUTED_METRIC),
+                count,
+            },
+            None,
+        )));
+        let metrics_collection = HashMap::from([
+            (
+                task_key(0),
+                TaskMetrics {
+                    task_metrics: skipped_metrics,
+                    pre_order_plan_metrics: vec![],
+                },
+            ),
+            (
+                task_key(1),
+                TaskMetrics {
+                    task_metrics: MetricsSet::new(),
+                    pre_order_plan_metrics: (0..num_nodes)
+                        .map(|_| make_test_metrics_set_from_seed(1, 1))
+                        .collect(),
+                },
+            ),
+        ]);
+
+        let stage_metrics = super::stage_metrics(&stage, &metrics_collection).unwrap();
+        assert!(
+            stage_metrics
+                .iter()
+                .any(|metric| metric.value().name() == crate::metrics::TASK_NOT_EXECUTED_METRIC)
+        );
+
+        let rewritten_plan = stage_metrics_rewriter(
+            &stage,
+            &metrics_collection,
+            DistributedMetricsFormat::PerTask,
+        )
+        .unwrap();
+        let mut actual_metrics = vec![];
+        collect_metrics_from_plan(&rewritten_plan, &mut actual_metrics);
+        assert_eq!(actual_metrics.len(), num_nodes);
+        for node_metrics in actual_metrics {
+            let task_ids: Vec<_> = node_metrics
+                .iter()
+                .flat_map(|m| m.labels().iter())
+                .filter(|l| l.name() == DISTRIBUTED_DATAFUSION_TASK_ID_LABEL)
+                .map(|l| l.value().to_string())
+                .collect();
+            assert_eq!(task_ids, vec!["1"]);
+        }
     }
 
     #[tokio::test]

@@ -162,7 +162,17 @@ impl Worker {
         #[allow(clippy::disallowed_methods)]
         tokio::spawn(async move {
             let mut stream = stream.map_ok(set_work_unit_received_time);
-            while let Some(Ok(msg)) = stream.next().await {
+            let mut sampling_started = false;
+            let mut stream_failed = false;
+            while let Some(msg) = stream.next().await {
+                let msg = match msg {
+                    Ok(msg) => msg,
+                    Err(err) => {
+                        log::warn!("coordinator channel closed with an error: {err}");
+                        stream_failed = true;
+                        break;
+                    }
+                };
                 match msg {
                     CoordinatorToWorkerMsg::WorkUnitBatch(work_unit_batch) => {
                         let Some(work_unit_senders) = work_unit_senders.as_mut() else {
@@ -193,6 +203,7 @@ impl Worker {
                         let _ = work_unit_senders.take();
                     }
                     CoordinatorToWorkerMsg::KickOffSampling => {
+                        sampling_started = sampler_gate.has_sampler();
                         sampler_gate.kick_off();
                     }
                 }
@@ -211,22 +222,48 @@ impl Worker {
                 .lock()
                 .unwrap()
                 .take();
-            if let Some(Ok(plan)) = task_data.final_plan.get() {
-                let d_ctx = DistributedTaskContext {
-                    task_index: key.task_number,
-                    task_count: request.task_count,
+            if stream_failed {
+                // A transport failure is not a clean end-of-query signal. Do not send a
+                // "complete" report from an in-flight plan; the coordinator will observe
+                // terminal-without-report and surface incomplete accounting.
+                drop(metrics_tx);
+                drop(dynamic_filters_tx);
+                task_data_entries.invalidate(&key).await;
+                return;
+            }
+            let d_ctx = DistributedTaskContext {
+                task_index: key.task_number,
+                task_count: request.task_count,
+            };
+            let final_plan = task_data
+                .final_plan
+                .get()
+                .and_then(|result| result.as_ref().ok());
+            if final_plan.is_none() {
+                // Stabilize sampled scan counters before sending a report from the base plan.
+                let _ = SamplerExec::stop_unexecuted_sampling(&task_data.base_plan).await;
+            } else {
+                task_data.task_data_metrics.mark_execution_finished();
+            }
+            if let Some(metrics_tx) = metrics_tx {
+                let (plan, task_metrics) = match final_plan {
+                    Some(plan) => (Some(plan), task_data.task_data_metrics.to_metrics_set()),
+                    None => {
+                        // An AQE task can sample without executing. The base plan has its I/O
+                        // metrics; a statically skipped task only reports its lifecycle.
+                        (
+                            sampling_started.then_some(&task_data.base_plan),
+                            task_data.task_data_metrics.to_unexecuted_metrics_set(),
+                        )
+                    }
                 };
-                let task_data_metrics = &task_data.task_data_metrics;
-                task_data_metrics.mark_execution_finished();
-                if let Some(metrics_tx) = metrics_tx {
-                    send_metrics_via_channel(metrics_tx, plan, d_ctx, task_data_metrics);
-                }
-                if let Some(dynamic_filters_tx) = dynamic_filters_tx {
-                    // TODO(#686): handle error
-                    let dynamic_filters =
-                        build_task_completed_dynamic_filters(plan).unwrap_or_default();
-                    let _ = dynamic_filters_tx.send(dynamic_filters);
-                }
+                send_metrics_via_channel(metrics_tx, plan, d_ctx, task_metrics);
+            }
+            if let (Some(plan), Some(dynamic_filters_tx)) = (final_plan, dynamic_filters_tx) {
+                // TODO(#686): handle error
+                let dynamic_filters =
+                    build_task_completed_dynamic_filters(plan).unwrap_or_default();
+                let _ = dynamic_filters_tx.send(dynamic_filters);
             }
             task_data_entries.invalidate(&key).await
         });
@@ -358,19 +395,97 @@ fn build_task_completed_dynamic_filters(
 /// coordinator channel oneshot.
 fn send_metrics_via_channel(
     metrics_tx: Sender<TaskMetrics>,
-    plan: &Arc<dyn ExecutionPlan>,
+    plan: Option<&Arc<dyn ExecutionPlan>>,
     dt_ctx: DistributedTaskContext,
-    task_data_metrics: &Arc<TaskDataMetrics>,
+    task_metrics: datafusion::physical_plan::metrics::MetricsSet,
 ) {
     let mut pre_order_plan_metrics = vec![];
-    let _ = plan.apply_with_dt_ctx(dt_ctx, |node, _| {
-        pre_order_plan_metrics.push(node.metrics().unwrap_or_default());
-        Ok(TreeNodeRecursion::Continue)
-    });
+    if let Some(plan) = plan {
+        let _ = plan.apply_with_dt_ctx(dt_ctx, |node, _| {
+            pre_order_plan_metrics.push(node.metrics().unwrap_or_default());
+            Ok(TreeNodeRecursion::Continue)
+        });
+    }
 
     // Ignore send errors — the coordinator channel may have been dropped (e.g. query cancelled).
     let _ = metrics_tx.send(TaskMetrics {
         pre_order_plan_metrics,
-        task_metrics: task_data_metrics.to_metrics_set(),
+        task_metrics,
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::worker::task_data::PLAN_EXECUTED_AT_METRIC;
+    use datafusion::arrow::datatypes::Schema;
+    use datafusion::physical_plan::empty::EmptyExec;
+    use uuid::Uuid;
+
+    fn request() -> SetPlanRequest {
+        SetPlanRequest {
+            task_key: crate::TaskKey {
+                query_id: Uuid::new_v4(),
+                stage_id: 1,
+                task_number: 0,
+            },
+            task_count: 1,
+            plan: MaybeEncoded::Decoded(Arc::new(EmptyExec::new(Arc::new(Schema::empty())))),
+            dynamic_filter_remote_producer_ids: vec![],
+            work_unit_feed_declarations: vec![],
+            target_worker_url: "http://localhost:8080".parse().unwrap(),
+            query_start_time_ns: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn channel_eos_reports_unexecuted_task_without_execution_metrics() {
+        let worker = Worker::default();
+        let result = worker
+            .coordinator_channel(
+                HeaderMap::new(),
+                request(),
+                futures::stream::empty().boxed(),
+            )
+            .await
+            .unwrap();
+        let messages = result.stream.try_collect::<Vec<_>>().await.unwrap();
+        let reports: Vec<_> = messages
+            .into_iter()
+            .filter_map(|msg| match msg {
+                WorkerToCoordinatorMsg::TaskMetrics(report) => Some(report),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(reports.len(), 1);
+        assert!(reports[0].was_not_executed());
+        assert!(reports[0].pre_order_plan_metrics.is_empty());
+        assert!(
+            !reports[0]
+                .task_metrics
+                .iter()
+                .any(|metric| metric.value().name() == PLAN_EXECUTED_AT_METRIC)
+        );
+    }
+
+    #[tokio::test]
+    async fn inbound_channel_error_does_not_report_partial_metrics_as_complete() {
+        let result = Worker::default()
+            .coordinator_channel(
+                HeaderMap::new(),
+                request(),
+                futures::stream::once(async {
+                    Err(exec_datafusion_err!("injected transport failure"))
+                })
+                .boxed(),
+            )
+            .await
+            .unwrap();
+        let messages = result.stream.try_collect::<Vec<_>>().await.unwrap();
+        assert!(
+            !messages
+                .iter()
+                .any(|msg| matches!(msg, WorkerToCoordinatorMsg::TaskMetrics(_)))
+        );
+    }
 }

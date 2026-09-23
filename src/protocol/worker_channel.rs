@@ -176,6 +176,16 @@ pub struct TaskMetrics {
     pub task_metrics: MetricsSet,
 }
 
+impl TaskMetrics {
+    /// Whether this report came from a planned task that never received ExecuteTask. Its plan
+    /// may still contain real sampling metrics, so it must not be treated as a zero-cost task.
+    pub fn was_not_executed(&self) -> bool {
+        self.task_metrics
+            .iter()
+            .any(|metric| metric.value().name() == crate::metrics::TASK_NOT_EXECUTED_METRIC)
+    }
+}
+
 #[derive(Default)]
 pub struct LoadInfo {
     /// The partition index to which this message belongs to.

@@ -15,3 +15,7 @@ pub use task_metrics_rewriter::{DistributedMetricsFormat, rewrite_distributed_pl
 /// Label used to annotate metrics in execution plan nodes with the task in which they were executed.
 /// Note that the same task id may be used in multiple stages.
 pub const DISTRIBUTED_DATAFUSION_TASK_ID_LABEL: &str = "task_id";
+
+/// Task-level marker for a plan that was installed (and possibly sampled) but not executed
+/// through ExecuteTask. This uses the existing metrics wire format.
+pub(crate) const TASK_NOT_EXECUTED_METRIC: &str = "task_not_executed";

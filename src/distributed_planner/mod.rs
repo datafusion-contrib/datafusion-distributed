@@ -11,6 +11,7 @@ mod push_fetch_into_network_coalesce;
 mod session_state_builder_ext;
 mod statistics;
 
+pub(crate) use distributed_config::DEFAULT_METRICS_FINALIZATION_TIMEOUT_MS;
 pub use distributed_config::DistributedConfig;
 pub(crate) use inject_network_boundaries::{
     InjectNetworkBoundaryContext, NetworkBoundaryBuilderResult, inject_network_boundaries,

@@ -2,14 +2,15 @@ use crate::common::require_one_child;
 use crate::coordinator::prepare_dynamic_plan::prepare_dynamic_plan;
 use crate::coordinator::prepare_static_plan::prepare_static_plan;
 use crate::coordinator::query_coordinator::QueryCoordinator;
-use crate::coordinator::store::{Store, task_keys_for_plan};
+use crate::coordinator::store::{Store, StoreSnapshot, task_keys_for_plan};
+use crate::distributed_planner::DEFAULT_METRICS_FINALIZATION_TIMEOUT_MS;
 use crate::dynamic_filtering::{
     is_dynamic_filtering_enabled, sever_dynamic_filter_relationships_in_plan_for_display,
 };
 use crate::{DistributedConfig, TaskCompletedDynamicFilters, TaskKey, TaskMetrics};
 use datafusion::common::internal_datafusion_err;
 use datafusion::common::tree_node::TreeNodeRecursion;
-use datafusion::common::{HashMap, Result, exec_err};
+use datafusion::common::{HashMap, Result, exec_datafusion_err, exec_err};
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr_common::metrics::MetricsSet;
@@ -19,6 +20,49 @@ use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, Pla
 use futures::StreamExt;
 use std::fmt::Formatter;
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
+use tokio::sync::watch;
+use tokio::time::Instant;
+
+/// Non-blocking, point-in-time view of the reports expected from a prepared distributed plan.
+#[derive(Debug)]
+pub struct TaskMetricsSnapshot {
+    /// Metrics received so far, including actual sampling metrics from tasks that never ran.
+    pub reported: HashMap<TaskKey, TaskMetrics>,
+    /// Tasks whose coordinator channels are still open and have not reported metrics.
+    pub pending: Vec<TaskKey>,
+    /// Tasks whose channels closed without a report. Their work cannot be accounted for.
+    pub missing_reports: Vec<TaskKey>,
+}
+
+impl TaskMetricsSnapshot {
+    fn from_store(snapshot: StoreSnapshot<TaskMetrics>) -> Self {
+        Self {
+            reported: snapshot.reported,
+            pending: snapshot.pending,
+            missing_reports: snapshot.terminal_without_report,
+        }
+    }
+
+    /// Whether every expected task has either reported or had its stream end without a report.
+    pub fn all_terminal(&self) -> bool {
+        self.pending.is_empty()
+    }
+
+    /// Whether every expected task has actually reported metrics. This distinguishes a
+    /// finished-but-incomplete query from one whose measurements are complete.
+    pub fn all_reported(&self) -> bool {
+        self.all_terminal() && self.missing_reports.is_empty()
+    }
+
+    /// Tasks that reported real sampling metrics but never received ExecuteTask.
+    pub fn unexecuted_tasks(&self) -> Vec<TaskKey> {
+        self.reported
+            .iter()
+            .filter_map(|(key, report)| report.was_not_executed().then_some(*key))
+            .collect()
+    }
+}
 
 /// [ExecutionPlan] that executes the inner plan in distributed mode.
 /// Before executing it, two modifications are lazily performed on the plan:
@@ -50,6 +94,9 @@ pub struct DistributedExec {
     pub(crate) metrics_store: Option<Arc<Store<TaskMetrics>>>,
     /// Storage for the completed dynamic filters reported by each worker task.
     pub(crate) completed_dynamic_filter_store: Option<Arc<Store<TaskCompletedDynamicFilters>>>,
+    /// Set when the result stream ends; all post-query waits use the same deadline.
+    finalization_deadline: watch::Sender<Option<Instant>>,
+    finalization_timeout: Duration,
 }
 
 #[derive(Debug, Clone)]
@@ -62,12 +109,15 @@ pub(super) struct PreparedPlan {
 
 impl DistributedExec {
     pub fn new(base_plan: Arc<dyn ExecutionPlan>) -> Self {
+        let (finalization_deadline, _) = watch::channel(None);
         Self {
             base_plan,
             prepared_plan: Arc::new(OnceLock::new()),
             metrics: ExecutionPlanMetricsSet::new(),
             metrics_store: None,
             completed_dynamic_filter_store: None,
+            finalization_deadline,
+            finalization_timeout: Duration::from_millis(DEFAULT_METRICS_FINALIZATION_TIMEOUT_MS),
         }
     }
 
@@ -89,12 +139,41 @@ impl DistributedExec {
         self
     }
 
-    /// Waits until all worker tasks have reported their metrics back via the coordinator channel
-    /// if metrics collection is enabled.
+    pub(crate) fn with_finalization_timeout(mut self, timeout: Duration) -> Self {
+        self.finalization_timeout = timeout;
+        self
+    }
+
+    async fn finalization_deadline(&self) -> Instant {
+        wait_for_finalization_deadline(self.finalization_deadline.subscribe()).await
+    }
+
+    /// Waits for complete metrics, if collection is enabled and execution has been prepared.
+    /// Returns `None` if a task failed to report or the finalization timeout elapsed; use
+    /// [`Self::metrics_snapshot`] to inspect reports and their completeness in that case.
     pub async fn wait_for_metrics(&self) -> Option<HashMap<TaskKey, TaskMetrics>> {
-        let task_metrics = self.metrics_store.as_ref()?;
+        self.complete_metrics().await.ok()
+    }
+
+    /// Returns all available metrics immediately, including gaps in task numbers, along with
+    /// pending and terminal-without-report task keys. Returns `None` if metrics are disabled or
+    /// the distributed plan has not yet been prepared.
+    pub fn metrics_snapshot(&self) -> Option<TaskMetricsSnapshot> {
+        let store = self.metrics_store.as_ref()?;
         let plan = &self.prepared_plan.get()?.plan_for_viz;
-        Some(task_metrics.wait_for(&task_keys_for_plan(plan)).await)
+        Some(TaskMetricsSnapshot::from_store(
+            store.snapshot(&task_keys_for_plan(plan)),
+        ))
+    }
+
+    pub(crate) async fn complete_metrics(&self) -> Result<HashMap<TaskKey, TaskMetrics>> {
+        let store = self
+            .metrics_store
+            .as_ref()
+            .ok_or_else(|| exec_datafusion_err!("metrics collection is disabled"))?;
+        let plan = &self.prepared_plan()?.plan_for_viz;
+        let keys = task_keys_for_plan(plan);
+        wait_for_complete_metrics(store, &keys, self.finalization_deadline().await).await
     }
 
     /// Waits until all worker tasks have reported their completed dynamic filters back via
@@ -104,7 +183,12 @@ impl DistributedExec {
     ) -> Option<HashMap<TaskKey, TaskCompletedDynamicFilters>> {
         let store = self.completed_dynamic_filter_store.as_ref()?;
         let plan = &self.prepared_plan.get()?.plan_for_viz;
-        Some(store.wait_for(&task_keys_for_plan(plan)).await)
+        tokio::time::timeout_at(
+            self.finalization_deadline().await,
+            store.wait_for(&task_keys_for_plan(plan)),
+        )
+        .await
+        .ok()
     }
 
     fn prepared_plan(&self) -> Result<PreparedPlan> {
@@ -152,8 +236,39 @@ impl DistributedExec {
             metrics: self.metrics.clone(),
             metrics_store: self.metrics_store.clone(),
             completed_dynamic_filter_store: self.completed_dynamic_filter_store.clone(),
+            finalization_deadline: self.finalization_deadline.clone(),
+            finalization_timeout: self.finalization_timeout,
         }))
     }
+}
+
+async fn wait_for_finalization_deadline(mut rx: watch::Receiver<Option<Instant>>) -> Instant {
+    (*rx.wait_for(Option::is_some)
+        .await
+        .expect("DistributedExec owns the finalization deadline sender"))
+    .expect("deadline was set before the receiver woke")
+}
+
+async fn wait_for_complete_metrics(
+    store: &Store<TaskMetrics>,
+    keys: &[TaskKey],
+    deadline: Instant,
+) -> Result<HashMap<TaskKey, TaskMetrics>> {
+    let snapshot = tokio::time::timeout_at(deadline, store.wait_for_terminal(keys))
+        .await
+        .map_err(|_| {
+            exec_datafusion_err!(
+                "timed out waiting for worker task metrics; pending: {:?}",
+                store.snapshot(keys).pending
+            )
+        })?;
+    if !snapshot.terminal_without_report.is_empty() {
+        return exec_err!(
+            "worker task metrics missing after coordinator channel closed: {:?}",
+            snapshot.terminal_without_report
+        );
+    }
+    Ok(snapshot.reported)
 }
 
 impl DisplayAs for DistributedExec {
@@ -200,6 +315,8 @@ impl ExecutionPlan for DistributedExec {
             metrics: self.metrics.clone(),
             metrics_store: self.metrics_store.clone(),
             completed_dynamic_filter_store: self.completed_dynamic_filter_store.clone(),
+            finalization_deadline: self.finalization_deadline.clone(),
+            finalization_timeout: self.finalization_timeout,
         }))
     }
 
@@ -221,6 +338,8 @@ impl ExecutionPlan for DistributedExec {
         let base_plan = Arc::clone(&self.base_plan);
         let prepared_plan = Arc::clone(&self.prepared_plan);
         let collect_dynamic_filters = self.completed_dynamic_filter_store.is_some();
+        let finalization_deadline = self.finalization_deadline.clone();
+        let finalization_timeout = self.finalization_timeout;
 
         let query_coordinator = Arc::new(QueryCoordinator::new(
             Arc::clone(&context),
@@ -243,7 +362,8 @@ impl ExecutionPlan for DistributedExec {
             // 4. The coordinator->worker channel EOS is received in `impl_coordinator_channel.rs`.
             // 5. The metrics are send back in the worker->coordinator channel, and then that
             //    channel is closed.
-            let guard = query_coordinator.end_query_guard();
+            let guard = query_coordinator
+                .end_query_guard(finalization_deadline.clone(), finalization_timeout);
 
             let d_cfg = DistributedConfig::from_config_options(context.session_config().options())?;
             let mut prepared = match d_cfg.dynamic_task_count {
@@ -271,7 +391,16 @@ impl ExecutionPlan for DistributedExec {
             }
             drop(guard);
             drop(tx);
-            query_coordinator.drain_pending_tasks().await?;
+            // DataFusion does not close the result stream until this spawned task returns.
+            // A half-open coordinator channel can otherwise hang result collection itself,
+            // even if the later metrics rewrite has its own timeout. Cancel stalled
+            // background tasks on timeout; their metric receivers then become terminal
+            // without a report, so accounting remains explicitly incomplete.
+            query_coordinator
+                .drain_pending_tasks(
+                    wait_for_finalization_deadline(finalization_deadline.subscribe()).await,
+                )
+                .await?;
             Ok(())
         });
 
@@ -280,5 +409,75 @@ impl ExecutionPlan for DistributedExec {
 
     fn metrics(&self) -> Option<MetricsSet> {
         Some(self.metrics.clone_inner())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use datafusion::physical_plan::metrics::MetricsSet;
+    use uuid::Uuid;
+
+    #[tokio::test]
+    async fn a_never_closing_channel_cannot_block_complete_metrics_indefinitely() {
+        let store = Store::<TaskMetrics>::new();
+        let key = TaskKey {
+            query_id: Uuid::new_v4(),
+            stage_id: 1,
+            task_number: 0,
+        };
+        let deadline = Instant::now() + Duration::from_millis(25);
+        let result = wait_for_complete_metrics(&store, &[key], deadline).await;
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("timed out waiting")
+        );
+        assert_eq!(store.snapshot(&[key]).pending, vec![key]);
+        // Rewriting after the drain used up the budget must not start another wait.
+        let result = tokio::time::timeout(
+            Duration::from_millis(100),
+            wait_for_complete_metrics(&store, &[key], deadline),
+        )
+        .await
+        .expect("expired deadline should return without another timeout window");
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn closed_channel_without_metrics_is_an_error_not_zero_metrics() {
+        let store = Store::<TaskMetrics>::new();
+        let query_id = Uuid::new_v4();
+        let reported = TaskKey {
+            query_id,
+            stage_id: 1,
+            task_number: 0,
+        };
+        let lost = TaskKey {
+            query_id,
+            stage_id: 1,
+            task_number: 2,
+        };
+        store.insert(
+            reported,
+            TaskMetrics {
+                pre_order_plan_metrics: vec![],
+                task_metrics: MetricsSet::new(),
+            },
+        );
+        store.mark_terminal(lost);
+        let result = wait_for_complete_metrics(
+            &store,
+            &[reported, lost],
+            Instant::now() + Duration::from_secs(1),
+        )
+        .await;
+        assert!(result.unwrap_err().to_string().contains("metrics missing"));
+        let snapshot = TaskMetricsSnapshot::from_store(store.snapshot(&[reported, lost]));
+        assert!(snapshot.all_terminal());
+        assert!(!snapshot.all_reported());
+        assert_eq!(snapshot.missing_reports, vec![lost]);
+        assert_eq!(snapshot.reported.len(), 1);
     }
 }

@@ -36,8 +36,10 @@ use datafusion::prelude::SessionConfig;
 use futures::{Stream, StreamExt, TryStreamExt};
 use std::ops::DerefMut;
 use std::sync::{Arc, Mutex};
-use tokio::sync::Notify;
+use std::time::Duration;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::{Notify, watch};
+use tokio::time::Instant as TokioInstant;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use url::Url;
 use uuid::Uuid;
@@ -109,16 +111,33 @@ impl QueryCoordinator {
     /// returns a guard that, when dropped, it signals all the coordinator->worker connections that
     /// the query is finished, ending them, and propagating the EOS to the workers so that they can
     /// clean up any remaining state.
-    pub(super) fn end_query_guard(&self) -> NotifyGuard {
-        NotifyGuard(Arc::clone(&self.end_stream_notifier))
+    pub(super) fn end_query_guard(
+        &self,
+        deadline: watch::Sender<Option<TokioInstant>>,
+        timeout: Duration,
+    ) -> NotifyGuard {
+        NotifyGuard {
+            notifier: Arc::clone(&self.end_stream_notifier),
+            deadline,
+            timeout,
+        }
     }
 
     /// Blocks until all background tasks have finished (e.g., sending WorkUnit feeds, or collecting
     /// metrics)
-    pub(super) async fn drain_pending_tasks(self: Arc<Self>) -> Result<()> {
+    pub(super) async fn drain_pending_tasks(self: Arc<Self>, deadline: TokioInstant) -> Result<()> {
         let join_set = std::mem::take(self.join_set.lock().unwrap().deref_mut());
-        for res in join_set.join_all().await {
-            res?;
+        match tokio::time::timeout_at(deadline, join_set.join_all()).await {
+            Ok(results) => {
+                for res in results {
+                    res?;
+                }
+            }
+            // Dropping the JoinSet aborts the stalled forwarding tasks. Their receivers
+            // observe EOS and mark missing reports as terminal, rather than hanging queries.
+            Err(_) => {
+                log::warn!("timed out draining worker coordinator channels after query completion")
+            }
         }
         Ok(())
     }
@@ -347,6 +366,16 @@ impl<'a> StageCoordinator<'a> {
                     }
                 }
             }
+            // The worker->coordinator stream has ended, so no further reports will arrive for
+            // this task. If the task never reported (e.g. it was planned but never executed
+            // because execution short-circuited, or the stream ended abruptly), mark it terminal
+            // so that waiters do not block forever. Reported values are left untouched.
+            if let Some(task_metrics) = &task_metrics {
+                task_metrics.mark_terminal(task_key);
+            }
+            if let Some(store) = &completed_dynamic_filter_store {
+                store.mark_terminal(task_key);
+            }
         });
         load_info_rx
     }
@@ -514,11 +543,17 @@ struct TaskSpecializedPlan {
     dynamic_filter_remote_producer_ids: Vec<u64>,
 }
 
-pub(super) struct NotifyGuard(Arc<Notify>);
+pub(super) struct NotifyGuard {
+    notifier: Arc<Notify>,
+    deadline: watch::Sender<Option<TokioInstant>>,
+    timeout: Duration,
+}
 
 impl Drop for NotifyGuard {
     fn drop(&mut self) {
-        self.0.notify_waiters();
+        self.deadline
+            .send_replace(Some(TokioInstant::now() + self.timeout));
+        self.notifier.notify_waiters();
     }
 }
 
@@ -559,6 +594,9 @@ impl CoordinatorToWorkerMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use datafusion::arrow::datatypes::Schema;
+    use datafusion::physical_plan::empty::EmptyExec;
+    use std::time::Duration;
 
     /// Regression test for a rustc miscompilation (present at least through
     /// 1.96, fixed in 1.98) of [`CoordinatorToWorkerMetrics::new`].
@@ -624,5 +662,97 @@ mod tests {
                  — rustc metric-builder miscompilation (use a named fn, not a closure)"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn channel_close_without_report_is_terminal_but_incomplete() {
+        let task_ctx = Arc::new(TaskContext::default());
+        let metrics = ExecutionPlanMetricsSet::new();
+        let metrics_store = Arc::new(Store::<TaskMetrics>::new());
+        let filters_store = Arc::new(Store::<TaskCompletedDynamicFilters>::new());
+        let coordinator = QueryCoordinator::new(
+            task_ctx,
+            &metrics,
+            Some(Arc::clone(&metrics_store)),
+            Some(Arc::clone(&filters_store)),
+        );
+        let stage = LocalStage {
+            query_id: Uuid::new_v4(),
+            num: 1,
+            plan: Arc::new(EmptyExec::new(Arc::new(Schema::empty()))),
+            tasks: 1,
+            metrics_set: Default::default(),
+        };
+        let mut stage_coordinator = coordinator.stage_coordinator(&stage);
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let _load_info = stage_coordinator.worker_to_coordinator_task(0, rx);
+        let key = TaskKey {
+            query_id: stage.query_id,
+            stage_id: stage.num,
+            task_number: 0,
+        };
+        // Keep the channel open: the task must still be pending, not prematurely terminal.
+        assert_eq!(metrics_store.snapshot(&[key]).pending, vec![key]);
+        drop(tx);
+        let reported = tokio::time::timeout(
+            Duration::from_secs(1),
+            metrics_store.wait_for_terminal(&[key]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(reported.terminal_without_report, vec![key]);
+        assert!(reported.reported.is_empty());
+        assert_eq!(
+            filters_store
+                .wait_for_terminal(&[key])
+                .await
+                .terminal_without_report,
+            vec![key]
+        );
+    }
+
+    #[tokio::test]
+    async fn stuck_channel_drain_is_bounded_and_does_not_fail_a_finished_query() {
+        let metrics = ExecutionPlanMetricsSet::new();
+        let metrics_store = Arc::new(Store::<TaskMetrics>::new());
+        let coordinator = Arc::new(QueryCoordinator::new(
+            Arc::new(TaskContext::default()),
+            &metrics,
+            Some(Arc::clone(&metrics_store)),
+            None,
+        ));
+        let stage = LocalStage {
+            query_id: Uuid::new_v4(),
+            num: 1,
+            plan: Arc::new(EmptyExec::new(Arc::new(Schema::empty()))),
+            tasks: 1,
+            metrics_set: Default::default(),
+        };
+        let key = TaskKey {
+            query_id: stage.query_id,
+            stage_id: stage.num,
+            task_number: 0,
+        };
+        // Hold a live sender inside the stuck forwarding task.
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        coordinator
+            .stage_coordinator(&stage)
+            .worker_to_coordinator_task(0, rx);
+        coordinator.join_set.lock().unwrap().spawn(async move {
+            let _tx = tx;
+            futures::future::pending::<()>().await;
+            Ok(())
+        });
+        coordinator
+            .drain_pending_tasks(TokioInstant::now() + Duration::from_millis(25))
+            .await
+            .unwrap();
+        let snapshot = tokio::time::timeout(
+            Duration::from_secs(1),
+            metrics_store.wait_for_terminal(&[key]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(snapshot.terminal_without_report, vec![key]);
     }
 }

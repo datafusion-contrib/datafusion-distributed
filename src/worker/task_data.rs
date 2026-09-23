@@ -1,10 +1,11 @@
 use crate::common::OnceLockResult;
 use crate::common::now_ns;
+use crate::metrics::TASK_NOT_EXECUTED_METRIC;
 use crate::{MaxLatencyMetric, ProducerHead, TaskCompletedDynamicFilters, TaskMetrics};
 use datafusion::common::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion::physical_plan::metrics::{Metric, MetricValue, MetricsSet};
+use datafusion::physical_plan::metrics::{Count, Metric, MetricValue, MetricsSet};
 use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::Duration;
@@ -90,6 +91,26 @@ impl TaskDataMetrics {
             &self.plan_finished_at,
         ));
 
+        metrics_set
+    }
+
+    /// Planning and sampling may have happened, but ExecuteTask was never called. Do not
+    /// manufacture timestamps for execution or completion.
+    pub(super) fn to_unexecuted_metrics_set(&self) -> MetricsSet {
+        let mut metrics_set = MetricsSet::new();
+        metrics_set.push(max_latency_metric(
+            PLAN_ADDED_AT_METRIC,
+            &self.plan_added_at,
+        ));
+        let count = Count::new();
+        count.add(1);
+        metrics_set.push(Arc::new(Metric::new(
+            MetricValue::Count {
+                name: Cow::Borrowed(TASK_NOT_EXECUTED_METRIC),
+                count,
+            },
+            None,
+        )));
         metrics_set
     }
 }

@@ -6,6 +6,6 @@ mod prepare_static_plan;
 mod query_coordinator;
 mod store;
 
-pub use distributed::DistributedExec;
+pub use distributed::{DistributedExec, TaskMetricsSnapshot};
 pub(crate) use dynamic_filter_registry::DynamicFilterRegistry;
 pub(crate) use store::Store;

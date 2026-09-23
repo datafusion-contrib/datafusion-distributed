@@ -2389,6 +2389,7 @@ dependencies = [
  "hyper-util",
  "insta",
  "itertools 0.14.0",
+ "log",
  "moka",
  "num-traits",
  "parquet",

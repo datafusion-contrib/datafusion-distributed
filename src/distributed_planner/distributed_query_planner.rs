@@ -24,6 +24,7 @@ use datafusion::physical_plan::{
 use datafusion::physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner};
 use futures::future::BoxFuture;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// Transforms a single-node physical plan into a distributed plan by injecting network
 /// boundaries between stages.
@@ -174,7 +175,10 @@ fn create_distributed_exec(
     Arc::new(
         DistributedExec::new(plan)
             .with_metrics_collection(d_cfg.collect_metrics)
-            .with_dynamic_filter_collection(d_cfg.collect_dynamic_filters),
+            .with_dynamic_filter_collection(d_cfg.collect_dynamic_filters)
+            .with_finalization_timeout(Duration::from_millis(
+                d_cfg.metrics_finalization_timeout_ms,
+            )),
     )
 }
 

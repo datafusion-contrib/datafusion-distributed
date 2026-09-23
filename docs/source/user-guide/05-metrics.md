@@ -8,21 +8,35 @@ display them.
 Distributed DataFusion does this for you, and exposes two functions you can use to build your own
 EXPLAIN ANALYZE in application code.
 
-## Enabling collection
+## Configuring collection
 
-Metrics collection across network boundaries is **on by default**. You can toggle it explicitly:
-
-```rust
-let state = SessionStateBuilder::new()
-    .with_default_features()
-    .with_distributed_worker_resolver(/* ... */)
-    .with_distributed_planner()
-    .with_distributed_metrics_collection(true) // default is true
-    .build();
-```
+Metrics collection across network boundaries is **on by default**. To disable it, call
+`.with_distributed_metrics_collection(false)?` on the session-state builder.
 
 When enabled, each worker streams the metrics for its tasks back to the coordinator on a dedicated
 channel, so they are not lost even if the result stream is dropped early (for example by a `LIMIT`).
+
+Post-query cleanup, metrics collection, and completed dynamic-filter collection share one deadline
+starting when the result stream ends. The default is five seconds. To adjust it, configure
+`DistributedConfig::metrics_finalization_timeout_ms` before planning the query:
+
+```rust
+use datafusion::execution::SessionStateBuilder;
+use datafusion_distributed::{DistributedConfig, DistributedExt, SessionStateBuilderExt};
+
+let state = SessionStateBuilder::new()
+    .with_default_features()
+    .with_distributed_option_extension(DistributedConfig {
+        metrics_finalization_timeout_ms: 10_000,
+        ..Default::default()
+    })
+    .with_distributed_worker_resolver(/* ... */)
+    .with_distributed_planner()
+    .build();
+```
+
+Set it to zero to avoid waiting for late reports. An incomplete metrics result still returns an
+error rather than treating missing work as zero.
 
 ## Rendering a plan with metrics
 
@@ -33,8 +47,9 @@ These functions, all exported from the crate root, do the work:
   used to execute the plan. When displaying both dynamic filters and metrics, apply the
   dynamic-filter rewrite first.
 - `rewrite_distributed_plan_with_metrics(plan, format)` — folds every task's metrics back into the
-  coordinator's copy of the plan. It waits for all worker metrics to arrive, so the result is always
-  complete. The `format` is a `DistributedMetricsFormat`:
+  coordinator's copy of the plan. It waits for complete worker reports and returns an error if a
+  channel closes without a report or finalization exceeds the configured deadline. The `format` is a
+  `DistributedMetricsFormat`:
     - `Aggregated` — metrics from all tasks of a stage are summed/aggregated into one value per node.
     - `PerTask` — each metric collects its per-task values into a map keyed by task id
       (`output_rows={0:.., 1:..}`) so you can see each task individually.
@@ -92,3 +107,32 @@ runtime metrics, including network-level metrics on the boundaries:
 
 > If `plan` is not a distributed plan (its root is not a `DistributedExec`),
 > `rewrite_distributed_plan_with_metrics` returns it unchanged, so it is always safe to call.
+
+## Inspecting a partial snapshot
+
+`DistributedExec::metrics_snapshot()` returns the metrics received **so far** without waiting.
+It returns `None` if collection is disabled or the plan has not yet been prepared. The snapshot
+has separate `pending`, `missing_reports`, and `reported` task keys; `all_terminal()` says whether
+every expected task has reported or its stream has ended. `all_reported()` says whether metrics
+are available for every task; use it when accounting must be complete. `unexecuted_tasks()` identifies planned
+tasks that reported actual AQE sampling metrics but never received an `ExecuteTask` call. These
+tasks have a `task_not_executed=1` stage metric instead of fabricated execution timestamps.
+
+```rust
+use datafusion_distributed::DistributedExec;
+
+if let Some(exec) = plan.downcast_ref::<DistributedExec>() {
+    if let Some(snapshot) = exec.metrics_snapshot() {
+        println!("{} reports; {} pending", snapshot.reported.len(), snapshot.pending.len());
+        if !snapshot.all_reported() {
+            // Do not treat a missing task report as zero I/O.
+            println!("missing reports: {:?}", snapshot.missing_reports);
+        }
+    }
+}
+```
+
+The existing `DistributedExec::wait_for_metrics()` only returns `Some` for a complete set of
+reports. If any task fails to report or the wait times out, it returns `None`; call
+`metrics_snapshot()` to inspect what arrived. A closed stream without a metrics report is not
+equivalent to an unexecuted task with a report.

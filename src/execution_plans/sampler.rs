@@ -110,6 +110,10 @@ pub(crate) struct SamplerGate {
 }
 
 impl SamplerGate {
+    pub(crate) fn has_sampler(&self) -> bool {
+        self.sampling_start_tx_opt.is_some()
+    }
+
     /// Takes the [LoadInfo] receivers. This function can only be called once, as subsequent calls
     /// will always return an empty [Vec].
     pub(crate) fn take_receivers(&mut self) -> Vec<oneshot::Receiver<LoadInfo>> {
@@ -146,6 +150,7 @@ impl SamplerExec {
                 partition_idx: i,
                 input: Arc::clone(&input),
                 stream: Mutex::new(None),
+                sampling_done_rx: Mutex::new(None),
                 metrics: Arc::clone(&metrics),
                 kick_off_at: Arc::new(OnceLock::new()),
                 first_batch_at: Arc::new(OnceLock::new()),
@@ -186,12 +191,37 @@ impl SamplerExec {
             receivers,
         })
     }
+
+    /// Stop samplers whose task never received ExecuteTask, then wait for their futures to be
+    /// dropped before reading the plan's accounting metrics. Otherwise in-flight scans can
+    /// continue incrementing I/O counters after their snapshot has been sent.
+    pub(crate) async fn stop_unexecuted_sampling(plan: &Arc<dyn ExecutionPlan>) -> Result<()> {
+        let mut done = vec![];
+        plan.apply(|node| {
+            if let Some(sampler) = node.downcast_ref::<SamplerExec>() {
+                for partition in &sampler.partition_samplers {
+                    // The saved stream owns the SpawnedTask; dropping it cancels any work not
+                    // consumed by an ExecuteTask request.
+                    drop(partition.stream.lock().unwrap().take());
+                    if let Some(rx) = partition.sampling_done_rx.lock().unwrap().take() {
+                        done.push(rx);
+                    }
+                }
+            }
+            Ok(TreeNodeRecursion::Continue)
+        })?;
+        for rx in done {
+            let _ = rx.await;
+        }
+        Ok(())
+    }
 }
 
 pub(crate) struct PartitionSampler {
     partition_idx: usize,
     input: Arc<dyn ExecutionPlan>,
     stream: Mutex<Option<SendableRecordBatchStream>>,
+    sampling_done_rx: Mutex<Option<oneshot::Receiver<()>>>,
     execution_started: Arc<AtomicBool>,
 
     // Metrics state.
@@ -282,7 +312,12 @@ impl PartitionSampler {
             first_batch_at: Arc::clone(&self.first_batch_at),
         };
 
+        let (sampling_done_tx, sampling_done_rx) = oneshot::channel::<()>();
+
         let task = SpawnedTask::spawn(async move {
+            // On completion or abort, dropping this sender signals that the sampler has
+            // stopped touching the input plan's metrics.
+            let _sampling_done_tx = sampling_done_tx;
             sampling_start_rx
                 .wait_for(|started| *started)
                 .await
@@ -333,6 +368,10 @@ impl PartitionSampler {
             .lock()
             .expect("poisoned lock")
             .replace(Box::pin(RecordBatchStreamAdapter::new(schema, stream)));
+        self.sampling_done_rx
+            .lock()
+            .unwrap()
+            .replace(sampling_done_rx);
 
         Ok(sampling_rx)
     }

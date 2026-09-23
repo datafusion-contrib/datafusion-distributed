@@ -4,6 +4,8 @@ use datafusion::config::{ConfigExtension, ConfigOptions};
 use datafusion::execution::TaskContext;
 use datafusion::prelude::SessionConfig;
 
+pub(crate) const DEFAULT_METRICS_FINALIZATION_TIMEOUT_MS: u64 = 5_000;
+
 extensions_options! {
     /// Configuration for the distributed planner.
     pub struct DistributedConfig {
@@ -29,6 +31,10 @@ extensions_options! {
         /// Propagate collected metrics from all nodes in the plan across network boundaries
         /// so that they can be reconstructed on the head node of the plan.
         pub collect_metrics: bool, default = true
+        /// Milliseconds allowed after the result stream ends for coordinator channels to close
+        /// and worker reports (metrics and completed dynamic filters) to arrive. All finalization
+        /// steps share this one deadline. A value of 0 does not wait for late reports.
+        pub metrics_finalization_timeout_ms: u64, default = DEFAULT_METRICS_FINALIZATION_TIMEOUT_MS
         /// Collect completed dynamic filters from worker tasks so that they can be displayed in
         /// the distributed plan. This does not control whether dynamic filtering is used during
         /// query execution.
