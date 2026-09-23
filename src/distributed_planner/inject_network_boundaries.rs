@@ -4,6 +4,7 @@ use crate::events::{
     DesiredTaskCountEvent, DesiredTaskCountHandlers, ScaleUpLeafNodeEvent, ScaleUpLeafNodeHandlers,
     TaskCountAnnotation,
 };
+use crate::execution_plans::ShuffleMode;
 use crate::execution_plans::{ChildWeight, ChildrenIsolatorUnionExec};
 use crate::stage::LocalStage;
 use crate::worker_resolver::WorkerResolverExtension;
@@ -335,11 +336,11 @@ async fn _inject_network_boundaries(
             .nb_builder
             .build(input_stage, TypeId::of::<NetworkShuffleExec>(), nb_ctx)
             .await?;
-        let nb = Arc::new(NetworkShuffleExec::from_stage(
+        let shuffle = Arc::new(NetworkShuffleExec::from_stage(
             result.input_stage,
             result.input_properties,
         ));
-        Ok(nb_ctx.plan_with_task_count(nb, result.consumer_task_count))
+        Ok(nb_ctx.plan_with_task_count(shuffle, result.consumer_task_count))
     }
     // Upon reaching a broadcast, we need to introduce a network broadcast right above it.
     else if let Some(_b_exec) = plan.downcast_ref::<BroadcastExec>() {
@@ -463,6 +464,25 @@ impl InjectNetworkBoundaryContext<'_> {
 
         // Handle network boundaries.
         } else if plan.is_network_boundary() {
+            if let Some(shuffle) = plan.downcast_ref::<NetworkShuffleExec>()
+                && matches!(shuffle.mode, ShuffleMode::Direct)
+            {
+                let consumer_partitions = shuffle.producer_partitioning.partition_count();
+                // now that task_count is the final reconciled consumer count,
+                // decide whether TwoPhase mode is warranted.
+                if task_count.as_usize() * consumer_partitions
+                    >= self.d_cfg.two_step_shuffle_fanout_threshold
+                {
+                    let two_phase_shuffle: Arc<dyn ExecutionPlan> =
+                        Arc::new(shuffle.to_two_phase_salted());
+                    self.set_task_count(&two_phase_shuffle, task_count);
+                    let consumer_repartition = Arc::new(RepartitionExec::try_new(
+                        two_phase_shuffle,
+                        shuffle.producer_partitioning.clone(),
+                    )?) as Arc<dyn ExecutionPlan>;
+                    return Ok(self.plan_with_task_count(consumer_repartition, task_count));
+                }
+            }
             // Just annotate the network boundary and stop recursion here.
             Ok(self.plan_with_task_count(Arc::clone(plan), task_count))
 
@@ -942,7 +962,7 @@ mod tests {
             .distributed_planner(false)
             .broadcast_joins(false);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
-        assert_snapshot!(annotated, @r"
+        assert_snapshot!(annotated, @"
         ProjectionExec: task_count=Desired(4)
           BoundedWindowAggExec: task_count=Desired(4)
             SortExec: task_count=Desired(4)
@@ -1018,7 +1038,7 @@ mod tests {
             .broadcast_joins(false)
             .desired_task_count_handler(repartition_max_one_desired_task_count_handler);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
-        assert_snapshot!(annotated, @r"
+        assert_snapshot!(annotated, @"
         AggregateExec: task_count=Desired(1)
           NetworkShuffleExec: task_count=Desired(1)
             RepartitionExec: task_count=Desired(1)
@@ -1370,6 +1390,52 @@ mod tests {
                 BroadcastExec: task_count=Desired(4)
                   DistributedLeafExec: task_count=Desired(4)
             DistributedLeafExec: task_count=Maximum(1)
+        ");
+    }
+
+    #[tokio::test]
+    async fn test_salted_shuffle_aggregation() {
+        let query = r#"
+        SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday"
+        "#;
+        let test_plan_builder = TestPlanBuilder::new()
+            .target_partitions(16)
+            .num_workers(20)
+            .distributed_planner(false)
+            .broadcast_joins(false);
+        let annotated = annotate_test_plan(test_plan_builder, query).await;
+        assert_snapshot!(annotated, @"
+        ProjectionExec: task_count=Desired(20)
+          AggregateExec: task_count=Desired(20)
+            RepartitionExec: task_count=Desired(20)
+              NetworkShuffleExec: task_count=Desired(20)
+                RepartitionExec: task_count=Desired(20)
+                  AggregateExec: task_count=Desired(20)
+                    DistributedLeafExec: task_count=Desired(20)
+        ");
+    }
+
+    #[tokio::test]
+    async fn test_salted_shuffle_join() {
+        let query = r#"
+        SELECT a."MinTemp", b."MaxTemp" FROM weather a LEFT JOIN weather b ON a."RainToday" = b."RainToday"
+        "#;
+        let test_plan_builder = TestPlanBuilder::new()
+            .target_partitions(16)
+            .num_workers(20)
+            .distributed_planner(false)
+            .broadcast_joins(false);
+        let annotated = annotate_test_plan(test_plan_builder, query).await;
+        assert_snapshot!(annotated, @"
+        HashJoinExec: task_count=Desired(20)
+          RepartitionExec: task_count=Desired(20)
+            NetworkShuffleExec: task_count=Desired(20)
+              RepartitionExec: task_count=Desired(20)
+                DistributedLeafExec: task_count=Desired(20)
+          RepartitionExec: task_count=Desired(20)
+            NetworkShuffleExec: task_count=Desired(20)
+              RepartitionExec: task_count=Desired(20)
+                DistributedLeafExec: task_count=Desired(20)
         ");
     }
 

@@ -1,6 +1,6 @@
 use crate::common::require_one_child;
 use crate::distributed_planner::ProducerHead;
-use crate::execution_plans::common::scale_partitioning;
+use crate::execution_plans::common::{salted_partitioning, scale_partitioning};
 use crate::stage::{LocalStage, Stage};
 use crate::worker::WorkerConnectionPool;
 use crate::{DistributedTaskContext, MaybeEncoded, NetworkBoundary};
@@ -10,6 +10,7 @@ use datafusion::error::DataFusionError;
 use datafusion::execution::memory_pool::MemoryConsumer;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::{Partitioning, PhysicalExpr};
+use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet};
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::streaming_merge::StreamingMergeBuilder;
@@ -21,6 +22,18 @@ use datafusion::physical_plan::{
 use std::fmt::Formatter;
 use std::sync::Arc;
 use uuid::Uuid;
+
+pub const PRODUCER_SALT_DEFAULT: u64 = 0x517cc1b727220a95;
+
+/// Routing strategy between producer and consumer stages.
+#[derive(Debug, Clone)]
+pub enum ShuffleMode {
+    /// Hash(key, consumer_task_count × consumer_partition_count): consumer reads global partitions
+    Direct,
+    /// Two-phase: producer hashes (key+salt) into consumer_task_count buckets; each consumer then
+    /// re-partitions locally into consumer_partition_count partitions via a RepartitionExec.
+    TwoPhase { salt: u64 },
+}
 
 /// [ExecutionPlan] implementation that shuffles data across the network in a distributed context.
 ///
@@ -108,8 +121,12 @@ use uuid::Uuid;
 pub struct NetworkShuffleExec {
     /// the properties we advertise for this execution plan
     pub(crate) properties: Arc<PlanProperties>,
+    /// producer's output partitioning; in TwoPhase mode `properties` advertises UnknownPartitioning
+    /// since the salt breaks hash guarantees, so we stash the original here.
+    pub(crate) producer_partitioning: Partitioning,
     pub(crate) input_stage: Stage,
     pub(crate) worker_connections: WorkerConnectionPool,
+    pub(crate) mode: ShuffleMode,
 }
 
 impl NetworkShuffleExec {
@@ -141,11 +158,41 @@ impl NetworkShuffleExec {
     }
 
     pub(crate) fn from_stage(input_stage: Stage, input_properties: Arc<PlanProperties>) -> Self {
-        let properties = Self::compute_properties(&input_properties, input_stage.task_count());
+        let producer_partitioning = input_properties.partitioning.clone();
+        let properties = Arc::new(PlanProperties::new(
+            input_properties.equivalence_properties().clone(),
+            producer_partitioning.clone(),
+            EmissionType::Incremental,
+            Boundedness::Bounded,
+        ));
         Self {
             properties,
+            producer_partitioning,
             worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
             input_stage,
+            mode: ShuffleMode::Direct,
+        }
+    }
+
+    /// Returns a copy of this node switched to [ShuffleMode::TwoPhase]. The advertised
+    /// partitioning becomes `UnknownPartitioning` since the salt breaks hash guarantees;
+    /// a downstream `RepartitionExec` is expected to restore the final partitioning.
+    pub(crate) fn to_two_phase_salted(&self) -> Self {
+        let output_partitions = self.input_stage.task_count();
+        let properties = Arc::new(PlanProperties::new(
+            self.properties.equivalence_properties().clone(),
+            Partitioning::UnknownPartitioning(output_partitions),
+            EmissionType::Incremental,
+            Boundedness::Bounded,
+        ));
+        Self {
+            properties,
+            producer_partitioning: self.producer_partitioning.clone(),
+            worker_connections: self.worker_connections.clone(),
+            input_stage: self.input_stage.clone(),
+            mode: ShuffleMode::TwoPhase {
+                salt: PRODUCER_SALT_DEFAULT,
+            },
         }
     }
 
@@ -191,11 +238,16 @@ impl NetworkBoundary for NetworkShuffleExec {
     }
 
     fn producer_head(&self, consumer_task_count: usize) -> Result<ProducerHead> {
+        let partitioning = match &self.mode {
+            ShuffleMode::Direct => {
+                scale_partitioning(&self.producer_partitioning, |n| n * consumer_task_count)?
+            }
+            ShuffleMode::TwoPhase { salt } => {
+                salted_partitioning(&self.producer_partitioning, *salt, consumer_task_count)?
+            }
+        };
         Ok(ProducerHead::RepartitionExec {
-            partitioning: MaybeEncoded::Decoded(scale_partitioning(
-                &self.properties.partitioning,
-                |prev| prev * consumer_task_count,
-            )?),
+            partitioning: MaybeEncoded::Decoded(partitioning),
         })
     }
 }
@@ -272,25 +324,49 @@ impl ExecutionPlan for NetworkShuffleExec {
         };
 
         let task_context = DistributedTaskContext::from_ctx(&context);
-        let out_partitions = self.properties.partitioning.partition_count();
-        let off = out_partitions * task_context.task_index;
+        let task_index = task_context.task_index;
+        let producer_task_count = remote_stage.workers.len();
 
         let schema = self.schema();
-        let mut streams = Vec::with_capacity(remote_stage.workers.len());
-        for input_task_index in 0..remote_stage.workers.len() {
-            let stream = self.worker_connections.execute(
-                remote_stage,
-                off..(off + self.properties.partitioning.partition_count()),
-                input_task_index,
-                off + partition,
-                self.producer_head(task_context.task_count)?,
-                &context,
-            )?;
-            streams.push(
-                Box::pin(RecordBatchStreamAdapter::new(schema.clone(), stream))
-                    as SendableRecordBatchStream,
-            );
-        }
+        let mut streams: Vec<SendableRecordBatchStream> =
+            if matches!(self.mode, ShuffleMode::Direct) {
+                // Read global partition task_index*partition_count+p from all producer tasks.
+                // All partitions for this consumer task share the same range key so the connection
+                // pool returns the same cached stream group for every partition call.
+                let partition_count = self.properties.partitioning.partition_count();
+                let off = task_index * partition_count;
+                let global_partition = off + partition;
+                let mut streams = Vec::with_capacity(producer_task_count);
+                for input_task_index in 0..producer_task_count {
+                    let stream = self.worker_connections.execute(
+                        remote_stage,
+                        off..(off + partition_count),
+                        input_task_index,
+                        global_partition,
+                        self.producer_head(task_context.task_count)?,
+                        &context,
+                    )?;
+                    streams.push(
+                        Box::pin(RecordBatchStreamAdapter::new(schema.clone(), stream))
+                            as SendableRecordBatchStream,
+                    );
+                }
+                streams
+            } else {
+                // TwoPhase: each consumer task reads from exactly one producer task.
+                let stream = self.worker_connections.execute(
+                    remote_stage,
+                    task_index..task_index + 1,
+                    partition,
+                    task_index,
+                    self.producer_head(task_context.task_count)?,
+                    &context,
+                )?;
+                vec![
+                    Box::pin(RecordBatchStreamAdapter::new(schema.clone(), stream))
+                        as SendableRecordBatchStream,
+                ]
+            };
 
         if streams.is_empty() {
             return Ok(Box::pin(EmptyRecordBatchStream::new(self.schema())));
@@ -336,7 +412,7 @@ impl ExecutionPlan for NetworkShuffleExec {
     ) -> Result<Arc<Statistics>> {
         self.input_stage.partition_statistics(
             args.partition(),
-            self.properties.output_partitioning().partition_count(),
+            self.properties.partitioning.partition_count(),
             self.schema(),
         )
     }

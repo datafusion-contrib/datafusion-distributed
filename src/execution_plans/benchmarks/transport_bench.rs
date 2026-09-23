@@ -2,6 +2,7 @@ use super::fixture::{
     InMemoryChannelsResolver, benchmark_schema, make_input_partitions, rows_for_producer,
 };
 use crate::common::task_ctx_with_extension;
+use crate::execution_plans::{PRODUCER_SALT_DEFAULT, ShuffleMode};
 use crate::stage::RemoteStage;
 use crate::worker::test_utils::worker_handles::{MemoryWorkerHandle, TcpWorkerHandle};
 use crate::{DistributedExt, DistributedTaskContext, NetworkShuffleExec, Stage, grpc};
@@ -11,6 +12,7 @@ use datafusion::common::Result;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+use datafusion::physical_plan::expressions::Column;
 use datafusion::physical_plan::{ExecutionPlan, PlanProperties};
 use futures::TryStreamExt;
 use std::fmt::{Display, Formatter};
@@ -270,17 +272,23 @@ impl TransportFixture {
 
         let mut join_set = JoinSet::default();
         for task_index in 0..self.bench.consumer_tasks {
+            let producer_partitioning =
+                Partitioning::Hash(vec![Arc::new(Column::new("id", 0))], self.bench.partitions);
             let shuffle = NetworkShuffleExec {
                 properties: Arc::new(PlanProperties::new(
                     EquivalenceProperties::new(Arc::clone(&self.schema)),
-                    Partitioning::RoundRobinBatch(self.bench.partitions),
+                    Partitioning::UnknownPartitioning(self.bench.partitions),
                     EmissionType::Incremental,
                     Boundedness::Bounded,
                 )),
+                producer_partitioning,
                 input_stage: input_stage.clone(),
                 worker_connections: crate::worker::WorkerConnectionPool::new(
                     self.bench.producer_tasks,
                 ),
+                mode: ShuffleMode::TwoPhase {
+                    salt: PRODUCER_SALT_DEFAULT,
+                },
             };
             let task_ctx = Arc::new(task_ctx_with_extension(
                 &self.task_ctx,
@@ -290,7 +298,7 @@ impl TransportFixture {
                 },
             ));
 
-            for partition in 0..shuffle.properties.partitioning.partition_count() {
+            for partition in 0..shuffle.producer_partitioning.partition_count() {
                 let stream = shuffle.execute(partition, Arc::clone(&task_ctx))?;
                 join_set.spawn(async move {
                     let batches = stream.try_collect::<Vec<_>>().await?;

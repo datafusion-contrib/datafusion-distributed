@@ -29,8 +29,9 @@ use datafusion::common::tree_node::{Transformed, TreeNodeRecursion};
 use datafusion::common::{DataFusionError, internal_err};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr_common::metrics::{ExecutionPlanMetricsSet, Label, MetricBuilder};
-use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::metrics::Count;
+use datafusion::physical_plan::repartition::RepartitionExec;
+use datafusion::physical_plan::{ChildrenPropertiesMode, ExecutionPlan, ReplaceChildrenOptions};
 use datafusion::prelude::SessionConfig;
 use futures::{Stream, StreamExt, TryStreamExt};
 use std::ops::DerefMut;
@@ -468,6 +469,18 @@ impl<'a> StageCoordinator<'a> {
                 return Ok(Transformed::yes(specialized));
             }
 
+            // Rebuild each RepartitionExec so every task gets its own instance with
+            // fresh partition state; sharing one across tasks causes a "partition not
+            // used yet" panic when the second task tries to pull from it.
+            if plan.downcast_ref::<RepartitionExec>().is_some() {
+                let children = plan.children().into_iter().map(Arc::clone).collect();
+                let local_repartion_exec = plan.replace_children(
+                    children,
+                    ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+                )?;
+                return Ok(Transformed::yes(local_repartion_exec));
+            }
+            // we are explicitly not retransforming the entire plan. if other operators cause shared state errors they will error out.
             Ok(Transformed::no(plan))
         })?;
         let plan = if dynamic_filtering_enabled {

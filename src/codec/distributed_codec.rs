@@ -1,10 +1,10 @@
 use super::get_distributed_user_codecs;
-use crate::NetworkShuffleExec;
 use crate::common::{deserialize_uuid, require_one_child, serialize_uuid};
 use crate::execution_plans::{
     BroadcastExec, ChildWeight, ChildrenIsolatorUnionExec, NetworkBroadcastExec,
     NetworkCoalesceExec, SamplerExec,
 };
+use crate::execution_plans::{NetworkShuffleExec, ShuffleMode};
 use crate::stage::{LocalStage, RemoteStage, Stage};
 use crate::worker::WorkerConnectionPool;
 use crate::{DistributedTaskContext, NetworkBoundary};
@@ -115,6 +115,8 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 partitioning,
                 input_stage,
                 equivalence_classes,
+                two_phase,
+                salt,
                 ordering,
             }) => {
                 let schema: Schema = schema
@@ -155,10 +157,16 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     equivalence_properties.add_orderings([sort_exprs]);
                 }
 
+                let mode = if two_phase {
+                    ShuffleMode::TwoPhase { salt }
+                } else {
+                    ShuffleMode::Direct
+                };
                 Ok(Arc::new(new_network_hash_shuffle_exec(
                     partitioning,
                     equivalence_properties,
                     parse_stage_proto(input_stage, inputs, dynamic_filter_anchors)?,
+                    mode,
                 )))
             }
             DistributedExecNode::NetworkCoalesceTasks(NetworkCoalesceExecProto {
@@ -353,7 +361,10 @@ impl PhysicalExtensionCodec for DistributedCodec {
         }
 
         if let Some(node) = node.downcast_ref::<NetworkShuffleExec>() {
-            // Serialize output ordering so workers know how to sort-merge incoming streams.
+            let (two_phase, salt) = match &node.mode {
+                ShuffleMode::Direct => (false, 0u64),
+                ShuffleMode::TwoPhase { salt } => (true, *salt),
+            };
             let ordering = node
                 .properties()
                 .output_ordering()
@@ -362,11 +373,10 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 })
                 .transpose()?
                 .unwrap_or_default();
-
             let inner = NetworkShuffleExecProto {
                 schema: Some(node.schema().try_into()?),
                 partitioning: Some(serialize_partitioning(
-                    node.properties().output_partitioning(),
+                    &node.producer_partitioning,
                     self,
                     proto_converter,
                 )?),
@@ -380,6 +390,8 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     self,
                     proto_converter,
                 )?,
+                two_phase,
+                salt,
                 ordering,
             };
 
@@ -598,8 +610,13 @@ pub struct NetworkShuffleExecProto {
     input_stage: Option<StageProto>,
     #[prost(message, repeated, tag = "4")]
     equivalence_classes: Vec<EquivalenceClassProto>,
+    #[prost(bool, tag = "5")]
+    two_phase: bool,
+    /// Salt value used in TwoPhase mode; ignored when `two_phase` is false.
+    #[prost(uint64, tag = "6")]
+    salt: u64,
     /// Sort expressions preserved across tasks and used by workers to sort-merge streams.
-    #[prost(message, repeated, tag = "5")]
+    #[prost(message, repeated, tag = "7")]
     ordering: Vec<protobuf::PhysicalSortExprNode>,
 }
 
@@ -648,16 +665,25 @@ fn new_network_hash_shuffle_exec(
     partitioning: Partitioning,
     equivalence_properties: EquivalenceProperties,
     input_stage: Stage,
+    mode: ShuffleMode,
 ) -> NetworkShuffleExec {
+    let producer_tasks = input_stage.task_count();
+    let advertised_partitioning = match &mode {
+        ShuffleMode::Direct => partitioning.clone(),
+        ShuffleMode::TwoPhase { .. } => Partitioning::UnknownPartitioning(producer_tasks),
+    };
+    let properties = Arc::new(PlanProperties::new(
+        equivalence_properties,
+        advertised_partitioning,
+        EmissionType::Incremental,
+        Boundedness::Bounded,
+    ));
     NetworkShuffleExec {
-        properties: Arc::new(PlanProperties::new(
-            equivalence_properties,
-            partitioning,
-            EmissionType::Incremental,
-            Boundedness::Bounded,
-        )),
+        properties,
+        producer_partitioning: partitioning,
         worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
         input_stage,
+        mode,
     }
 }
 
@@ -737,6 +763,10 @@ mod tests {
         new_proto_converter as default_proto_converter, roundtrip_pb,
     };
     use super::*;
+
+    use crate::execution_plans::PRODUCER_SALT_DEFAULT;
+
+    const DEFAULT_MODE: ShuffleMode = ShuffleMode::Direct;
     use datafusion::arrow::datatypes::{DataType, Field};
     use datafusion::physical_expr::{LexOrdering, PhysicalExpr};
     use datafusion::physical_plan::empty::EmptyExec;
@@ -797,6 +827,7 @@ mod tests {
             part,
             EquivalenceProperties::new(schema),
             dummy_stage(),
+            DEFAULT_MODE,
         ));
 
         let mut buf = Vec::new();
@@ -828,6 +859,7 @@ mod tests {
             Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 4),
             EquivalenceProperties::new(schema),
             stage,
+            ShuffleMode::Direct,
         ));
 
         let mut buf = vec![];
@@ -880,11 +912,13 @@ mod tests {
             Partitioning::RoundRobinBatch(2),
             EquivalenceProperties::new(schema.clone()),
             dummy_stage(),
+            DEFAULT_MODE,
         ));
         let right = Arc::new(new_network_hash_shuffle_exec(
             Partitioning::RoundRobinBatch(2),
             EquivalenceProperties::new(schema.clone()),
             dummy_stage(),
+            DEFAULT_MODE,
         ));
 
         let union = UnionExec::try_new(vec![left.clone(), right.clone()])?;
@@ -910,6 +944,7 @@ mod tests {
             Partitioning::UnknownPartitioning(1),
             EquivalenceProperties::new(schema.clone()),
             dummy_stage(),
+            DEFAULT_MODE,
         ));
 
         let sort_expr = PhysicalSortExpr {
@@ -965,6 +1000,7 @@ mod tests {
             part,
             EquivalenceProperties::new(schema),
             dummy_stage_with_plan(),
+            DEFAULT_MODE,
         ));
 
         let mut buf = Vec::new();
@@ -1061,11 +1097,13 @@ mod tests {
             Partitioning::RoundRobinBatch(2),
             EquivalenceProperties::new(schema.clone()),
             dummy_stage(),
+            DEFAULT_MODE,
         )) as Arc<dyn ExecutionPlan>;
         let right = Arc::new(new_network_hash_shuffle_exec(
             Partitioning::RoundRobinBatch(2),
             EquivalenceProperties::new(schema.clone()),
             dummy_stage(),
+            DEFAULT_MODE,
         )) as Arc<dyn ExecutionPlan>;
 
         let plan: Arc<dyn ExecutionPlan> =
@@ -1107,6 +1145,7 @@ mod tests {
                     Partitioning::UnknownPartitioning(1),
                     equivalence_properties.clone(),
                     dummy_stage(),
+                    DEFAULT_MODE,
                 )),
             ),
             (
@@ -1152,6 +1191,79 @@ mod tests {
                 );
             }
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_roundtrip_salted_shuffle() -> datafusion::common::Result<()> {
+        let codec = DistributedCodec;
+        let ctx = create_context();
+
+        let schema = schema_i32("a");
+        // Use a non-default salt to confirm the exact value survives serialization.
+        let salt = PRODUCER_SALT_DEFAULT.wrapping_add(1);
+        let part = Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 4);
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(new_network_hash_shuffle_exec(
+            part,
+            EquivalenceProperties::new(schema),
+            dummy_stage(),
+            ShuffleMode::TwoPhase { salt },
+        ));
+
+        let mut buf = Vec::new();
+        codec.try_encode(plan.clone(), &mut buf, &default_proto_converter())?;
+        let decoded = codec.try_decode(&buf, &[], &ctx, &default_proto_converter())?;
+
+        assert_eq!(repr(&plan), repr(&decoded));
+
+        let decoded_exec = decoded.downcast_ref::<NetworkShuffleExec>().unwrap();
+        assert!(
+            matches!(decoded_exec.mode, ShuffleMode::TwoPhase { salt: s } if s == salt),
+            "salt value was not preserved through encode/decode"
+        );
+        // producer_partitioning (Hash(_, 4)) must survive even though the advertised
+        // partitioning is UnknownPartitioning
+        assert_eq!(
+            decoded_exec.producer_partitioning.partition_count(),
+            4,
+            "producer_partitioning partition count was not preserved through encode/decode"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_roundtrip_salted_shuffle_with_plan() -> datafusion::common::Result<()> {
+        let codec = DistributedCodec;
+        let ctx = create_context();
+
+        let schema = schema_i32("a");
+        let salt = PRODUCER_SALT_DEFAULT;
+        let part = Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 3);
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(new_network_hash_shuffle_exec(
+            part,
+            EquivalenceProperties::new(schema),
+            dummy_stage_with_plan(),
+            ShuffleMode::TwoPhase { salt },
+        ));
+
+        let mut buf = Vec::new();
+        codec.try_encode(plan.clone(), &mut buf, &default_proto_converter())?;
+        let decoded = codec.try_decode(&buf, &[empty_exec()], &ctx, &default_proto_converter())?;
+
+        assert_eq!(repr(&plan), repr(&decoded));
+
+        let decoded_exec = decoded.downcast_ref::<NetworkShuffleExec>().unwrap();
+        assert!(
+            matches!(decoded_exec.mode, ShuffleMode::TwoPhase { salt: s } if s == salt),
+            "salt value was not preserved through encode/decode"
+        );
+        assert_eq!(
+            decoded_exec.producer_partitioning.partition_count(),
+            3,
+            "producer_partitioning partition count was not preserved through encode/decode"
+        );
 
         Ok(())
     }

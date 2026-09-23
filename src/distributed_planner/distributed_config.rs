@@ -50,6 +50,12 @@ extensions_options! {
         /// If set to 0, this value is the number of workers returned by the provided `WorkerResolver`.
         /// It defaults to 0.
         pub max_tasks_per_stage: usize, default = 0
+        /// Fan-out threshold for choosing between Direct and TwoPhase shuffle modes. In Direct mode
+        /// the producer hashes into `consumer_task_count × consumer_partition_count` global buckets;
+        /// TwoPhase mode is used when that product meets or exceeds this value, reducing the
+        /// producer-side hash to `consumer_task_count` buckets and adding a local RepartitionExec
+        /// on the consumer side.
+        pub two_step_shuffle_fanout_threshold: usize, default = 128
         /// Maximum number of times the coordinator retries establishing a coordinator channel
         /// after the initial dial fails with a retryable error. Set to 0 to disable retries.
         pub max_coordinator_channel_retries: usize, default = 3
