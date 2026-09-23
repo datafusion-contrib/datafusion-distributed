@@ -19,10 +19,12 @@ use arrow_flight::error::FlightError;
 use arrow_select::dictionary::garbage_collect_any_dictionary;
 use async_trait::async_trait;
 use datafusion::arrow::array::{Array, AsArray, RecordBatch, RecordBatchOptions};
+use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::ipc::writer::IpcWriteOptions;
 use datafusion::common::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
+use datafusion_proto::protobuf;
 use futures::stream::BoxStream;
 use futures::{StreamExt, TryStreamExt};
 use prost::Message;
@@ -220,9 +222,16 @@ fn decode_coordinator_to_worker_msg(
                 CoordinatorToWorkerMsg::KickOffSampling
             }
             pb::coordinator_to_worker_msg::Inner::ApplyDynamicFilter(filter) => {
+                let producer_schema =
+                    protobuf::Schema::decode(filter.producer_schema.as_slice())
+                        .map_err(|error| Status::invalid_argument(error.to_string()))?;
+                let producer_schema = Schema::try_from(&producer_schema).map_err(|error| {
+                    datafusion_error_to_tonic_status(DataFusionError::from(error))
+                })?;
                 CoordinatorToWorkerMsg::ApplyDynamicFilter(Box::new(ApplyDynamicFilter {
                     expression_id: filter.expression_id,
                     expression: MaybeEncoded::Encoded(filter.expression_proto),
+                    producer_schema: Arc::new(producer_schema),
                 }))
             }
         },

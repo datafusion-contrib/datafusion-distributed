@@ -16,6 +16,8 @@ mod tests {
         )
         .execute()
         .await?;
+
+        // Each task in stage 1 produces a distinct filter to push down.
         assert_snapshot!(display, @"
         ┌───── DistributedExec
         │ AggregateExec: mode=Final, gby=[], aggr=[min(weather.MinTemp)]
@@ -26,14 +28,14 @@ mod tests {
           │ AggregateExec: mode=Partial, gby=[], aggr=[min(weather.MinTemp)]
           │   FilterExec: RainToday@1 = Yes, projection=[MinTemp@0]
           │     DistributedLeafExec:
-          │       t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp, RainToday], file_type=parquet, predicate=RainToday@19 = Yes AND DynamicFilter [ MinTemp@0 < 4.3 ], dynamic_rg_pruning=eligible, pruning_predicate=RainToday_null_count@2 != row_count@3 AND RainToday_min@0 <= Yes AND Yes <= RainToday_max@1 AND MinTemp_null_count@5 != row_count@3 AND MinTemp_min@4 < 4.3, required_guarantees=[RainToday in (Yes)]
-          │       t1: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp, RainToday], file_type=parquet, predicate=RainToday@19 = Yes AND DynamicFilter [ MinTemp@0 < -1.6 ], dynamic_rg_pruning=eligible, pruning_predicate=RainToday_null_count@2 != row_count@3 AND RainToday_min@0 <= Yes AND Yes <= RainToday_max@1 AND MinTemp_null_count@5 != row_count@3 AND MinTemp_min@4 < -1.6, required_guarantees=[RainToday in (Yes)]
+          │       t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp, RainToday], file_type=parquet, predicate=RainToday@19 = Yes AND DynamicFilter [ expression_id_0_hash_0 ], dynamic_rg_pruning=eligible
+          │       t1: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp, RainToday], file_type=parquet, predicate=RainToday@19 = Yes AND DynamicFilter [ expression_id_0_hash_1 ], dynamic_rg_pruning=eligible
           └──────────────────────────────────────────────────
         ");
         Ok(())
     }
 
-    /// A partial aggregate does not yet update a data source across a shuffle.
+    /// A partial aggregate updates a data source across a shuffle.
     #[tokio::test]
     async fn remote_dynamic_filters() -> Result<()> {
         let display = TestQuery::new(
@@ -48,6 +50,8 @@ mod tests {
         .expect_dynamic_filter_updates()
         .execute()
         .await?;
+
+        // The per-task partial aggregate filters in stage 2 are merged into one and passed to both consumers.
         assert_snapshot!(display, @"
         ┌───── DistributedExec
         │ AggregateExec: mode=Final, gby=[], aggr=[min(key)]
@@ -63,8 +67,8 @@ mod tests {
             │ RepartitionExec: partitioning=Hash([key@0], 6), input_partitions=3
             │   AggregateExec: mode=Partial, gby=[key@0 as key], aggr=[]
             │     DistributedLeafExec:
-            │       t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp@0 as key], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
-            │       t1: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp@0 as key], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
+            │       t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp@0 as key], file_type=parquet, predicate=DynamicFilter [ expression_id_0_hash_0 ], dynamic_rg_pruning=eligible
+            │       t1: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp@0 as key], file_type=parquet, predicate=DynamicFilter [ expression_id_0_hash_0 ], dynamic_rg_pruning=eligible
             └──────────────────────────────────────────────────
         ");
         Ok(())

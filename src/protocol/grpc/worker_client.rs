@@ -26,6 +26,7 @@ use datafusion::execution::TaskContext;
 use datafusion::execution::memory_pool::MemoryConsumer;
 use datafusion::physical_expr_common::metrics::{Count, Label, MetricBuilder, MetricValue, Time};
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, Gauge};
+use datafusion_proto::protobuf;
 use futures::future::{Either, pending, ready};
 use futures::stream::{BoxStream, select};
 use futures::{FutureExt, Stream, StreamExt, TryStreamExt};
@@ -498,6 +499,8 @@ fn encode_coordinator_to_worker_msg(
                 pb::coordinator_to_worker_msg::Inner::ApplyDynamicFilter(pb::ApplyDynamicFilter {
                     expression_id: filter.expression_id,
                     expression_proto: filter.expression.encode(task_ctx)?,
+                    producer_schema: protobuf::Schema::try_from(filter.producer_schema)?
+                        .encode_to_vec(),
                 })
             }
         }),

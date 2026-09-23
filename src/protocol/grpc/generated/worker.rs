@@ -37,6 +37,9 @@ pub struct ApplyDynamicFilter {
     /// Serialized datafusion.proto.PhysicalExprNode containing a full DynamicFilter expression.
     #[prost(bytes = "vec", tag = "2")]
     pub expression_proto: ::prost::alloc::vec::Vec<u8>,
+    /// Serialized datafusion.proto.Schema referenced by the producer predicate.
+    #[prost(bytes = "vec", tag = "3")]
+    pub producer_schema: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WorkerToCoordinatorMsg {
