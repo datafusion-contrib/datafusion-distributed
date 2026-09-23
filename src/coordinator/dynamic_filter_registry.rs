@@ -1,7 +1,8 @@
-use crate::dynamic_filtering::discover_dynamic_filter_consumers;
+use crate::dynamic_filtering::{discover_dynamic_filter_consumers, dynamic_filter_producer_schema};
 use crate::{
     ApplyDynamicFilter, CoordinatorToWorkerMsg, MaybeEncoded, ProducedDynamicFilter, TaskKey,
 };
+use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::common::{HashMap, HashSet, Result, exec_err, internal_err};
 use datafusion::execution::TaskContext;
@@ -35,15 +36,25 @@ pub(super) enum DynamicFilterMergeMode {
 
 #[derive(Default)]
 pub(super) struct PlannedDynamicFilter {
-    pub(super) merge_mode: Option<DynamicFilterMergeMode>,
     // Producer and consumer tasks for a dynamic filter.
     //
     // Note that it is not guaranteed that every task within a stage produces / consumes dynamic filters. For
     // example, a distributed union may prevent a dynamic filter from appearing in all tasks. So, we
     // store task keys rather than stage ids.
+    //
     /// Registered producers and their latest accepted snapshots, if any.
     pub(super) producers: HashMap<TaskKey, Option<PhysicalDynamicFilterNode>>,
     pub(super) consumer_tasks: HashSet<TaskKey>,
+
+    /// Populated upon task registration when a producer is found.
+    ///
+    /// The behavior to take when an update arrives from a producer.
+    pub(super) merge_mode: Option<DynamicFilterMergeMode>,
+    /// Schema of the original producer arguments, shared by all producer tasks.
+    pub(super) producer_schema: Option<SchemaRef>,
+
+    /// Populated when an update is ready to be sent to consumers.
+    ///
     /// Full dynamic filter containing the merged predicate and its completion state.
     pub(super) merged: Option<PhysicalDynamicFilterNode>,
     /// Immutable snapshot shared by local and remote delivery, encoded once per change.
@@ -130,7 +141,14 @@ impl DynamicFilterRegistry {
                     }
                 })
                 .collect::<Result<_>>()?;
-            producers.extend(produced_ids.iter().map(|id| (*id, merge_mode)));
+            if !produced_ids.is_empty() {
+                let schema = dynamic_filter_producer_schema(node.as_ref())?;
+                producers.extend(
+                    produced_ids
+                        .iter()
+                        .map(|id| (*id, merge_mode, Arc::clone(&schema))),
+                );
+            }
             Ok(TreeNodeRecursion::Continue)
         })?;
         // We can safely ignore anchors because they are not evaluated by network boundaries. This
@@ -138,8 +156,14 @@ impl DynamicFilterRegistry {
         let consumers = discover_dynamic_filter_consumers(task_specialized_plan)?.consumers;
 
         let mut state = self.state.lock().expect("dynamic filter registry poisoned");
-        for (id, merge_mode) in producers {
+        for (id, merge_mode, producer_schema) in producers {
             let filter = state.filters.entry(id).or_default();
+            if let Some(existing) = &filter.producer_schema
+                && existing != &producer_schema
+            {
+                return internal_err!("Dynamic filter {id} has conflicting producer schemas");
+            }
+            filter.producer_schema.get_or_insert(producer_schema);
             filter.merge_mode = Some(match filter.merge_mode {
                 Some(existing) if existing != merge_mode => {
                     return internal_err!(
@@ -328,6 +352,11 @@ impl DynamicFilterRegistry {
         let Some(expression) = &filter.merged_bytes else {
             return Ok(());
         };
+        let Some(producer_schema) = &filter.producer_schema else {
+            return internal_err!(
+                "Dynamic filter {id} has a merged predicate but no producer schema"
+            );
+        };
         for &task_key in &filter.consumer_tasks {
             // A task-local consumer is already updated directly by its producer.
             if filter.producers.contains_key(&task_key) || state.delivered.contains(&(id, task_key))
@@ -340,6 +369,7 @@ impl DynamicFilterRegistry {
             let update = CoordinatorToWorkerMsg::ApplyDynamicFilter(Box::new(ApplyDynamicFilter {
                 expression_id: id,
                 expression: MaybeEncoded::Encoded(expression.clone()),
+                producer_schema: Arc::clone(producer_schema),
             }));
             if sender.send(update).is_err() {
                 // Closing the channel is expected only once query shutdown has started.
