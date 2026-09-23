@@ -38,6 +38,8 @@ message ApplyDynamicFilter {
   uint64 expression_id = 1;
   // Serialized datafusion.proto.PhysicalExprNode containing a full DynamicFilter expression.
   bytes expression_proto = 2;
+  // Serialized datafusion.proto.Schema referenced by the producer predicate.
+  bytes producer_schema = 3;
 }
 
 message WorkerToCoordinatorMsg {

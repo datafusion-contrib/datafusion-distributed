@@ -1,4 +1,4 @@
-use crate::codec::{decode_physical_expr, dynamic_filter_update_target};
+use crate::codec::apply_dynamic_filter_update;
 use crate::common::TreeNodeExt;
 use crate::dynamic_filtering::{
     DiscoveredDynamicFilter, discover_dynamic_filter_consumers, discover_dynamic_filter_producers,
@@ -381,17 +381,14 @@ fn apply_merged_dynamic_filter(
         return internal_err!("dynamic filter update has no predicate");
     };
 
-    // PhysicalExprNode to PhysicalExpr
-    let predicate = decode_physical_expr(&predicate, consumer.input_schema.as_ref(), task_ctx)?;
-
-    let dynamic_filter = dynamic_filter_update_target(
+    apply_dynamic_filter_update(
         &consumer.expression,
-        consumer.input_schema.as_ref(),
+        &predicate,
+        filter.producer_schema.as_ref(),
         task_ctx,
     )?;
-    dynamic_filter.update(predicate)?;
     if update.is_complete {
-        dynamic_filter.mark_complete();
+        consumer.expression.mark_complete();
     }
     Ok(())
 }

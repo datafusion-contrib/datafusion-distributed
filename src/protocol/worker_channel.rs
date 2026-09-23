@@ -1,5 +1,6 @@
 use crate::{MaybeEncoded, ProducerHead, WorkUnit};
 use async_trait::async_trait;
+use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::Result;
 use datafusion::execution::TaskContext;
@@ -64,6 +65,8 @@ pub struct ApplyDynamicFilter {
     pub expression_id: u64,
     /// A full dynamic filter containing the merged predicate.
     pub expression: MaybeEncoded<Arc<dyn PhysicalExpr>>,
+    /// Schema referenced by the producer predicate, before consumer-specific remapping.
+    pub producer_schema: SchemaRef,
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]

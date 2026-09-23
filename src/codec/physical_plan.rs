@@ -80,10 +80,7 @@ pub(crate) fn decode_physical_expr(
     converter.proto_to_physical_expr(proto, input_schema, &decode_ctx)
 }
 
-/// Creates a sythetic "producer" [`DynamicFilterPhysicalExpr`] which can be used to
-/// update consumer dynamic filters via a shared state. Rather than updating
-/// the provicder consumer expression directly, the returned expression should
-/// be updated instead.
+/// Applies a producer-space predicate through a synthetic producer sharing the consumer's state.
 ///
 /// DataFusion does a particular song and dance to update dynamic filters. This function
 /// helps us do the same.
@@ -113,11 +110,13 @@ pub(crate) fn decode_physical_expr(
 /// You cannot update() consumers directly. In the above example, updating consumer 1 would remap
 /// `key > 123` to `phone_number > 123` and store this in the shared state. Consumer 2 would be
 /// unable to apply this filter now.
-pub(crate) fn dynamic_filter_update_target(
+pub(crate) fn apply_dynamic_filter_update(
     consumer: &Arc<DynamicFilterPhysicalExpr>,
-    input_schema: &Schema,
+    predicate: &protobuf::PhysicalExprNode,
+    producer_schema: &Schema,
     task_ctx: &TaskContext,
-) -> Result<Arc<DynamicFilterPhysicalExpr>> {
+) -> Result<()> {
+    let predicate = decode_physical_expr(predicate, producer_schema, task_ctx)?;
     // Since consumer.children() returns the remapped children, we use the proto as a workaround to get the
     // original children from the producer.
     let consumer: Arc<dyn PhysicalExpr> = consumer.clone();
@@ -128,13 +127,13 @@ pub(crate) fn dynamic_filter_update_target(
     let original_children = dynamic_filter
         .children
         .iter()
-        .map(|child| decode_physical_expr(child, input_schema, task_ctx))
+        .map(|child| decode_physical_expr(child, producer_schema, task_ctx))
         .collect::<Result<Vec<_>>>()?;
     let update_target = Arc::clone(&consumer).with_new_children(original_children)?;
     let Ok(update_target) = Arc::downcast::<DynamicFilterPhysicalExpr>(update_target) else {
         return internal_err!("expected a dynamic filter update target");
     };
-    Ok(update_target)
+    update_target.update(predicate)
 }
 
 pub(crate) fn encode_partitioning(
