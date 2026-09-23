@@ -79,12 +79,12 @@ impl DynamicFilterRegistry {
     /// Adds any dynamic filter producers and consumers found in `plan` to the registry.
     pub(crate) fn register_task(
         &self,
-        plan: &Arc<dyn ExecutionPlan>,
+        task_specialized_plan: &Arc<dyn ExecutionPlan>,
         task_key: TaskKey,
     ) -> Result<()> {
         let mut producers = vec![];
 
-        plan.apply(|node| {
+        task_specialized_plan.apply(|node| {
             // `CollectLeft` joins broadcast an equivalent build side to every producer task,
             // so we can forward the first completed dynamic filter.
             //
@@ -98,9 +98,7 @@ impl DynamicFilterRegistry {
                 .is_some_and(|join| matches!(join.partition_mode(), PartitionMode::CollectLeft))
             {
                 DynamicFilterMergeMode::FirstProducerComplete
-            } else if node.downcast_ref::<SortExec>().is_some()
-                || node.downcast_ref::<AggregateExec>().is_some()
-            {
+            } else if node.is::<SortExec>() || node.is::<AggregateExec>() {
                 DynamicFilterMergeMode::Incremental
             } else {
                 DynamicFilterMergeMode::AllProducersComplete
@@ -125,7 +123,7 @@ impl DynamicFilterRegistry {
         })?;
         // We can safely ignore anchors because they are not evaluated by network boundaries. This
         // means they do not need updates forwarded to them.
-        let consumers = discover_dynamic_filter_consumers(plan)?.consumers;
+        let consumers = discover_dynamic_filter_consumers(task_specialized_plan)?.consumers;
 
         let mut state = self.state.lock().expect("dynamic filter registry poisoned");
         for (id, merge_mode) in producers {
@@ -159,7 +157,7 @@ impl DynamicFilterRegistry {
         state.sealed_stages.insert(stage_id);
         let ids = state.filters.keys().copied().collect::<Vec<_>>();
         for id in ids {
-            Self::try_merge(&mut state, id);
+            Self::merge(&mut state, id);
         }
     }
 
@@ -199,7 +197,7 @@ impl DynamicFilterRegistry {
             return;
         }
         filter.producer_filters.insert(task_key, *dynamic_filter);
-        Self::try_merge(&mut state, report.expression_id);
+        Self::merge(&mut state, report.expression_id);
     }
 
     /// Merges partial dynamic filters together for the provided dynamic filter
