@@ -1,3 +1,4 @@
+use datafusion::physical_plan::ReplaceChildrenOptions;
 #[cfg(all(feature = "integration", test))]
 mod tests {
     use datafusion::arrow::util::pretty::pretty_format_batches;
@@ -124,6 +125,14 @@ mod tests {
             children: Vec<Arc<dyn ExecutionPlan>>,
         ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
             Ok(Arc::new(CustomPassThroughExec::new(children[0].clone())))
+        }
+
+        fn replace_children(
+            self: Arc<Self>,
+            children: Vec<Arc<dyn ExecutionPlan>>,
+            _options: ReplaceChildrenOptions,
+        ) -> Result<Arc<dyn ExecutionPlan>> {
+            self.with_new_children(children)
         }
 
         fn execute(

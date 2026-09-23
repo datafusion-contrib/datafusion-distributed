@@ -5,8 +5,7 @@ use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr_common::metrics::MetricsSet;
 use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, StatisticsArgs,
-};
+    DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, StatisticsArgs, ReplaceChildrenOptions};
 use std::fmt::Formatter;
 use std::sync::Arc;
 
@@ -175,6 +174,15 @@ impl ExecutionPlan for DistributedLeafExec {
             return not_impl_err!("DistributedLeafExec does not accept children");
         }
         Ok(self)
+    }
+
+    fn replace_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+        _options: ReplaceChildrenOptions,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        // Prefer replace_children over deprecated with_new_children (#657).
+        self.with_new_children(children)
     }
 
     fn execute(
