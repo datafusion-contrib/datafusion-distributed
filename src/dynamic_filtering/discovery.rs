@@ -5,6 +5,7 @@ use datafusion::common::{HashMap, HashSet, Result, internal_err};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr::expressions::DynamicFilterPhysicalExpr;
 use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::joins::HashJoinExec;
 use std::sync::Arc;
 
 /// A dynamic filter produced by an [`ExecutionPlan`].
@@ -12,15 +13,14 @@ use std::sync::Arc;
 pub(crate) struct DiscoveredDynamicFilterProducer {
     pub(crate) id: u64,
     pub(crate) expression: Arc<dyn PhysicalExpr>,
+    pub(crate) input_schema: SchemaRef,
 }
 
-/// A dynamic-filter consumer discovered in an execution plan along with the schema it is evaluated
-/// against.
+/// A dynamic-filter consumer discovered in an execution plan.
 #[derive(Clone)]
 pub(crate) struct DiscoveredDynamicFilter {
     pub(crate) id: u64,
     pub(crate) expression: Arc<DynamicFilterPhysicalExpr>,
-    pub(crate) input_schema: SchemaRef,
 }
 
 /// An anchor is an artificial dynamic filter consumer injected into network boundaries
@@ -62,11 +62,6 @@ pub(crate) fn discover_dynamic_filter_consumers(
                 Ok(id)
             })
             .collect::<Result<_>>()?;
-        let input_schema = node
-            .children()
-            .first()
-            .map(|child| child.schema())
-            .unwrap_or_else(|| node.schema());
         let is_network_boundary = node.is_network_boundary();
 
         node.apply_expressions(&mut |root| {
@@ -93,11 +88,7 @@ pub(crate) fn discover_dynamic_filter_consumers(
                 } else if !produced_ids.contains(&id) {
                     consumers
                         .entry(id)
-                        .or_insert_with(|| DiscoveredDynamicFilter {
-                            id,
-                            expression,
-                            input_schema: Arc::clone(&input_schema),
-                        });
+                        .or_insert_with(|| DiscoveredDynamicFilter { id, expression });
                 }
 
                 Ok(TreeNodeRecursion::Continue)
@@ -129,9 +120,14 @@ pub(crate) fn discover_dynamic_filter_producers(
             let Some(id) = expression.expression_id() else {
                 return internal_err!("DynamicFilterPhysicalExpr did not have an expression ID");
             };
+            let input_schema = dynamic_filter_producer_schema(node.as_ref())?;
             producers
                 .entry(id)
-                .or_insert_with(|| DiscoveredDynamicFilterProducer { id, expression });
+                .or_insert(DiscoveredDynamicFilterProducer {
+                    id,
+                    expression,
+                    input_schema,
+                });
         }
         Ok(TreeNodeRecursion::Continue)
     })?;
@@ -139,6 +135,21 @@ pub(crate) fn discover_dynamic_filter_producers(
     let mut producers: Vec<_> = producers.into_values().collect();
     producers.sort_unstable_by_key(|producer| producer.id);
     Ok(producers)
+}
+
+/// Schema referenced by a producer's predicates, before any consumer remapping.
+pub(crate) fn dynamic_filter_producer_schema(plan: &dyn ExecutionPlan) -> Result<SchemaRef> {
+    if let Some(join) = plan.downcast_ref::<HashJoinExec>() {
+        return Ok(join.right().schema());
+    }
+    match plan.children().as_slice() {
+        [input] => Ok(input.schema()),
+        [] => Ok(plan.schema()),
+        _ => internal_err!(
+            "cannot determine dynamic filter producer schema for {}",
+            plan.name()
+        ),
+    }
 }
 
 /// Returns producer IDs with at least one remote consumer.

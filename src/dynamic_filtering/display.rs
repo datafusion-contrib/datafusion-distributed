@@ -1,10 +1,13 @@
-use crate::codec::{decode_physical_expr, dynamic_filter_update_target, roundtrip_pb};
+use crate::codec::{apply_dynamic_filter_update, roundtrip_pb};
 use crate::common::TreeNodeExt;
 use crate::coordinator::DistributedExec;
-use crate::dynamic_filtering::discover_dynamic_filter_consumers;
+use crate::dynamic_filtering::{
+    discover_dynamic_filter_consumers, discover_dynamic_filter_producers,
+};
 use crate::execution_plans::DistributedLeafExec;
 use crate::stage::{LocalStage, Stage, find_all_stages};
 use crate::{DistributedTaskContext, TaskCompletedDynamicFilters, TaskKey};
+use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{HashMap, Result, internal_err};
 use datafusion::execution::TaskContext;
@@ -38,6 +41,24 @@ pub async fn rewrite_distributed_plan_with_dynamic_filters(
     let Some(reports) = distributed_exec.wait_for_dynamic_filters().await else {
         return internal_err!("dynamic filters were enabled but the execution was not prepared");
     };
+
+    // Collect producer schemas so we can decode collected dynamic filters.
+    //
+    // Note that we display dynamic filters on consumers but decode them with respect
+    // to the producer schemas. When updating the consumers, they automatically remap
+    // the expressions to their own schema.
+    let mut producers = discover_dynamic_filter_producers(&plan_for_viz)?;
+    plan_for_viz.apply(|node| {
+        if let Some(leaf) = node.downcast_ref::<DistributedLeafExec>() {
+            producers.extend(discover_dynamic_filter_producers(leaf.original())?);
+        }
+        Ok(TreeNodeRecursion::Continue)
+    })?;
+    let producer_schemas = producers
+        .into_iter()
+        .map(|producer| (producer.id, producer.input_schema))
+        .collect();
+
     // Avoids mutating the `plan_for_viz` of the incoming DistributedExec.
     let plan_for_viz =
         sever_dynamic_filter_relationships_in_plan_for_display(plan_for_viz, task_ctx)?;
@@ -45,7 +66,7 @@ pub async fn rewrite_distributed_plan_with_dynamic_filters(
         let Stage::Local(stage) = stage else {
             return internal_err!("expected local stages in the visualization plan");
         };
-        apply_reports_to_distributed_leaves(stage, &reports, task_ctx)?;
+        apply_reports_to_distributed_leaves(stage, &reports, &producer_schemas, task_ctx)?;
     }
     let plan = distributed_exec.with_plan_for_viz(Arc::clone(&plan_for_viz))?;
     plan.replace_children(
@@ -153,6 +174,7 @@ fn isolate_sort_dynamic_filters_for_display(
 fn apply_reports_to_distributed_leaves(
     stage: &LocalStage,
     reports: &HashMap<TaskKey, TaskCompletedDynamicFilters>,
+    producer_schemas: &HashMap<u64, SchemaRef>,
     task_ctx: &Arc<TaskContext>,
 ) -> Result<()> {
     for task_number in 0..stage.tasks {
@@ -202,14 +224,18 @@ fn apply_reports_to_distributed_leaves(
                 let Some(predicate) = dynamic_filter_proto.inner_expr.as_deref() else {
                     return internal_err!("reported dynamic filter has no predicate");
                 };
-                let predicate =
-                    decode_physical_expr(predicate, consumer.input_schema.as_ref(), task_ctx)?;
-                let dynamic_filter = dynamic_filter_update_target(
+                let Some(producer_schema) = producer_schemas.get(&consumer.id) else {
+                    return internal_err!(
+                        "missing producer schema for dynamic filter {}",
+                        consumer.id
+                    );
+                };
+                apply_dynamic_filter_update(
                     &consumer.expression,
-                    consumer.input_schema.as_ref(),
+                    predicate,
+                    producer_schema.as_ref(),
                     task_ctx,
                 )?;
-                dynamic_filter.update(predicate)?;
             }
             Ok(TreeNodeRecursion::Continue)
         })?;
@@ -244,7 +270,7 @@ mod tests {
             vec![Arc::clone(&column)],
             lit(true),
         )) as Arc<dyn PhysicalExpr>;
-        let input = Arc::new(EmptyExec::new(schema)) as Arc<dyn ExecutionPlan>;
+        let input = Arc::new(EmptyExec::new(Arc::clone(&schema))) as Arc<dyn ExecutionPlan>;
         let variant = Arc::new(FilterExec::try_new(
             Arc::clone(&dynamic_filter),
             Arc::clone(&input),
@@ -288,7 +314,8 @@ mod tests {
             tasks: 2,
             metrics_set: Default::default(),
         };
-        apply_reports_to_distributed_leaves(&stage, &reports, &task_ctx)?;
+        let producer_schemas = HashMap::from([(dynamic_filter.expression_id().unwrap(), schema)]);
+        apply_reports_to_distributed_leaves(&stage, &reports, &producer_schemas, &task_ctx)?;
         let leaf = isolated.downcast_ref::<DistributedLeafExec>().unwrap();
         let task_0 = displayable(leaf.variants()[0].as_ref())
             .one_line()
