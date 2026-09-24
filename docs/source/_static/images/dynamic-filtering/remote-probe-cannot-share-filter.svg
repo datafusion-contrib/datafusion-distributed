@@ -36,6 +36,7 @@
       .packet text{fill:#0969da;font-size:10px;font-weight:650;text-anchor:middle}
       .build-packet rect{fill:#dafbe1;stroke:#4ac26b}
       .build-packet text{fill:#24292f}
+      .progress-track{fill:#dbeafe}.progress-fill{fill:#218bff;transform-box:fill-box;transform-origin:left center;animation:progress 6s linear infinite}
       .join-build{opacity:0;animation:joinBuild 6s ease-in-out infinite}
       .join-probe{opacity:0;animation:joinProbe 6s ease-in-out infinite}
       .attempt{opacity:0;animation:attempt 6s ease-in-out infinite}
@@ -47,12 +48,14 @@
       @keyframes buildUp{0%,5%{opacity:0;transform:translate(0,0)}9%,16%{opacity:1;transform:translate(0,0)}26%{opacity:1;transform:translate(123px,-40px)}30%,100%{opacity:0;transform:translate(123px,-40px)}}
       @keyframes probeUp{0%,52%{opacity:0;transform:translate(0,0)}57%,64%{opacity:1;transform:translate(0,0)}74%{opacity:1;transform:translate(-95px,-40px)}76%,100%{opacity:0;transform:translate(-95px,-40px)}}
       @keyframes dashFlow{to{stroke-dashoffset:-22}}
+      @keyframes progress{from{transform:scaleX(0)}to{transform:scaleX(1)}}
       @media(prefers-reduced-motion:reduce){*{animation:none!important}.build-packet,.probe-packet{opacity:0}.join-build,.join-probe,.attempt{opacity:1}}
     </style>
   </defs>
 
   <g class="scene">
     <rect width="960" height="430" rx="16" fill="#fbfcfd"/>
+    <g aria-label="Animation progress"><rect x="780" y="16" width="150" height="4" rx="2" class="progress-track"/><rect x="780" y="16" width="150" height="4" rx="2" class="progress-fill"/></g>
 
     <rect x="235" y="15" width="490" height="210" rx="14" class="worker"/>
     <text x="260" y="43" class="worker-title">Worker A · join task</text>

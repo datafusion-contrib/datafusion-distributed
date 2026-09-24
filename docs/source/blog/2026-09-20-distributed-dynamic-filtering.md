@@ -226,13 +226,16 @@ to all the consumers.
 Figure 4
 ```
 
-#### MIN/MAX aggregate
+#### MIN/MAX Aggregate
 
-A partial `MIN` turns each observed value into an independently safe upper
-bound; later, lower values only tighten it. `MAX` works symmetrically. The
-coordinator therefore uses `Incremental`, ANDs the latest bounds from every
-producer, and publishes each new generation immediately. A final aggregate in
-the next stage still combines the partial values to produce the global result.
+Partial aggreates which compute `MIN` or `MAX` on a column with no group by
+push down filters to prune rows outside the current `MIN` or `MAX` bound.
+
+Each update is independently safe to push down as long as we `AND` updates
+from different producer tasks.
+
+As shown in Figure 5, we track the global `MIN` of the query and continously
+push that minumum value down to the scan tasks. 
 
 ```{figure} ../_static/images/dynamic-filtering/remote-min-aggregate.svg
 :alt: Two partial MIN aggregates send their local minima through a final aggregate while reporting successively lower bounds, which the coordinator intersects with AND and sends to remote scans.
@@ -241,13 +244,17 @@ the next stage still combines the partial values to produce the global result.
 Figure 5
 ```
 
-#### TopK sort
+#### TopK Sort
 
-For a descending TopK, each local sort retains its best K candidates, so its
-Kth value is an independently safe lower bound. Each generation can only raise
-that bound. As with MIN/MAX, the coordinator uses `Incremental` and ANDs the
-latest bounds, keeping the strictest one. A `SortPreservingMergeExec` in the
-next stage merges the locally sorted candidates into the global TopK.
+A distributed TopK sort operation is compsed of a partitioned, distributed sort
+where each `SortExec` retains its best `K` candidates. This is followed by a sort preserving merge
+to get the global TopK values.
+
+In single node datafusion, each sort pushes down a dynamic filter to eliminate rows
+which will not enter it's local top `K`. In distributed datafusion, we effectively
+select the best `K` to push down. In Figure 6, the query computes the top 3 values.
+Each `SortExec` passes its bound to the coorindator and the coorindator chooses the
+tighest bound to push down.
 
 ```{figure} ../_static/images/dynamic-filtering/remote-topk-sort.svg
 :alt: Two local TopK sorts send sorted candidates through a SortPreservingMerge while reporting increasingly strict bounds, which the coordinator intersects with AND and sends to remote scans.

@@ -117,6 +117,7 @@ html_context = {
 html_static_path = ["_static"]
 
 html_css_files = ["theme_overrides.css"]
+html_js_files = ["interactive_dynamic_filtering_figures.js"]
 
 html_sidebars = {
     "**": ["docs-sidebar.html"],

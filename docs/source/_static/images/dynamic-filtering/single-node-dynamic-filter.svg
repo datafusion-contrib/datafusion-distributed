@@ -31,6 +31,7 @@
       .strike{stroke:#cf222e;stroke-width:1.3;opacity:.8}
       .packet rect{fill:#ddf4ff;stroke:#54aeff}.packet text{fill:#0969da;font-size:10px;font-weight:650;text-anchor:middle}
       .build-packet rect{fill:#dafbe1;stroke:#4ac26b}.build-packet text{fill:#24292f}
+      .progress-track{fill:#dbeafe}.progress-fill{fill:#218bff;transform-box:fill-box;transform-origin:left center;animation:progress 6s linear infinite}
       .build-ready{opacity:0}
       .build-ready{animation:buildReady 6s ease-in-out infinite}
       .arrived{opacity:0;animation:arrived 6s ease-in-out infinite}
@@ -47,11 +48,13 @@
       @keyframes buildUp{0%,5%{opacity:0;transform:translate(0,0)}9%,17%{opacity:1;transform:translate(0,0)}28%{opacity:1;transform:translate(170px,-50px)}32%,100%{opacity:0;transform:translate(170px,-50px)}}
       @keyframes probeUp{0%,58%{opacity:0;transform:translate(0,0)}63%,68%{opacity:1;transform:translate(0,0)}77%{opacity:1;transform:translate(-85px,-50px)}81%,100%{opacity:0;transform:translate(-85px,-50px)}}
       @keyframes dashFlow{to{stroke-dashoffset:-22}}
+      @keyframes progress{from{transform:scaleX(0)}to{transform:scaleX(1)}}
       @media(prefers-reduced-motion:reduce){*{animation:none!important}.unfiltered,.build-packet,.probe-packet{opacity:0}.build-ready,.arrived,.update,.filtered{opacity:1}}
     </style>
   </defs>
   <g class="scene">
     <rect width="960" height="390" rx="16" fill="#fbfcfd"/>
+    <g aria-label="Animation progress"><rect x="780" y="16" width="150" height="4" rx="2" class="progress-track"/><rect x="780" y="16" width="150" height="4" rx="2" class="progress-fill"/></g>
 
     <rect x="235" y="30" width="490" height="155" rx="12" class="join"/>
     <circle cx="265" cy="61" r="15" class="step"/>

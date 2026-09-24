@@ -8,42 +8,44 @@
     <marker id="filter-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#d74633"/></marker>
     <style>
       .scene{font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.heading{fill:#24292f;font-size:15px;font-weight:650}.label{fill:#57606a;font-size:12px}.small{fill:#57606a;font-size:10.5px}.stage{fill:#6e7781;font-size:11px;font-weight:700;letter-spacing:.08em}.join-task{fill:#f6f8fa;stroke:#d8dee4;stroke-width:1.5}.build-task{fill:#eaf3ff;stroke:#218bff;stroke-width:1.8}.probe-task{fill:#edfff2;stroke:#2da44e;stroke-width:1.8}.coord{fill:#fff8f5;stroke:#d74633;stroke-width:1.5}.network{fill:#eef2f6;stroke:#afb8c1;stroke-width:1.2}.data-flow{fill:none;stroke:#8b949e;stroke-width:1.5;stroke-dasharray:5 5;marker-end:url(#data-arrow)}.filter-up{fill:none;stroke:#d74633;stroke-width:2;marker-end:url(#filter-arrow)}.filter-bus{fill:none;stroke:#d74633;stroke-width:2}.filter-down{fill:none;stroke:#d74633;stroke-width:2;marker-end:url(#filter-arrow)}.row rect{fill:#eef2f6;stroke:#d0d7de}.row text{fill:#24292f;font-size:11px;text-anchor:middle}.build-row rect{fill:#dbeafe;stroke:#218bff}.keep rect{fill:#dafbe1;stroke:#4ac26b}.packet rect{fill:#fff1e5;stroke:#d74633;stroke-width:1.4}.packet text{fill:#9a2f22;font-size:10.5px;font-weight:650;text-anchor:middle}.data-chip rect{fill:#fff;stroke:#8b949e;stroke-width:1.2}.data-chip text{fill:#24292f;font-size:10px;font-weight:650;text-anchor:middle}
-      .build-phase{animation:buildPhase 10s linear infinite}.probe-phase{opacity:0;animation:probePhase 10s linear infinite}.build-chip{opacity:0;animation:buildUp 10s ease-in-out infinite}.probe-chip{opacity:0;animation:probeUp 10s ease-in-out infinite}.hash-ready{opacity:0;animation:hashReady 10s linear infinite}.p0{opacity:0;animation:p0 10s ease-in-out infinite}.p1{opacity:0;animation:p1 10s ease-in-out infinite}.waiting{opacity:0;animation:waiting 10s linear infinite}.merged{opacity:0;animation:merged 10s linear infinite}.filter-route{opacity:0;stroke-dasharray:1300;stroke-dashoffset:1300;animation:filterRoute 10s linear infinite}.filter-branches{opacity:0;animation:filterBranches 10s linear infinite}.scan-filter{opacity:0;animation:scanFilter 10s linear infinite}.drop{animation:reject 10s linear infinite}.strike{opacity:0;animation:strike 10s linear infinite}.status-build{opacity:0;animation:statusBuild 10s linear infinite}.status-wait{opacity:0;animation:statusWait 10s linear infinite}.status-switch{opacity:0;animation:statusSwitch 10s linear infinite}.status-probe{opacity:0;animation:statusProbe 10s linear infinite}
-      @keyframes buildPhase{0%,39%{opacity:1}45%,100%{opacity:0}}
-      @keyframes probePhase{0%,43%{opacity:0}49%,94%{opacity:1}99%,100%{opacity:0}}
+      .progress-track{fill:#dbeafe}.progress-fill{fill:#218bff;transform-box:fill-box;transform-origin:left center;animation:progress 12s linear infinite}
+      .build-phase{animation:buildPhase 12s linear infinite}.probe-phase{opacity:0;animation:probePhase 12s linear infinite}.build-chip{opacity:0;animation:buildUp 12s ease-in-out infinite}.probe-chip{opacity:0;animation:probeUp 12s ease-in-out infinite}.hash-ready{opacity:0;animation:hashReady 12s linear infinite}.p0{opacity:0;animation:p0 12s ease-in-out infinite}.p1{opacity:0;animation:p1 12s ease-in-out infinite}.waiting{opacity:0;animation:waiting 12s linear infinite}.merged{opacity:0;animation:merged 12s linear infinite}.filter-route{opacity:0;stroke-dasharray:1800;stroke-dashoffset:1800;animation:filterRoute 12s linear infinite}.filter-branches{opacity:0;animation:filterBranches 12s linear infinite}.scan-filter{opacity:0;animation:scanFilter 12s linear infinite}.drop{animation:reject 12s linear infinite}.strike{opacity:0;animation:strike 12s linear infinite}.status-build{opacity:0;animation:statusBuild 12s linear infinite}.status-wait{opacity:0;animation:statusWait 12s linear infinite}.status-switch{opacity:0;animation:statusSwitch 12s linear infinite}.status-probe{opacity:0;animation:statusProbe 12s linear infinite}
+      @keyframes buildPhase{0%,47%{opacity:1}53%,100%{opacity:0}}
+      @keyframes probePhase{0%,55%{opacity:0}61%,95%{opacity:1}99%,100%{opacity:0}}
       @keyframes buildUp{0%,4%{opacity:0;transform:translateY(0)}7%,12%{opacity:1}19%,100%{opacity:0;transform:translateY(-165px)}}
-      @keyframes probeUp{0%,67%{opacity:0;transform:translateY(0)}70%,78%{opacity:1}87%,100%{opacity:0;transform:translateY(-190px)}}
+      @keyframes probeUp{0%,86%{opacity:0;transform:translateY(0)}89%,93%{opacity:1}97%,100%{opacity:0;transform:translateY(-190px)}}
       @keyframes hashReady{0%,16%{opacity:0}20%,94%{opacity:1}99%,100%{opacity:0}}
-      @keyframes p0{0%,20%{opacity:0;transform:translate(0,0)}23%,30%{opacity:1}35%,100%{opacity:0;transform:translate(113px,-57px)}}
-      @keyframes p1{0%,27%{opacity:0;transform:translate(0,0)}30%,37%{opacity:1}42%,100%{opacity:0;transform:translate(-12px,-57px)}}
-      @keyframes waiting{0%,25%{opacity:0}28%,41%{opacity:1}45%,100%{opacity:0}}
-      @keyframes merged{0%,40%{opacity:0}44%,94%{opacity:1}99%,100%{opacity:0}}
-      @keyframes filterRoute{0%,43%{opacity:0;stroke-dashoffset:1300}45%{opacity:1;stroke-dashoffset:1300}59%,94%{opacity:1;stroke-dashoffset:0}99%,100%{opacity:0;stroke-dashoffset:0}}
-      @keyframes filterBranches{0%,56%{opacity:0}60%,94%{opacity:1}99%,100%{opacity:0}}
-      @keyframes scanFilter{0%,58%{opacity:0}62%,94%{opacity:1}99%,100%{opacity:0}}
-      @keyframes reject{0%,59%{opacity:1}64%,94%{opacity:.18}99%,100%{opacity:1}}
-      @keyframes strike{0%,59%{opacity:0}64%,94%{opacity:1}99%,100%{opacity:0}}
+      @keyframes p0{0%,27%{opacity:0;transform:translate(0,0)}30%,37%{opacity:1}42%,100%{opacity:0;transform:translate(65px,-57px)}}
+      @keyframes p1{0%,34%{opacity:0;transform:translate(0,0)}37%,44%{opacity:1}49%,100%{opacity:0;transform:translate(-65px,-57px)}}
+      @keyframes waiting{0%,32%{opacity:0}35%,48%{opacity:1}52%,100%{opacity:0}}
+      @keyframes merged{0%,48%{opacity:0}52%,94%{opacity:1}99%,100%{opacity:0}}
+      @keyframes filterRoute{0%,66%{opacity:0;stroke-dashoffset:1800}69%{opacity:1;stroke-dashoffset:1800}81%,95%{opacity:1;stroke-dashoffset:0}99%,100%{opacity:0;stroke-dashoffset:0}}
+      @keyframes filterBranches{0%,78%{opacity:0}82%,95%{opacity:1}99%,100%{opacity:0}}
+      @keyframes scanFilter{0%,81%{opacity:0}85%,95%{opacity:1}99%,100%{opacity:0}}
+      @keyframes reject{0%,82%{opacity:1}86%,95%{opacity:.18}99%,100%{opacity:1}}
+      @keyframes strike{0%,82%{opacity:0}86%,95%{opacity:1}99%,100%{opacity:0}}
       @keyframes statusBuild{0%,3%{opacity:0}6%,20%{opacity:1}24%,100%{opacity:0}}
-      @keyframes statusWait{0%,21%{opacity:0}25%,42%{opacity:1}46%,100%{opacity:0}}
-      @keyframes statusSwitch{0%,43%{opacity:0}47%,64%{opacity:1}68%,100%{opacity:0}}
-      @keyframes statusProbe{0%,65%{opacity:0}69%,94%{opacity:1}99%,100%{opacity:0}}
+      @keyframes statusWait{0%,21%{opacity:0}25%,53%{opacity:1}57%,100%{opacity:0}}
+      @keyframes statusSwitch{0%,54%{opacity:0}58%,79%{opacity:1}83%,100%{opacity:0}}
+      @keyframes statusProbe{0%,80%{opacity:0}84%,95%{opacity:1}99%,100%{opacity:0}}
+      @keyframes progress{from{transform:scaleX(0)}to{transform:scaleX(1)}}
       @media(prefers-reduced-motion:reduce){*{animation:none!important}.build-phase,.build-chip,.probe-chip,.p0,.p1,.waiting,.status-build,.status-wait,.status-switch{opacity:0}.probe-phase,.hash-ready,.merged,.filter-route,.filter-branches,.scan-filter,.strike,.status-probe{opacity:1}.filter-route{stroke-dashoffset:0}.drop{opacity:.18}}
     </style>
   </defs>
   <g class="scene">
     <rect width="960" height="620" rx="16" fill="#fbfcfd"/>
-    <text x="30" y="33" class="heading">Partitioned Join: Build First, Then Filter the Probe</text><text x="930" y="33" class="label" text-anchor="end">10-second loop</text>
+    <g aria-label="Animation progress"><rect x="780" y="42" width="150" height="4" rx="2" class="progress-track"/><rect x="780" y="42" width="150" height="4" rx="2" class="progress-fill"/></g>
     <text x="30" y="94" class="stage">COORDINATOR</text>
-    <rect x="330" y="52" width="410" height="103" rx="12" class="coord"/><text x="350" y="79" class="heading">Query coordinator</text>
-    <g class="waiting"><circle cx="357" cy="127" r="5" fill="#d74633"/><text x="370" y="131" class="small mono">F₀ received · waiting for F₁</text></g><g class="merged"><circle cx="357" cy="127" r="5" fill="#2da44e"/><text x="370" y="131" class="small mono">F₀ OR F₁ = key IN (B, D, G, H)</text></g>
+    <rect x="275" y="52" width="410" height="103" rx="12" class="coord"/><text x="295" y="79" class="heading">Query Coordinator</text>
+    <g class="waiting"><circle cx="302" cy="127" r="5" fill="#d74633"/><text x="315" y="131" class="small mono">F₀ received · waiting for F₁</text></g><g class="merged"><circle cx="302" cy="127" r="5" fill="#2da44e"/><text x="315" y="131" class="small mono">F₀ OR F₁ = key IN (B, D, G, H)</text></g>
     <text x="30" y="245" class="stage">STAGE 3</text>
     <rect x="175" y="190" width="285" height="125" rx="12" class="join-task"/><text x="193" y="217" class="heading">Hash Join task 0</text><text x="193" y="239" class="label">build input from Stage 1</text>
     <g class="hash-ready"><g class="row build-row" transform="translate(193 253)"><rect width="42" height="27" rx="7"/><text x="21" y="18">B</text></g><g class="row build-row" transform="translate(243 253)"><rect width="42" height="27" rx="7"/><text x="21" y="18">D</text></g><text x="193" y="299" class="small mono">F₀ = key IN (B, D)</text></g>
     <rect x="500" y="190" width="285" height="125" rx="12" class="join-task"/><text x="518" y="217" class="heading">Hash Join task 1</text><text x="518" y="239" class="label">build input from Stage 1</text>
     <g class="hash-ready"><g class="row build-row" transform="translate(518 253)"><rect width="42" height="27" rx="7"/><text x="21" y="18">G</text></g><g class="row build-row" transform="translate(568 253)"><rect width="42" height="27" rx="7"/><text x="21" y="18">H</text></g><text x="518" y="299" class="small mono">F₁ = key IN (G, H)</text></g>
-    <path d="M310 190L430 155" class="filter-up"/><path d="M650 190L640 155" class="filter-up"/><g transform="translate(281 177)"><g class="packet p0"><rect width="58" height="24" rx="7"/><text x="29" y="16">F₀ ✓</text></g></g><g transform="translate(621 177)"><g class="packet p1"><rect width="58" height="24" rx="7"/><text x="29" y="16">F₁ ✓</text></g></g>
+    <path d="M310 190L375 155" class="filter-up"/><path d="M650 190L585 155" class="filter-up"/><g transform="translate(281 177)"><g class="packet p0"><rect width="58" height="24" rx="7"/><text x="29" y="16">F₀ ✓</text></g></g><g transform="translate(621 177)"><g class="packet p1"><rect width="58" height="24" rx="7"/><text x="29" y="16">F₁ ✓</text></g></g>
     <rect x="175" y="350" width="610" height="34" rx="10" class="network"/><text x="480" y="372" class="small mono build-phase" text-anchor="middle">Network shuffle · Stage 1 build rows move upward</text><text x="480" y="372" class="small mono probe-phase" text-anchor="middle">Network shuffle · filtered Stage 2 probe rows move upward</text><path d="M290 350V315" class="data-flow"/><path d="M615 350V315" class="data-flow"/>
-    <path d="M740 103H925V407H135" class="filter-bus filter-route"/><g class="filter-branches"><path d="M225 407V425" class="filter-down"/><path d="M430 407V425" class="filter-down"/><path d="M635 407V425" class="filter-down"/><path d="M840 407V425" class="filter-down"/></g>
+    <path d="M685 103H925V407H135" class="filter-bus filter-route"/><g class="filter-branches"><path d="M225 407V425" class="filter-down"/><path d="M430 407V425" class="filter-down"/><path d="M635 407V425" class="filter-down"/><path d="M840 407V425" class="filter-down"/></g>
     <g class="build-phase">
       <text x="30" y="417" class="stage" fill="#0969da">STAGE 1</text>
       <path d="M290 425V384" class="data-flow"/><path d="M615 425V384" class="data-flow"/>
@@ -60,6 +62,6 @@
       <rect x="725" y="425" width="180" height="125" rx="12" class="probe-task"/><text x="741" y="451" class="heading">Probe task 3</text><text x="741" y="470" class="label">Data Source · fact</text><text x="741" y="488" class="small mono scan-filter">key ∈ {B,D,G,H}</text><g class="row keep" transform="translate(741 502)"><rect width="52" height="30" rx="7"/><text x="26" y="20">H</text></g><g class="row drop" transform="translate(801 502)"><rect width="52" height="30" rx="7"/><text x="26" y="20">I</text></g><g class="strike" stroke="#cf222e" stroke-width="2.4"><path d="M810 517h34"/></g>
       <g transform="translate(195 507)"><g class="data-chip probe-chip"><rect width="34" height="20" rx="5"/><text x="17" y="14">B</text></g></g><g transform="translate(400 507)"><g class="data-chip probe-chip"><rect width="34" height="20" rx="5"/><text x="17" y="14">D</text></g></g><g transform="translate(605 507)"><g class="data-chip probe-chip"><rect width="34" height="20" rx="5"/><text x="17" y="14">G</text></g></g><g transform="translate(750 507)"><g class="data-chip probe-chip"><rect width="34" height="20" rx="5"/><text x="17" y="14">H</text></g></g>
     </g>
-    <g transform="translate(480 590)" text-anchor="middle"><text class="status-build label">Two Stage 1 tasks scan separate dim partitions and send build rows upward.</text><text class="status-wait label">The joins build their hash tables; the coordinator waits for both filters.</text><text class="status-switch label">Four Stage 2 probe tasks start and receive the merged filter.</text><text class="status-probe label">Stage 2 applies the merged filter and sends only surviving fact rows upward.</text></g>
+    <g transform="translate(480 590)" text-anchor="middle"><text class="status-build label">Two Stage 1 tasks scan separate dim partitions and send build rows upward.</text><text class="status-wait label">The joins build their hash tables; the coordinator waits for both filters.</text><text class="status-switch label">Four Stage 2 probe tasks start with the unfiltered fact rows visible.</text><text class="status-probe label">The merged filter arrives; Stage 2 sends only surviving fact rows upward.</text></g>
   </g>
 </svg>
