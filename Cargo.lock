@@ -2483,7 +2483,6 @@ dependencies = [
  "bytes",
  "datafusion",
  "datafusion-distributed",
- "datafusion-iceberg",
  "datafusion-proto",
  "delegate",
  "futures",
@@ -2743,22 +2742,6 @@ checksum = "0b352020834140073fbf5b46ee0ceb926e5074a9d0bcae1dbd91d0586d999cde"
 dependencies = [
  "datafusion-common",
  "datafusion-physical-expr-common",
-]
-
-[[package]]
-name = "datafusion-iceberg"
-version = "0.10.1"
-source = "git+https://github.com/apache/datafusion-iceberg.git?rev=05e277e8a8bf342db53cbf2d53ed6f2098b44a88#05e277e8a8bf342db53cbf2d53ed6f2098b44a88"
-dependencies = [
- "anyhow",
- "async-trait",
- "dashmap",
- "datafusion",
- "futures",
- "iceberg",
- "parquet",
- "tokio",
- "uuid",
 ]
 
 [[package]]
@@ -4018,7 +4001,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.10.1"
-source = "git+https://github.com/apache/iceberg-rust.git?rev=665c64e48e8d33797ecb1a421f327edd9b024879#665c64e48e8d33797ecb1a421f327edd9b024879"
+source = "git+https://github.com/apache/iceberg-rust.git?rev=4d83bc77dc10cff851a3ef427c451ff977bc3643#4d83bc77dc10cff851a3ef427c451ff977bc3643"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -4077,7 +4060,7 @@ dependencies = [
 [[package]]
 name = "iceberg-property-macro"
 version = "0.10.1"
-source = "git+https://github.com/apache/iceberg-rust.git?rev=665c64e48e8d33797ecb1a421f327edd9b024879#665c64e48e8d33797ecb1a421f327edd9b024879"
+source = "git+https://github.com/apache/iceberg-rust.git?rev=4d83bc77dc10cff851a3ef427c451ff977bc3643#4d83bc77dc10cff851a3ef427c451ff977bc3643"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4087,7 +4070,7 @@ dependencies = [
 [[package]]
 name = "iceberg-storage-opendal"
 version = "0.10.1"
-source = "git+https://github.com/apache/iceberg-rust.git?rev=665c64e48e8d33797ecb1a421f327edd9b024879#665c64e48e8d33797ecb1a421f327edd9b024879"
+source = "git+https://github.com/apache/iceberg-rust.git?rev=4d83bc77dc10cff851a3ef427c451ff977bc3643#4d83bc77dc10cff851a3ef427c451ff977bc3643"
 dependencies = [
  "anyhow",
  "async-trait",
