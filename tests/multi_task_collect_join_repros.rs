@@ -376,13 +376,13 @@ mod tests {
         .unwrap();
     }
 
-    /// A build-side `LIMIT` is carried by the `CoalescePartitionsExec` that a
-    /// broadcast rewrite replaces. The replacement must preserve that fetch or
-    /// the join observes every build row instead of the requested 50.
+    /// The build-side limit must be applied before its rows are broadcast to probe tasks.
+    /// Without that limit, the join observes every build row instead of the requested 50.
+    /// ORDER BY keeps the limited rows and scan plan deterministic.
     #[tokio::test]
     async fn build_side_fetch_is_preserved_by_broadcast() {
         let plan = assert_distributed_matches_single_node(
-            "SELECT count(*) FROM (SELECT id FROM build_side LIMIT 50) b \
+            "SELECT count(*) FROM (SELECT id FROM build_side ORDER BY id LIMIT 50) b \
              JOIN probe_side p ON b.id = p.id",
             true,
         )
@@ -409,16 +409,16 @@ mod tests {
           └──────────────────────────────────────────────────
             ┌───── Stage 2 ── tasks=1, partitions=4
             │ BroadcastExec: input_partitions=1, consumer_tasks=4, output_partitions=4
-            │   CoalescePartitionsExec: fetch=50
-            │     [Stage 1] => NetworkCoalesceExec: output_partitions=12, input_tasks=4
+            │   SortPreservingMergeExec: [id@0 ASC NULLS LAST], fetch=50
+            │     [Stage 1] => NetworkCoalesceExec: output_partitions=8, input_tasks=4
             └──────────────────────────────────────────────────
-              ┌───── Stage 1 ── tasks=4, partitions=12
-              │ LocalLimitExec: fetch=50
+              ┌───── Stage 1 ── tasks=4, partitions=8
+              │ SortExec: TopK(fetch=50), expr=[id@0 ASC NULLS LAST], preserve_partitioning=[true]
               │   DistributedLeafExec:
-              │     t0: DataSourceExec: file_groups={3 groups: [[/target/multi_task_collect_join_repros/build_side/part-1.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-2.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-3.parquet:<int>..<int>]]}, projection=[id], limit=50, file_type=parquet
-              │     t1: DataSourceExec: file_groups={3 groups: [[/target/multi_task_collect_join_repros/build_side/part-1.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-2.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-3.parquet:<int>..<int>]]}, projection=[id], limit=50, file_type=parquet
-              │     t2: DataSourceExec: file_groups={3 groups: [[/target/multi_task_collect_join_repros/build_side/part-1.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-2.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-3.parquet:<int>..<int>]]}, projection=[id], limit=50, file_type=parquet
-              │     t3: DataSourceExec: file_groups={3 groups: [[/target/multi_task_collect_join_repros/build_side/part-1.parquet:<int>..<int>, /target/multi_task_collect_join_repros/build_side/part-2.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-2.parquet:<int>..<int>, /target/multi_task_collect_join_repros/build_side/part-3.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-3.parquet:<int>..<int>]]}, projection=[id], limit=50, file_type=parquet
+              │     t0: DataSourceExec: file_groups={2 groups: [[/target/multi_task_collect_join_repros/build_side/part-0.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-2.parquet:<int>..<int>]]}, projection=[id], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
+              │     t1: DataSourceExec: file_groups={2 groups: [[/target/multi_task_collect_join_repros/build_side/part-0.parquet:<int>..<int>, /target/multi_task_collect_join_repros/build_side/part-1.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-2.parquet:<int>..<int>, /target/multi_task_collect_join_repros/build_side/part-3.parquet:<int>..<int>]]}, projection=[id], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
+              │     t2: DataSourceExec: file_groups={2 groups: [[/target/multi_task_collect_join_repros/build_side/part-1.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-3.parquet:<int>..<int>]]}, projection=[id], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
+              │     t3: DataSourceExec: file_groups={2 groups: [[/target/multi_task_collect_join_repros/build_side/part-1.parquet:<int>..<int>, /target/multi_task_collect_join_repros/build_side/part-2.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-3.parquet:<int>..<int>]]}, projection=[id], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
               └──────────────────────────────────────────────────
         ")
     }
