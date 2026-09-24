@@ -7,6 +7,7 @@ mod network_broadcast;
 mod network_coalesce;
 mod network_shuffle;
 mod sampler;
+mod task_variants;
 
 #[cfg(any(test, feature = "integration"))]
 pub mod benchmarks;
@@ -20,3 +21,4 @@ pub use network_broadcast::NetworkBroadcastExec;
 pub use network_coalesce::NetworkCoalesceExec;
 pub use network_shuffle::NetworkShuffleExec;
 pub use sampler::SamplerExec;
+pub(crate) use task_variants::TaskVariantsExec;
