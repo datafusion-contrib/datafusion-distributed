@@ -12,10 +12,10 @@ use url::Url;
 pub struct LocalWorkerContext {
     /// The [Worker] present in the current process, and ready answer to [WorkerChannel] method
     /// invocations locally.
-    pub(crate) local_worker: Worker,
+    pub local_worker: Worker,
     /// The URL of the [Worker] in scope. When trying to reach to a target URL that happens
     /// to be the same as this one, local comms are preferred instead.
-    pub(crate) self_url: Url,
+    pub self_url: Url,
 }
 
 impl LocalWorkerContext {
