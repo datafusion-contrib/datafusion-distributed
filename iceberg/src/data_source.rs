@@ -20,7 +20,6 @@ use datafusion::physical_plan::{DisplayFormatType, SortOrderPushdownResult};
 use datafusion::prelude::Expr;
 use datafusion::scalar::ScalarValue;
 use datafusion_distributed::WorkUnitFeed;
-use datafusion_iceberg::physical_plan::convert_filters_to_predicate;
 use futures::{StreamExt, TryStreamExt};
 use iceberg::arrow::ArrowReaderBuilder;
 use iceberg::io::FileIO;
@@ -31,7 +30,7 @@ use iceberg::spec::{
 };
 use iceberg::table::Table;
 
-use crate::common::{df_err, iceberg_err};
+use crate::common::{convert_filters_to_predicate, df_err, iceberg_err};
 use crate::{IcebergConfig, IcebergWorkUnitFeed};
 
 /// Snapshot summary keys defined by the Iceberg table spec:
