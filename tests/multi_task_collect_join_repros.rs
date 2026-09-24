@@ -29,6 +29,7 @@ mod tests {
     use datafusion::physical_plan::{ExecutionPlan, collect};
     use datafusion::prelude::{ParquetReadOptions, SessionContext};
     use datafusion_distributed::test_utils::in_memory_channel_resolver::start_in_memory_context;
+    use datafusion_distributed::test_utils::insta::settings;
     use datafusion_distributed::test_utils::property_based::compare_result_set;
     use datafusion_distributed::{
         DefaultSessionBuilder, DistributedExt, assert_snapshot, display_plan_ascii,
@@ -379,6 +380,13 @@ mod tests {
     /// A build-side `LIMIT` is carried by the `CoalescePartitionsExec` that a
     /// broadcast rewrite replaces. The replacement must preserve that fetch or
     /// the join observes every build row instead of the requested 50.
+    ///
+    /// Only 3 of the 4 build-side files survive the limit: DataFusion stops listing files
+    /// once their row counts exceed the fetch and sorts the survivors by path only
+    /// afterwards, so which files remain depends on the directory listing order and on
+    /// `buffer_unordered` statistics fetching. That differs between filesystems and even
+    /// between CI runs on the same image. Redact the build-side file index; the probe-side
+    /// files are unaffected and stay asserted.
     #[tokio::test]
     async fn build_side_fetch_is_preserved_by_broadcast() {
         let plan = assert_distributed_matches_single_node(
@@ -388,7 +396,9 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_snapshot!(display_plan_ascii(plan.as_ref(), false), @r"
+        let mut settings = settings();
+        settings.add_filter(r"(build_side/part-)\d+(\.parquet)", "${1}<shard>${2}");
+        settings.bind(|| assert_snapshot!(display_plan_ascii(plan.as_ref(), false), @r"
         ┌───── DistributedExec
         │ ProjectionExec: expr=[count(Int64(1))@0 as count(*)]
         │   AggregateExec: mode=Final, gby=[], aggr=[count(Int64(1))]
@@ -415,12 +425,12 @@ mod tests {
               ┌───── Stage 1 ── tasks=4, partitions=12
               │ LocalLimitExec: fetch=50
               │   DistributedLeafExec:
-              │     t0: DataSourceExec: file_groups={3 groups: [[/target/multi_task_collect_join_repros/build_side/part-1.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-2.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-3.parquet:<int>..<int>]]}, projection=[id], limit=50, file_type=parquet
-              │     t1: DataSourceExec: file_groups={3 groups: [[/target/multi_task_collect_join_repros/build_side/part-1.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-2.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-3.parquet:<int>..<int>]]}, projection=[id], limit=50, file_type=parquet
-              │     t2: DataSourceExec: file_groups={3 groups: [[/target/multi_task_collect_join_repros/build_side/part-1.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-2.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-3.parquet:<int>..<int>]]}, projection=[id], limit=50, file_type=parquet
-              │     t3: DataSourceExec: file_groups={3 groups: [[/target/multi_task_collect_join_repros/build_side/part-1.parquet:<int>..<int>, /target/multi_task_collect_join_repros/build_side/part-2.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-2.parquet:<int>..<int>, /target/multi_task_collect_join_repros/build_side/part-3.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-3.parquet:<int>..<int>]]}, projection=[id], limit=50, file_type=parquet
+              │     t0: DataSourceExec: file_groups={3 groups: [[/target/multi_task_collect_join_repros/build_side/part-<shard>.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-<shard>.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-<shard>.parquet:<int>..<int>]]}, projection=[id], limit=50, file_type=parquet
+              │     t1: DataSourceExec: file_groups={3 groups: [[/target/multi_task_collect_join_repros/build_side/part-<shard>.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-<shard>.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-<shard>.parquet:<int>..<int>]]}, projection=[id], limit=50, file_type=parquet
+              │     t2: DataSourceExec: file_groups={3 groups: [[/target/multi_task_collect_join_repros/build_side/part-<shard>.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-<shard>.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-<shard>.parquet:<int>..<int>]]}, projection=[id], limit=50, file_type=parquet
+              │     t3: DataSourceExec: file_groups={3 groups: [[/target/multi_task_collect_join_repros/build_side/part-<shard>.parquet:<int>..<int>, /target/multi_task_collect_join_repros/build_side/part-<shard>.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-<shard>.parquet:<int>..<int>, /target/multi_task_collect_join_repros/build_side/part-<shard>.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-<shard>.parquet:<int>..<int>]]}, projection=[id], limit=50, file_type=parquet
               └──────────────────────────────────────────────────
-        ")
+        "));
     }
 
     fn data_dir() -> PathBuf {
