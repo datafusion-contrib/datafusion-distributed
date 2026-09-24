@@ -82,7 +82,7 @@ impl Stream for QueryStream {
     type Item = Result<RecordBatch>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        // Surface errors in any tasks. 
+        // Surface errors in any tasks.
         let tasks_finished = loop {
             let result = {
                 let mut tasks = self.task_state.join_set.lock().unwrap();
@@ -99,7 +99,7 @@ impl Stream for QueryStream {
                 }
                 Poll::Ready(Some(Err(error))) => {
                     self.task_state.cancel();
-                    /// If the child task panicked, then panic on this main task.
+                    // If the child task panicked, then panic on this main task.
                     if error.is_panic() {
                         resume_unwind(error.into_panic());
                     }
@@ -116,11 +116,11 @@ impl Stream for QueryStream {
         match self.batches.poll_recv(cx) {
             Poll::Ready(Some(batch)) => Poll::Ready(Some(Ok(batch))),
             Poll::Ready(None) if tasks_finished => {
-                /// All tasks including the main query RecordBatch stream finished.
+                // All tasks including the main query RecordBatch stream finished.
                 self.task_state.cancel();
                 Poll::Ready(None)
             }
-            // Wait for all owned tasks to finish. 
+            // Wait for all owned tasks to finish.
             _ => Poll::Pending,
         }
     }
