@@ -3,9 +3,7 @@ use crate::{
     ApplyDynamicFilter, CoordinatorToWorkerMsg, MaybeEncoded, ProducedDynamicFilter, TaskKey,
 };
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
-use datafusion::common::{
-    DataFusionError, HashMap, HashSet, Result, exec_datafusion_err, internal_err,
-};
+use datafusion::common::{HashMap, HashSet, Result, exec_err, internal_err};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::expressions::DynamicFilterPhysicalExpr;
 use datafusion::physical_expr_common::metrics::{ExecutionPlanMetricsSet, MetricBuilder};
@@ -20,7 +18,7 @@ use datafusion_proto::protobuf::{
 };
 use prost::Message;
 use std::sync::{Arc, Mutex};
-use tokio::sync::mpsc::{Sender, UnboundedSender};
+use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,21 +69,18 @@ pub(super) struct DynamicFilterRegistryState {
 pub(crate) struct DynamicFilterRegistry {
     pub(super) state: Mutex<DynamicFilterRegistryState>,
     dynamic_filter_updates_received: Count,
-    error_tx: Sender<DataFusionError>,
     query_finished: CancellationToken,
 }
 
 impl DynamicFilterRegistry {
     pub(crate) fn new(
         metrics: &ExecutionPlanMetricsSet,
-        error_tx: Sender<DataFusionError>,
         query_finished: CancellationToken,
     ) -> Self {
         Self {
             state: Mutex::new(DynamicFilterRegistryState::default()),
             dynamic_filter_updates_received: MetricBuilder::new(metrics)
                 .global_counter("dynamic_filter_updates_received"),
-            error_tx,
             query_finished,
         }
     }
@@ -173,26 +168,28 @@ impl DynamicFilterRegistry {
         &self,
         task_key: TaskKey,
         sender: UnboundedSender<CoordinatorToWorkerMsg>,
-    ) {
+    ) -> Result<()> {
         let mut state = self.state.lock().expect("dynamic filter registry poisoned");
         state.task_senders.insert(task_key, sender);
         state.delivered.retain(|(_, task)| *task != task_key);
         let ids = state.filters.keys().copied().collect::<Vec<_>>();
         for id in ids {
-            self.dispatch(&mut state, id);
+            self.dispatch(&mut state, id)?;
         }
+        Ok(())
     }
 
     /// Mark that a stage has registered all of its tasks.
-    pub(crate) fn seal_stage(&self, stage_id: usize) {
+    pub(crate) fn seal_stage(&self, stage_id: usize) -> Result<()> {
         let mut state = self.state.lock().expect("dynamic filter registry poisoned");
         state.sealed_stages.insert(stage_id);
         let ids = state.filters.keys().copied().collect::<Vec<_>>();
         for id in ids {
             if Self::merge(&mut state, id) {
-                self.dispatch(&mut state, id);
+                self.dispatch(&mut state, id)?;
             }
         }
+        Ok(())
     }
 
     /// Records a producer's latest dynamic-filter update and recomputes the merged filter.
@@ -201,31 +198,41 @@ impl DynamicFilterRegistry {
         task_key: TaskKey,
         report: ProducedDynamicFilter,
         task_ctx: &TaskContext,
-    ) {
+    ) -> Result<()> {
         self.record_update_received();
-        let expression = match report.expression.to_proto(task_ctx) {
-            Ok(expression) => expression,
-            Err(error) => {
-                let _ = self.error_tx.try_send(error);
-                return;
-            }
-        };
+        let expression = report.expression.to_proto(task_ctx)?;
         if expression.expr_id != Some(report.expression_id) {
-            return;
+            return exec_err!(
+                "Dynamic filter {} from task {task_key:?} has mismatched expression ID {:?}",
+                report.expression_id,
+                expression.expr_id
+            );
         }
         let Some(ExprType::DynamicFilter(dynamic_filter)) = expression.expr_type else {
-            return;
+            return exec_err!(
+                "Expected dynamic filter expression for filter {} from task {task_key:?}",
+                report.expression_id
+            );
         };
         if dynamic_filter.inner_expr.is_none() {
-            return;
+            return exec_err!(
+                "Missing inner expression for dynamic filter {} from task {task_key:?}",
+                report.expression_id
+            );
         }
 
         let mut state = self.state.lock().expect("dynamic filter registry poisoned");
         let Some(filter) = state.filters.get_mut(&report.expression_id) else {
-            return;
+            return exec_err!(
+                "Received update for unregistered dynamic filter {} from task {task_key:?}",
+                report.expression_id
+            );
         };
         let Some(previous) = filter.producers.get_mut(&task_key) else {
-            return;
+            return exec_err!(
+                "Task {task_key:?} is not a registered producer of dynamic filter {}",
+                report.expression_id
+            );
         };
         if (filter.merge_mode != Some(DynamicFilterMergeMode::Incremental)
             && !dynamic_filter.is_complete)
@@ -233,12 +240,13 @@ impl DynamicFilterRegistry {
                 .as_ref()
                 .is_some_and(|previous| previous.is_complete || previous == dynamic_filter.as_ref())
         {
-            return;
+            return Ok(());
         }
         *previous = Some(*dynamic_filter);
         if Self::merge(&mut state, report.expression_id) {
-            self.dispatch(&mut state, report.expression_id);
+            self.dispatch(&mut state, report.expression_id)?;
         }
+        Ok(())
     }
 
     /// Merges partial dynamic filters together for the provided dynamic filter
@@ -310,15 +318,15 @@ impl DynamicFilterRegistry {
 
     // Merge and enqueue under the same lock so successive snapshots cannot overtake each other.
     // Unbounded channel sends do not wait for the network or the receiving worker.
-    fn dispatch(&self, state: &mut DynamicFilterRegistryState, id: u64) {
+    fn dispatch(&self, state: &mut DynamicFilterRegistryState, id: u64) -> Result<()> {
         if self.query_finished.is_cancelled() {
-            return;
+            return Ok(());
         }
         let Some(filter) = state.filters.get(&id) else {
-            return;
+            return Ok(());
         };
         let Some(expression) = &filter.merged_bytes else {
-            return;
+            return Ok(());
         };
         for &task_key in &filter.consumer_tasks {
             // A task-local consumer is already updated directly by its producer.
@@ -336,14 +344,15 @@ impl DynamicFilterRegistry {
             if sender.send(update).is_err() {
                 // Closing the channel is expected only once query shutdown has started.
                 if !self.query_finished.is_cancelled() {
-                    let _ = self.error_tx.try_send(exec_datafusion_err!(
+                    return exec_err!(
                         "Failed to send dynamic filter {id} to task {task_key:?}: channel closed"
-                    ));
+                    );
                 }
-                return;
+                return Ok(());
             }
             state.delivered.insert((id, task_key));
         }
+        Ok(())
     }
 }
 
