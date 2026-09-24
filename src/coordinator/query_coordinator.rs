@@ -4,6 +4,7 @@ use crate::config_extension_ext::get_config_extension_propagation_headers;
 use crate::coordinator::DynamicFilterRegistry;
 use crate::coordinator::Store;
 use crate::coordinator::latency_metric::LatencyMetric;
+use crate::coordinator::query_task_state::QueryTaskState;
 use crate::dynamic_filtering::{
     dynamic_filter_remote_producer_ids, is_dynamic_filtering_enabled,
     maybe_roundtrip_plan_to_sever_in_memory_dynamic_filter_relationships,
@@ -24,7 +25,6 @@ use crate::{
 };
 use datafusion::common::Result;
 use datafusion::common::instant::Instant;
-use datafusion::common::runtime::JoinSet;
 use datafusion::common::tree_node::{Transformed, TreeNodeRecursion};
 use datafusion::common::{DataFusionError, internal_err};
 use datafusion::execution::TaskContext;
@@ -33,13 +33,9 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::metrics::Count;
 use datafusion::prelude::SessionConfig;
 use futures::StreamExt;
-use std::ops::DerefMut;
 use std::sync::{Arc, Mutex};
-use tokio::sync::mpsc::{
-    Receiver, Sender, UnboundedReceiver, UnboundedSender, channel, unbounded_channel,
-};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio_stream::wrappers::UnboundedReceiverStream;
-use tokio_util::sync::{CancellationToken, DropGuard};
 use url::Url;
 use uuid::Uuid;
 
@@ -59,9 +55,7 @@ pub(super) struct QueryCoordinator {
     metrics_store: Option<Arc<Store<TaskMetrics>>>,
     completed_dynamic_filter_store: Option<Arc<Store<TaskCompletedDynamicFilters>>>,
     dynamic_filter_registry: Arc<DynamicFilterRegistry>,
-    query_finished: CancellationToken,
-    error_tx: Sender<DataFusionError>,
-    join_set: Mutex<JoinSet<Result<()>>>,
+    pub(super) task_state: Arc<QueryTaskState>,
 }
 
 impl QueryCoordinator {
@@ -71,25 +65,20 @@ impl QueryCoordinator {
         metrics_set: &ExecutionPlanMetricsSet,
         metrics_store: Option<Arc<Store<TaskMetrics>>>,
         completed_dynamic_filter_store: Option<Arc<Store<TaskCompletedDynamicFilters>>>,
-    ) -> (Self, Receiver<DataFusionError>) {
-        let (error_tx, error_rx) = channel(1);
-        let query_finished = CancellationToken::new();
-        let coordinator = Self {
+    ) -> Self {
+        let task_state = Arc::new(QueryTaskState::new());
+        Self {
             task_ctx,
             metrics: metrics_set.clone(),
             metrics_store,
             completed_dynamic_filter_store,
             dynamic_filter_registry: Arc::new(DynamicFilterRegistry::new(
                 metrics_set,
-                error_tx.clone(),
-                query_finished.clone(),
+                task_state.cancel_token(),
             )),
             coordinator_to_worker_metrics: CoordinatorToWorkerMetrics::new(metrics_set),
-            query_finished,
-            error_tx,
-            join_set: Mutex::new(JoinSet::new()),
-        };
-        (coordinator, error_rx)
+            task_state,
+        }
     }
 
     /// Builds a new [StageCoordinator] that will manage coordinator-worker connections for the given
@@ -106,32 +95,13 @@ impl QueryCoordinator {
             metrics_store: &self.metrics_store,
             completed_dynamic_filter_store: &self.completed_dynamic_filter_store,
             dynamic_filter_registry: &self.dynamic_filter_registry,
-            query_finished: &self.query_finished,
-            error_tx: &self.error_tx,
-            join_set: &self.join_set,
+            task_state: &self.task_state,
         }
     }
 
     /// Returns the [SessionConfig] for the current query.
     pub(super) fn session_config(&self) -> &SessionConfig {
         self.task_ctx.session_config()
-    }
-
-    /// returns a guard that, when dropped, it signals all the coordinator->worker connections that
-    /// the query is finished, ending them, and propagating the EOS to the workers so that they can
-    /// clean up any remaining state.
-    pub(super) fn end_query_guard(&self) -> DropGuard {
-        self.query_finished.clone().drop_guard()
-    }
-
-    /// Blocks until all background tasks have finished (e.g., sending WorkUnit feeds, or collecting
-    /// metrics)
-    pub(super) async fn drain_pending_tasks(self: Arc<Self>) -> Result<()> {
-        let join_set = std::mem::take(self.join_set.lock().unwrap().deref_mut());
-        for res in join_set.join_all().await {
-            res?;
-        }
-        Ok(())
     }
 }
 
@@ -154,9 +124,7 @@ pub(super) struct StageCoordinator<'a> {
     metrics_store: &'a Option<Arc<Store<TaskMetrics>>>,
     completed_dynamic_filter_store: &'a Option<Arc<Store<TaskCompletedDynamicFilters>>>,
     dynamic_filter_registry: &'a Arc<DynamicFilterRegistry>,
-    query_finished: &'a CancellationToken,
-    error_tx: &'a Sender<DataFusionError>,
-    join_set: &'a Mutex<JoinSet<Result<()>>>,
+    task_state: &'a QueryTaskState,
 }
 
 impl<'a> StageCoordinator<'a> {
@@ -212,7 +180,7 @@ impl<'a> StageCoordinator<'a> {
                 UnboundedReceiverStream::new(coordinator_to_worker_rx)
                     .map(set_work_unit_send_time)
                     // Keep the channel open after work-unit delivery until the query finishes.
-                    .take_until(self.query_finished.clone().cancelled_owned())
+                    .take_until(self.task_state.cancel_token().cancelled_owned())
                     .boxed();
 
             let set_plan_request = SetPlanRequest {
@@ -279,17 +247,9 @@ impl<'a> StageCoordinator<'a> {
         let (worker_to_coordinator_tx, worker_to_coordinator_rx) = unbounded_channel();
 
         let mut worker_to_coordinator_stream = response.worker_to_coordinator_stream;
-        let error_tx = self.error_tx.clone();
-        self.join_set.lock().unwrap().spawn(async move {
+        self.task_state.spawn(async move {
             while let Some(msg) = worker_to_coordinator_stream.next().await {
-                let msg = match msg {
-                    Ok(msg) => msg,
-                    Err(error) => {
-                        let _ = error_tx.try_send(error);
-                        break;
-                    }
-                };
-                if worker_to_coordinator_tx.send(msg).is_err() {
+                if worker_to_coordinator_tx.send(msg?).is_err() {
                     break; // receiver dropped
                 }
             }
@@ -301,7 +261,7 @@ impl<'a> StageCoordinator<'a> {
             return internal_err!("Missing coordinator_to_worker_tx");
         };
         self.dynamic_filter_registry
-            .register_sender(task_key, coordinator_to_worker_tx.clone());
+            .register_sender(task_key, coordinator_to_worker_tx.clone())?;
 
         Ok((
             response.url,
@@ -310,8 +270,8 @@ impl<'a> StageCoordinator<'a> {
         ))
     }
 
-    pub(super) fn seal_dynamic_filter_stage(&self) {
-        self.dynamic_filter_registry.seal_stage(self.stage_id);
+    pub(super) fn seal_dynamic_filter_stage(&self) -> Result<()> {
+        self.dynamic_filter_registry.seal_stage(self.stage_id)
     }
 
     /// Spawns a background task in charge of collecting messages sent by a worker. Some things that
@@ -334,10 +294,7 @@ impl<'a> StageCoordinator<'a> {
         let (load_info_tx, load_info_rx) = unbounded_channel();
         let mut load_info_tx_opt = Some(load_info_tx);
 
-        // Cannot use self.join_set because that's tied to the lifetime of the query, and the
-        // metrics collection process might outlive the query's lifetime.
-        #[allow(clippy::disallowed_methods)]
-        tokio::spawn(async move {
+        self.task_state.spawn(async move {
             while let Some(msg) = worker_to_coordinator_rx.recv().await {
                 match msg {
                     WorkerToCoordinatorMsg::TaskMetrics(v) => {
@@ -360,10 +317,11 @@ impl<'a> StageCoordinator<'a> {
                     }
                     WorkerToCoordinatorMsg::ProducedDynamicFilter(filter) => {
                         dynamic_filter_registry
-                            .record_dynamic_filter_update(task_key, *filter, &task_ctx);
+                            .record_dynamic_filter_update(task_key, *filter, &task_ctx)?;
                     }
                 }
             }
+            Ok(())
         });
         load_info_rx
     }
@@ -433,7 +391,7 @@ impl<'a> StageCoordinator<'a> {
             }
         }
 
-        self.join_set.lock().unwrap().spawn(async move {
+        self.task_state.spawn(async move {
             let _guard = WorkUnitEosOnDrop(tx);
             futures::future::try_join_all(futures).await?;
             Ok(())
