@@ -6,10 +6,10 @@ use super::spawn_select_all::spawn_select_all;
 use crate::common::{deserialize_uuid, now_ns};
 use crate::protocol::grpc::{ObservabilityServiceImpl, ObservabilityServiceServer};
 use crate::{
-    CoordinatorToWorkerMsg, DistributedConfig, ExecuteTaskRequest, LoadInfo, MaybeEncoded,
-    ProducedDynamicFilter, ProducerHead, SetPlanRequest, TaskCompletedDynamicFilters, TaskKey,
-    TaskMetrics, WorkUnitBatch, WorkUnitFeedDeclaration, WorkUnitMsg, Worker, WorkerResolver,
-    WorkerToCoordinatorMsg,
+    ApplyDynamicFilter, CoordinatorToWorkerMsg, DistributedConfig, ExecuteTaskRequest, LoadInfo,
+    MaybeEncoded, ProducedDynamicFilter, ProducerHead, SetPlanRequest, TaskCompletedDynamicFilters,
+    TaskKey, TaskMetrics, WorkUnitBatch, WorkUnitFeedDeclaration, WorkUnitMsg, Worker,
+    WorkerResolver, WorkerToCoordinatorMsg,
 };
 
 use crate::worker::CoordinatorChannelResult;
@@ -218,6 +218,12 @@ fn decode_coordinator_to_worker_msg(
             }
             pb::coordinator_to_worker_msg::Inner::KickOffSampling(_) => {
                 CoordinatorToWorkerMsg::KickOffSampling
+            }
+            pb::coordinator_to_worker_msg::Inner::ApplyDynamicFilter(filter) => {
+                CoordinatorToWorkerMsg::ApplyDynamicFilter(Box::new(ApplyDynamicFilter {
+                    expression_id: filter.expression_id,
+                    expression: MaybeEncoded::Encoded(filter.expression_proto),
+                }))
             }
         },
     )

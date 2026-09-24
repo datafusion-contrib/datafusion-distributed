@@ -4,6 +4,7 @@ mod latency_metric;
 mod prepare_dynamic_plan;
 mod prepare_static_plan;
 mod query_coordinator;
+mod query_task_state;
 mod store;
 
 pub use distributed::DistributedExec;
