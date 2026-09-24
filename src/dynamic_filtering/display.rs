@@ -4,14 +4,15 @@ use crate::coordinator::DistributedExec;
 use crate::dynamic_filtering::{
     discover_dynamic_filter_consumers, discover_dynamic_filter_producers,
 };
-use crate::execution_plans::DistributedLeafExec;
+use crate::execution_plans::{DistributedLeafExec, TaskVariantsExec};
 use crate::stage::{LocalStage, Stage, find_all_stages};
-use crate::{DistributedTaskContext, TaskCompletedDynamicFilters, TaskKey};
+use crate::{DistributedTaskContext, NetworkBoundaryExt, TaskCompletedDynamicFilters, TaskKey};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{HashMap, Result, internal_err};
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::empty::EmptyExec;
+use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::{
     ChildrenPropertiesMode, ExecutionPlan, ExecutionPlanProperties, ReplaceChildrenOptions,
@@ -68,11 +69,98 @@ pub async fn rewrite_distributed_plan_with_dynamic_filters(
         };
         apply_reports_to_distributed_leaves(stage, &reports, &producer_schemas, task_ctx)?;
     }
+    let plan_for_viz = plan_for_viz
+        .transform_down(|node| {
+            let Some(boundary) = node.as_network_boundary() else {
+                return Ok(Transformed::no(node));
+            };
+            let Stage::Local(stage) = boundary.input_stage() else {
+                return internal_err!("expected local stages in the visualization plan");
+            };
+            let plan = display_task_filter_variants(stage, &reports, &producer_schemas, task_ctx)?;
+            Ok(Transformed::yes(boundary.with_input_stage(
+                Stage::Local(LocalStage {
+                    plan,
+                    ..stage.clone()
+                }),
+            )?))
+        })?
+        .data;
     let plan = distributed_exec.with_plan_for_viz(Arc::clone(&plan_for_viz))?;
     plan.replace_children(
         vec![plan_for_viz],
         ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
     )
+}
+
+/// Intermediate operators have one visualization node but may have a different predicate in
+/// each task. Keep isolated copies of just that operator, without duplicating its subtree.
+fn display_task_filter_variants(
+    stage: &LocalStage,
+    reports: &HashMap<TaskKey, TaskCompletedDynamicFilters>,
+    producer_schemas: &HashMap<u64, SchemaRef>,
+    task_ctx: &Arc<TaskContext>,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let mut variants_by_node: HashMap<usize, TaskVariantsExec> = HashMap::new();
+    for task_number in 0..stage.tasks {
+        let task_key = TaskKey {
+            query_id: stage.query_id,
+            stage_id: stage.num,
+            task_number,
+        };
+        let Some(report) = reports.get(&task_key) else {
+            continue;
+        };
+        let d_ctx = DistributedTaskContext {
+            task_index: task_number,
+            task_count: stage.tasks,
+        };
+        stage.plan.apply_with_dt_ctx(d_ctx, |node, _| {
+            let Some(filter) = node.downcast_ref::<FilterExec>() else {
+                return Ok(TreeNodeRecursion::Continue);
+            };
+            let placeholder = Arc::new(
+                EmptyExec::new(filter.input().schema())
+                    .with_partitions(filter.input().output_partitioning().partition_count()),
+            ) as Arc<dyn ExecutionPlan>;
+            let isolated = Arc::clone(node).replace_children(
+                vec![placeholder],
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            )?;
+            if discover_dynamic_filter_consumers(&isolated)?
+                .consumers
+                .is_empty()
+            {
+                return Ok(TreeNodeRecursion::Continue);
+            }
+            let isolated = roundtrip_pb(isolated, task_ctx)?;
+            apply_report(&isolated, report, producer_schemas, task_ctx)?;
+            let id = Arc::as_ptr(node) as *const () as usize;
+            variants_by_node
+                .entry(id)
+                .or_insert_with(|| TaskVariantsExec {
+                    inner: Arc::clone(node),
+                    variants: vec![],
+                })
+                .variants
+                .push((task_number, isolated));
+            Ok(TreeNodeRecursion::Continue)
+        })?;
+    }
+    Arc::clone(&stage.plan)
+        .transform_down(|node| {
+            if node.is_network_boundary() {
+                return Ok(Transformed::new(node, false, TreeNodeRecursion::Jump));
+            }
+            let id = Arc::as_ptr(&node) as *const () as usize;
+            let Some(variants) = variants_by_node.remove(&id) else {
+                return Ok(Transformed::no(node));
+            };
+            Ok(Transformed::yes(
+                Arc::new(variants) as Arc<dyn ExecutionPlan>
+            ))
+        })
+        .map(|transformed| transformed.data)
 }
 
 /// Severs dynamic filter connections so we can update filter values for
@@ -186,11 +274,6 @@ fn apply_reports_to_distributed_leaves(
         let Some(report) = reports.get(&task_key) else {
             continue;
         };
-        let updates: HashMap<_, _> = report
-            .filters
-            .iter()
-            .map(|filter| (filter.expression_id, &filter.expression))
-            .collect();
         let d_ctx = DistributedTaskContext {
             task_index: task_number,
             task_count: stage.tasks,
@@ -208,37 +291,47 @@ fn apply_reports_to_distributed_leaves(
                     stage.num
                 );
             };
-            let discovered = discover_dynamic_filter_consumers(variant)?;
-            for consumer in discovered.consumers {
-                let Some(expression) = updates.get(&consumer.id).copied() else {
-                    continue;
-                };
-                let proto = expression.to_proto(task_ctx)?;
-                let Some(ExprType::DynamicFilter(dynamic_filter_proto)) = proto.expr_type.as_ref()
-                else {
-                    return internal_err!("expected a dynamic filter in the completed task report");
-                };
-                if dynamic_filter_proto.generation <= 1 {
-                    continue;
-                }
-                let Some(predicate) = dynamic_filter_proto.inner_expr.as_deref() else {
-                    return internal_err!("reported dynamic filter has no predicate");
-                };
-                let Some(producer_schema) = producer_schemas.get(&consumer.id) else {
-                    return internal_err!(
-                        "missing producer schema for dynamic filter {}",
-                        consumer.id
-                    );
-                };
-                apply_dynamic_filter_update(
-                    &consumer.expression,
-                    predicate,
-                    producer_schema.as_ref(),
-                    task_ctx,
-                )?;
-            }
+            apply_report(variant, report, producer_schemas, task_ctx)?;
             Ok(TreeNodeRecursion::Continue)
         })?;
+    }
+    Ok(())
+}
+
+fn apply_report(
+    plan: &Arc<dyn ExecutionPlan>,
+    report: &TaskCompletedDynamicFilters,
+    producer_schemas: &HashMap<u64, SchemaRef>,
+    task_ctx: &Arc<TaskContext>,
+) -> Result<()> {
+    let updates: HashMap<_, _> = report
+        .filters
+        .iter()
+        .map(|filter| (filter.expression_id, &filter.expression))
+        .collect();
+    for consumer in discover_dynamic_filter_consumers(plan)?.consumers {
+        let Some(expression) = updates.get(&consumer.id).copied() else {
+            continue;
+        };
+        let proto = expression.to_proto(task_ctx)?;
+        let Some(ExprType::DynamicFilter(dynamic_filter_proto)) = proto.expr_type.as_ref() else {
+            return internal_err!("expected a dynamic filter in the completed task report");
+        };
+        if dynamic_filter_proto.generation <= 1 {
+            continue;
+        }
+        let Some(predicate) = dynamic_filter_proto.inner_expr.as_deref() else {
+            return internal_err!("reported dynamic filter has no predicate");
+        };
+        let Some(producer_schema) = producer_schemas.get(&consumer.id) else {
+            return internal_err!("missing producer schema for dynamic filter {}", consumer.id);
+        };
+        apply_dynamic_filter_update(
+            &consumer.expression,
+            predicate,
+            producer_schema.as_ref(),
+            task_ctx,
+        )?;
     }
     Ok(())
 }
