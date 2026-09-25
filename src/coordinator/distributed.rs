@@ -2,6 +2,7 @@ use crate::common::require_one_child;
 use crate::coordinator::prepare_dynamic_plan::prepare_dynamic_plan;
 use crate::coordinator::prepare_static_plan::prepare_static_plan;
 use crate::coordinator::query_coordinator::QueryCoordinator;
+use crate::coordinator::query_task_state::QueryTaskState;
 use crate::coordinator::store::{Store, task_keys_for_plan};
 use crate::dynamic_filtering::{
     is_dynamic_filtering_enabled, sever_dynamic_filter_relationships_in_plan_for_display,
@@ -14,11 +15,11 @@ use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr_common::metrics::MetricsSet;
 use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
+use datafusion::physical_plan::stream::RecordBatchReceiverStreamBuilder;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
 use futures::StreamExt;
 use std::fmt::Formatter;
 use std::sync::{Arc, OnceLock};
-use tokio::sync::mpsc::channel;
 
 /// [ExecutionPlan] that executes the inner plan in distributed mode.
 /// Before executing it, two modifications are lazily performed on the plan:
@@ -222,14 +223,16 @@ impl ExecutionPlan for DistributedExec {
         let prepared_plan = Arc::clone(&self.prepared_plan);
         let collect_dynamic_filters = self.completed_dynamic_filter_store.is_some();
 
+        let mut builder = RecordBatchReceiverStreamBuilder::new(self.schema(), 1);
+        let tx = builder.tx();
+        let task_state = Arc::new(QueryTaskState::new(&mut builder));
         let query_coordinator = Arc::new(QueryCoordinator::new(
             Arc::clone(&context),
             &self.metrics,
             self.metrics_store.clone(),
             self.completed_dynamic_filter_store.clone(),
+            Arc::clone(&task_state),
         ));
-        let task_state = Arc::clone(&query_coordinator.task_state);
-        let (tx, rx) = channel(1);
         task_state.spawn(async move {
             // Dropping this `guard` is what signals the coordinator->worker channel to be dropped,
             // which triggers a chain reaction that ends up also gracefully closing the
@@ -261,7 +264,7 @@ impl ExecutionPlan for DistributedExec {
             })?;
             let mut stream = head_stage.execute(partition, context)?;
             while let Some(msg) = stream.next().await {
-                if tx.send(msg?).await.is_err() {
+                if tx.send(Ok(msg?)).await.is_err() {
                     break; // channel closed
                 }
             }
@@ -270,7 +273,7 @@ impl ExecutionPlan for DistributedExec {
             Ok(())
         });
 
-        Ok(task_state.output_stream(self.schema(), rx))
+        Ok(task_state.output_stream(builder))
     }
 
     fn metrics(&self) -> Option<MetricsSet> {

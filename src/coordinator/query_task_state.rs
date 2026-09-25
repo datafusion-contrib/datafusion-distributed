@@ -1,139 +1,103 @@
-use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::runtime::JoinSet;
-use datafusion::common::{Result, exec_datafusion_err};
-use datafusion::execution::{RecordBatchStream, SendableRecordBatchStream};
-use futures::Stream;
+use datafusion::common::{Result, exec_err};
+use datafusion::execution::SendableRecordBatchStream;
+use datafusion::physical_plan::stream::{
+    RecordBatchReceiverStreamBuilder, RecordBatchStreamAdapter,
+};
+use futures::future::BoxFuture;
+use futures::{FutureExt, TryStreamExt, stream};
 use std::panic::resume_unwind;
-use std::pin::Pin;
-use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll};
-use tokio::sync::mpsc::Receiver;
+use tokio::select;
+use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio_util::sync::{CancellationToken, DropGuard};
 
 /// Owns query task spawning and shutdown independently of planning and worker state.
 pub(super) struct QueryTaskState {
-    cancel_token: CancellationToken,
-    // Owns all the tasks for a query.
-    //
-    // Mutex + Open are used to take the joinset when the query completes or errors, preventing
-    // any new tasks from being spawned.
-    join_set: Mutex<Option<JoinSet<Result<()>>>>,
+    // Marks the end of the end query in both success and failure cases.
+    query_finished: CancellationToken,
+    task_tx: UnboundedSender<BoxFuture<'static, Result<()>>>,
 }
 
 impl QueryTaskState {
-    pub(super) fn new() -> Self {
-        Self {
-            cancel_token: CancellationToken::new(),
-            join_set: Mutex::new(Some(JoinSet::new())),
-        }
-    }
+    pub(super) fn new(output: &mut RecordBatchReceiverStreamBuilder) -> Self {
+        let query_finished = CancellationToken::new();
+        let (task_tx, mut task_rx) = unbounded_channel::<BoxFuture<'static, Result<()>>>();
+        let guard = query_finished.clone().drop_guard();
 
-    /// Returns a cancellation token that, when cancelled, drops all tasks.
-    pub(super) fn cancel_token(&self) -> CancellationToken {
-        self.cancel_token.clone()
-    }
-
-    /// Returns a guard that, when dropped, drops all tasks.
-    pub(super) fn end_query_guard(&self) -> DropGuard {
-        self.cancel_token.clone().drop_guard()
-    }
-
-    /// Spawns a task in the joinset to execute the provided future.
-    pub(super) fn spawn(&self, task: impl Future<Output = Result<()>> + Send + 'static) {
-        if let Some(join_set) = self.join_set.lock().unwrap().as_mut() {
-            join_set.spawn(task);
-        }
-    }
-
-    /// Builds a [`SendableRecordBatchStream`] for the query. The returned stream will
-    /// error if any tasks associated with the query lifetime error.
-    pub(super) fn output_stream(
-        self: Arc<Self>,
-        schema: SchemaRef,
-        batches: Receiver<RecordBatch>,
-    ) -> SendableRecordBatchStream {
-        Box::pin(QueryStream {
-            task_state: self,
-            schema,
-            batches,
-        })
-    }
-
-    /// Cancels the query, dropping every task related to this query.
-    fn cancel(&self) {
-        self.cancel_token.cancel();
-        let tasks = self.join_set.lock().unwrap().take();
-        drop(tasks);
-    }
-}
-
-/// [`RecordBatchStream`] for the entire query which errors if any tasks associated
-/// with the query error.
-struct QueryStream {
-    /// Main query record batch stream.
-    batches: Receiver<RecordBatch>,
-    schema: SchemaRef,
-    /// Owns tasks associated with the query.
-    task_state: Arc<QueryTaskState>,
-}
-
-impl Stream for QueryStream {
-    type Item = Result<RecordBatch>;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        // Surface errors in any tasks.
-        let tasks_finished = loop {
-            let result = {
-                let mut tasks = self.task_state.join_set.lock().unwrap();
-                let Some(tasks) = tasks.as_mut() else {
-                    return Poll::Ready(None);
-                };
-                tasks.poll_join_next(cx)
-            };
-            match result {
-                Poll::Ready(Some(Ok(Ok(())))) => continue,
-                Poll::Ready(Some(Ok(Err(error)))) => {
-                    self.task_state.cancel();
-                    return Poll::Ready(Some(Err(error)));
-                }
-                Poll::Ready(Some(Err(error))) => {
-                    self.task_state.cancel();
-                    // If the child task panicked, then panic on this main task.
-                    if error.is_panic() {
-                        resume_unwind(error.into_panic());
+        // This task owns all of the tasks associated with the query. If any task errors,
+        // it signals that the query is finished and drops all the tasks.
+        //
+        // Note that owned tasks may outlive the query itself (ex. metrics collection). This
+        // task only finishes when those are done. It's expected that tasks have a bounded
+        // lifetime or finish gracefully when the query_finish signal is fired.
+        output.spawn(async move {
+            let _guard = guard;
+            let mut tasks = JoinSet::new();
+            let mut closed = false;
+            loop {
+                select! {
+                    result = tasks.join_next(), if !tasks.is_empty() => {
+                        match result {
+                            Some(Ok(result)) => result?,
+                            Some(Err(error)) => {
+                                if error.is_panic() {
+                                    resume_unwind(error.into_panic());
+                                }
+                                return exec_err!("non panic JoinSet Error: {error}");
+                            }
+                            None => unreachable!("nonempty JoinSet returned no task"),
+                        }
                     }
-                    return Poll::Ready(Some(Err(exec_datafusion_err!(
-                        "Non panic JoinSet Error: {error}"
-                    ))));
+                    task = task_rx.recv(), if !closed => {
+                        match task {
+                            Some(task) => { tasks.spawn(task); }
+                            None => closed = true,
+                        }
+                    }
+                    else => break,
                 }
-                Poll::Ready(None) => break true,
-                Poll::Pending => break false,
             }
-        };
+            Ok(())
+        });
 
-        // Poll the main RecordBatch steam.
-        match self.batches.poll_recv(cx) {
-            Poll::Ready(Some(batch)) => Poll::Ready(Some(Ok(batch))),
-            Poll::Ready(None) if tasks_finished => {
-                // All tasks including the main query RecordBatch stream finished.
-                self.task_state.cancel();
-                Poll::Ready(None)
-            }
-            // Wait for all owned tasks to finish.
-            _ => Poll::Pending,
+        Self {
+            query_finished,
+            task_tx,
         }
     }
-}
 
-impl RecordBatchStream for QueryStream {
-    fn schema(&self) -> SchemaRef {
-        Arc::clone(&self.schema)
+    /// Returns the token used to close coordinator-to-worker channels.
+    pub(super) fn query_finished(&self) -> CancellationToken {
+        self.query_finished.clone()
     }
-}
 
-impl Drop for QueryStream {
-    fn drop(&mut self) {
-        self.task_state.cancel();
+    /// Returns a guard that signals query completion when dropped.
+    pub(super) fn end_query_guard(&self) -> DropGuard {
+        self.query_finished.clone().drop_guard()
+    }
+
+    /// Registers a task to run in the supervisor's JoinSet.
+    pub(super) fn spawn(&self, task: impl Future<Output = Result<()>> + Send + 'static) {
+        // Once the supervisor stops, sending fails and drops the future without running it.
+        let _ = self.task_tx.send(task.boxed());
+    }
+
+    pub(super) fn output_stream(
+        &self,
+        output: RecordBatchReceiverStreamBuilder,
+    ) -> SendableRecordBatchStream {
+        let output = output.build();
+        let schema = output.schema();
+        // Construct the guard before polling so dropping an unpolled stream also cancels.
+        let state = (output, self.end_query_guard());
+        let stream = stream::try_unfold(state, |(mut output, guard)| async move {
+            // Stop after the first error, dropping `output` and the guard even if
+            // the caller retains this stream.
+            Ok(output
+                .try_next()
+                .await?
+                .map(|batch| (batch, (output, guard))))
+        });
+        Box::pin(RecordBatchStreamAdapter::new(schema, stream))
     }
 }

@@ -66,8 +66,8 @@ impl QueryCoordinator {
         metrics_set: &ExecutionPlanMetricsSet,
         metrics_store: Option<Arc<Store<TaskMetrics>>>,
         completed_dynamic_filter_store: Option<Arc<Store<TaskCompletedDynamicFilters>>>,
+        task_state: Arc<QueryTaskState>,
     ) -> Self {
-        let task_state = Arc::new(QueryTaskState::new());
         Self {
             task_ctx,
             metrics: metrics_set.clone(),
@@ -75,7 +75,7 @@ impl QueryCoordinator {
             completed_dynamic_filter_store,
             dynamic_filter_registry: Arc::new(DynamicFilterRegistry::new(
                 metrics_set,
-                task_state.cancel_token(),
+                task_state.query_finished(),
             )),
             coordinator_to_worker_metrics: CoordinatorToWorkerMetrics::new(metrics_set),
             task_state,
@@ -181,7 +181,7 @@ impl<'a> StageCoordinator<'a> {
                 UnboundedReceiverStream::new(coordinator_to_worker_rx)
                     .map(set_work_unit_send_time)
                     // Keep the channel open after work-unit delivery until the query finishes.
-                    .take_until(self.task_state.cancel_token().cancelled_owned())
+                    .take_until(self.task_state.query_finished().cancelled_owned())
                     .boxed();
 
             let set_plan_request = SetPlanRequest {
