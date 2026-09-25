@@ -17,13 +17,8 @@ use datafusion::physical_plan::{
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_distributed::BroadcastExec;
 use futures::{StreamExt, stream};
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, AtomicU64, Ordering},
-};
-use std::thread;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
-use sysinfo::{System, get_current_pid};
 use tokio::runtime::Builder as RuntimeBuilder;
 
 #[derive(Clone, Copy)]
@@ -47,45 +42,6 @@ struct Scenario {
     rows_per_batch: usize,
     num_batches: usize,
     consumers: Vec<ConsumerSpec>,
-}
-
-struct PeakRssSampler {
-    stop: Arc<AtomicBool>,
-    peak_bytes: Arc<AtomicU64>,
-    handle: Option<thread::JoinHandle<()>>,
-}
-
-impl PeakRssSampler {
-    fn start(interval: Duration) -> Self {
-        let stop = Arc::new(AtomicBool::new(false));
-        let peak_bytes = Arc::new(AtomicU64::new(0));
-        let stop_clone = Arc::clone(&stop);
-        let peak_clone = Arc::clone(&peak_bytes);
-        let handle = thread::spawn(move || {
-            let mut sys = System::new();
-            let pid = get_current_pid().expect("pid");
-            while !stop_clone.load(Ordering::Relaxed) {
-                sys.refresh_process(pid);
-                if let Some(proc) = sys.process(pid) {
-                    peak_clone.fetch_max(proc.memory(), Ordering::Relaxed);
-                }
-                thread::sleep(interval);
-            }
-        });
-        Self {
-            stop,
-            peak_bytes,
-            handle: Some(handle),
-        }
-    }
-
-    fn stop(mut self) -> u64 {
-        self.stop.store(true, Ordering::Relaxed);
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
-        self.peak_bytes.load(Ordering::Relaxed)
-    }
 }
 
 #[derive(Debug)]
@@ -224,15 +180,13 @@ async fn run_scenario(
     scenario: &Scenario,
     input: Arc<dyn ExecutionPlan>,
     task_ctx: Arc<TaskContext>,
-    sample_rss: bool,
     recording_pool: Option<Arc<PeakRecordingPool>>,
-) -> Result<(Duration, u64, Option<(usize, usize)>)> {
+) -> Result<(Duration, Option<(usize, usize)>)> {
     let broadcast = Arc::new(BroadcastExec::new(
         Arc::clone(&input),
         scenario.consumer_tasks,
     ));
 
-    let sampler = sample_rss.then(|| PeakRssSampler::start(Duration::from_millis(25)));
     let start = Instant::now();
 
     let mut join_set = tokio::task::JoinSet::new();
@@ -251,9 +205,8 @@ async fn run_scenario(
     }
 
     let elapsed = start.elapsed();
-    let peak_rss_bytes = sampler.map(|s| s.stop()).unwrap_or(0);
     let memory = recording_pool.map(|pool| (pool.peak_reserved(), pool.reserved()));
-    Ok((elapsed, peak_rss_bytes, memory))
+    Ok((elapsed, memory))
 }
 
 fn memory_context() -> Result<(Arc<TaskContext>, Arc<PeakRecordingPool>)> {
@@ -388,16 +341,6 @@ fn scenario_matrix() -> Vec<Scenario> {
     scenarios
 }
 
-fn rss_enabled() -> bool {
-    match std::env::var("BROADCAST_BENCH_RSS") {
-        Ok(val) => {
-            let val = val.to_ascii_lowercase();
-            val == "1" || val == "true" || val == "yes"
-        }
-        Err(_) => false,
-    }
-}
-
 fn memory_enabled() -> bool {
     match std::env::var("BROADCAST_BENCH_MEMORY") {
         Ok(val) => {
@@ -426,7 +369,6 @@ fn bench_broadcast_cache(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("broadcast_cache_scenarios");
     group.sample_size(10);
-    let sample_rss = rss_enabled();
     let sample_memory = memory_enabled();
     let task_ctx = SessionContext::new().task_ctx();
 
@@ -437,19 +379,17 @@ fn bench_broadcast_cache(c: &mut Criterion) {
             false,
         )]));
         let input = prebuilt_input(&scenario, &schema);
-        let mut rss_peaks = Vec::new();
         let mut memory_peaks = Vec::new();
         let mut memory_residuals = Vec::new();
         group.bench_function(BenchmarkId::new("scenario", scenario.name), |b| {
             b.iter_custom(|iters| {
                 let mut total = Duration::ZERO;
                 for _ in 0..iters {
-                    let (elapsed, _, _) = rt
+                    let (elapsed, _) = rt
                         .block_on(run_scenario(
                             &scenario,
                             Arc::clone(&input),
                             Arc::clone(&task_ctx),
-                            false,
                             None,
                         ))
                         .expect("scenario");
@@ -459,26 +399,17 @@ fn bench_broadcast_cache(c: &mut Criterion) {
             });
         });
 
-        if sample_rss || sample_memory {
+        if sample_memory {
             for _ in 0..DIAGNOSTIC_RUNS {
-                let (diagnostic_task_ctx, recording_pool) = if sample_memory {
-                    let (task_ctx, pool) = memory_context().expect("memory context");
-                    (task_ctx, Some(pool))
-                } else {
-                    (Arc::clone(&task_ctx), None)
-                };
-                let (_, peak_rss_bytes, memory) = rt
+                let (diagnostic_task_ctx, pool) = memory_context().expect("memory context");
+                let (_, memory) = rt
                     .block_on(run_scenario(
                         &scenario,
                         paced_input(&scenario, &schema),
                         diagnostic_task_ctx,
-                        sample_rss,
-                        recording_pool,
+                        Some(pool),
                     ))
                     .expect("diagnostic scenario");
-                if sample_rss {
-                    rss_peaks.push(peak_rss_bytes);
-                }
                 if let Some((peak_reserved, residual_reserved)) = memory {
                     memory_peaks.push(peak_reserved);
                     memory_residuals.push(residual_reserved);
@@ -486,20 +417,6 @@ fn bench_broadcast_cache(c: &mut Criterion) {
             }
         }
 
-        if sample_rss && !rss_peaks.is_empty() {
-            rss_peaks.sort_unstable();
-            let min = rss_peaks[0];
-            let max = rss_peaks[rss_peaks.len() - 1];
-            let median = rss_peaks[rss_peaks.len() / 2];
-            eprintln!(
-                "scenario={} peak_rss_bytes[min/median/max]={}/{}/{} runs={}",
-                scenario.name,
-                min,
-                median,
-                max,
-                rss_peaks.len()
-            );
-        }
         if sample_memory && !memory_peaks.is_empty() {
             memory_peaks.sort_unstable();
             memory_residuals.sort_unstable();
