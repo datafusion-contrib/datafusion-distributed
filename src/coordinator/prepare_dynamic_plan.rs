@@ -6,12 +6,13 @@ use crate::distributed_planner::{
     inject_network_boundaries,
 };
 use crate::dynamic_filtering::orphan_dynamic_filter_consumers;
+use crate::events::DynamicStageBuiltHandlers;
 use crate::events::TaskCountAnnotation::{Desired, Maximum};
 use crate::execution_plans::SamplerExec;
 use crate::stage::{LocalStage, RemoteStage};
 use crate::{
-    BytesCounterMetric, CoordinatorToWorkerMsg, LoadInfo, MaxGaugeMetric, NetworkBoundaryExt,
-    NetworkCoalesceExec, Stage,
+    BytesCounterMetric, CoordinatorToWorkerMsg, DynamicStageBuiltEvent, LoadInfo, MaxGaugeMetric,
+    NetworkBoundaryExt, NetworkCoalesceExec, Stage,
 };
 use dashmap::DashMap;
 use datafusion::common::stats::Precision;
@@ -72,6 +73,15 @@ pub(super) async fn prepare_dynamic_plan(
             let task_count = nb_ctx
                 .task_count(&input_stage.plan)?
                 .merge(Desired(compute_based_task_count));
+
+            let ev = DynamicStageBuiltEvent {
+                session_config: nb_ctx.cfg,
+                cost,
+                plan: &input_stage.plan,
+            };
+            if let Some(response) = DynamicStageBuiltHandlers::handle(ev).transpose()? {
+                input_stage.plan = response.plan
+            };
 
             // Propagate the final task_count inferred based on runtime statistics and compute cost.
             // Here is where leaf nodes are scaled up by ScaleUpLeafNodeHandler, and the
