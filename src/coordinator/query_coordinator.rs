@@ -312,8 +312,8 @@ impl<'a> StageCoordinator<'a> {
             stage_id: self.stage_id,
             task_number: task_i,
         };
-        let task_metrics = self.metrics_store.clone();
-        let completed_dynamic_filter_store = self.completed_dynamic_filter_store.clone();
+        let mut task_metrics = self.metrics_store.clone();
+        let mut completed_dynamic_filter_store = self.completed_dynamic_filter_store.clone();
         let dynamic_filter_registry = Arc::clone(self.dynamic_filter_registry);
         let (load_info_tx, load_info_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut load_info_tx_opt = Some(load_info_tx);
@@ -322,13 +322,11 @@ impl<'a> StageCoordinator<'a> {
         // metrics collection process might outlive the query's lifetime.
         #[allow(clippy::disallowed_methods)]
         tokio::spawn(async move {
-            let mut received_metrics = false;
             while let Some(msg) = worker_to_coordinator_rx.recv().await {
                 match msg {
                     WorkerToCoordinatorMsg::TaskMetrics(v) => {
-                        if let Some(task_metrics) = &task_metrics {
-                            task_metrics.insert(task_key, v);
-                            received_metrics = true;
+                        if let Some(store) = task_metrics.take() {
+                            store.insert(task_key, v);
                         }
                     }
                     WorkerToCoordinatorMsg::LoadInfo(load_info) => {
@@ -340,7 +338,7 @@ impl<'a> StageCoordinator<'a> {
                         let _ = load_info_tx_opt.take();
                     }
                     WorkerToCoordinatorMsg::TaskCompletedDynamicFilters(filters) => {
-                        if let Some(store) = &completed_dynamic_filter_store {
+                        if let Some(store) = completed_dynamic_filter_store.take() {
                             store.insert(task_key, filters);
                         }
                     }
@@ -349,17 +347,12 @@ impl<'a> StageCoordinator<'a> {
                     }
                 }
             }
-            if !received_metrics {
-                if let Some(task_metrics) = task_metrics {
-                    // An unexecuted task sends no metrics; still complete its wait.
-                    task_metrics.insert(
-                        task_key,
-                        TaskMetrics {
-                            pre_order_plan_metrics: vec![],
-                            task_metrics: Default::default(),
-                        },
-                    );
-                }
+            // An unexecuted task sends no final reports; still complete its waits.
+            if let Some(store) = task_metrics {
+                store.insert(task_key, TaskMetrics::default());
+            }
+            if let Some(store) = completed_dynamic_filter_store {
+                store.insert(task_key, TaskCompletedDynamicFilters::default());
             }
         });
         load_info_rx

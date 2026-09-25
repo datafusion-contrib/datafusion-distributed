@@ -18,7 +18,7 @@ mod tests {
     use datafusion_distributed::{
         DefaultSessionBuilder, DistributedExt, DistributedLeafExec, DistributedMetricsFormat,
         NetworkCoalesceExec, NetworkShuffleExec, WorkerQueryContext, display_plan_ascii,
-        rewrite_distributed_plan_with_metrics,
+        rewrite_distributed_plan_with_dynamic_filters, rewrite_distributed_plan_with_metrics,
     };
     use futures::TryStreamExt;
     use std::sync::Arc;
@@ -386,6 +386,7 @@ mod tests {
     {
         let (mut ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
         ctx.set_distributed_dynamic_task_count(true)?;
+        ctx = ctx.with_distributed_dynamic_filter_collection(true)?;
         register_parquet_tables(&ctx).await?;
         {
             let state = ctx.state_ref();
@@ -408,6 +409,12 @@ mod tests {
             .await?;
         assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 0);
 
+        let task_ctx = ctx.task_ctx();
+        let plan = tokio::time::timeout(
+            Duration::from_secs(10),
+            rewrite_distributed_plan_with_dynamic_filters(plan, &task_ctx),
+        )
+        .await??;
         tokio::time::timeout(
             Duration::from_secs(10),
             rewrite_distributed_plan_with_metrics(plan, DistributedMetricsFormat::PerTask),
