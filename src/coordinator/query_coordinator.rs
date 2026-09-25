@@ -322,11 +322,13 @@ impl<'a> StageCoordinator<'a> {
         // metrics collection process might outlive the query's lifetime.
         #[allow(clippy::disallowed_methods)]
         tokio::spawn(async move {
+            let mut received_metrics = false;
             while let Some(msg) = worker_to_coordinator_rx.recv().await {
                 match msg {
                     WorkerToCoordinatorMsg::TaskMetrics(v) => {
                         if let Some(task_metrics) = &task_metrics {
                             task_metrics.insert(task_key, v);
+                            received_metrics = true;
                         }
                     }
                     WorkerToCoordinatorMsg::LoadInfo(load_info) => {
@@ -345,6 +347,18 @@ impl<'a> StageCoordinator<'a> {
                     WorkerToCoordinatorMsg::ProducedDynamicFilter(_) => {
                         dynamic_filter_registry.record_update_received();
                     }
+                }
+            }
+            if !received_metrics {
+                if let Some(task_metrics) = task_metrics {
+                    // An unexecuted task sends no metrics; still complete its wait.
+                    task_metrics.insert(
+                        task_key,
+                        TaskMetrics {
+                            pre_order_plan_metrics: vec![],
+                            task_metrics: Default::default(),
+                        },
+                    );
                 }
             }
         });

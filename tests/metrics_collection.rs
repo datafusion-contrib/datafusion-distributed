@@ -382,7 +382,6 @@ mod tests {
 
     /// Regression for #739: an empty build side can leave sampled probe tasks unexecuted.
     #[tokio::test]
-    #[ignore = "metrics rewrite hangs on planned but unexecuted tasks"]
     async fn metrics_rewrite_after_unexecuted_aqe_tasks() -> Result<(), Box<dyn std::error::Error>>
     {
         let (mut ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
