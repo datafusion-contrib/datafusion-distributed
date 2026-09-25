@@ -532,9 +532,6 @@ impl<T: Clone> Stream for BroadcastConsumer<T> {
     type Item = T;
 
     /// Poll the next value from the stream reading from the shared entry queue.
-    ///
-    /// TODO: Profile lock contention and inspect if a lock free implementation has better
-    /// performance.
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         loop {
             let (value, closed) = {
@@ -686,15 +683,18 @@ mod tests {
         queue.push(20);
         assert_eq!(consumer0.next().await, Some(10));
         drop(consumer0);
+        assert!(!queue.shared.cancel.is_cancelled());
 
         // The dropped consumer must no longer pin the unread suffix, including entries produced
-        // after cancellation.
+        // after the first reader is released.
         queue.push(30);
         assert_eq!(consumer1.next().await, Some(10));
         assert_eq!(consumer1.next().await, Some(20));
         assert_eq!(consumer1.next().await, Some(30));
         drop(consumer1);
+        assert!(queue.shared.cancel.is_cancelled());
         assert_eq!(buffered_len(&queue), 0);
+        assert!(!queue.push(20));
     }
 
     #[tokio::test]
@@ -711,21 +711,6 @@ mod tests {
         assert_eq!(shared.queue_state.lock().unwrap().entries.len(), 0);
         assert!(shared.cancel.is_cancelled());
         assert_eq!(consumer.next().await, None);
-    }
-
-    #[tokio::test]
-    async fn broadcast_queue_cancels_when_all_readers_drop() {
-        let queue = BroadcastQueue::new(2);
-        let reader0 = queue.readers().claim(0).expect("consumer 0 registration");
-        let reader1 = queue.readers().claim(1).expect("consumer 1 registration");
-
-        assert!(queue.push(10));
-        drop(reader0);
-        assert!(!queue.shared.cancel.is_cancelled());
-        drop(reader1);
-        assert!(queue.shared.cancel.is_cancelled());
-        assert_eq!(buffered_len(&queue), 0);
-        assert!(!queue.push(20));
     }
 
     #[tokio::test]
