@@ -2,7 +2,7 @@ use crate::common::require_one_child;
 use crate::coordinator::prepare_dynamic_plan::prepare_dynamic_plan;
 use crate::coordinator::prepare_static_plan::prepare_static_plan;
 use crate::coordinator::query_coordinator::QueryCoordinator;
-use crate::coordinator::store::{Store, StoreSnapshot, task_keys_for_plan};
+use crate::coordinator::store::{Store, task_keys_for_plan};
 use crate::distributed_planner::DEFAULT_METRICS_FINALIZATION_TIMEOUT_MS;
 use crate::dynamic_filtering::{
     is_dynamic_filtering_enabled, sever_dynamic_filter_relationships_in_plan_for_display,
@@ -23,46 +23,6 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::watch;
 use tokio::time::Instant;
-
-/// Non-blocking, point-in-time view of the reports expected from a prepared distributed plan.
-#[derive(Debug)]
-pub struct TaskMetricsSnapshot {
-    /// Metrics received so far, including actual sampling metrics from tasks that never ran.
-    pub reported: HashMap<TaskKey, TaskMetrics>,
-    /// Tasks whose coordinator channels are still open and have not reported metrics.
-    pub pending: Vec<TaskKey>,
-    /// Tasks whose channels closed without a report. Their work cannot be accounted for.
-    pub missing_reports: Vec<TaskKey>,
-}
-
-impl TaskMetricsSnapshot {
-    fn from_store(snapshot: StoreSnapshot<TaskMetrics>) -> Self {
-        Self {
-            reported: snapshot.reported,
-            pending: snapshot.pending,
-            missing_reports: snapshot.terminal_without_report,
-        }
-    }
-
-    /// Whether every expected task has either reported or had its stream end without a report.
-    pub fn all_terminal(&self) -> bool {
-        self.pending.is_empty()
-    }
-
-    /// Whether every expected task has actually reported metrics. This distinguishes a
-    /// finished-but-incomplete query from one whose measurements are complete.
-    pub fn all_reported(&self) -> bool {
-        self.all_terminal() && self.missing_reports.is_empty()
-    }
-
-    /// Tasks that reported real sampling metrics but never received ExecuteTask.
-    pub fn unexecuted_tasks(&self) -> Vec<TaskKey> {
-        self.reported
-            .iter()
-            .filter_map(|(key, report)| report.was_not_executed().then_some(*key))
-            .collect()
-    }
-}
 
 /// [ExecutionPlan] that executes the inner plan in distributed mode.
 /// Before executing it, two modifications are lazily performed on the plan:
@@ -149,21 +109,9 @@ impl DistributedExec {
     }
 
     /// Waits for complete metrics, if collection is enabled and execution has been prepared.
-    /// Returns `None` if a task failed to report or the finalization timeout elapsed; use
-    /// [`Self::metrics_snapshot`] to inspect reports and their completeness in that case.
+    /// Returns `None` if a task failed to report or the finalization timeout elapsed.
     pub async fn wait_for_metrics(&self) -> Option<HashMap<TaskKey, TaskMetrics>> {
         self.complete_metrics().await.ok()
-    }
-
-    /// Returns all available metrics immediately, including gaps in task numbers, along with
-    /// pending and terminal-without-report task keys. Returns `None` if metrics are disabled or
-    /// the distributed plan has not yet been prepared.
-    pub fn metrics_snapshot(&self) -> Option<TaskMetricsSnapshot> {
-        let store = self.metrics_store.as_ref()?;
-        let plan = &self.prepared_plan.get()?.plan_for_viz;
-        Some(TaskMetricsSnapshot::from_store(
-            store.snapshot(&task_keys_for_plan(plan)),
-        ))
     }
 
     pub(crate) async fn complete_metrics(&self) -> Result<HashMap<TaskKey, TaskMetrics>> {
@@ -474,10 +422,9 @@ mod tests {
         )
         .await;
         assert!(result.unwrap_err().to_string().contains("metrics missing"));
-        let snapshot = TaskMetricsSnapshot::from_store(store.snapshot(&[reported, lost]));
-        assert!(snapshot.all_terminal());
-        assert!(!snapshot.all_reported());
-        assert_eq!(snapshot.missing_reports, vec![lost]);
+        let snapshot = store.snapshot(&[reported, lost]);
+        assert!(snapshot.pending.is_empty());
+        assert_eq!(snapshot.terminal_without_report, vec![lost]);
         assert_eq!(snapshot.reported.len(), 1);
     }
 }

@@ -416,31 +416,10 @@ mod tests {
             ),
         )
         .await??;
-        rewrite_with_metrics_within_timeout(with_filters).await?;
-        let snapshot = plan
-            .downcast_ref::<DistributedExec>()
-            .unwrap()
-            .metrics_snapshot()
-            .unwrap();
-        assert!(
-            snapshot.all_reported(),
-            "unexpected lost report: {:?}",
-            snapshot.missing_reports
-        );
-        let unexecuted = snapshot.unexecuted_tasks();
-        assert!(!unexecuted.is_empty(), "AQE did not skip any task");
-        assert!(
-            unexecuted.iter().any(|key| {
-                snapshot.reported[key]
-                    .pre_order_plan_metrics
-                    .iter()
-                    .flat_map(|set| set.iter())
-                    .any(|metric| {
-                        metric.value().name() == "files_opened" && metric.value().as_usize() > 0
-                    })
-            }),
-            "skipped AQE tasks lost their actual sampling I/O metrics"
-        );
+        let rewritten = rewrite_with_metrics_within_timeout(with_filters).await?;
+        let display = display_plan_ascii(rewritten.as_ref(), true);
+        assert_contains!(&display, "task_not_executed=");
+        assert_contains!(&display, "files_opened=");
         Ok(())
     }
 

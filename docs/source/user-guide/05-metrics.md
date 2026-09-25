@@ -107,32 +107,3 @@ runtime metrics, including network-level metrics on the boundaries:
 
 > If `plan` is not a distributed plan (its root is not a `DistributedExec`),
 > `rewrite_distributed_plan_with_metrics` returns it unchanged, so it is always safe to call.
-
-## Inspecting a partial snapshot
-
-`DistributedExec::metrics_snapshot()` returns the metrics received **so far** without waiting.
-It returns `None` if collection is disabled or the plan has not yet been prepared. The snapshot
-has separate `pending`, `missing_reports`, and `reported` task keys; `all_terminal()` says whether
-every expected task has reported or its stream has ended. `all_reported()` says whether metrics
-are available for every task; use it when accounting must be complete. `unexecuted_tasks()` identifies planned
-tasks that reported actual AQE sampling metrics but never received an `ExecuteTask` call. These
-tasks have a `task_not_executed=1` stage metric instead of fabricated execution timestamps.
-
-```rust
-use datafusion_distributed::DistributedExec;
-
-if let Some(exec) = plan.downcast_ref::<DistributedExec>() {
-    if let Some(snapshot) = exec.metrics_snapshot() {
-        println!("{} reports; {} pending", snapshot.reported.len(), snapshot.pending.len());
-        if !snapshot.all_reported() {
-            // Do not treat a missing task report as zero I/O.
-            println!("missing reports: {:?}", snapshot.missing_reports);
-        }
-    }
-}
-```
-
-The existing `DistributedExec::wait_for_metrics()` only returns `Some` for a complete set of
-reports. If any task fails to report or the wait times out, it returns `None`; call
-`metrics_snapshot()` to inspect what arrived. A closed stream without a metrics report is not
-equivalent to an unexecuted task with a report.
