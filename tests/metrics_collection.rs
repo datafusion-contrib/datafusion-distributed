@@ -22,6 +22,7 @@ mod tests {
     };
     use futures::TryStreamExt;
     use std::sync::Arc;
+    use std::time::Duration;
     use test_case::test_case;
 
     #[test_case(DistributedMetricsFormat::Aggregated ; "aggregated_metrics")]
@@ -376,6 +377,43 @@ mod tests {
             0,
         );
 
+        Ok(())
+    }
+
+    /// Regression for #739: an empty build side can leave sampled probe tasks unexecuted.
+    #[tokio::test]
+    #[ignore = "metrics rewrite hangs on planned but unexecuted tasks"]
+    async fn metrics_rewrite_after_unexecuted_aqe_tasks() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (mut ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+        ctx.set_distributed_dynamic_task_count(true)?;
+        register_parquet_tables(&ctx).await?;
+        {
+            let state = ctx.state_ref();
+            let mut state = state.write();
+            let options = state.config_mut().options_mut();
+            options.optimizer.hash_join_single_partition_threshold = 0;
+            options.optimizer.hash_join_single_partition_threshold_rows = 0;
+        }
+
+        let plan = ctx
+            .sql(
+                r#"SELECT a."MinTemp" FROM weather a JOIN weather b
+                     ON a."RainToday" = b."RainToday" WHERE a."MinTemp" > 1000000"#,
+            )
+            .await?
+            .create_physical_plan()
+            .await?;
+        let batches = execute_stream(plan.clone(), ctx.task_ctx())?
+            .try_collect::<Vec<_>>()
+            .await?;
+        assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 0);
+
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            rewrite_distributed_plan_with_metrics(plan, DistributedMetricsFormat::PerTask),
+        )
+        .await??;
         Ok(())
     }
 
