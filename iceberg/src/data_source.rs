@@ -18,19 +18,16 @@ use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSe
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{DisplayFormatType, SortOrderPushdownResult};
 use datafusion::prelude::Expr;
-use datafusion::scalar::ScalarValue;
 use datafusion_distributed::WorkUnitFeed;
 use futures::{StreamExt, TryStreamExt};
 use iceberg::arrow::ArrowReaderBuilder;
 use iceberg::io::FileIO;
 use iceberg::puffin::APACHE_DATASKETCHES_THETA_V1;
-use iceberg::spec::{
-    DataFile, Datum, ManifestContentType, ManifestList, PrimitiveLiteral, PrimitiveType,
-    SnapshotRef,
-};
+use iceberg::spec::{DataFile, ManifestContentType, ManifestList, SnapshotRef};
 use iceberg::table::Table;
 
-use crate::common::{convert_filters_to_predicate, df_err, iceberg_err};
+use crate::common::{convert_filters_to_predicate, datum_to_scalar, df_err, iceberg_err};
+use crate::partitioning::scan_partitioning;
 use crate::{IcebergConfig, IcebergWorkUnitFeed};
 
 /// Snapshot summary keys defined by the Iceberg table spec:
@@ -148,6 +145,7 @@ pub(crate) struct IcebergDataSourceOptions<'a> {
     pub(crate) projection: Option<&'a Vec<usize>>,
     pub(crate) fetch: Option<usize>,
     pub(crate) filters: &'a [Expr],
+    pub(crate) hash_partitioning_enabled: bool,
     pub(crate) iceberg_runtime: Option<iceberg::Runtime>,
 }
 
@@ -156,7 +154,7 @@ impl IcebergDataSource {
     pub(crate) fn new(
         table: iceberg::table::Table,
         schema: SchemaRef,
-        partitioning: Partitioning,
+        target_partitions: usize,
         opts: IcebergDataSourceOptions<'_>,
     ) -> Self {
         let output_schema = match opts.projection {
@@ -175,6 +173,13 @@ impl IcebergDataSource {
         }
         .cloned();
         let predicates = convert_filters_to_predicate(opts.filters);
+        let partitioning = scan_partitioning(
+            &table,
+            opts.snapshot_id,
+            &output_schema,
+            target_partitions,
+            opts.hash_partitioning_enabled,
+        );
 
         Self {
             schema: output_schema,
@@ -279,6 +284,10 @@ impl DataSource for IcebergDataSource {
 
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "format=iceberg")?;
+        if let Partitioning::Hash(exprs, _) = &self.partitioning {
+            let exprs = exprs.iter().map(|e| e.to_string()).collect::<Vec<_>>();
+            write!(f, ", hash_partitioning=[{}]", exprs.join(", "))?;
+        }
         let Some(feed) = self.feed.inner() else {
             return Ok(());
         };
@@ -548,36 +557,5 @@ fn data_file_col_stats(df: &DataFile, id: i32) -> ColumnStatistics {
             .unwrap_or(Precision::Absent),
         sum_value: Precision::Absent,
         distinct_count: Precision::Absent,
-    }
-}
-
-/// Conversion function of iceberg's Datum
-fn datum_to_scalar(d: &Datum) -> Option<ScalarValue> {
-    match (d.data_type(), d.literal()) {
-        (PrimitiveType::Boolean, PrimitiveLiteral::Boolean(v)) => {
-            Some(ScalarValue::Boolean(Some(*v)))
-        }
-        (PrimitiveType::Int, PrimitiveLiteral::Int(v)) => Some(ScalarValue::Int32(Some(*v))),
-        (PrimitiveType::Long, PrimitiveLiteral::Long(v)) => Some(ScalarValue::Int64(Some(*v))),
-        (PrimitiveType::Float, PrimitiveLiteral::Float(v)) => {
-            Some(ScalarValue::Float32(Some(v.into_inner())))
-        }
-        (PrimitiveType::Double, PrimitiveLiteral::Double(v)) => {
-            Some(ScalarValue::Float64(Some(v.into_inner())))
-        }
-        (PrimitiveType::String, PrimitiveLiteral::String(s)) => {
-            Some(ScalarValue::Utf8(Some(s.clone())))
-        }
-        (PrimitiveType::Date, PrimitiveLiteral::Int(v)) => Some(ScalarValue::Date32(Some(*v))),
-        (PrimitiveType::Timestamp, PrimitiveLiteral::Long(v)) => {
-            Some(ScalarValue::TimestampMicrosecond(Some(*v), None))
-        }
-        (PrimitiveType::Timestamptz, PrimitiveLiteral::Long(v)) => Some(
-            ScalarValue::TimestampMicrosecond(Some(*v), Some("UTC".into())),
-        ),
-        (PrimitiveType::Decimal { precision, scale }, PrimitiveLiteral::Int128(v)) => Some(
-            ScalarValue::Decimal128(Some(*v), *precision as u8, *scale as i8),
-        ),
-        _ => None,
     }
 }
