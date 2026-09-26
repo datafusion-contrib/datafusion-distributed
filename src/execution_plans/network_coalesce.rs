@@ -247,9 +247,10 @@ impl ExecutionPlan for NetworkCoalesceExec {
         apply_expression_roots(self.input_stage.dynamic_filter_anchors().iter(), f)
     }
 
-    fn with_new_children(
+    fn replace_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
+        _options: ReplaceChildrenOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let mut self_clone = self.as_ref().clone();
         match &mut self_clone.input_stage {

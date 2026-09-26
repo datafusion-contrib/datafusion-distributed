@@ -6,8 +6,7 @@ use datafusion::error::Result;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::{
-    ChildrenPropertiesMode, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
-    ReplaceChildrenOptions,
+    DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, ReplaceChildrenOptions,
 };
 use delegate::delegate;
 use std::fmt::{Debug, Formatter};
@@ -64,15 +63,13 @@ impl ExecutionPlan for MetricsWrapperExec {
         self.inner.apply_expressions(f)
     }
 
-    fn with_new_children(
+    fn replace_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
+        options: ReplaceChildrenOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         Ok(Arc::new(MetricsWrapperExec {
-            inner: Arc::clone(&self.inner).replace_children(
-                children.clone(),
-                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
-            )?,
+            inner: Arc::clone(&self.inner).replace_children(children, options)?,
             metrics: self.metrics.clone(),
         }))
     }

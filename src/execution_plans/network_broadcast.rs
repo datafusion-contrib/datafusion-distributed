@@ -12,8 +12,7 @@ use datafusion::physical_expr_common::metrics::MetricsSet;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties, Statistics,
-    StatisticsArgs, apply_expression_roots,
-};
+    StatisticsArgs, ReplaceChildrenOptions};
 use std::fmt::Formatter;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -219,14 +218,15 @@ impl ExecutionPlan for NetworkBroadcastExec {
 
     fn apply_expressions(
         &self,
-        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
     ) -> Result<TreeNodeRecursion> {
-        apply_expression_roots(self.input_stage.dynamic_filter_anchors().iter(), f)
+        Ok(TreeNodeRecursion::Continue)
     }
 
-    fn with_new_children(
+    fn replace_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
+        _options: ReplaceChildrenOptions,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
         let mut self_clone = self.as_ref().clone();
         match &mut self_clone.input_stage {
