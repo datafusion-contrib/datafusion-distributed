@@ -276,6 +276,9 @@ pub fn stage_metrics_rewriter(
                 stage.num
             );
         };
+        if task_metrics.pre_order_plan_metrics.is_empty() {
+            continue; // The task was never executed, so there are no plan metrics to rewrite.
+        }
 
         let mut per_task_counter = 0usize;
         stage.plan.apply_with_dt_ctx(d_ctx, |node, _ctx| {

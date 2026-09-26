@@ -164,7 +164,7 @@ pub struct TaskDynamicFilter {
     pub expression: MaybeEncoded<Arc<dyn PhysicalExpr>>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct TaskMetrics {
     /// Metrics for a single task's plan nodes in pre-order traversal order.
     /// The TaskKey is implicit — it is determined by the SetPlanRequest that

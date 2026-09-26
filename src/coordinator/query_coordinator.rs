@@ -316,8 +316,8 @@ impl<'a> StageCoordinator<'a> {
             stage_id: self.stage_id,
             task_number: task_i,
         };
-        let task_metrics = self.metrics_store.clone();
-        let completed_dynamic_filter_store = self.completed_dynamic_filter_store.clone();
+        let mut task_metrics = self.metrics_store.clone();
+        let mut completed_dynamic_filter_store = self.completed_dynamic_filter_store.clone();
         let dynamic_filter_registry = Arc::clone(self.dynamic_filter_registry);
         let task_ctx = Arc::clone(self.task_ctx);
         let (load_info_tx, load_info_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -330,8 +330,8 @@ impl<'a> StageCoordinator<'a> {
             while let Some(msg) = worker_to_coordinator_rx.recv().await {
                 match msg {
                     WorkerToCoordinatorMsg::TaskMetrics(v) => {
-                        if let Some(task_metrics) = &task_metrics {
-                            task_metrics.insert(task_key, v);
+                        if let Some(store) = task_metrics.take() {
+                            store.insert(task_key, v);
                         }
                     }
                     WorkerToCoordinatorMsg::LoadInfo(load_info) => {
@@ -343,7 +343,7 @@ impl<'a> StageCoordinator<'a> {
                         let _ = load_info_tx_opt.take();
                     }
                     WorkerToCoordinatorMsg::TaskCompletedDynamicFilters(filters) => {
-                        if let Some(store) = &completed_dynamic_filter_store {
+                        if let Some(store) = completed_dynamic_filter_store.take() {
                             store.insert(task_key, filters);
                         }
                     }
@@ -352,6 +352,13 @@ impl<'a> StageCoordinator<'a> {
                             .record_dynamic_filter_update(task_key, *filter, &task_ctx);
                     }
                 }
+            }
+            // An unexecuted task sends no final reports; still complete its waits.
+            if let Some(store) = task_metrics {
+                store.insert(task_key, TaskMetrics::default());
+            }
+            if let Some(store) = completed_dynamic_filter_store {
+                store.insert(task_key, TaskCompletedDynamicFilters::default());
             }
         });
         load_info_rx
