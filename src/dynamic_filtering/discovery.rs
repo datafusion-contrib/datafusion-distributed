@@ -235,6 +235,7 @@ mod tests {
                     ) other_build ON other_build.key = probe."RainTomorrow"
                     WHERE probe."MinTemp" > 0
                 "#,
+            true,
         )
         .await?;
         assert_snapshot!(display, @r"
@@ -285,6 +286,7 @@ mod tests {
                     GROUP BY "RainTomorrow"
                 ) probe ON build.key = probe.key
             "#,
+            true,
         )
         .await?;
         assert_snapshot!(display, @r"
@@ -314,11 +316,62 @@ mod tests {
         Ok(())
     }
 
-    async fn display_query(sql: &str) -> Result<String> {
+    /// Disabling remote dynamic filters removes the anchors and remote producers, but the
+    /// task-local producers and consumers are left intact.
+    #[tokio::test]
+    async fn skips_anchors_when_remote_dynamic_filters_are_disabled() -> Result<()> {
+        let display = display_query(
+            r#"
+                    SELECT COUNT(*)
+                    FROM (
+                        SELECT DISTINCT "RainToday" AS key
+                        FROM weather
+                    ) build
+                    JOIN weather probe ON build.key = probe."RainToday"
+                    JOIN (
+                        SELECT DISTINCT "RainTomorrow" AS key
+                        FROM weather
+                    ) other_build ON other_build.key = probe."RainTomorrow"
+                    WHERE probe."MinTemp" > 0
+                "#,
+            false,
+        )
+        .await?;
+        assert_snapshot!(display, @r"
+        Stage 5
+          AggregateExec
+            HashJoinExec producers=[1]
+              NetworkShuffleExec
+              AggregateExec
+                NetworkShuffleExec
+        Stage 4
+          RepartitionExec
+            AggregateExec
+              DataSourceExec consumers=[1]
+        Stage 3
+          RepartitionExec
+            HashJoinExec producers=[2]
+              NetworkShuffleExec
+              AggregateExec
+                NetworkShuffleExec
+        Stage 2
+          RepartitionExec
+            AggregateExec
+              DataSourceExec consumers=[2]
+        Stage 1
+          RepartitionExec
+            FilterExec
+              DataSourceExec
+        ");
+        Ok(())
+    }
+
+    async fn display_query(sql: &str, remote_dynamic_filters: bool) -> Result<String> {
         let captured_plans = CapturePlans::default();
         let (ctx, _guard, _) = start_localhost_context(2, DefaultSessionBuilder).await;
         let ctx = ctx
             .with_distributed_broadcast_joins(false)?
+            .with_distributed_dynamic_filters_used(remote_dynamic_filters)?
             .with_distributed_route_task_handler(captured_plans.clone());
         {
             let state = ctx.state_ref();

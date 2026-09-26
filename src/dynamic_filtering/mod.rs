@@ -1,6 +1,7 @@
 mod discovery;
 mod display;
 
+use crate::DistributedConfig;
 use crate::codec::roundtrip_pb;
 use datafusion::common::Result;
 use datafusion::execution::TaskContext;
@@ -12,11 +13,18 @@ pub(crate) use discovery::*;
 pub use display::rewrite_distributed_plan_with_dynamic_filters;
 pub(crate) use display::sever_dynamic_filter_relationships_in_plan_for_display;
 
-pub(crate) fn is_dynamic_filtering_enabled(session_config: &SessionConfig) -> bool {
+pub(crate) fn is_local_dynamic_filtering_enabled(session_config: &SessionConfig) -> bool {
     session_config
         .options()
         .optimizer
         .enable_dynamic_filter_pushdown
+}
+
+pub(crate) fn is_remote_dynamic_filtering_enabled(session_config: &SessionConfig) -> Result<bool> {
+    let remote_enabled =
+        DistributedConfig::from_session_config(session_config)?.remote_dynamic_filters;
+    let local_enabled = is_local_dynamic_filtering_enabled(session_config);
+    Ok(remote_enabled && local_enabled)
 }
 
 /// Deepcopies the plan if it contains any dynamic filter producers or consumers. This isolates

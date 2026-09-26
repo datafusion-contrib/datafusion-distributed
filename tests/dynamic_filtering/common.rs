@@ -24,7 +24,8 @@ pub(crate) struct TestQuery<'a> {
     broadcast_joins: bool,
     one_task_per_leaf: bool,
     collect_dynamic_filters: bool,
-    expect_dynamic_filter_updates: bool,
+    remote_dynamic_filters: bool,
+    expect_dynamic_filter_updates: Option<bool>,
 }
 
 impl<'a> TestQuery<'a> {
@@ -35,7 +36,8 @@ impl<'a> TestQuery<'a> {
             broadcast_joins: false,
             one_task_per_leaf: false,
             collect_dynamic_filters: true,
-            expect_dynamic_filter_updates: false,
+            remote_dynamic_filters: true,
+            expect_dynamic_filter_updates: None,
         }
     }
 
@@ -63,8 +65,21 @@ impl<'a> TestQuery<'a> {
         self
     }
 
+    /// Disables distributing dynamic filters across network boundaries.
+    pub(crate) fn without_remote_dynamic_filters(mut self) -> Self {
+        self.remote_dynamic_filters = false;
+        self
+    }
+
+    /// Asserts that the coordinator received at least one dynamic filter update.
     pub(crate) fn expect_dynamic_filter_updates(mut self) -> Self {
-        self.expect_dynamic_filter_updates = true;
+        self.expect_dynamic_filter_updates = Some(true);
+        self
+    }
+
+    /// Asserts that the coordinator received no dynamic filter updates.
+    pub(crate) fn expect_no_dynamic_filter_updates(mut self) -> Self {
+        self.expect_dynamic_filter_updates = Some(false);
         self
     }
 
@@ -72,7 +87,8 @@ impl<'a> TestQuery<'a> {
         let (ctx, _guard, _) = start_localhost_context(2, DefaultSessionBuilder).await;
         let mut ctx = ctx
             .with_distributed_broadcast_joins(self.broadcast_joins)?
-            .with_distributed_dynamic_filter_collection(self.collect_dynamic_filters)?;
+            .with_distributed_dynamic_filter_collection(self.collect_dynamic_filters)?
+            .with_distributed_dynamic_filters_used(self.remote_dynamic_filters)?;
         if self.one_task_per_leaf {
             ctx = ctx.with_distributed_desired_task_count_handler(1usize);
         }
@@ -124,7 +140,7 @@ pub(crate) async fn execute_range_partitioned_query(
     register_range_partitioned_table(&ctx, "dim", "testdata/join/parquet/dim", "d_dkey").await?;
     register_range_partitioned_table(&ctx, "fact", "testdata/join/parquet/fact", "f_dkey").await?;
 
-    execute_query_and_display(&ctx, sql, expected_rows, true, false).await
+    execute_query_and_display(&ctx, sql, expected_rows, true, None).await
 }
 
 async fn register_range_partitioned_table(
@@ -156,7 +172,7 @@ async fn execute_query_and_display(
     sql: &str,
     expected_rows: usize,
     collect_dynamic_filters: bool,
-    expect_dynamic_filter_updates: bool,
+    expect_dynamic_filter_updates: Option<bool>,
 ) -> Result<String> {
     let plan = ctx.sql(sql).await?.create_physical_plan().await?;
     let task_ctx = ctx.task_ctx();
@@ -176,16 +192,23 @@ async fn execute_query_and_display(
     );
     assert_eq!(display_plan_ascii(plan.as_ref(), false), original_display);
 
-    if expect_dynamic_filter_updates {
+    if let Some(expect_updates) = expect_dynamic_filter_updates {
         let updates = plan
             .metrics()
             .expect("DistributedExec has metrics")
             .sum(|metric| metric.value().name() == "dynamic_filter_updates_received")
             .map_or(0, |metric| metric.as_usize());
-        assert!(
-            updates > 0,
-            "expected dynamic_filter_updates_received > 0, got {updates}"
-        );
+        if expect_updates {
+            assert!(
+                updates > 0,
+                "expected dynamic_filter_updates_received > 0, got {updates}"
+            );
+        } else {
+            assert_eq!(
+                updates, 0,
+                "expected dynamic_filter_updates_received == 0, got {updates}"
+            );
+        }
     }
 
     Ok(display_plan_ascii(
