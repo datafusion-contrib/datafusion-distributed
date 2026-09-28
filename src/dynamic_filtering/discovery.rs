@@ -371,7 +371,7 @@ mod tests {
         let (ctx, _guard, _) = start_localhost_context(2, DefaultSessionBuilder).await;
         let ctx = ctx
             .with_distributed_broadcast_joins(false)?
-            .with_distributed_dynamic_filters_used(remote_dynamic_filters)?
+            .with_distributed_remote_dynamic_filters(remote_dynamic_filters)?
             .with_distributed_route_task_handler(captured_plans.clone());
         {
             let state = ctx.state_ref();
