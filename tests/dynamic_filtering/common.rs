@@ -88,7 +88,7 @@ impl<'a> TestQuery<'a> {
         let mut ctx = ctx
             .with_distributed_broadcast_joins(self.broadcast_joins)?
             .with_distributed_dynamic_filter_collection(self.collect_dynamic_filters)?
-            .with_distributed_dynamic_filters_used(self.remote_dynamic_filters)?;
+            .with_distributed_remote_dynamic_filters(self.remote_dynamic_filters)?;
         if self.one_task_per_leaf {
             ctx = ctx.with_distributed_desired_task_count_handler(1usize);
         }

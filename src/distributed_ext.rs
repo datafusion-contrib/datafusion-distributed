@@ -386,11 +386,14 @@ pub trait DistributedExt: Sized {
 
     /// Enables or disables the use of distributed dynamic filters across network boundaries. This
     /// does not affect dynamic filter pushdown intra-stage.
-    fn with_distributed_dynamic_filters_used(self, enabled: bool) -> Result<Self, DataFusionError>;
+    fn with_distributed_remote_dynamic_filters(
+        self,
+        enabled: bool,
+    ) -> Result<Self, DataFusionError>;
 
-    /// Same as [`DistributedExt::with_distributed_dynamic_filters_used`] but with an in-place
+    /// Same as [`DistributedExt::with_distributed_remote_dynamic_filters`] but with an in-place
     /// mutation.
-    fn set_distributed_dynamic_filters_used(
+    fn set_distributed_remote_dynamic_filters(
         &mut self,
         enabled: bool,
     ) -> Result<(), DataFusionError>;
@@ -852,7 +855,7 @@ impl DistributedExt for SessionConfig {
         Ok(())
     }
 
-    fn set_distributed_dynamic_filters_used(
+    fn set_distributed_remote_dynamic_filters(
         &mut self,
         enabled: bool,
     ) -> Result<(), DataFusionError> {
@@ -1028,9 +1031,9 @@ impl DistributedExt for SessionConfig {
             #[expr($?;Ok(self))]
             fn with_distributed_dynamic_filter_collection(mut self, enabled: bool) -> Result<Self, DataFusionError>;
 
-            #[call(set_distributed_dynamic_filters_used)]
+            #[call(set_distributed_remote_dynamic_filters)]
             #[expr($?;Ok(self))]
-            fn with_distributed_dynamic_filters_used(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+            fn with_distributed_remote_dynamic_filters(mut self, enabled: bool) -> Result<Self, DataFusionError>;
 
             #[call(set_distributed_children_isolator_unions)]
             #[expr($?;Ok(self))]
@@ -1167,10 +1170,10 @@ impl DistributedExt for SessionStateBuilder {
             #[expr($?;Ok(self))]
             fn with_distributed_dynamic_filter_collection(mut self, enabled: bool) -> Result<Self, DataFusionError>;
 
-            fn set_distributed_dynamic_filters_used(&mut self, enabled: bool) -> Result<(), DataFusionError>;
-            #[call(set_distributed_dynamic_filters_used)]
+            fn set_distributed_remote_dynamic_filters(&mut self, enabled: bool) -> Result<(), DataFusionError>;
+            #[call(set_distributed_remote_dynamic_filters)]
             #[expr($?;Ok(self))]
-            fn with_distributed_dynamic_filters_used(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+            fn with_distributed_remote_dynamic_filters(mut self, enabled: bool) -> Result<Self, DataFusionError>;
 
             fn set_distributed_children_isolator_unions(&mut self, enabled: bool) -> Result<(), DataFusionError>;
             #[call(set_distributed_children_isolator_unions)]
@@ -1332,10 +1335,10 @@ impl DistributedExt for SessionState {
             #[expr($?;Ok(self))]
             fn with_distributed_dynamic_filter_collection(mut self, enabled: bool) -> Result<Self, DataFusionError>;
 
-            fn set_distributed_dynamic_filters_used(&mut self, enabled: bool) -> Result<(), DataFusionError>;
-            #[call(set_distributed_dynamic_filters_used)]
+            fn set_distributed_remote_dynamic_filters(&mut self, enabled: bool) -> Result<(), DataFusionError>;
+            #[call(set_distributed_remote_dynamic_filters)]
             #[expr($?;Ok(self))]
-            fn with_distributed_dynamic_filters_used(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+            fn with_distributed_remote_dynamic_filters(mut self, enabled: bool) -> Result<Self, DataFusionError>;
 
             fn set_distributed_children_isolator_unions(&mut self, enabled: bool) -> Result<(), DataFusionError>;
             #[call(set_distributed_children_isolator_unions)]
@@ -1490,10 +1493,10 @@ impl DistributedExt for SessionContext {
             #[expr($?;Ok(self))]
             fn with_distributed_dynamic_filter_collection(self, enabled: bool) -> Result<Self, DataFusionError>;
 
-            fn set_distributed_dynamic_filters_used(&mut self, enabled: bool) -> Result<(), DataFusionError>;
-            #[call(set_distributed_dynamic_filters_used)]
+            fn set_distributed_remote_dynamic_filters(&mut self, enabled: bool) -> Result<(), DataFusionError>;
+            #[call(set_distributed_remote_dynamic_filters)]
             #[expr($?;Ok(self))]
-            fn with_distributed_dynamic_filters_used(self, enabled: bool) -> Result<Self, DataFusionError>;
+            fn with_distributed_remote_dynamic_filters(self, enabled: bool) -> Result<Self, DataFusionError>;
 
             fn set_distributed_children_isolator_unions(&mut self, enabled: bool) -> Result<(), DataFusionError>;
             #[call(set_distributed_children_isolator_unions)]
