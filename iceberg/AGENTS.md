@@ -2,7 +2,7 @@
 
 ## Tests
 
-- Reuse `src/test_utils/harness.rs` and `testdata/iceberg/taxi` as much as
+- Reuse `src/test_utils/harness.rs` and `testdata/taxi` as much as
   possible.
 - Prefer integration tests over unit tests when possible. Each isolated feature
   should have its own dedicated file in `tests/`.

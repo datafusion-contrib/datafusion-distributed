@@ -219,7 +219,7 @@ struct FixtureStorageFactory {
 impl Default for FixtureStorageFactory {
     fn default() -> Self {
         Self {
-            root: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../testdata/iceberg"),
+            root: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata"),
             files: HashMap::new(),
         }
     }
