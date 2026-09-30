@@ -16,6 +16,7 @@ mod table_provider;
 mod work_unit_feed;
 
 mod codec;
+#[cfg(any(feature = "integration", test))]
 #[doc(hidden)]
 pub mod test_utils;
 

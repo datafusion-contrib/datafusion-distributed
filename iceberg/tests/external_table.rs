@@ -1,4 +1,4 @@
-#[cfg(test)]
+#[cfg(all(feature = "integration", test))]
 mod tests {
     use datafusion::error::Result;
     use datafusion_distributed_iceberg::test_utils::{FIXTURE_URI, IcebergTestHarness};

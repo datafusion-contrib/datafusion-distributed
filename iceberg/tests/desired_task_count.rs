@@ -1,4 +1,4 @@
-#[cfg(test)]
+#[cfg(all(feature = "integration", test))]
 mod tests {
     use datafusion::common::Result;
     use datafusion_distributed::DistributedExt;
@@ -7,7 +7,6 @@ mod tests {
     };
     use iceberg::spec::{Snapshot, TableMetadata};
 
-    #[cfg(feature = "integration")]
     #[tokio::test]
     async fn executes_with_estimated_scan_tasks() -> Result<()> {
         // 4,480,382 bytes / 1 MB / 2 partitions rounds up to 3 tasks, not all 4 workers.

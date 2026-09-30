@@ -30,7 +30,7 @@ The default storage factory resolves `file://`, S3 (`s3://`, `s3a://`,
 `IcebergIntegrationOptions` to supply custom storage or an Iceberg runtime.
 
 ```bash
-cargo test -p datafusion-distributed-iceberg
+cargo test -p datafusion-distributed-iceberg --features integration
 ```
 
 Local TPC-H Iceberg benchmarks use the separate

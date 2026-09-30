@@ -67,7 +67,7 @@ COPY (
   SELECT * EXCLUDE (row_number)
   FROM sampled
   WHERE row_number <= 25000
-) TO 'iceberg/testdata/taxi/data' (
+) TO 'testdata/iceberg/taxi/data' (
   FORMAT parquet,
   PARTITION_BY (pickup_date),
   COMPRESSION zstd,
