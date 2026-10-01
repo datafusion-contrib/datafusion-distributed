@@ -29,22 +29,6 @@ The default storage factory resolves `file://`, S3 (`s3://`, `s3a://`,
 `s3n://`), and GCS (`gs://`, `gcs://`) URIs. Use
 `IcebergIntegrationOptions` to supply custom storage or an Iceberg runtime.
 
-## Decode-time runtime selection
-
-`IcebergCodec::new` keeps a fixed runtime. For per-query selection, use
-`IcebergCodec::new_with_runtime_resolver` (see its Rustdoc example).
-Its closure receives the decoding `TaskContext` and can read worker-local session
-extensions, for example an `iceberg::Runtime::new_with_split(&io, &query_cpu)`.
-The caller controls CPU/I/O routing and must keep those Tokio runtimes alive
-through execution. Resolver errors fail decoding; encoding and the wire format
-are unchanged.
-
-Register the codec with `with_distributed_user_codec` **before** calling
-`with_iceberg_integration`, which adds a fixed-runtime codec. Keep codec order
-consistent on coordinator and workers. Install runtime extensions in each worker
-query's session config; runtime handles are not sent from the coordinator.
-This only changes decoded scans, not coordinator-side table planning.
-
 ```bash
 cargo test -p datafusion-distributed-iceberg
 ```

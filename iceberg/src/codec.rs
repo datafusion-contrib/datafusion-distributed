@@ -46,30 +46,10 @@ impl IcebergCodec {
         Self::new_with_runtime_resolver(storage_factory, move |_| Ok(iceberg_runtime.clone()))
     }
 
-    /// Creates a codec that selects a worker-local runtime for each decoded scan.
+    /// Selects a runtime from the [`TaskContext`] for each decoded scan.
     ///
-    /// The resolver receives the decoding task's context, so it can read a runtime
-    /// from a worker-local session extension. It is not called during encoding;
-    /// resolver errors fail decoding. CPU/I/O routing is entirely caller-defined,
-    /// and runtime handles are never serialized. The caller must keep the selected
-    /// Tokio runtimes alive until scan execution completes.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use std::sync::Arc;
-    /// # use datafusion::common::exec_datafusion_err;
-    /// # use datafusion_distributed_iceberg::IcebergCodec;
-    /// # use iceberg::io::StorageFactory;
-    /// # fn example(storage_factory: Arc<dyn StorageFactory>) {
-    /// let codec = IcebergCodec::new_with_runtime_resolver(storage_factory, |ctx| {
-    ///     ctx.session_config()
-    ///         .get_extension::<iceberg::Runtime>()
-    ///         .map(|runtime| runtime.as_ref().clone())
-    ///         .ok_or_else(|| exec_datafusion_err!("missing worker Iceberg runtime"))
-    /// });
-    /// # }
-    /// ```
+    /// The resolver is not called during encoding; its errors fail decoding.
+    /// Callers must keep the selected Tokio runtimes alive through execution.
     pub fn new_with_runtime_resolver(
         storage_factory: Arc<dyn StorageFactory>,
         runtime_resolver: impl Fn(&TaskContext) -> Result<iceberg::Runtime> + Send + Sync + 'static,
