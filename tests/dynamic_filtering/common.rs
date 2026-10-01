@@ -9,6 +9,7 @@ use datafusion::datasource::listing::{
 use datafusion::logical_expr::{Partitioning, RangePartitioning};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr::expressions::{Column, DynamicFilterPhysicalExpr, UnKnownColumn};
+use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::{ExecutionPlan, collect};
 use datafusion::prelude::{SessionContext, col};
 use datafusion_distributed::test_utils::localhost::start_localhost_context;
@@ -288,6 +289,8 @@ impl DynamicFilterLabels {
                 for variant in leaf.variants() {
                     self.label_variant(variant, &mut updates)?;
                 }
+            } else if node.is::<FilterExec>() {
+                self.label_node(node, &mut updates)?;
             }
             Ok(TreeNodeRecursion::Continue)
         })?;
@@ -304,38 +307,45 @@ impl DynamicFilterLabels {
         updates: &mut Vec<(Arc<DynamicFilterPhysicalExpr>, String)>,
     ) -> Result<()> {
         variant.apply(|node| {
-            node.apply_expressions(&mut |root| {
-                root.apply(|expression| {
-                    let Ok(dynamic_filter) =
-                        Arc::downcast::<DynamicFilterPhysicalExpr>(expression.clone())
-                    else {
-                        return Ok(TreeNodeRecursion::Continue);
-                    };
-                    if expression.snapshot_generation() == 1 {
-                        return Ok(TreeNodeRecursion::Continue);
-                    }
-                    let Some(expression_id) = expression.expression_id() else {
-                        return internal_err!("dynamic filter did not have an expression ID");
-                    };
-                    let next_expression_id = self.expression_ids.len();
-                    let expression_id = *self
-                        .expression_ids
-                        .entry(expression_id)
-                        .or_insert(next_expression_id);
-                    let predicate = dynamic_filter.current()?;
-                    let predicate_id =
-                        intern_predicate(&mut self.predicates, Arc::clone(&predicate));
-                    let mut label = format!("expression_id_{expression_id}_hash_{predicate_id}");
-                    if let Some(predicates) = &mut self.normalized_predicates {
-                        let normalized_id =
-                            intern_predicate(predicates, normalize_columns(predicate)?);
-                        label.push_str(&format!("_normalized_hash_{normalized_id}"));
-                    }
-                    updates.push((dynamic_filter, label));
-                    Ok(TreeNodeRecursion::Continue)
-                })
-            })?;
+            self.label_node(node, updates)?;
             Ok(TreeNodeRecursion::Continue)
+        })?;
+        Ok(())
+    }
+
+    fn label_node(
+        &mut self,
+        node: &Arc<dyn ExecutionPlan>,
+        updates: &mut Vec<(Arc<DynamicFilterPhysicalExpr>, String)>,
+    ) -> Result<()> {
+        node.apply_expressions(&mut |root| {
+            root.apply(|expression| {
+                let Ok(dynamic_filter) =
+                    Arc::downcast::<DynamicFilterPhysicalExpr>(expression.clone())
+                else {
+                    return Ok(TreeNodeRecursion::Continue);
+                };
+                if expression.snapshot_generation() == 1 {
+                    return Ok(TreeNodeRecursion::Continue);
+                }
+                let Some(expression_id) = expression.expression_id() else {
+                    return internal_err!("dynamic filter did not have an expression ID");
+                };
+                let next_expression_id = self.expression_ids.len();
+                let expression_id = *self
+                    .expression_ids
+                    .entry(expression_id)
+                    .or_insert(next_expression_id);
+                let predicate = dynamic_filter.current()?;
+                let predicate_id = intern_predicate(&mut self.predicates, Arc::clone(&predicate));
+                let mut label = format!("expression_id_{expression_id}_hash_{predicate_id}");
+                if let Some(predicates) = &mut self.normalized_predicates {
+                    let normalized_id = intern_predicate(predicates, normalize_columns(predicate)?);
+                    label.push_str(&format!("_normalized_hash_{normalized_id}"));
+                }
+                updates.push((dynamic_filter, label));
+                Ok(TreeNodeRecursion::Continue)
+            })
         })?;
         Ok(())
     }
