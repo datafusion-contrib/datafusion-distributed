@@ -1,6 +1,7 @@
+use crate::codec::apply_dynamic_filter_update;
 use crate::common::TreeNodeExt;
 use crate::dynamic_filtering::{
-    discover_dynamic_filter_consumers, discover_dynamic_filter_producers,
+    DiscoveredDynamicFilter, discover_dynamic_filter_consumers, discover_dynamic_filter_producers,
 };
 use crate::events::{WorkerPlanRewriteEvent, WorkerPlanRewriteHandlers};
 use crate::execution_plans::SamplerExec;
@@ -10,25 +11,31 @@ use crate::protocol::grpc::on_drop_stream;
 use crate::work_unit_feed::{RemoteWorkUnitFeedRegistry, set_work_unit_received_time};
 use crate::worker::task_data::TaskDataMetrics;
 use crate::{
-    CoordinatorToWorkerMsg, DistributedConfig, DistributedExt, DistributedTaskContext,
-    MaybeEncoded, ProducedDynamicFilter, SetPlanRequest, TaskCompletedDynamicFilters, TaskData,
-    TaskDynamicFilter, TaskMetrics, Worker, WorkerQueryContext, WorkerToCoordinatorMsg,
+    ApplyDynamicFilter, CoordinatorToWorkerMsg, DistributedConfig, DistributedExt,
+    DistributedTaskContext, MaybeEncoded, ProducedDynamicFilter, SetPlanRequest,
+    TaskCompletedDynamicFilters, TaskData, TaskDynamicFilter, TaskMetrics, Worker,
+    WorkerQueryContext, WorkerToCoordinatorMsg,
 };
 use datafusion::common::tree_node::TreeNodeRecursion;
-use datafusion::common::{DataFusionError, HashSet, Result, exec_datafusion_err};
+use datafusion::common::{
+    DataFusionError, HashMap, HashSet, Result, exec_datafusion_err, internal_err,
+};
 use datafusion::execution::{SessionStateBuilder, TaskContext};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr::expressions::DynamicFilterPhysicalExpr;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionConfig;
+use datafusion_proto::protobuf::physical_expr_node::ExprType;
 use futures::stream::{BoxStream, FuturesUnordered, select_all};
 use futures::{FutureExt, StreamExt, TryStreamExt};
 use http::HeaderMap;
 #[cfg(feature = "integration")]
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, OnceLock};
+use tokio::sync::mpsc::channel;
 use tokio::sync::oneshot::Sender;
 use tokio::sync::{oneshot, watch};
+use tokio_stream::wrappers::ReceiverStream;
 
 /// Return value of the [Worker::coordinator_channel] method.
 pub struct CoordinatorChannelResult {
@@ -61,6 +68,7 @@ impl Worker {
 
         let (metrics_tx, metrics_rx) = oneshot::channel();
         let (dynamic_filters_tx, dynamic_filters_rx) = oneshot::channel();
+        let (error_tx, error_rx) = channel(1);
 
         let task_data = || async {
             let mut cfg = SessionConfig::default()
@@ -141,11 +149,17 @@ impl Worker {
         let producer_filters = discover_dynamic_filter_producers(&task_data.base_plan)?
             .into_iter()
             .filter(|producer| dynamic_filter_remote_producer_ids.contains(&producer.id));
+        let dynamic_filter_consumers = discover_dynamic_filter_consumers(&task_data.base_plan)?
+            .consumers
+            .into_iter()
+            .map(|consumer| (consumer.id, consumer))
+            .collect();
         let (producer_cancel_tx, producer_cancel_rx) = watch::channel(false);
 
         // Continue reading remaining messages (work unit feed data) in the background.
         let mut work_unit_senders = Some(remote_work_unit_feed_registry.senders);
         let task_data_entries = Arc::clone(&self.task_data_entries);
+        let dynamic_filter_task_ctx = Arc::clone(&task_data.task_ctx);
 
         // This tokio task takes ownership of the final-report senders that keep the
         // worker->coordinator stream alive. As soon as this task ends, the runtime metrics and
@@ -195,9 +209,15 @@ impl Worker {
                     CoordinatorToWorkerMsg::KickOffSampling => {
                         sampler_gate.kick_off();
                     }
-                    CoordinatorToWorkerMsg::ApplyDynamicFilter(_) => {
-                        // Runtime application is introduced independently from the routing
-                        // protocol. Until then, accepting the message is intentionally a no-op.
+                    CoordinatorToWorkerMsg::ApplyDynamicFilter(filter) => {
+                        if let Err(error) = apply_merged_dynamic_filter(
+                            *filter,
+                            &dynamic_filter_consumers,
+                            &dynamic_filter_task_ctx,
+                        ) {
+                            let _ = error_tx.try_send(error);
+                            break;
+                        }
                     }
                 }
             }
@@ -273,12 +293,12 @@ impl Worker {
             }));
 
         let stream = select_all([
-            produced_dynamic_filters_stream.boxed(),
-            load_info_stream.boxed(),
-            metrics_stream.boxed(),
-            dynamic_filters_stream.boxed(),
+            produced_dynamic_filters_stream.map(Ok).boxed(),
+            load_info_stream.map(Ok).boxed(),
+            metrics_stream.map(Ok).boxed(),
+            dynamic_filters_stream.map(Ok).boxed(),
+            ReceiverStream::new(error_rx).map(Err).boxed(),
         ])
-        .map(Ok)
         .boxed();
 
         #[cfg(feature = "integration")]
@@ -335,6 +355,42 @@ fn produced_dynamic_filter_stream(
         Some((message, next))
     })
     .boxed()
+}
+
+fn apply_merged_dynamic_filter(
+    filter: ApplyDynamicFilter,
+    consumers: &HashMap<u64, DiscoveredDynamicFilter>,
+    task_ctx: &Arc<TaskContext>,
+) -> Result<()> {
+    let Some(consumer) = consumers.get(&filter.expression_id) else {
+        return Ok(());
+    };
+
+    // Bytes to PhysicalExprNode
+    let expression = filter.expression.to_proto(task_ctx)?;
+
+    if expression.expr_id != Some(filter.expression_id) {
+        return internal_err!("dynamic filter update has a mismatched expression ID");
+    }
+
+    let Some(ExprType::DynamicFilter(update)) = expression.expr_type else {
+        return internal_err!("expected a dynamic filter update");
+    };
+
+    let Some(predicate) = update.inner_expr else {
+        return internal_err!("dynamic filter update has no predicate");
+    };
+
+    apply_dynamic_filter_update(
+        &consumer.expression,
+        &predicate,
+        filter.producer_schema.as_ref(),
+        task_ctx,
+    )?;
+    if update.is_complete {
+        consumer.expression.mark_complete();
+    }
+    Ok(())
 }
 
 /// Finds all consumed dynamic filters for the completed task report.
