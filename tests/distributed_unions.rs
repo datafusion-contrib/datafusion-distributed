@@ -229,20 +229,20 @@ mod tests {
             @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [MinTemp@0 ASC NULLS LAST, RainToday@1 ASC NULLS LAST]
-        │   [Stage 7] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
+        │   [Stage 7] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 7 ── tasks=2, partitions=2
-          │ DistributedUnionExec: t0:[c0] t1:[c1]
+          ┌───── Stage 7 ── tasks=3, partitions=3
+          │ DistributedUnionExec: t0:[c0] t1:[c1] t2:[]
           │   SortExec: TopK(fetch=1000000), expr=[MinTemp@0 ASC NULLS LAST, RainToday@1 ASC NULLS LAST], preserve_partitioning=[false]
           │     CoalescePartitionsExec
-          │       [Stage 3] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
+          │       [Stage 3] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
           │   ProjectionExec: expr=[Temp9am@0 as MinTemp, RainToday@1 as RainToday]
           │     SortExec: TopK(fetch=1000000), expr=[Temp9am@0 ASC NULLS LAST, RainToday@1 ASC NULLS LAST], preserve_partitioning=[false]
           │       CoalescePartitionsExec
-          │         [Stage 6] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
+          │         [Stage 6] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
           └──────────────────────────────────────────────────
-            ┌───── Stage 3 ── tasks=2, partitions=2
-            │ DistributedUnionExec: t0:[c0] t1:[c1]
+            ┌───── Stage 3 ── tasks=3, partitions=3
+            │ DistributedUnionExec: t0:[c0] t1:[c1] t2:[]
             │   CoalescePartitionsExec: fetch=1000000
             │     [Stage 1] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
             │   ProjectionExec: expr=[MaxTemp@0 as MinTemp, RainToday@1 as RainToday]
@@ -263,8 +263,8 @@ mod tests {
               │     t1: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=MaxTemp@1 < 30 AND DynamicFilter [ empty ], dynamic_rg_pruning=eligible, pruning_predicate=MaxTemp_null_count@1 != row_count@2 AND MaxTemp_min@0 < 30, required_guarantees=[]
               │     t2: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=MaxTemp@1 < 30 AND DynamicFilter [ empty ], dynamic_rg_pruning=eligible, pruning_predicate=MaxTemp_null_count@1 != row_count@2 AND MaxTemp_min@0 < 30, required_guarantees=[]
               └──────────────────────────────────────────────────
-            ┌───── Stage 6 ── tasks=2, partitions=2
-            │ DistributedUnionExec: t0:[c0] t1:[c1]
+            ┌───── Stage 6 ── tasks=3, partitions=3
+            │ DistributedUnionExec: t0:[c0] t1:[c1] t2:[]
             │   CoalescePartitionsExec: fetch=1000000
             │     [Stage 4] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
             │   ProjectionExec: expr=[Temp3pm@0 as Temp9am, RainToday@1 as RainToday]
