@@ -4889,12 +4889,12 @@ mod tests {
         │           RepartitionExec: partitioning=Hash([lochierarchy@4, CASE WHEN t_class@3 = 0 THEN i_category@1 END], 3), input_partitions=3
         │             ProjectionExec: expr=[gross_margin@0 as gross_margin, i_category@1 as i_category, i_class@2 as i_class, t_class@4 as t_class, lochierarchy@5 as lochierarchy]
         │               AggregateExec: mode=FinalPartitioned, gby=[gross_margin@0 as gross_margin, i_category@1 as i_category, i_class@2 as i_class, t_category@3 as t_category, t_class@4 as t_class, lochierarchy@5 as lochierarchy], aggr=[]
-        │                 [Stage 16] => NetworkShuffleExec: output_partitions=3, input_tasks=2
+        │                 [Stage 16] => NetworkShuffleExec: output_partitions=3, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 16 ── tasks=2, partitions=3
+          ┌───── Stage 16 ── tasks=3, partitions=3
           │ RepartitionExec: partitioning=Hash([gross_margin@0, i_category@1, i_class@2, t_category@3, t_class@4, lochierarchy@5], 3), input_partitions=3
           │   AggregateExec: mode=Partial, gby=[gross_margin@0 as gross_margin, i_category@1 as i_category, i_class@2 as i_class, t_category@3 as t_category, t_class@4 as t_class, lochierarchy@5 as lochierarchy], aggr=[], ordering_mode=PartiallySorted([3])
-          │     DistributedUnionExec: t0:[c0] t1:[c1]
+          │     DistributedUnionExec: t0:[c0(0/2)] t1:[c0(1/2)] t2:[c1]
           │       ProjectionExec: expr=[gross_margin@0 as gross_margin, CAST(i_category@1 AS Utf8) as i_category, i_class@2 as i_class, t_category@3 as t_category, t_class@4 as t_class, lochierarchy@5 as lochierarchy]
           │         AggregateExec: mode=FinalPartitioned, gby=[gross_margin@0 as gross_margin, i_category@1 as i_category, i_class@2 as i_class, t_category@3 as t_category, t_class@4 as t_class, lochierarchy@5 as lochierarchy], aggr=[], ordering_mode=PartiallySorted([3])
           │           [Stage 10] => NetworkShuffleExec: output_partitions=3, input_tasks=3
@@ -4903,8 +4903,8 @@ mod tests {
           │           CoalescePartitionsExec
           │             [Stage 15] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
           └──────────────────────────────────────────────────
-            ┌───── Stage 10 ── tasks=3, partitions=3
-            │ RepartitionExec: partitioning=Hash([gross_margin@0, i_category@1, i_class@2, t_category@3, t_class@4, lochierarchy@5], 3), input_partitions=3
+            ┌───── Stage 10 ── tasks=3, partitions=6
+            │ RepartitionExec: partitioning=Hash([gross_margin@0, i_category@1, i_class@2, t_category@3, t_class@4, lochierarchy@5], 6), input_partitions=3
             │   AggregateExec: mode=Partial, gby=[gross_margin@0 as gross_margin, i_category@1 as i_category, i_class@2 as i_class, t_category@3 as t_category, t_class@4 as t_class, lochierarchy@5 as lochierarchy], aggr=[], ordering_mode=PartiallySorted([3, 4, 5])
             │     DistributedUnionExec: t0:[c0(0/2)] t1:[c0(1/2)] t2:[c1]
             │       ProjectionExec: expr=[CAST(sum(store_sales.ss_net_profit)@2 AS Float64) / CAST(sum(store_sales.ss_ext_sales_price)@3 AS Float64) as gross_margin, i_category@0 as i_category, CAST(i_class@1 AS Utf8) as i_class, 0 as t_category, 0 as t_class, 0 as lochierarchy]
