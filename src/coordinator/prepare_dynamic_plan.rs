@@ -8,11 +8,12 @@ use crate::distributed_planner::{
 use crate::dynamic_filtering::{
     is_remote_dynamic_filtering_enabled, orphan_dynamic_filter_consumers,
 };
+use crate::events::DynamicStageBuiltHandlers;
 use crate::execution_plans::SamplerExec;
 use crate::stage::{LocalStage, RemoteStage};
 use crate::{
-    BytesCounterMetric, CoordinatorToWorkerMsg, LoadInfo, MaxGaugeMetric, NetworkBoundaryExt,
-    NetworkCoalesceExec, Stage, TaskCountAnnotation,
+    BytesCounterMetric, CoordinatorToWorkerMsg, DynamicStageBuiltEvent, LoadInfo, MaxGaugeMetric,
+    NetworkBoundaryExt, NetworkCoalesceExec, Stage, TaskCountAnnotation,
 };
 use dashmap::DashMap;
 use datafusion::common::stats::Precision;
@@ -62,17 +63,31 @@ pub(super) async fn prepare_dynamic_plan(
                 "network_cost",
                 *cost.network.get_value().unwrap_or(&0),
             ));
-            let compute_based_task_count = *cost.cpu.get_value().unwrap_or(&0) as f64
-                / nb_ctx.d_cfg.dynamic_bytes_per_partition.max(1) as f64
-                / input_stage
-                    .plan
-                    .output_partitioning()
-                    .partition_count()
-                    .max(1) as f64;
-            let compute_based_task_count = compute_based_task_count.min(nb_ctx.max_tasks()? as f64);
-            let task_count = nb_ctx
-                .task_count(&input_stage.plan)?
-                .merge(TaskCountAnnotation::soft(compute_based_task_count))?;
+
+            let ev = DynamicStageBuiltEvent {
+                session_config: nb_ctx.cfg,
+                cost,
+                plan: &input_stage.plan,
+            };
+            let prev_task_count = nb_ctx.task_count(&input_stage.plan)?;
+            let mut new_task_count = None;
+            if let Some(response) = DynamicStageBuiltHandlers::handle(ev).transpose()? {
+                input_stage.plan = response.plan;
+                new_task_count = response.task_count;
+            };
+
+            let new_task_count = match new_task_count {
+                Some(new_task_count) => new_task_count,
+                None => {
+                    let partitions = input_stage.plan.output_partitioning().partition_count();
+                    let compute_based_task_count = *cost.cpu.get_value().unwrap_or(&0) as f64
+                        / nb_ctx.d_cfg.dynamic_bytes_per_partition.max(1) as f64
+                        / partitions.max(1) as f64;
+                    TaskCountAnnotation::soft(compute_based_task_count)
+                }
+            };
+
+            let task_count = prev_task_count.merge(new_task_count)?;
 
             // Propagate the final task_count inferred based on runtime statistics and compute cost.
             // Here is where leaf nodes are scaled up by ScaleUpLeafNodeHandler, and the

@@ -389,19 +389,19 @@ mod tests {
         assert_snapshot!(plan + &results, @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST]
-        │   [Stage 7] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
+        │   [Stage 7] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 7 ── tasks=2, partitions=2
-          │ DistributedUnionExec: t0:[c0] t1:[c1]
+          ┌───── Stage 7 ── tasks=3, partitions=3
+          │ DistributedUnionExec: t0:[c0] t1:[c1] t2:[]
           │   SortExec: TopK(fetch=1000000), expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[false]
           │     CoalescePartitionsExec
-          │       [Stage 3] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
+          │       [Stage 3] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
           │   SortExec: TopK(fetch=1000000), expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[false]
           │     CoalescePartitionsExec
-          │       [Stage 6] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
+          │       [Stage 6] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
           └──────────────────────────────────────────────────
-            ┌───── Stage 3 ── tasks=2, partitions=2
-            │ DistributedUnionExec: t0:[c0] t1:[c1]
+            ┌───── Stage 3 ── tasks=3, partitions=3
+            │ DistributedUnionExec: t0:[c0] t1:[c1] t2:[]
             │   CoalescePartitionsExec: fetch=1000000
             │     [Stage 1] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
             │   CoalescePartitionsExec: fetch=1000000
@@ -415,8 +415,8 @@ mod tests {
               │ LocalLimitExec: fetch=1000000
               │   RowGeneratorExec: tag=b, tasks=2, partition_ops=[[rows(1)], [rows(2)], [rows(2)], [rows(1)]]
               └──────────────────────────────────────────────────
-            ┌───── Stage 6 ── tasks=2, partitions=2
-            │ DistributedUnionExec: t0:[c0] t1:[c1]
+            ┌───── Stage 6 ── tasks=3, partitions=3
+            │ DistributedUnionExec: t0:[c0] t1:[c1] t2:[]
             │   CoalescePartitionsExec: fetch=1000000
             │     [Stage 4] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
             │   CoalescePartitionsExec: fetch=1000000
