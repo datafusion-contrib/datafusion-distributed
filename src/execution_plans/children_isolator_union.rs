@@ -1,5 +1,5 @@
-use crate::DistributedTaskContext;
 use crate::common::task_ctx_with_extension;
+use crate::{DistributedTaskContext, TaskCountAnnotation};
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::tree_node::TreeNodeRecursion;
@@ -16,6 +16,7 @@ use datafusion::physical_plan::{
 };
 use futures::{Stream, StreamExt};
 use itertools::Itertools;
+use std::cmp::Ordering;
 use std::fmt::Formatter;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -88,10 +89,9 @@ pub struct ChildrenIsolatorUnionExec {
     pub(crate) properties: Arc<PlanProperties>,
     pub(crate) metrics: ExecutionPlanMetricsSet,
     pub(crate) children: Vec<Arc<dyn ExecutionPlan>>,
-    /// The original per-child weights (and their optional hard caps) used to build the
-    /// `task_idx_map`. Stored so `with_new_children` can re-run the allocator with the same
-    /// inputs and preserve `Maximum(N)` caps across plan rewrites.
-    pub(crate) child_weights: Vec<ChildWeight>,
+    /// The per-child annotations used to build the `task_idx_map`. Stored so
+    /// `with_new_children` can preserve task allocation across plan rewrites.
+    pub(crate) child_annotations: Vec<TaskCountAnnotation>,
     pub(crate) task_idx_map: Vec<
         /* outer distributed task idx */
         Vec<(
@@ -101,35 +101,6 @@ pub struct ChildrenIsolatorUnionExec {
     >,
 }
 
-/// Per-child allocation hint passed to [`ChildrenIsolatorUnionExec::from_children_and_weights`].
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct ChildWeight {
-    /// Weight relative to other children. The higher the weight vs other children, the more tasks
-    /// will be allocated to it.
-    pub(crate) weight: f64,
-    /// Maximum task count cap for this child. While allocating tasks for this child, it cannot
-    /// exceed the specified `max` no matter its `weight`
-    pub(crate) max: Option<usize>,
-}
-
-impl ChildWeight {
-    /// Convenience: a child with relative weight `w` and no cap.
-    pub fn desired(w: f64) -> Self {
-        Self {
-            weight: w,
-            max: None,
-        }
-    }
-
-    /// Convenience: a child whose relative weight equals its hard cap `n`.
-    pub fn maximum(n: usize) -> Self {
-        Self {
-            weight: n as f64,
-            max: Some(n),
-        }
-    }
-}
-
 impl ChildrenIsolatorUnionExec {
     /// Creates a single-node union placeholder with every child assigned to the default task.
     pub(crate) fn new_single_task(
@@ -137,26 +108,30 @@ impl ChildrenIsolatorUnionExec {
     ) -> Result<Self, DataFusionError> {
         let children = children.into_iter().collect_vec();
         let child_count = children.len();
-        Self::from_children_and_weights(children, vec![ChildWeight::desired(1.0); child_count], 1)
+        Self::from_children_and_annotations(
+            children,
+            vec![TaskCountAnnotation::soft(1.0); child_count],
+            1,
+        )
     }
 
-    pub(crate) fn from_children_and_weights(
+    pub(crate) fn from_children_and_annotations(
         children: impl IntoIterator<Item = Arc<dyn ExecutionPlan>>,
-        children_weights: impl IntoIterator<Item = ChildWeight>,
+        child_annotations: impl IntoIterator<Item = TaskCountAnnotation>,
         task_count: usize,
     ) -> Result<Self, DataFusionError> {
         let children = children.into_iter().collect_vec();
-        let weights = children_weights.into_iter().collect_vec();
+        let annotations = child_annotations.into_iter().collect_vec();
 
-        if children.len() != weights.len() {
+        if children.len() != annotations.len() {
             return internal_err!(
-                "ChildrenIsolatorUnionExec received {} children but a vec of {} weights for those children. This is a bug in the distributed planning logic, please report it",
+                "ChildrenIsolatorUnionExec received {} children but {} task count annotations. This is a bug in the distributed planning logic, please report it",
                 children.len(),
-                weights.len()
+                annotations.len()
             );
         }
 
-        let task_idx_map = split_children(&weights, task_count)?;
+        let task_idx_map = split_children(&annotations, task_count)?;
 
         // Because different children might return a different number of partitions, and we might
         // execute a different number of children in different tasks, the reality is that this node,
@@ -189,7 +164,7 @@ impl ChildrenIsolatorUnionExec {
             properties: Arc::new(properties),
             metrics: ExecutionPlanMetricsSet::default(),
             children,
-            child_weights: weights,
+            child_annotations: annotations,
             task_idx_map,
         })
     }
@@ -231,7 +206,7 @@ impl ChildrenIsolatorUnionExec {
             children: new_children,
             properties: self.properties.clone(),
             metrics: self.metrics.clone(),
-            child_weights: self.child_weights.clone(),
+            child_annotations: self.child_annotations.clone(),
             task_idx_map: self.task_idx_map.clone(),
         }
     }
@@ -288,9 +263,9 @@ impl ExecutionPlan for ChildrenIsolatorUnionExec {
                 self.children.len()
             );
         }
-        Ok(Arc::new(Self::from_children_and_weights(
+        Ok(Arc::new(Self::from_children_and_annotations(
             children,
-            self.child_weights.clone(),
+            self.child_annotations.clone(),
             self.task_idx_map.len(),
         )?))
     }
@@ -414,37 +389,15 @@ impl Stream for ObservedStream {
     }
 }
 
-/// Given a per-child [`ChildWeight`] slice and a `task_count_budget`, distribute the budget
-/// across children proportional to their weights, honoring any per-child caps.
+/// Given per-child [`TaskCountAnnotation`]s and a `task_count_budget`, distribute task slots
+/// proportional to soft counts, then impose each child's exact count. When a light exact child
+/// shares a slot, a flexible child can still use the full task budget.
 ///
-/// ## Examples (read alongside the unit tests for the full picture):
-///
-/// ```text
-///   weights: [w(1), w(1), w(1)], budget: 3  →  one task slot per child
-///       [[(0, 0/1)], [(1, 0/1)], [(2, 0/1)]]
-///
-///   weights: [w(1), w(2), w(3)], budget: 6  →  weights match the budget exactly
-///       [[(0, 0/1)], [(1, 0/2)], [(1, 1/2)], [(2, 0/3)], [(2, 1/3)], [(2, 2/3)]]
-///
-///   weights: [w(1), w(1)], budget: 3  →  more budget than the total weight — the heavier-
-///       share child (after tiebreak) covers two slots:
-///       [[(0, 0/2)], [(0, 1/2)], [(1, 0/1)]]
-///
-///   weights: [Maximum(1), Maximum(1)], budget: 3  →  both children are capped at 1; the
-///       third slot stays empty:
-///       [[(0, 0/1)], [(1, 0/1)], []]
-///
-///   weights: [Maximum(1), w(1)], budget: 3  →  the capped child gets exactly 1 slot, the
-///       uncapped sibling absorbs the surplus:
-///       [[(0, 0/1)], [(1, 0/2)], [(1, 1/2)]]
-///
-///   weights: [w(10), w(1), w(1)], budget: 3  →  child 0's proportional share is 2.5
-///       (rounds up to 3 via the largest-remainder pass); children 1 and 2 round down to 0
-///       and are distributed round-robin across occupied slots instead of stealing one from child 0:
-///       [[(0, 0/3), (1, 0/1)], [(0, 1/3), (2, 0/1)], [(0, 2/3)]]
-/// ```
+/// The diagrams at each step follow one example through to its final task map. `cN` is a child,
+/// `tN` is an outer union task, and `cN(i/n)` runs child N with task index i and task count n.
+/// A child without an `(i/n)` suffix runs once, with context `(0/1)`.
 fn split_children(
-    children: &[ChildWeight],
+    children: &[TaskCountAnnotation],
     task_count_budget: usize,
 ) -> Result<
     // Task idx. This Vec will have `task_count_budget` length.
@@ -457,6 +410,19 @@ fn split_children(
     >,
     DataFusionError,
 > {
+    // Step 1: validate the budget and each child's constraints.
+    //
+    // Running example: four outer task slots, four children.
+    //
+    //             +------+------+------+------+
+    //             |  c0  |  c1  |  c2  |  c3  |
+    // +-----------+------+------+------+------+
+    // | soft load |  4   |  2   |  0   |  0   |
+    // | hard count|  1   |  -   |  1   |  -   |   '-' = flexible
+    // +-----------+------+------+------+------+
+    //
+    // Budget > 0; soft loads are finite and >= 0; each hard count is in 1..=budget.
+    // Hard counts need not SUM to <= budget: different children can share an outer slot.
     if task_count_budget == 0 {
         return internal_err!(
             "ChildrenIsolatorUnionExec had a task count {task_count_budget}. This is a bug in the distributed planning logic, please report it"
@@ -467,105 +433,185 @@ fn split_children(
             "ChildrenIsolatorUnionExec built with no children. This is a bug in the distributed planning logic, please report it"
         );
     }
-    for (i, weight) in children.iter().enumerate() {
-        if weight.max == Some(0) {
+    for (i, annotation) in children.iter().enumerate() {
+        if annotation.hard == Some(0) {
             return plan_err!(
-                "ChildrenIsolatorUnionExec child {i} has a max task count of 0, which is invalid"
+                "ChildrenIsolatorUnionExec child {i} has an exact task count of 0, which is invalid"
             );
         }
-        if weight.weight < 0.0 {
+        if let Some(exact) = annotation.hard
+            && exact > task_count_budget
+        {
+            return plan_err!(
+                "ChildrenIsolatorUnionExec child {i} requires {exact} tasks, but the union has only {task_count_budget}"
+            );
+        }
+        if annotation.soft < 0.0 {
             return plan_err!(
                 "ChildrenIsolatorUnionExec child {i} has a negative desired wait of {}, which is invalid.",
-                weight.weight
+                annotation.soft
             );
         }
-        if !weight.weight.is_finite() {
+        if !annotation.soft.is_finite() {
             return plan_err!(
                 "ChildrenIsolatorUnionExec child {i} has a non-finite desired wait of {}, which is invalid.",
-                weight.weight
+                annotation.soft
             );
         }
     }
 
-    // Two running examples (A and B) traced through every step below.
-    // A: [w(10), w(1), w(1)], budget=3   (heavy child dominates)
-    // B: [max(1), w(1)],      budget=3   (cap kicks in during remainder pass)
-    let child_weights: Vec<f64> = children.iter().map(|w| w.weight).collect();
-    let total_weight: f64 = child_weights.iter().sum(); // A→12.0  B→2.0
+    // Step 2: turn soft loads into fractional shares of the full budget.
+    //
+    //                      c0      c1      c2      c3
+    //   soft load         [ 4,      2,      0,      0 ]  sum = 6
+    //                       |       |       |       |
+    //                       +-------+-------+-------+  * budget / sum = 4/6
+    //                       v       v       v       v
+    //   fractional share  [ 2.667,  1.333,  0,      0 ]
+    //
+    // Hard counts do not reserve slots yet, so trivial hard children do not take a flexible
+    // sibling's share. If ALL soft loads are zero, split max(budget - sum(hard), 0) evenly
+    // among flexible children instead; hard children receive their exact counts in step 4.
+    let exact_total = children
+        .iter()
+        .filter_map(|child| child.hard)
+        .fold(0usize, usize::saturating_add);
+    let total_weight: f64 = children.iter().map(|child| child.soft).sum();
     let child_count = children.len();
+    let flexible_count = children.iter().filter(|child| child.hard.is_none()).count();
 
-    // Ideal share per child = budget * w_i / Σw.
-    // A: [2.5, 0.25, 0.25]
-    // B: [1.5, 1.5]
     let unrounded_child_task_counts: Vec<f64> = if total_weight > 0.0 {
-        child_weights
+        children
             .iter()
-            .map(|w| task_count_budget as f64 * w / total_weight)
+            .map(|child| task_count_budget as f64 * child.soft / total_weight)
+            .collect()
+    } else if flexible_count > 0 {
+        let flexible_budget = task_count_budget.saturating_sub(exact_total);
+        children
+            .iter()
+            .map(|child| {
+                if child.hard.is_some() {
+                    0.0
+                } else {
+                    flexible_budget as f64 / flexible_count as f64
+                }
+            })
             .collect()
     } else {
-        // All weights zero → even split.
-        vec![task_count_budget as f64 / child_count as f64; child_count]
+        vec![0.0; child_count]
     };
 
-    // Floor each share, then clamp by any per-child cap.
-    // A: floor:[2,0,0] cap:unchanged
-    // B: floor:[1,1]   cap:c0        min(1,1)=1 → unchanged
+    // Step 3: round shares using the largest remainders (lower child index breaks ties).
+    //
+    //                      c0      c1      c2      c3
+    //   fractional share  [ 2.667,  1.333,  0,      0 ]
+    //                       |       |       |       |  floor
+    //   whole slots       [ 2,      1,      0,      0 ]  sum = 3; one slot left
+    //   remainder         [  .667,   .333,  0,      0 ]
+    //                         ^ largest remainder gets the remaining slot
+    //   rounded slots     [ 3,      1,      0,      0 ]  sum = budget = 4
+    //
+    // Finish rounding BEFORE imposing hard counts: a nearly zero-load hard child must not
+    // consume a slot that should round up to a flexible child. With all-zero soft loads,
+    // defer leftover slots until step 5, after imposing hard counts.
     let mut child_task_counts = unrounded_child_task_counts
         .iter()
         .map(|x| x.floor() as usize)
         .collect::<Vec<_>>();
-    for (task_count, child_weight) in child_task_counts.iter_mut().zip(children.iter()) {
-        if let Some(max) = child_weight.max {
-            *task_count = (*task_count).min(max);
-        }
-    }
 
-    // Hare largest-remainder: give the remaining slots to children with the biggest
-    // fractional parts, skipping any already at their cap.
-    // A: Σfloors=2, unallocated=1; remainders=[0.5,0.25,0.25] → c0 wins → [3,0,0]
-    // B: Σfloors=2, unallocated=1; remainders=[0.5,0.5] → c0 tied-wins but capped → c1 wins → [1,2]
-    let allocated_task_counts: usize = child_task_counts.iter().sum();
-    let mut unallocated_task_counts = task_count_budget.saturating_sub(allocated_task_counts);
-    if unallocated_task_counts > 0 {
-        let mut order: Vec<usize> = (0..child_count).collect();
-        // Sort descending by fractional part; lower index breaks ties deterministically.
-        order.sort_by(|&a, &b| {
-            let ra = unrounded_child_task_counts[a] - unrounded_child_task_counts[a].floor();
-            let rb = unrounded_child_task_counts[b] - unrounded_child_task_counts[b].floor();
-            rb.partial_cmp(&ra)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(a.cmp(&b))
-        });
-        while unallocated_task_counts > 0 {
-            let mut made_progress = false;
-            for &idx in &order {
-                if unallocated_task_counts == 0 {
-                    break;
-                }
-                if let Some(max) = children[idx].max
-                    && child_task_counts[idx] >= max
-                {
-                    continue;
-                }
-                child_task_counts[idx] += 1;
-                unallocated_task_counts -= 1;
-                made_progress = true;
-            }
-            if !made_progress {
-                // All remaining children are at their cap; leftover budget becomes empty slots.
+    let mut order: Vec<usize> = (0..child_count).collect();
+    order.sort_by(|&a, &b| {
+        let ra = unrounded_child_task_counts[a] - unrounded_child_task_counts[a].floor();
+        let rb = unrounded_child_task_counts[b] - unrounded_child_task_counts[b].floor();
+        rb.partial_cmp(&ra)
+            .unwrap_or(Ordering::Equal)
+            .then(a.cmp(&b))
+    });
+    if total_weight > 0.0 {
+        let mut unallocated = task_count_budget.saturating_sub(child_task_counts.iter().sum());
+        for &idx in &order {
+            if unallocated == 0 {
                 break;
             }
+            child_task_counts[idx] += 1;
+            unallocated -= 1;
         }
     }
 
-    // Lay out each child's alloc in consecutive result slots.
-    // A: c0×3 → slots 0=(0,0/3), 1=(0,1/3), 2=(0,2/3); c1,c2 alloc=0 → skipped; task_idx=3
-    // B: c0×1 → slot  0=(0,0/1); c1×2 → slots 1=(1,0/2), 2=(1,1/2);       task_idx=3
+    // Step 4: replace each hard child's rounded share with its exact count.
+    //
+    //                      c0      c1      c2      c3
+    //   rounded slots     [ 3,      1,      0,      0 ]
+    //   hard counts       [ 1,      -,      1,      - ]
+    //                       |              |
+    //                       v              v
+    //   imposed counts    [ 1,      1,      1,      0 ]  sum = 3
+    //
+    // This can reduce OR increase the total. If it exceeds the budget, children will share
+    // outer slots in step 6; their individual exact counts are never reduced to make them fit.
+    for (task_count, annotation) in child_task_counts.iter_mut().zip(children.iter()) {
+        if let Some(exact) = annotation.hard {
+            *task_count = exact;
+        }
+    }
+
+    // Step 5: fill unused slots with the flexible child furthest below its fractional share.
+    //
+    //                      c0      c1      c2      c3
+    //   imposed counts    [ 1,      1,      1,      0 ]  one slot left
+    //   eligible deficit  [ -,      .333,   -,      0 ]  share - current count
+    //                                ^ largest deficit gets the slot
+    //   final counts      [ 1,      2,      1,      0 ]  sum = budget = 4
+    //
+    // Recompute deficits after each assignment, breaking ties by lower child index. Never
+    // change hard counts here. If all children are hard, surplus outer slots remain empty.
+    let allocated_task_counts: usize = child_task_counts.iter().sum();
+    let mut unallocated_task_counts = task_count_budget.saturating_sub(allocated_task_counts);
+    while unallocated_task_counts > 0 {
+        let Some(idx) = (0..child_count)
+            .filter(|&idx| children[idx].hard.is_none())
+            .max_by(|&a, &b| {
+                let a_deficit = unrounded_child_task_counts[a] - child_task_counts[a] as f64;
+                let b_deficit = unrounded_child_task_counts[b] - child_task_counts[b] as f64;
+                a_deficit
+                    .partial_cmp(&b_deficit)
+                    .unwrap_or(Ordering::Equal)
+                    .then(b.cmp(&a))
+            })
+        else {
+            // Every child has an exact count; leftover budget becomes empty slots.
+            break;
+        };
+        child_task_counts[idx] += 1;
+        unallocated_task_counts -= 1;
+    }
+
+    // Step 6: place child task contexts into consecutive outer slots, wrapping at the budget.
+    //
+    //   counts [1, 2, 1, 0] expand into:
+    //
+    //       t0          t1          t2          t3
+    //   +----------+-----------+-----------+----------+
+    //   |    c0    |  c1(0/2)  |  c1(1/2)  |    c2    |
+    //   +----------+-----------+-----------+----------+
+    //
+    // Sharing example: soft=[2, 0], hard=[-, 1], budget=2 gives counts=[2, 1].
+    //
+    //       context:  c0(0/2) ---> c0(1/2) ---> c1
+    //       slot:        0            1         0 (wrap)
+    //
+    //       +----------+----------+
+    //       | c0(0/2)  | c0(1/2)  |
+    //       | c1       |          |
+    //       +----------+----------+
+    //           t0         t1
+    //
+    // Each child's count fits the budget, so it cannot occur twice in the same outer slot.
     let mut result = vec![vec![]; task_count_budget];
     let mut task_idx = 0;
     for (child_idx, &task_count) in child_task_counts.iter().enumerate() {
         for task_i in 0..task_count {
-            result[task_idx].push((
+            result[task_idx % task_count_budget].push((
                 child_idx,
                 DistributedTaskContext {
                     task_index: task_i,
@@ -576,17 +622,25 @@ fn split_children(
         }
     }
 
-    // Distribute zero-alloc children round-robin across occupied slots so their data still
-    // gets produced without overpacking a single slot.
-    // A: c1 → slot 0, c2 → slot 1: [(0,0/3),(1,0/1)], [(0,1/3),(2,0/1)], [(0,2/3)]
-    // B: no zero-alloc children → result unchanged
+    // Step 7: run every zero-allocation child once, sharing already occupied slots.
+    //
+    //   Our c3 received zero slots, but its rows must still be produced:
+    //
+    //       t0          t1          t2          t3
+    //   +----------+-----------+-----------+----------+
+    //   |    c0    |  c1(0/2)  |  c1(1/2)  |    c2    |
+    //   |  + c3    |           |           |          |
+    //   +----------+-----------+-----------+----------+
+    //
+    // Additional zero-allocation children go to t1, t2, ... round-robin, each with context
+    // (0/1). This preserves every child's output without taking slots from heavier children.
     if task_idx > 0 {
         let mut zero_alloc_i = 0usize;
         for (child_idx, &task_count) in child_task_counts.iter().enumerate() {
             if task_count != 0 {
                 continue;
             }
-            let slot = zero_alloc_i % task_idx;
+            let slot = zero_alloc_i % task_idx.min(task_count_budget);
             result[slot].push((
                 child_idx,
                 DistributedTaskContext {
@@ -743,22 +797,26 @@ mod tests {
         Ok(())
     }
 
-    /// Hard cap (`Maximum(N)`) is honored: a capped child never receives more slots than its
-    /// cap, even if its proportional share would be larger. Excess budget is redistributed to
-    /// uncapped siblings; if every child is capped, the surplus slots stay empty.
+    /// Exact counts are reserved before the remaining slots are shared by flexible children.
     #[test]
-    fn split_children_respects_maximum_caps() -> Result<(), Box<dyn std::error::Error>> {
-        // Two children both capped at 1. Budget 3 → can only hand out 2 (one per child),
+    fn split_children_respects_exact_counts() -> Result<(), Box<dyn std::error::Error>> {
+        // Two children both require 1. Budget 3 → can only hand out 2 (one per child),
         // the third slot stays empty.
         assert_eq!(
-            split_children(&[max(1), max(1)], 3)?,
+            split_children(&[exact(1), exact(1)], 3)?,
             vec![vec![(0, ctx(0, 1))], vec![(1, ctx(0, 1))], vec![]]
         );
 
-        // One capped at 1, one uncapped with weight 1. Budget 3 → c0 stuck at 1, c1 absorbs
+        // Tiny soft loads do not force exact-one children into separate union tasks.
+        assert_eq!(
+            split_children(&[TaskCountAnnotation::soft(0.0001).hard(1); 3], 1)?,
+            vec![vec![(0, ctx(0, 1)), (1, ctx(0, 1)), (2, ctx(0, 1))]]
+        );
+
+        // One exact at 1, one unconstrained with weight 1. Budget 3 → c1 absorbs
         // the surplus and ends up running in 2 tasks.
         assert_eq!(
-            split_children(&[max(1), des(1.0)], 3)?,
+            split_children(&[exact(1), des(1.0)], 3)?,
             vec![
                 vec![(0, ctx(0, 1))],
                 vec![(1, ctx(0, 2))],
@@ -766,11 +824,9 @@ mod tests {
             ]
         );
 
-        // Three children: c0 capped at 2, c1 and c2 uncapped with weight 1 each. Budget 6 →
-        // c0's proportional share would be 3 but it caps at 2; the saved slot goes to c1
-        // (lower-index tiebreak among the uncapped siblings).
+        // c0 requires 2; unconstrained siblings divide the remaining four slots.
         assert_eq!(
-            split_children(&[max(2), des(1.0), des(1.0)], 6)?,
+            split_children(&[exact(2), des(1.0), des(1.0)], 6)?,
             vec![
                 vec![(0, ctx(0, 2))],
                 vec![(0, ctx(1, 2))],
@@ -781,14 +837,40 @@ mod tests {
             ]
         );
 
-        // All children capped, but budget matches the cap sum exactly — no surplus, no empty
+        // All children exact, and budget matches the sum — no surplus, no empty
         // slots.
         assert_eq!(
-            split_children(&[max(2), max(1)], 3)?,
+            split_children(&[exact(2), exact(1)], 3)?,
             vec![
                 vec![(0, ctx(0, 2))],
                 vec![(0, ctx(1, 2))],
                 vec![(1, ctx(0, 1))],
+            ]
+        );
+
+        // A trivial exact child shares a slot so a flexible sibling can use the full budget.
+        assert_eq!(
+            split_children(&[des(2.0), TaskCountAnnotation::soft(0.0).hard(1)], 2)?,
+            vec![vec![(0, ctx(0, 2)), (1, ctx(0, 1))], vec![(0, ctx(1, 2))],]
+        );
+
+        // A large soft weight lets the sibling share a slot without reducing c0's exact count.
+        assert_eq!(
+            split_children(&[exact(2), des(10.0)], 3)?,
+            vec![
+                vec![(0, ctx(0, 2)), (1, ctx(1, 2))],
+                vec![(0, ctx(1, 2))],
+                vec![(1, ctx(0, 2))],
+            ]
+        );
+
+        // Both children keep their exact counts when their combined count exceeds the budget.
+        assert_eq!(
+            split_children(&[exact(2), exact(2)], 3)?,
+            vec![
+                vec![(0, ctx(0, 2)), (1, ctx(1, 2))],
+                vec![(0, ctx(1, 2))],
+                vec![(1, ctx(0, 2))],
             ]
         );
         Ok(())
@@ -837,21 +919,20 @@ mod tests {
     }
 
     #[test]
-    fn split_children_rejects_zero_max() {
+    fn split_children_rejects_invalid_exact_count() {
         let err = split_children(
-            &[
-                des(1.0),
-                ChildWeight {
-                    weight: 1.0,
-                    max: Some(0),
-                },
-                des(1.0),
-            ],
+            &[des(1.0), TaskCountAnnotation::soft(1.0).hard(0), des(1.0)],
             3,
         )
         .unwrap_err();
         assert!(
-            err.to_string().contains("max task count of 0"),
+            err.to_string().contains("exact task count of 0"),
+            "unexpected error: {err}"
+        );
+
+        let err = split_children(&[exact(3), des(1.0)], 2).unwrap_err();
+        assert!(
+            err.to_string().contains("requires 3 tasks"),
             "unexpected error: {err}"
         );
     }
@@ -863,13 +944,13 @@ mod tests {
         }
     }
 
-    /// Shorthand for `ChildWeight::desired(w)` — keeps the unit tests readable.
-    fn des(w: f64) -> ChildWeight {
-        ChildWeight::desired(w)
+    /// Shorthand for a soft task count — keeps the unit tests readable.
+    fn des(w: f64) -> TaskCountAnnotation {
+        TaskCountAnnotation::soft(w)
     }
 
-    /// Shorthand for `ChildWeight::maximum(n)` — keeps the unit tests readable.
-    fn max(n: usize) -> ChildWeight {
-        ChildWeight::maximum(n)
+    /// Shorthand for a hard task count — keeps the unit tests readable.
+    fn exact(n: usize) -> TaskCountAnnotation {
+        TaskCountAnnotation::soft(n).hard(n)
     }
 }
