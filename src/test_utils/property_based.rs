@@ -4,14 +4,14 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use datafusion::{
-    common::{internal_datafusion_err, internal_err},
+    common::{HashMap, internal_datafusion_err, internal_err},
     error::{DataFusionError, Result},
     physical_expr::LexOrdering,
     physical_plan::ExecutionPlan,
 };
 use std::sync::Arc;
 
-/// compares the set of record batches for equality
+/// Compare result rows, including duplicate counts, ignoring row order and batch boundaries.
 pub fn compare_result_set(
     actual_result: &Result<Vec<RecordBatch>>,
     expected_result: &Result<Vec<RecordBatch>>,
@@ -88,7 +88,7 @@ pub fn compare_ordering(
     Ok(())
 }
 
-/// Compare two sets of record batches for equality (order-independent)
+/// Compare two collections of record batches for multiset equality (order-independent).
 fn records_equal_as_sets(
     left: &[RecordBatch],
     right: &[RecordBatch],
@@ -122,7 +122,7 @@ fn detailed_batch_comparison(
     left: &[RecordBatch],
     right: &[RecordBatch],
 ) -> Result<(), DataFusionError> {
-    // Convert both sides to sets of string representations of rows
+    // Count occurrences of the existing canonical row strings on both sides.
     let left_rows = batch_rows_to_strings(left);
     let right_rows = batch_rows_to_strings(right);
 
@@ -134,46 +134,26 @@ fn detailed_batch_comparison(
         );
     }
 
-    let left_set: datafusion::common::HashSet<_> = left_rows.iter().collect();
-    let right_set: datafusion::common::HashSet<_> = right_rows.iter().collect();
+    let mut row_counts: HashMap<&str, (usize, usize)> = HashMap::new();
+    for row in &left_rows {
+        row_counts.entry(row.as_str()).or_default().0 += 1;
+    }
+    for row in &right_rows {
+        row_counts.entry(row.as_str()).or_default().1 += 1;
+    }
 
-    if left_set != right_set {
-        // Get all differences (not just samples)
-        let left_only: Vec<_> = left_rows
-            .iter()
-            .filter(|row| !right_set.contains(row))
-            .collect();
-        let right_only: Vec<_> = right_rows
-            .iter()
-            .filter(|row| !left_set.contains(row))
-            .collect();
+    let mut differences: Vec<_> = row_counts
+        .into_iter()
+        .filter(|(_, (actual, expected))| actual != expected)
+        .collect();
 
-        let mut error_msg = format!(
-            "Row content differs between result sets\nLeft set size: {}, Right set size: {}",
-            left_set.len(),
-            right_set.len()
-        );
-
-        if !left_only.is_empty() {
-            error_msg.push_str(&format!(
-                "\n\nRows only in left ({} total):",
-                left_only.len()
-            ));
-            for row in left_only {
-                error_msg.push_str(&format!("\n  {row}"));
-            }
+    if !differences.is_empty() {
+        // Only sort mismatches, to keep failure diagnostics deterministic.
+        differences.sort_unstable_by_key(|(row, _)| *row);
+        let mut error_msg = "Row multiplicities differ between result sets:".to_string();
+        for (row, (actual, expected)) in differences {
+            error_msg.push_str(&format!("\n  {row}: actual={actual}, expected={expected}"));
         }
-
-        if !right_only.is_empty() {
-            error_msg.push_str(&format!(
-                "\n\nRows only in right ({} total):",
-                right_only.len()
-            ));
-            for row in right_only {
-                error_msg.push_str(&format!("\n  {row}"));
-            }
-        }
-
         return internal_err!("{}", error_msg);
     }
 
@@ -291,6 +271,36 @@ mod tests {
 
     use std::sync::Arc;
 
+    #[test]
+    fn test_compare_result_set_rejects_balanced_duplicate_counts() {
+        let actual = Ok(vec![string_batch(&["a", "a", "b"])]);
+        let expected = Ok(vec![string_batch(&["a", "b", "b"])]);
+
+        let error = compare_result_set(&actual, &expected)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("\n  a: actual=2, expected=1\n  b: actual=1, expected=2"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn test_compare_result_set_ignores_row_order() {
+        let actual = Ok(vec![string_batch(&["a", "a", "b"])]);
+        let expected = Ok(vec![string_batch(&["b", "a", "a"])]);
+
+        compare_result_set(&actual, &expected).unwrap();
+    }
+
+    #[test]
+    fn test_compare_result_set_ignores_batch_boundaries() {
+        let actual = Ok(vec![string_batch(&["a", "a", "b"])]);
+        let expected = Ok(vec![string_batch(&["a"]), string_batch(&["a", "b"])]);
+
+        compare_result_set(&actual, &expected).unwrap();
+    }
+
     #[tokio::test]
     async fn test_records_equal_as_sets_empty() {
         let left: Vec<RecordBatch> = vec![];
@@ -332,7 +342,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_records_equal_different_counts() {
+    async fn test_compare_result_set_rejects_different_total_counts() {
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
 
         let batch1 = RecordBatch::try_new(
@@ -350,7 +360,7 @@ mod tests {
         let left = vec![batch1];
         let right = vec![batch2];
 
-        assert!(records_equal_as_sets(&left, &right).is_err());
+        assert!(compare_result_set(&Ok(left), &Ok(right)).is_err());
     }
 
     #[tokio::test]
@@ -395,7 +405,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_detailed_batch_comparison_different() {
+    async fn test_compare_result_set_rejects_different_rows() {
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
 
         let batch1 = RecordBatch::try_new(
@@ -413,7 +423,13 @@ mod tests {
         let left = vec![batch1];
         let right = vec![batch2];
 
-        assert!(detailed_batch_comparison(&left, &right).is_err());
+        let error = compare_result_set(&Ok(left), &Ok(right))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("\n  3: actual=1, expected=0\n  4: actual=0, expected=1"),
+            "{error}"
+        );
     }
 
     #[tokio::test]
@@ -458,5 +474,13 @@ mod tests {
         // This should fail because the batch is not sorted by value
         let result = Ok(vec![batch]);
         assert!(compare_ordering(actual_plan.clone(), expected_plan.clone(), &result).is_err());
+    }
+
+    fn string_batch(rows: &[&str]) -> RecordBatch {
+        RecordBatch::try_from_iter([(
+            "value",
+            Arc::new(StringArray::from(rows.to_vec())) as ArrayRef,
+        )])
+        .unwrap()
     }
 }
