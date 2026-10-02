@@ -95,7 +95,8 @@ impl PhysicalExtensionCodec for IcebergCodec {
             schema,
             partitioning,
             fetch,
-            metrics: Default::default(),
+            // Share the feed's metric set so both feed and scan metrics are reported.
+            metrics: feed.metrics(),
             column_stats: None,
             table_snapshot: None,
             iceberg_file_io,
