@@ -1,4 +1,4 @@
-#[cfg(test)]
+#[cfg(all(feature = "integration", test))]
 mod tests {
     use std::error::Error;
     use std::sync::Arc;

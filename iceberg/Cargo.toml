@@ -8,7 +8,7 @@ license = "Apache-2.0"
 repository = "https://github.com/datafusion-contrib/datafusion-distributed"
 
 [features]
-# Distributed worker support for the test harness.
+# Integration tests and public test utilities, including distributed worker support.
 integration = ["datafusion-distributed/integration"]
 
 [dependencies]
