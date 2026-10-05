@@ -8,12 +8,12 @@ use crate::distributed_planner::{
 use crate::dynamic_filtering::{
     is_remote_dynamic_filtering_enabled, orphan_dynamic_filter_consumers,
 };
-use crate::events::DynamicStageBuiltHandlers;
+use crate::events::StageBuiltHandlers;
 use crate::execution_plans::SamplerExec;
 use crate::stage::{LocalStage, RemoteStage};
 use crate::{
-    BytesCounterMetric, CoordinatorToWorkerMsg, DynamicStageBuiltEvent, LoadInfo, MaxGaugeMetric,
-    NetworkBoundaryExt, NetworkCoalesceExec, Stage, TaskCountAnnotation,
+    BytesCounterMetric, CoordinatorToWorkerMsg, LoadInfo, MaxGaugeMetric, NetworkBoundaryExt,
+    NetworkCoalesceExec, Stage, StageBuiltEvent, StageBuiltEventResponse, TaskCountAnnotation,
 };
 use dashmap::DashMap;
 use datafusion::common::stats::Precision;
@@ -21,8 +21,7 @@ use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{Result, exec_err, plan_err};
 use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::{
-    ColumnStatistics, ExecutionPlan, ExecutionPlanProperties, Statistics, StatisticsArgs,
-    StatisticsContext,
+    ColumnStatistics, ExecutionPlan, Statistics, StatisticsArgs, StatisticsContext,
 };
 use futures::{Stream, StreamExt};
 use std::any::TypeId;
@@ -38,8 +37,6 @@ pub(super) async fn prepare_dynamic_plan(
     let head_stage = inject_network_boundaries(
         Arc::clone(base_plan),
         |mut input_stage: LocalStage, nb_type: TypeId, nb_ctx: &InjectNetworkBoundaryContext| {
-            let mut metrics = MetricsSet::new();
-
             // At this point, input_stage.plan has two kind of leaf nodes:
             // - The ones that naturally do not read from any children, like DataSourceExec
             // - Network boundaries whose Stage was set to Stage::Remote by a previous iteration
@@ -51,49 +48,25 @@ pub(super) async fn prepare_dynamic_plan(
             // - Network boundaries contain statistics collected from runtime information, gathered
             //   by the SamplerExec injected by this same function.
             let cost = calculate_cost(&input_stage.plan)?;
-            metrics.push(BytesCounterMetric::new_metric(
-                "cpu_cost",
-                *cost.cpu.get_value().unwrap_or(&0),
-            ));
-            metrics.push(BytesCounterMetric::new_metric(
-                "memory_cost",
-                *cost.memory.get_value().unwrap_or(&0),
-            ));
-            metrics.push(BytesCounterMetric::new_metric(
-                "network_cost",
-                *cost.network.get_value().unwrap_or(&0),
-            ));
 
-            let ev = DynamicStageBuiltEvent {
+            let propagated_task_count = nb_ctx.task_count(&input_stage.plan)?;
+            let ev = StageBuiltEvent {
                 session_config: nb_ctx.cfg,
                 cost,
-                plan: &input_stage.plan,
+                plan: input_stage.plan,
             };
-            let prev_task_count = nb_ctx.task_count(&input_stage.plan)?;
-            let mut new_task_count = None;
-            if let Some(response) = DynamicStageBuiltHandlers::handle(ev).transpose()? {
-                input_stage.plan = response.plan;
-                new_task_count = response.task_count;
-            };
-
-            let new_task_count = match new_task_count {
-                Some(new_task_count) => new_task_count,
-                None => {
-                    let partitions = input_stage.plan.output_partitioning().partition_count();
-                    let compute_based_task_count = *cost.cpu.get_value().unwrap_or(&0) as f64
-                        / nb_ctx.d_cfg.dynamic_bytes_per_partition.max(1) as f64
-                        / partitions.max(1) as f64;
-                    TaskCountAnnotation::soft(compute_based_task_count)
-                }
-            };
-
-            let task_count = prev_task_count.merge(new_task_count)?;
+            let StageBuiltEventResponse {
+                task_count,
+                plan,
+                mut metrics,
+            } = StageBuiltHandlers::handle(ev)?;
+            let task_count = task_count.merge(propagated_task_count)?;
 
             // Propagate the final task_count inferred based on runtime statistics and compute cost.
             // Here is where leaf nodes are scaled up by ScaleUpLeafNodeHandler, and the
             // plan is finally left ready for distribution.
-            input_stage.plan = nb_ctx
-                .propagate_task_count_until_network_boundaries(&input_stage.plan, task_count)?;
+            input_stage.plan =
+                nb_ctx.propagate_task_count_until_network_boundaries(&plan, task_count)?;
             input_stage.tasks = task_count.as_usize();
             // In order to infer the compute the cost of the stage above this one, here a sampler
             // is injected to gather runtime statistics.

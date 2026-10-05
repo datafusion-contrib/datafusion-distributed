@@ -1,15 +1,15 @@
 use crate::distributed_planner::insert_broadcast::is_left_broadcast_safe;
 use crate::events::{
     DesiredTaskCountEvent, DesiredTaskCountHandlers, ScaleUpLeafNodeEvent, ScaleUpLeafNodeHandlers,
-    TaskCountAnnotation,
+    StageBuiltHandlers, TaskCountAnnotation,
 };
 use crate::execution_plans::ChildrenIsolatorUnionExec;
 use crate::execution_plans::ShuffleMode;
 use crate::stage::LocalStage;
 use crate::worker_resolver::WorkerResolverExtension;
 use crate::{
-    BroadcastExec, DistributedConfig, NetworkBoundaryExt, NetworkBroadcastExec,
-    NetworkCoalesceExec, NetworkShuffleExec, Stage,
+    BroadcastExec, Cost, DistributedConfig, NetworkBoundaryExt, NetworkBroadcastExec,
+    NetworkCoalesceExec, NetworkShuffleExec, Stage, StageBuiltEvent, StageBuiltEventResponse,
 };
 use async_trait::async_trait;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
@@ -644,14 +644,29 @@ impl NetworkBoundaryBuilder for CardinalityBasedNetworkBoundaryBuilder {
         nb_type: TypeId,
         nb_ctx: &'a InjectNetworkBoundaryContext<'a>,
     ) -> Result<NetworkBoundaryBuilderResult> {
-        let tc = nb_ctx.task_count(&input_stage.plan)?;
+        let propagated_task_count = nb_ctx.task_count(&input_stage.plan)?;
+
+        let ev = StageBuiltEvent {
+            session_config: nb_ctx.cfg,
+            // Cost::default() returns absent cost estimations.
+            cost: Cost::default(),
+            plan: input_stage.plan,
+        };
+        let StageBuiltEventResponse {
+            task_count,
+            plan,
+            metrics,
+        } = StageBuiltHandlers::handle(ev)?;
+        let task_count = task_count.merge(propagated_task_count)?;
+
         input_stage.plan =
-            nb_ctx.propagate_task_count_until_network_boundaries(&input_stage.plan, tc)?;
+            nb_ctx.propagate_task_count_until_network_boundaries(&plan, task_count)?;
+        input_stage.metrics_set.extend(metrics);
         let input_properties = Arc::clone(input_stage.plan.properties());
 
         if nb_type == TypeId::of::<NetworkCoalesceExec>() {
             return Ok(NetworkBoundaryBuilderResult {
-                consumer_task_count: tc.hard(1),
+                consumer_task_count: task_count.hard(1),
                 input_stage: Stage::Local(input_stage),
                 input_properties,
             });
