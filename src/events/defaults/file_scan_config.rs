@@ -40,32 +40,67 @@ pub(crate) fn file_scan_config_scale_up_leaf_node(
     let file_scan = dse.data_source().downcast_ref::<FileScanConfig>()?;
     let partition_count = ev.plan.output_partitioning().partition_count();
 
-    let rebalanced = if file_scan.output_partitioning.is_some() {
-        let all_partitioned_files = file_scan
-            .file_groups
-            .iter()
-            .flat_map(|file_group| file_group.iter().cloned())
-            .collect::<Vec<_>>();
-        rebalance_round_robin(all_partitioned_files, partition_count * ev.task_count)
-            .into_iter()
-            .map(FileGroup::new)
-            .collect::<Vec<_>>()
-    } else {
-        FileGroupPartitioner::new()
-            .with_target_partitions(partition_count * ev.task_count)
-            .with_repartition_file_min_size(0)
-            .with_preserve_order_within_groups(!file_scan.output_ordering.is_empty())
-            .repartition_file_groups(&file_scan.file_groups)
-            .unwrap_or_else(|| file_scan.file_groups.clone())
-            .into_iter()
-            .collect()
-    };
-
     let mut file_scan_template = file_scan.clone();
     file_scan_template.file_groups.clear();
     let mut file_scans = vec![file_scan_template; ev.task_count];
-    for (i, file_group) in rebalanced.into_iter().enumerate() {
-        file_scans[i % ev.task_count].file_groups.push(file_group);
+
+    let is_sorted = !file_scan.output_ordering.is_empty();
+    let is_pre_partitioned = file_scan.output_partitioning.is_some();
+
+    match (is_sorted, is_pre_partitioned) {
+        // partitioned, whether it's sorted or not.
+        (_, true) => {
+            let all_partitioned_files = file_scan
+                .file_groups
+                .iter()
+                .flat_map(|file_group| file_group.iter().cloned())
+                .collect::<Vec<_>>();
+            let rebalanced =
+                rebalance_round_robin(all_partitioned_files, partition_count * ev.task_count)
+                    .into_iter()
+                    .map(FileGroup::new);
+            for (i, file_group) in rebalanced.into_iter().enumerate() {
+                file_scans[i % ev.task_count].file_groups.push(file_group);
+            }
+        }
+        // sorted but not partitioned.
+        (true, false) => {
+            // Preserve each input group's order while splitting its files and byte ranges
+            // across every task. Each task receives one fragment of every original group.
+            for file_group in &file_scan.file_groups {
+                let mut fragments = FileGroupPartitioner::new()
+                    .with_target_partitions(ev.task_count)
+                    .with_repartition_file_min_size(0)
+                    .repartition_file_groups(std::slice::from_ref(file_group))
+                    .unwrap_or_else(|| vec![file_group.clone()]);
+                fragments.resize(ev.task_count, FileGroup::default());
+                for (file_scan, fragment) in file_scans.iter_mut().zip(fragments) {
+                    file_scan.file_groups.push(fragment);
+                }
+            }
+        }
+        // neither sorted nor partitioned.
+        (false, false) => {
+            let rebalanced = FileGroupPartitioner::new()
+                .with_target_partitions(partition_count * ev.task_count)
+                .with_repartition_file_min_size(0)
+                .repartition_file_groups(&file_scan.file_groups)
+                .unwrap_or_else(|| file_scan.file_groups.clone());
+            for (i, file_group) in rebalanced.into_iter().enumerate() {
+                file_scans[i % ev.task_count].file_groups.push(file_group);
+            }
+        }
+    }
+
+    let variant_partition_count = file_scans
+        .iter()
+        .map(|file_scan| file_scan.file_groups.len())
+        .max()
+        .unwrap_or_default();
+    for file_scan in &mut file_scans {
+        while file_scan.file_groups.len() < variant_partition_count {
+            file_scan.file_groups.push(FileGroup::default());
+        }
     }
 
     let distributed_leaf_result = DistributedLeafExec::try_new(
