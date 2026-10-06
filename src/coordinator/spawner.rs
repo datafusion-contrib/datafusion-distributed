@@ -22,7 +22,7 @@ impl Spawner {
 
         // Supervisor task responsible for propagating errors from tasks to the main
         // query response stream. Terminates when all tasks finished, otherwise
-        // blocks the resposne stream from finishing.
+        // blocks the response stream from finishing.
         output.spawn(async move {
             let mut tasks = JoinSet::new();
             loop {
