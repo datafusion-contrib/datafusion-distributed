@@ -55,6 +55,15 @@ pub enum CoordinatorToWorkerMsg {
     WorkUnitBatch(WorkUnitBatch),
     /// Signals an EOS for WorkUnits. After this message is received, no more WorkUnits will be sent.
     WorkUnitEos,
+    /// Sends a dynamic-filter update to one consumer task which should be applied locally.
+    ApplyDynamicFilter(Box<ApplyDynamicFilter>),
+}
+
+#[derive(Clone, Debug)]
+pub struct ApplyDynamicFilter {
+    pub expression_id: u64,
+    /// A full dynamic filter containing the merged predicate.
+    pub expression: MaybeEncoded<Arc<dyn PhysicalExpr>>,
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]

@@ -222,28 +222,29 @@ impl ExecutionPlan for DistributedExec {
         let prepared_plan = Arc::clone(&self.prepared_plan);
         let collect_dynamic_filters = self.completed_dynamic_filter_store.is_some();
 
+        let mut builder = RecordBatchReceiverStreamBuilder::new(self.schema(), 1);
+        let tx = builder.tx();
         let query_coordinator = Arc::new(QueryCoordinator::new(
             Arc::clone(&context),
             &self.metrics,
             self.metrics_store.clone(),
             self.completed_dynamic_filter_store.clone(),
+            &mut builder,
         ));
-
-        let mut builder = RecordBatchReceiverStreamBuilder::new(self.schema(), 1);
-        let tx = builder.tx();
-
+        // Capture the guard before spawning so even an unpolled execution future cancels on drop.
+        let guard = query_coordinator.spawner.end_query_guard();
         builder.spawn(async move {
             // Dropping this `guard` is what signals the coordinator->worker channel to be dropped,
             // which triggers a chain reaction that ends up also gracefully closing the
             // worker->coordinator channel. The flow looks like this:
-            // 1. The query ends normally, as all Arrow RecordBatches are already streamed.
-            // 2. The `guard` here is dropped.
-            // 3. In StageCoordinator::send_plan_task(), `end_stream_notifier` fires and the
-            //    coordinator->worker channel is gracefully ended.
-            // 4. The coordinator->worker channel EOS is received in `impl_coordinator_channel.rs`.
-            // 5. The metrics are send back in the worker->coordinator channel, and then that
-            //    channel is closed.
-            let guard = query_coordinator.end_query_guard();
+            // 1. Execution ends normally. All Arrow RecordBatches are emitted (note that
+            //    the response stream does not terminate yet).
+            // 2. The `guard` here is dropped, signalling the coordinator->worker streams to finish.
+            // 3. The worker observes end-of-stream in `impl_coordinator_channel.rs`.
+            // 4. The worker sends final metrics etc., if enabled.
+            // 5. The tasks owned by the response stream finish, such as tasks collecting metrics etc.
+            // 6. The response stream finishes, ending the query for the user.
+            let _guard = guard;
 
             let d_cfg = DistributedConfig::from_config_options(context.session_config().options())?;
             let mut prepared = match d_cfg.dynamic_task_count {
@@ -266,13 +267,10 @@ impl ExecutionPlan for DistributedExec {
             })?;
             let mut stream = head_stage.execute(partition, context)?;
             while let Some(msg) = stream.next().await {
-                if tx.send(msg).await.is_err() {
+                if tx.send(Ok(msg?)).await.is_err() {
                     break; // channel closed
                 }
             }
-            drop(guard);
-            drop(tx);
-            query_coordinator.drain_pending_tasks().await?;
             Ok(())
         });
 

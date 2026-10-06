@@ -15,6 +15,7 @@ mod tests {
     use futures::TryStreamExt;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
+    use tokio::time::timeout;
 
     #[tokio::test]
     async fn single_task_no_distribution() -> Result<(), Box<dyn std::error::Error>> {
@@ -714,15 +715,15 @@ mod tests {
 
     /// Same as [`err_op_in_single_task_propagates`] but with two tasks, so the
     /// erroring feed actually goes through the coordinator → worker gRPC path.
-    /// Guards against errors being silently swallowed as EOF on the worker side.
     #[tokio::test]
     async fn err_op_in_distributed_feed_propagates() -> Result<(), Box<dyn std::error::Error>> {
-        let res = run_query(
-            r#"
-            SELECT * FROM test_work_unit('a', 2, 'rows(1)', 'rows(1), err(boom_distributed)')
-            "#,
-        )
-        .await;
+        let query = r#"
+            SELECT * FROM test_work_unit('a', 2, 'wait(30000), rows(1)', 'rows(1), err(boom_distributed)')
+        "#;
+        // Expect the query to fail fast rather than waitinng for the unrelated 30s feed.
+        let res = timeout(Duration::from_secs(5), run_query(query))
+            .await
+            .expect("feed error waited for an unrelated pending feed");
         let err = res.expect_err("distributed query should have failed");
         let msg = err.to_string();
         assert!(

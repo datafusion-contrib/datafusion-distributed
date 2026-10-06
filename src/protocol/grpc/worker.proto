@@ -25,11 +25,19 @@ message CoordinatorToWorkerMsg {
     bool work_unit_eos = 3;
     // Signals the worker to begin sampling during adaptive query execution.
     KickOffSampling kick_off_sampling = 4;
+    // Sends a coordinator-merged dynamic-filter update to one consumer task.
+    ApplyDynamicFilter apply_dynamic_filter = 5;
   }
 }
 
 message KickOffSampling {
 
+}
+
+message ApplyDynamicFilter {
+  uint64 expression_id = 1;
+  // Serialized datafusion.proto.PhysicalExprNode containing a full DynamicFilter expression.
+  bytes expression_proto = 2;
 }
 
 message WorkerToCoordinatorMsg {
