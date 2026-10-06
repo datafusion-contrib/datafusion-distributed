@@ -106,11 +106,11 @@ pub(super) async fn prepare_dynamic_plan(
                 let results = futures::future::try_join_all(futures).await?;
 
                 let mut workers = Vec::with_capacity(input_stage.tasks);
-                for (task_i, (url, worker_tx, worker_stream)) in results.into_iter().enumerate() {
+                for (task_i, (url, worker_tx, worker_rx_stream)) in results.into_iter().enumerate() {
                     workers.push(url);
                     load_info_rxs.push({
                         let rx =
-                            stage_coordinator.worker_to_coordinator_task(task_i, worker_stream);
+                            stage_coordinator.worker_to_coordinator_task(task_i, worker_rx_stream);
                         UnboundedReceiverStream::new(rx)
                     });
                     let _ = worker_tx.send(CoordinatorToWorkerMsg::KickOffSampling);

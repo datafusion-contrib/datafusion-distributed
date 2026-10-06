@@ -1,6 +1,8 @@
 #[cfg(all(feature = "integration", test))]
 mod tests {
+    use async_trait::async_trait;
     use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
+    use datafusion::common::{assert_contains, exec_err};
     use datafusion::error::DataFusionError;
     use datafusion::execution::{SendableRecordBatchStream, SessionState, TaskContext};
     use datafusion::physical_expr::{EquivalenceProperties, PhysicalExpr};
@@ -12,16 +14,23 @@ mod tests {
     };
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::parquet::register_parquet_tables;
-    use datafusion_distributed::{DistributedExt, WorkerQueryContext};
+    use datafusion_distributed::test_utils::routing::UrlEmitterRouteTaskHandler;
+    use datafusion_distributed::{
+        DefaultSessionBuilder, DistributedExt, RouteTaskEvent, RouteTaskEventResponse,
+        RouteTaskHandler, WorkerQueryContext, ok_or_some_err,
+    };
     use datafusion_proto::physical_plan::{
         PhysicalExtensionCodec, PhysicalProtoConverterExtension,
     };
     use datafusion_proto::protobuf::proto_error;
-    use futures::{TryStreamExt, stream};
+    use futures::{StreamExt, TryStreamExt, stream};
     use prost::Message;
     use std::error::Error;
     use std::fmt::Formatter;
     use std::sync::Arc;
+    use std::time::Duration;
+    use test_case::test_case;
+    use tokio::time::timeout;
 
     #[tokio::test]
     async fn test_error_propagation() -> Result<(), Box<dyn Error>> {
@@ -64,6 +73,42 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[test_case(false; "static_planner")]
+    #[test_case(true; "adaptive_planner")]
+    #[tokio::test]
+    async fn worker_channel_error_fails_query(adaptive: bool) -> Result<(), Box<dyn Error>> {
+        let (ctx, _guard, _) = start_localhost_context(2, DefaultSessionBuilder).await;
+        let ctx = ctx
+            .with_distributed_dynamic_task_count(adaptive)?
+            .with_distributed_route_task_handler(FailingWorkerChannel);
+        register_parquet_tables(&ctx).await?;
+        let query = ctx
+            .sql(r#"SELECT "MinTemp" FROM weather WHERE "MinTemp" > 20.0"#)
+            .await?;
+        let error = timeout(Duration::from_secs(5), query.collect())
+            .await?
+            .expect_err("worker channel error must fail the query");
+        assert_contains!(error.to_string(), "injected worker channel error");
+        Ok(())
+    }
+
+    struct FailingWorkerChannel;
+
+    #[async_trait]
+    impl RouteTaskHandler for FailingWorkerChannel {
+        async fn handle(
+            &self,
+            event: RouteTaskEvent<'_>,
+        ) -> Option<Result<RouteTaskEventResponse, DataFusionError>> {
+            let mut response = ok_or_some_err!(UrlEmitterRouteTaskHandler.handle(event).await?);
+            response.worker_to_coordinator_stream =
+                stream::once(async { exec_err!("injected worker channel error") })
+                    .chain(response.worker_to_coordinator_stream)
+                    .boxed();
+            Some(Ok(response))
+        }
     }
 
     /// A custom execution plan that wraps a child but always throws an error.
