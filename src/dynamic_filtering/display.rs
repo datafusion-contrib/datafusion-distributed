@@ -17,7 +17,6 @@ use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::{
     ChildrenPropertiesMode, ExecutionPlan, ExecutionPlanProperties, ReplaceChildrenOptions,
 };
-use datafusion_proto::protobuf::physical_expr_node::ExprType;
 use std::sync::Arc;
 
 /// Rewrites an executed distributed plan with the dynamic filters reported by its completed
@@ -214,14 +213,6 @@ fn apply_reports_to_distributed_leaves(
                 let Some(expression) = updates.get(&consumer.id).copied() else {
                     continue;
                 };
-                let proto = expression.to_proto(task_ctx)?;
-                let Some(ExprType::DynamicFilter(dynamic_filter_proto)) = proto.expr_type.as_ref()
-                else {
-                    return internal_err!("expected a dynamic filter in the completed task report");
-                };
-                let Some(predicate) = dynamic_filter_proto.inner_expr.as_deref() else {
-                    return internal_err!("reported dynamic filter has no predicate");
-                };
                 let Some(producer_schema) = producer_schemas.get(&consumer.id) else {
                     return internal_err!(
                         "missing producer schema for dynamic filter {}",
@@ -230,7 +221,7 @@ fn apply_reports_to_distributed_leaves(
                 };
                 apply_dynamic_filter_update(
                     &consumer.expression,
-                    predicate,
+                    expression,
                     producer_schema.as_ref(),
                     task_ctx,
                 )?;

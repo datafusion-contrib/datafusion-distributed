@@ -25,7 +25,6 @@ use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr::expressions::DynamicFilterPhysicalExpr;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionConfig;
-use datafusion_proto::protobuf::physical_expr_node::ExprType;
 use futures::stream::{BoxStream, FuturesUnordered, select_all};
 use futures::{FutureExt, StreamExt, TryStreamExt};
 use http::HeaderMap;
@@ -373,31 +372,12 @@ fn apply_merged_dynamic_filter(
         );
     };
 
-    // Bytes to PhysicalExprNode
-    let expression = filter.expression.to_proto(task_ctx)?;
-
-    if expression.expr_id != Some(filter.expression_id) {
-        return internal_err!("dynamic filter update has a mismatched expression ID");
-    }
-
-    let Some(ExprType::DynamicFilter(update)) = expression.expr_type else {
-        return internal_err!("expected a dynamic filter update");
-    };
-
-    let Some(predicate) = update.inner_expr else {
-        return internal_err!("dynamic filter update has no predicate");
-    };
-
     apply_dynamic_filter_update(
         &consumer.expression,
-        &predicate,
+        &filter.expression,
         filter.producer_schema.as_ref(),
         task_ctx,
-    )?;
-    if update.is_complete {
-        consumer.expression.mark_complete();
-    }
-    Ok(())
+    )
 }
 
 /// Finds all consumed dynamic filters for the completed task report.
