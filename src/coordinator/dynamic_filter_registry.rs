@@ -402,7 +402,7 @@ fn merge_predicates(
             expr_type: Some(ExprType::BinaryExpr(Box::new(PhysicalBinaryExprNode {
                 l: None,
                 r: None,
-                op: if mode == DynamicFilterMergeMode::IntersectOnUpdate {
+                op: if mode == DynamicFilterMergePolicy::IntersectOnUpdate {
                     "And"
                 } else {
                     "Or"

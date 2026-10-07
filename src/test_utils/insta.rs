@@ -30,6 +30,11 @@ pub fn settings() -> insta::Settings {
         r"(DynamicFilter \[[^\[\]]*IN \(SET\) \(\[)[^\]]*(\]\))",
         "${1}<values>${2}",
     );
+    // Omit runtime pruning details when dynamic filters have normalized labels.
+    settings.add_filter(
+        r"(DynamicFilter \[ expression_id_[^\n]*?dynamic_rg_pruning=eligible)[^\n]*",
+        "${1}",
+    );
     // When a scan has a limit, DataFusion stops scanning files as soon as the row count limit
     // is satisfied. Because file metadata is fetched asynchronously (buffer_unordered) from
     // the directory listing, whichever file finishes reading first is selected as the sole

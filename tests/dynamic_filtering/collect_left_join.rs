@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::common::{LOCAL_AND_REMOTE_UNION_QUERY, TestQuery};
+    use crate::common::TestQuery;
     use datafusion::common::Result;
     use datafusion_distributed::assert_snapshot;
 
@@ -118,10 +118,32 @@ mod tests {
     /// Task 1's filter reports must reach variant 0 of its isolated union child.
     #[tokio::test]
     async fn union_with_local_and_remote_probe_children() -> Result<()> {
-        let display = TestQuery::new(LOCAL_AND_REMOTE_UNION_QUERY)
-            .with_broadcast_joins()
-            .execute()
-            .await?;
+        let display = TestQuery::new(
+            r#"
+                WITH remote_probe AS (
+                    SELECT probe."WindGustDir" AS key
+                    FROM (
+                        SELECT DISTINCT "RainToday" AS key
+                        FROM weather
+                    ) nested_build
+                    JOIN weather probe
+                        ON nested_build.key = probe."RainToday"
+                )
+                SELECT COUNT(*)
+                FROM (
+                    SELECT DISTINCT "WindGustDir" AS key
+                    FROM weather
+                ) build
+                JOIN (
+                    SELECT "WindGustDir" AS key FROM weather
+                    UNION ALL
+                    SELECT key FROM remote_probe
+                ) probe ON build.key = probe.key
+            "#,
+        )
+        .with_broadcast_joins()
+        .execute()
+        .await?;
         // The consumer in c0 of t0 in stage 5 sees the dynamic filter from the topmost join.
         // The consumer in c1 of t1 in stage 5 sees distinct local dynamic filters from both joins.
         // DataFusion ANDs distinct dynamic filter predicates.
