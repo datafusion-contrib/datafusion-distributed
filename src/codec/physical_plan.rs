@@ -1,8 +1,7 @@
 use super::DistributedCodec;
 use datafusion::arrow::datatypes::{Schema, SchemaRef};
-use datafusion::common::{Result, internal_err};
+use datafusion::common::Result;
 use datafusion::execution::TaskContext;
-use datafusion::physical_expr::expressions::DynamicFilterPhysicalExpr;
 use datafusion::physical_expr::{Partitioning, PhysicalExpr};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::bytes::{
@@ -14,7 +13,6 @@ use datafusion_proto::physical_plan::{
     DeduplicatingProtoConverter, PhysicalPlanDecodeContext, PhysicalProtoConverterExtension,
 };
 use datafusion_proto::protobuf;
-use datafusion_proto::protobuf::physical_expr_node::ExprType;
 use datafusion_proto::protobuf::proto_error;
 use prost::Message;
 use std::sync::Arc;
@@ -78,64 +76,6 @@ pub(crate) fn decode_physical_expr(
     let decode_ctx = PhysicalPlanDecodeContext::new(task_ctx, &codec);
     let converter = new_proto_converter();
     converter.proto_to_physical_expr(proto, input_schema, &decode_ctx)
-}
-
-/// Applies a predicate to a consumer dynamic filter expression.
-///
-/// To update a consumer, this function creates a synthetic "producer"
-/// [`DynamicFilterPhysicalExpr`] which can be used to update consumer
-/// dynamic filters via a shared state. The reason for this is to match
-/// the same behavior as DataFusion.
-///
-/// ```text
-/// HashJoinExec: on=[build.key = probe.key]
-/// │   └── producer: original=[key], children=[key]   ──────────────┐
-/// ├── build                                                        │
-/// └── UnionExec: probe                                             │
-///     ├── DataSourceExec: phone_number AS key                      │ shared inner
-///     │   └── consumer 1: original=[key], children=[phone_number] ─┤
-///     └── DataSourceExec: telephone AS key                         │
-///         └── consumer 2: original=[key], children=[telephone]  ───┘
-/// ```
-///
-/// Behavior:
-/// 1. [`DynamicFilterPhysicalExpr::update()`] remaps any occurrences of `original` to `children`
-///    and stores the result in the shared state.
-///
-/// 2. [`DynamicFilterPhysicalExpr::current()`] reads the remapped expression and remaps it again,
-///    mapping `original` to `children` and returns it without storing.
-///
-/// In the above plan, the producer calls update() so an expression like `key > 123` is mapped to
-/// `key > 123` and this is stored. Then, the consumers call current(), reading from the same state,
-/// to get `phone_number > 123` and `telephone > 123` respectively.
-///
-/// You cannot update() consumers directly. In the above example, updating consumer 1 would remap
-/// `key > 123` to `phone_number > 123` and store this in the shared state. Consumer 2 would be
-/// unable to apply this filter now.
-pub(crate) fn apply_dynamic_filter_update(
-    consumer: &Arc<DynamicFilterPhysicalExpr>,
-    predicate: &protobuf::PhysicalExprNode,
-    producer_schema: &Schema,
-    task_ctx: &TaskContext,
-) -> Result<()> {
-    let predicate = decode_physical_expr(predicate, producer_schema, task_ctx)?;
-    // Since consumer.children() returns the remapped children, we use the proto as a workaround to get the
-    // original children from the producer.
-    let consumer: Arc<dyn PhysicalExpr> = consumer.clone();
-    let proto = encode_physical_expr(&consumer, task_ctx)?;
-    let Some(ExprType::DynamicFilter(dynamic_filter)) = proto.expr_type else {
-        return internal_err!("expected a dynamic filter expression");
-    };
-    let original_children = dynamic_filter
-        .children
-        .iter()
-        .map(|child| decode_physical_expr(child, producer_schema, task_ctx))
-        .collect::<Result<Vec<_>>>()?;
-    let update_target = Arc::clone(&consumer).with_new_children(original_children)?;
-    let Ok(update_target) = Arc::downcast::<DynamicFilterPhysicalExpr>(update_target) else {
-        return internal_err!("expected a dynamic filter update target");
-    };
-    update_target.update(predicate)
 }
 
 pub(crate) fn encode_partitioning(

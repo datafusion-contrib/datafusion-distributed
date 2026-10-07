@@ -1,8 +1,9 @@
-use crate::codec::{apply_dynamic_filter_update, roundtrip_pb};
+use crate::codec::roundtrip_pb;
 use crate::common::TreeNodeExt;
 use crate::coordinator::DistributedExec;
 use crate::dynamic_filtering::{
-    discover_dynamic_filter_consumers, discover_dynamic_filter_producers,
+    apply_dynamic_filter_update, discover_dynamic_filter_consumers,
+    discover_dynamic_filter_producers,
 };
 use crate::execution_plans::{DistributedLeafExec, TaskVariantsExec};
 use crate::stage::{LocalStage, Stage, find_all_stages};
@@ -317,9 +318,6 @@ fn apply_report(
         let Some(ExprType::DynamicFilter(dynamic_filter_proto)) = proto.expr_type.as_ref() else {
             return internal_err!("expected a dynamic filter in the completed task report");
         };
-        if dynamic_filter_proto.generation <= 1 {
-            continue;
-        }
         let Some(predicate) = dynamic_filter_proto.inner_expr.as_deref() else {
             return internal_err!("reported dynamic filter has no predicate");
         };
