@@ -22,28 +22,6 @@ use datafusion_distributed::{
 };
 use std::sync::Arc;
 
-pub(crate) const LOCAL_AND_REMOTE_UNION_QUERY: &str = r#"
-    WITH remote_probe AS (
-        SELECT probe."WindGustDir" AS key
-        FROM (
-            SELECT DISTINCT "RainToday" AS key
-            FROM weather
-        ) nested_build
-        JOIN weather probe
-            ON nested_build.key = probe."RainToday"
-    )
-    SELECT COUNT(*)
-    FROM (
-        SELECT DISTINCT "WindGustDir" AS key
-        FROM weather
-    ) build
-    JOIN (
-        SELECT "WindGustDir" AS key FROM weather
-        UNION ALL
-        SELECT key FROM remote_probe
-    ) probe ON build.key = probe.key
-"#;
-
 pub(crate) struct TestQuery<'a> {
     sql: &'a str,
     expected_rows: usize,
@@ -276,10 +254,7 @@ struct DynamicFilterLabels {
 impl DynamicFilterLabels {
     fn normalize(&mut self, plan: Arc<dyn ExecutionPlan>) -> Result<String> {
         self.label_plan(&plan)?;
-        Ok(remove_runtime_pruning_details(display_plan_ascii(
-            plan.as_ref(),
-            false,
-        )))
+        Ok(display_plan_ascii(plan.as_ref(), false))
     }
 
     fn label_plan(&mut self, plan: &Arc<dyn ExecutionPlan>) -> Result<()> {
@@ -370,22 +345,6 @@ fn normalize_columns(predicate: Arc<dyn PhysicalExpr>) -> Result<Arc<dyn Physica
             ))
         })?
         .data)
-}
-
-fn remove_runtime_pruning_details(display: String) -> String {
-    const START: &str = "DynamicFilter [ expression_id_";
-    const END: &str = "dynamic_rg_pruning=eligible";
-
-    display
-        .lines()
-        .map(|line| {
-            let (Some(start), Some(end)) = (line.find(START), line.find(END)) else {
-                return line.to_owned();
-            };
-            format!("{}{}", &line[..start], &line[start..end + END.len()])
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 fn set_dynamic_filter_pushdown(ctx: &SessionContext, enabled: bool) -> Result<()> {
