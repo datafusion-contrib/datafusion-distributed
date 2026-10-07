@@ -1,7 +1,7 @@
-use crate::codec::apply_dynamic_filter_update;
 use crate::common::TreeNodeExt;
 use crate::dynamic_filtering::{
-    DiscoveredDynamicFilter, discover_dynamic_filter_consumers, discover_dynamic_filter_producers,
+    DiscoveredDynamicFilter, apply_dynamic_filter_update, discover_dynamic_filter_consumers,
+    discover_dynamic_filter_producers,
 };
 use crate::events::{WorkerPlanRewriteEvent, WorkerPlanRewriteHandlers};
 use crate::execution_plans::SamplerExec;
@@ -216,7 +216,9 @@ impl Worker {
                             &dynamic_filter_task_ctx,
                         ) {
                             let _ = dynamic_filters_error_tx.try_send(error);
-                            break;
+                            // Continue to read messages. Let the coordinator handle the error
+                            // sent on the channel and gracefully terminate the worker.impl
+                            continue;
                         }
                     }
                 }
@@ -292,14 +294,14 @@ impl Worker {
                 )
             }));
 
+        let dynamic_filters_error_stream = ReceiverStream::new(dynamic_filters_error_rx);
+
         let stream = select_all([
             produced_dynamic_filters_stream.map(Ok).boxed(),
             load_info_stream.map(Ok).boxed(),
             metrics_stream.map(Ok).boxed(),
             dynamic_filters_stream.map(Ok).boxed(),
-            ReceiverStream::new(dynamic_filters_error_rx)
-                .map(Err)
-                .boxed(),
+            dynamic_filters_error_stream.map(Err).boxed(),
         ])
         .boxed();
 
@@ -411,6 +413,10 @@ fn build_task_completed_dynamic_filters(
 ) -> Result<TaskCompletedDynamicFilters> {
     let mut filters = vec![];
     for consumer in discover_dynamic_filter_consumers(plan)?.consumers {
+        // Generation numbers start at 1. Avoid sending any empty filters.
+        if consumer.expression.snapshot_generation() <= 1 {
+            continue;
+        }
         filters.push(TaskDynamicFilter {
             expression_id: consumer.id,
             expression: MaybeEncoded::Decoded(consumer.expression),

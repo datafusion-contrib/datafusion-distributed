@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::common::{LOCAL_AND_REMOTE_UNION_QUERY, TestQuery, execute_range_partitioned_query};
+    use crate::common::{TestQuery, execute_range_partitioned_query};
     use datafusion::common::Result;
     use datafusion_distributed::assert_snapshot;
     use datafusion_distributed::test_utils::insta::insta::allow_duplicates;
@@ -268,9 +268,31 @@ mod tests {
 
     #[tokio::test]
     async fn union_with_local_and_remote_probe_children() -> Result<()> {
-        let display = TestQuery::new(LOCAL_AND_REMOTE_UNION_QUERY)
-            .execute()
-            .await?;
+        let display = TestQuery::new(
+            r#"
+                WITH remote_probe AS (
+                    SELECT probe."WindGustDir" AS key
+                    FROM (
+                        SELECT DISTINCT "RainToday" AS key
+                        FROM weather
+                    ) nested_build
+                    JOIN weather probe
+                        ON nested_build.key = probe."RainToday"
+                )
+                SELECT COUNT(*)
+                FROM (
+                    SELECT DISTINCT "WindGustDir" AS key
+                    FROM weather
+                ) build
+                JOIN (
+                    SELECT "WindGustDir" AS key FROM weather
+                    UNION ALL
+                    SELECT key FROM remote_probe
+                ) probe ON build.key = probe.key
+            "#,
+        )
+        .execute()
+        .await?;
 
         // Complex test.
         // Dynamic filters from the stage 5 tasks are merged and forwarded to both c0 of t0 in stage

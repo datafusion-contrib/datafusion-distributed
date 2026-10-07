@@ -23,15 +23,17 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum DynamicFilterMergeMode {
+enum DynamicFilterMergePolicy {
     /// Wait for every planned producer task to report a complete dynamic filter, then
-    /// merge and forward the filter. Used for partitioned joins.
-    AllProducersComplete,
+    /// union and forward the filter. Used for partitioned joins.
+    UnionWhenAllComplete,
     /// Wait for any producer to report a complete dynamic filter and forward it.
     /// Used for collect left joins.
-    FirstProducerComplete,
-    /// Forward any update received from any producer.
-    Incremental,
+    ForwardFirstComplete,
+    /// Intersect all updates from producers and immediately forward them. Used
+    /// for TopK and Min/Max aggregate dynamic filters where intersecting updates
+    /// is safe.
+    IntersectOnUpdate,
 }
 
 #[derive(Default)]
@@ -49,7 +51,7 @@ pub(super) struct PlannedDynamicFilter {
     /// Populated upon task registration when a producer is found.
     ///
     /// The behavior to take when an update arrives from a producer.
-    pub(super) merge_mode: Option<DynamicFilterMergeMode>,
+    pub(super) merge_mode: Option<DynamicFilterMergePolicy>,
     /// Schema of the original producer arguments, shared by all producer tasks.
     pub(super) producer_schema: Option<SchemaRef>,
 
@@ -120,11 +122,11 @@ impl DynamicFilterRegistry {
                 .downcast_ref::<HashJoinExec>()
                 .is_some_and(|join| matches!(join.partition_mode(), PartitionMode::CollectLeft))
             {
-                DynamicFilterMergeMode::FirstProducerComplete
+                DynamicFilterMergePolicy::ForwardFirstComplete
             } else if node.is::<SortExec>() || node.is::<AggregateExec>() {
-                DynamicFilterMergeMode::Incremental
+                DynamicFilterMergePolicy::IntersectOnUpdate
             } else {
-                DynamicFilterMergeMode::AllProducersComplete
+                DynamicFilterMergePolicy::UnionWhenAllComplete
             };
             let produced_ids: HashSet<_> = node
                 .dynamic_expressions_produced()
@@ -257,7 +259,7 @@ impl DynamicFilterRegistry {
                 report.expression_id
             );
         };
-        if (filter.merge_mode != Some(DynamicFilterMergeMode::Incremental)
+        if (filter.merge_mode != Some(DynamicFilterMergePolicy::IntersectOnUpdate)
             && !dynamic_filter.is_complete)
             || previous
                 .as_ref()
@@ -290,7 +292,7 @@ impl DynamicFilterRegistry {
                 state.sealed_stages.contains(&task.stage_id)
                     && report.as_ref().is_some_and(|report| report.is_complete)
             });
-        if mode == DynamicFilterMergeMode::AllProducersComplete && !all_complete {
+        if mode == DynamicFilterMergePolicy::UnionWhenAllComplete && !all_complete {
             return false;
         }
 
@@ -300,7 +302,7 @@ impl DynamicFilterRegistry {
             .filter_map(|(task, report)| report.as_ref().map(|report| (task, report)))
             .collect();
         reports.sort_unstable_by_key(|(key, _)| (key.stage_id, key.task_number));
-        if mode == DynamicFilterMergeMode::FirstProducerComplete {
+        if mode == DynamicFilterMergePolicy::ForwardFirstComplete {
             reports.truncate(1);
         }
         let Some((_, template)) = reports.first() else {
@@ -314,7 +316,7 @@ impl DynamicFilterRegistry {
             mode,
         )
         .map(Box::new);
-        let is_complete = mode == DynamicFilterMergeMode::FirstProducerComplete || all_complete;
+        let is_complete = mode == DynamicFilterMergePolicy::ForwardFirstComplete || all_complete;
         if previous.is_some_and(|previous| {
             previous.inner_expr == inner_expr && previous.is_complete == is_complete
         }) {
@@ -387,10 +389,10 @@ impl DynamicFilterRegistry {
 }
 
 /// Merges [`PhysicalExprNode`] together. Merge behavior (ex. AND vs OR) is determined
-/// by the provided [`DynamicFilterMergeMode`].
+/// by the provided [`DynamicFilterMergePolicy`].
 fn merge_predicates(
     mut predicates: Vec<PhysicalExprNode>,
-    mode: DynamicFilterMergeMode,
+    mode: DynamicFilterMergePolicy,
 ) -> Option<PhysicalExprNode> {
     match predicates.len() {
         0 => None,
@@ -400,7 +402,7 @@ fn merge_predicates(
             expr_type: Some(ExprType::BinaryExpr(Box::new(PhysicalBinaryExprNode {
                 l: None,
                 r: None,
-                op: if mode == DynamicFilterMergeMode::Incremental {
+                op: if mode == DynamicFilterMergePolicy::IntersectOnUpdate {
                     "And"
                 } else {
                     "Or"

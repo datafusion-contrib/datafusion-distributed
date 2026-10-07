@@ -1,7 +1,7 @@
 use datafusion::arrow::datatypes::DataType;
 use datafusion::common::test_util::batches_to_sort_string;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
-use datafusion::common::{HashMap, Result, ScalarValue, SplitPoint, internal_err};
+use datafusion::common::{Result, ScalarValue, SplitPoint, internal_err};
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::listing::{
     ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl,
@@ -9,6 +9,7 @@ use datafusion::datasource::listing::{
 use datafusion::logical_expr::{Partitioning, RangePartitioning};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr::expressions::{Column, DynamicFilterPhysicalExpr, UnKnownColumn};
+use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::{ExecutionPlan, collect};
 use datafusion::prelude::{SessionContext, col};
 use datafusion_distributed::test_utils::localhost::start_localhost_context;
@@ -21,28 +22,6 @@ use datafusion_distributed::{
     display_plan_ascii, rewrite_distributed_plan_with_dynamic_filters,
 };
 use std::sync::Arc;
-
-pub(crate) const LOCAL_AND_REMOTE_UNION_QUERY: &str = r#"
-    WITH remote_probe AS (
-        SELECT probe."WindGustDir" AS key
-        FROM (
-            SELECT DISTINCT "RainToday" AS key
-            FROM weather
-        ) nested_build
-        JOIN weather probe
-            ON nested_build.key = probe."RainToday"
-    )
-    SELECT COUNT(*)
-    FROM (
-        SELECT DISTINCT "WindGustDir" AS key
-        FROM weather
-    ) build
-    JOIN (
-        SELECT "WindGustDir" AS key FROM weather
-        UNION ALL
-        SELECT key FROM remote_probe
-    ) probe ON build.key = probe.key
-"#;
 
 pub(crate) struct TestQuery<'a> {
     sql: &'a str,
@@ -106,8 +85,7 @@ impl<'a> TestQuery<'a> {
         self
     }
 
-    /// Adds a normalized hash to the dynamic filter display formatter. See
-    /// [`DynamicFilterLabels`] below.
+    /// Adds column-independent predicate labels for comparing remapped consumers.
     pub(crate) fn with_normalized_filter_hashes(mut self) -> Self {
         self.normalized_filter_hashes = true;
         self
@@ -248,11 +226,15 @@ async fn execute_query_and_display(
             "expected dynamic_filter_updates_received == 0, got {updates}"
         );
     }
-    DynamicFilterLabels {
-        normalized_predicates: normalized_filter_hashes.then(Vec::new),
-        ..Default::default()
-    }
-    .normalize(plan_with_dynamic_filters)
+    display_with_dynamic_filter_labels(&plan_with_dynamic_filters, normalized_filter_hashes)
+}
+
+fn set_dynamic_filter_pushdown(ctx: &SessionContext, enabled: bool) -> Result<()> {
+    let state = ctx.state_ref();
+    state.write().config_mut().options_mut().set(
+        "datafusion.optimizer.enable_dynamic_filter_pushdown",
+        &enabled.to_string(),
+    )
 }
 
 /// Encodes dynamic filter expressions in the plan deterministically for consistent snapshots.
@@ -263,135 +245,85 @@ async fn execute_query_and_display(
 /// Both of these are normalized to be monotonic integers starting from `0` for readability,
 /// assigned during a pre-order traversal of the plan.
 ///
-/// If `normalized_predicates` is non empty, then we append the suffix `_normalized_hash_{}`
+/// If `normalized_filter_hashes` is non empty, then we append the suffix `_normalized_hash_{}`
 /// containing the hash of the expression without column names.
-#[derive(Default)]
-struct DynamicFilterLabels {
-    expression_ids: HashMap<u64, usize>,
-    // InListExpr ignores element order for equality, but not hashing.
-    predicates: Vec<Arc<dyn PhysicalExpr>>,
-    normalized_predicates: Option<Vec<Arc<dyn PhysicalExpr>>>,
-}
-
-impl DynamicFilterLabels {
-    fn normalize(&mut self, plan: Arc<dyn ExecutionPlan>) -> Result<String> {
-        self.label_plan(&plan)?;
-        Ok(remove_runtime_pruning_details(display_plan_ascii(
-            plan.as_ref(),
-            false,
-        )))
-    }
-
-    fn label_plan(&mut self, plan: &Arc<dyn ExecutionPlan>) -> Result<()> {
-        let mut updates = vec![];
-        plan.apply(|node| {
-            if let Some(leaf) = node.downcast_ref::<DistributedLeafExec>() {
-                for variant in leaf.variants() {
-                    self.label_variant(variant, &mut updates)?;
-                }
-            }
-            Ok(TreeNodeRecursion::Continue)
-        })?;
-        // Read every predicate before changing any potentially shared filter state.
-        for (dynamic_filter, label) in updates {
-            dynamic_filter.update(Arc::new(UnKnownColumn::new(&label)))?;
-        }
-        Ok(())
-    }
-
-    fn label_variant(
-        &mut self,
-        variant: &Arc<dyn ExecutionPlan>,
-        updates: &mut Vec<(Arc<DynamicFilterPhysicalExpr>, String)>,
-    ) -> Result<()> {
-        variant.apply(|node| {
-            node.apply_expressions(&mut |root| {
-                root.apply(|expression| {
-                    let Ok(dynamic_filter) =
-                        Arc::downcast::<DynamicFilterPhysicalExpr>(expression.clone())
-                    else {
-                        return Ok(TreeNodeRecursion::Continue);
-                    };
-                    if expression.snapshot_generation() == 1 {
-                        return Ok(TreeNodeRecursion::Continue);
-                    }
-                    let Some(expression_id) = expression.expression_id() else {
-                        return internal_err!("dynamic filter did not have an expression ID");
-                    };
-                    let next_expression_id = self.expression_ids.len();
-                    let expression_id = *self
-                        .expression_ids
-                        .entry(expression_id)
-                        .or_insert(next_expression_id);
-                    let predicate = dynamic_filter.current()?;
-                    let predicate_id =
-                        intern_predicate(&mut self.predicates, Arc::clone(&predicate));
-                    let mut label = format!("expression_id_{expression_id}_hash_{predicate_id}");
-                    if let Some(predicates) = &mut self.normalized_predicates {
-                        let normalized_id =
-                            intern_predicate(predicates, normalize_columns(predicate)?);
-                        label.push_str(&format!("_normalized_hash_{normalized_id}"));
-                    }
-                    updates.push((dynamic_filter, label));
+fn display_with_dynamic_filter_labels(
+    plan: &Arc<dyn ExecutionPlan>,
+    normalized_filter_hashes: bool,
+) -> Result<String> {
+    let mut nodes = Vec::new();
+    plan.apply(|node| {
+        if let Some(leaf) = node.downcast_ref::<DistributedLeafExec>() {
+            for variant in leaf.variants() {
+                variant.apply(|node| {
+                    nodes.push(Arc::clone(node));
                     Ok(TreeNodeRecursion::Continue)
-                })
-            })?;
-            Ok(TreeNodeRecursion::Continue)
+                })?;
+            }
+        }
+        Ok(TreeNodeRecursion::Continue)
+    })?;
+
+    let mut expression_ids = Vec::new();
+    let mut predicates = Vec::new();
+    let mut normalized_predicates = Vec::new();
+    let mut updates = Vec::new();
+    for node in nodes {
+        node.apply_expressions(&mut |root| {
+            root.apply(|expression| {
+                let Ok(dynamic_filter) =
+                    Arc::downcast::<DynamicFilterPhysicalExpr>(expression.clone())
+                else {
+                    return Ok(TreeNodeRecursion::Continue);
+                };
+                if expression.snapshot_generation() == 1 {
+                    return Ok(TreeNodeRecursion::Continue);
+                }
+                let Some(expression_id) = expression.expression_id() else {
+                    return internal_err!("dynamic filter did not have an expression ID");
+                };
+                let expression_id = intern(&mut expression_ids, expression_id);
+                let predicate = dynamic_filter.current()?;
+                let predicate_id = intern(&mut predicates, Arc::clone(&predicate));
+                let mut label = format!("expression_id_{expression_id}_hash_{predicate_id}");
+                if normalized_filter_hashes {
+                    let normalized_id =
+                        intern(&mut normalized_predicates, normalize_columns(predicate)?);
+                    label.push_str(&format!("_normalized_hash_{normalized_id}"));
+                }
+                updates.push((dynamic_filter, label));
+                Ok(TreeNodeRecursion::Continue)
+            })
         })?;
-        Ok(())
     }
+    // Read every predicate before changing any potentially shared filter state.
+    for (dynamic_filter, label) in updates {
+        dynamic_filter.update(Arc::new(UnKnownColumn::new(&label)))?;
+    }
+    Ok(display_plan_ascii(plan.as_ref(), false))
 }
 
-fn intern_predicate(
-    predicates: &mut Vec<Arc<dyn PhysicalExpr>>,
-    predicate: Arc<dyn PhysicalExpr>,
-) -> usize {
-    predicates
+fn intern<T: PartialEq>(values: &mut Vec<T>, value: T) -> usize {
+    values
         .iter()
-        .position(|existing| existing.eq(&predicate))
+        .position(|existing| existing.eq(&value))
         .unwrap_or_else(|| {
-            let id = predicates.len();
-            predicates.push(predicate);
+            let id = values.len();
+            values.push(value);
             id
         })
 }
 
+/// Replaces every column with `column_0@0`.
 fn normalize_columns(predicate: Arc<dyn PhysicalExpr>) -> Result<Arc<dyn PhysicalExpr>> {
-    let mut columns = HashMap::new();
     Ok(predicate
         .transform_down(|expression| {
-            let Some(column) = expression.downcast_ref::<Column>() else {
+            if expression.downcast_ref::<Column>().is_none() {
                 return Ok(Transformed::no(expression));
-            };
-            let next_id = columns.len();
-            let id = *columns.entry(column.clone()).or_insert(next_id);
+            }
             Ok(Transformed::yes(
-                Arc::new(Column::new(&format!("column_{id}"), id)) as Arc<dyn PhysicalExpr>,
+                Arc::new(Column::new("column_0", 0)) as Arc<dyn PhysicalExpr>
             ))
         })?
         .data)
-}
-
-fn remove_runtime_pruning_details(display: String) -> String {
-    const START: &str = "DynamicFilter [ expression_id_";
-    const END: &str = "dynamic_rg_pruning=eligible";
-
-    display
-        .lines()
-        .map(|line| {
-            let (Some(start), Some(end)) = (line.find(START), line.find(END)) else {
-                return line.to_owned();
-            };
-            format!("{}{}", &line[..start], &line[start..end + END.len()])
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn set_dynamic_filter_pushdown(ctx: &SessionContext, enabled: bool) -> Result<()> {
-    let state = ctx.state_ref();
-    state.write().config_mut().options_mut().set(
-        "datafusion.optimizer.enable_dynamic_filter_pushdown",
-        &enabled.to_string(),
-    )
 }
