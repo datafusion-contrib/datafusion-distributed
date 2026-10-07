@@ -10,11 +10,11 @@ pub(crate) use defaults::{
     SingleTaskCoordinatorRouteTaskHandler, file_scan_config_desired_task_count,
     file_scan_config_scale_up_leaf_node,
 };
-pub(crate) use desired_task_count::DesiredTaskCountHandlers;
 pub use desired_task_count::{
     DesiredTaskCountEvent, DesiredTaskCountEventResponse, DesiredTaskCountHandler,
     TaskCountAnnotation,
 };
+pub(crate) use desired_task_count::{DesiredTaskCountHandlers, TaskCountRestriction};
 pub use route_tasks::{
     CoordinatorToWorkerDialer, RouteTaskEvent, RouteTaskEventResponse, RouteTaskHandler,
 };

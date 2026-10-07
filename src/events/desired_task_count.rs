@@ -5,53 +5,63 @@ use datafusion::execution::config::SessionConfig;
 use datafusion::physical_plan::ExecutionPlan;
 use num_traits::AsPrimitive;
 use std::fmt::{Debug, Formatter};
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 /// Annotation attached to a single [ExecutionPlan] that determines how many distributed tasks
 /// it should run on.
 #[derive(Clone, Copy)]
 pub struct TaskCountAnnotation {
-    /// The load of a node measured in tasks required to properly execute it. This number is used
-    /// as a hint for the distributed planner to decide on a final task count for a stage.
-    /// This value is reconciled with other [TaskCountAnnotation]s provided by other nodes in the
-    /// same stage.
-    pub soft: f64,
-    /// Exact number of tasks that should be allocated to the node.
-    pub hard: Option<usize>,
+    /// The node's estimated load, expressed in task units. The distributed planner combines
+    /// this soft estimate with estimates from other nodes in the same stage before choosing a
+    /// task count. Fractional values are allowed.
+    pub(crate) soft: f64,
+
+    /// An optional task-count restriction, independent of the soft load estimate.
+    pub(crate) restriction: TaskCountRestriction,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TaskCountRestriction {
+    None,
+    Exact(NonZeroUsize),
+    Min(NonZeroUsize),
 }
 
 impl TaskCountAnnotation {
-    /// Builds a new [TaskCountAnnotation] with a provided `soft` value and no `hard` value.
+    /// Creates an annotation with a soft load estimate and no task-count restriction.
     ///
-    /// A `soft` value is a fractional number indicating the amount of ideal tasks in which a node
-    /// should be executed. It's "soft" in the sense that the provided value is not a strictly
-    /// required, and therefore, it might get reconciled with other values resulting in a different
-    /// task count outcome.
-    ///
-    /// The `soft` value of a [TaskCountAnnotation] is linearly proportional to the load of the
-    /// node, whether this is memory of CPU.
+    /// The estimate is measured in tasks and may be fractional. The planner combines it with
+    /// other nodes' estimates in the same stage before choosing an integer task count.
     pub fn soft<T: AsPrimitive<f64> + 'static>(value: T) -> Self {
         Self {
             soft: value.as_(),
-            hard: None,
+            restriction: TaskCountRestriction::None,
         }
     }
 
-    /// Annotates an existing [TaskCountAnnotation] with a `hard` value, meaning that the planner
-    /// should respect the provided value no matter what. If the planner tries to reconcile this
-    /// value with a different incompatible one, it will fail (e.g. hard=1 + hard=3).
+    /// Requires the node to execute in exactly `exact` tasks, while retaining `soft` as its load
+    /// estimate. If another node imposes an incompatible exact count, planning fails.
     ///
-    /// The `hard` value is optional, but the `soft` value is mandatory, users wanting to build a
-    /// [TaskCountAnnotation] must always pass through providing a `soft` value as well:
-    ///
-    /// ```rust
-    /// # use datafusion_distributed::TaskCountAnnotation;
-    ///
-    /// let annotation = TaskCountAnnotation::soft(0.15).hard(1);
-    /// ```
-    pub fn hard(mut self, value: usize) -> Self {
-        self.hard = Some(value);
-        self
+    /// The `soft` value is required, as it's needed for estimating the amount of tasks upstream of
+    /// the node, regardless of the exact restriction the annotated node imposes. `soft` can be
+    /// left to 0 indicating that nodes upstream should not account for any load introduced by this
+    /// node.
+    pub fn exact<T: AsPrimitive<f64> + 'static>(exact: NonZeroUsize, soft: T) -> Self {
+        Self {
+            soft: soft.as_(),
+            restriction: TaskCountRestriction::Exact(exact),
+        }
+    }
+
+    /// Requires the node to execute in at least `min` tasks, while retaining `soft` as its load
+    /// estimate. The planner may assign more than `min` tasks based on the load estimate and
+    /// other nodes' requirements.
+    pub(crate) fn min<T: AsPrimitive<f64> + 'static>(min: NonZeroUsize, soft: T) -> Self {
+        Self {
+            soft: soft.as_(),
+            restriction: TaskCountRestriction::Min(min),
+        }
     }
 }
 
@@ -70,29 +80,32 @@ pub struct DesiredTaskCountEvent<'a> {
 /// Result of running a [TaskEstimator] on a leaf node. It tells the distributed planner hints
 /// about how many tasks should be used in [Stage]s that contain leaf nodes.
 pub struct DesiredTaskCountEventResponse {
-    /// The number of tasks that should be used in the [Stage] containing the leaf node.
-    ///
-    /// Even if implementations get to decide this number, there are situations where it can
-    /// get overridden:
-    /// - If a [Stage] contains multiple leaf nodes, the one that declares the biggest
-    ///   task_count wins.
-    /// - If there are less available workers than this number, the number of available workers
-    ///   is chosen.
+    /// Estimated load and any exact task-count requirement for this node.
+    /// The planner reconciles loads within a stage, while exact requirements must be satisfied.
     pub task_count: TaskCountAnnotation,
 }
 
 impl DesiredTaskCountEventResponse {
-    pub fn hard(mut self, value: usize) -> Self {
-        self.task_count.hard = Some(value);
-        self
-    }
-
+    /// Creates an annotation with a soft load estimate and no task-count restriction.
+    ///
+    /// The estimate is measured in tasks and may be fractional. The planner combines it with
+    /// other nodes' estimates in the same stage before choosing an integer task count.
     pub fn soft<T: AsPrimitive<f64> + 'static>(value: T) -> Self {
         DesiredTaskCountEventResponse {
-            task_count: TaskCountAnnotation {
-                soft: value.as_(),
-                hard: None,
-            },
+            task_count: TaskCountAnnotation::soft(value),
+        }
+    }
+
+    /// Requires the node to execute in exactly `exact` tasks, while retaining `soft` as its load
+    /// estimate. If another node imposes an incompatible exact count, planning fails.
+    ///
+    /// The `soft` value is required, as it's needed for estimating the amount of tasks upstream of
+    /// the node, regardless of the exact restriction the annotated node imposes. `soft` can be
+    /// left to 0 indicating that nodes upstream should not account for any load introduced by this
+    /// node.
+    pub fn exact<T: AsPrimitive<f64> + 'static>(exact: NonZeroUsize, soft: T) -> Self {
+        DesiredTaskCountEventResponse {
+            task_count: TaskCountAnnotation::exact(exact, soft),
         }
     }
 
@@ -111,13 +124,12 @@ pub trait DesiredTaskCountHandler: Send + Sync + 'static {
     /// Handlers are asynchronous and may await metadata or external services. Handler functions
     /// return a [`DesiredTaskCountFuture`] so their futures can borrow from the event.
     ///
-    /// All the [TaskEstimator] registered in the session will be applied to the node
-    /// until one returns an estimation.
+    /// Some nodes like unions and joins are managed by this project, and this event handler will
+    /// not run on those nodes.
     ///
-    ///
-    /// If no estimation is returned from any of the registered [TaskEstimator]s, then:
-    /// - If the node is a leaf node,`Maximum(1)` is assumed, hinting the distributed planner
-    ///   that the leaf node cannot be distributed across tasks.
+    /// If no estimation is returned from any of the registered [DesiredTaskCountHandler]s, then:
+    /// - If the node is a leaf node, an exact count of one is assumed, so the leaf
+    ///   is executed in a single task.
     /// - If the node is a normal node in the plan, then the maximum task count from its children
     ///   is inherited.
     async fn handle(
@@ -133,36 +145,53 @@ impl From<TaskCountAnnotation> for usize {
 }
 
 impl TaskCountAnnotation {
+    /// Resolves the load and restriction to an integer task count.
     pub fn as_usize(&self) -> usize {
-        if let Some(exact) = self.hard {
-            return exact;
+        let tasks = (self.soft.ceil() as usize).max(1);
+        match self.restriction {
+            TaskCountRestriction::None => tasks,
+            TaskCountRestriction::Exact(exact) => exact.get(),
+            TaskCountRestriction::Min(min) => tasks.max(min.get()),
         }
-        (self.soft.ceil() as usize).max(1)
     }
 
     pub(crate) fn merge(self, other: TaskCountAnnotation) -> Result<Self> {
-        Ok(Self {
-            hard: match (self.hard, other.hard) {
-                (Some(a), Some(b)) => {
-                    if a != b {
-                        return plan_err!("Incompatible hard task counts {a} and {b}");
-                    }
-                    Some(a)
+        let restriction = match (self.restriction, other.restriction) {
+            (TaskCountRestriction::None, restriction)
+            | (restriction, TaskCountRestriction::None) => restriction,
+            (TaskCountRestriction::Exact(a), TaskCountRestriction::Exact(b)) => {
+                if a != b {
+                    return plan_err!("Incompatible exact task counts {a} and {b}");
                 }
-                (Some(a), None) => Some(a),
-                (None, Some(b)) => Some(b),
-                (None, None) => None,
-            },
+                TaskCountRestriction::Exact(a)
+            }
+            (TaskCountRestriction::Min(a), TaskCountRestriction::Min(b)) => {
+                TaskCountRestriction::Min(a.max(b))
+            }
+            (TaskCountRestriction::Exact(exact), TaskCountRestriction::Min(min))
+            | (TaskCountRestriction::Min(min), TaskCountRestriction::Exact(exact)) => {
+                if exact < min {
+                    return plan_err!(
+                        "Exact task count {exact} is below the required minimum {min}"
+                    );
+                }
+                TaskCountRestriction::Exact(exact)
+            }
+        };
+        Ok(Self {
             soft: self.soft.max(other.soft),
+            restriction,
         })
     }
 }
 
 impl Debug for TaskCountAnnotation {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "TaskCountAnnotation: soft={:.2}", self.soft)?;
-        if let Some(hard) = self.hard {
-            write!(f, ", hard={hard}")?;
+        write!(f, "TaskCountAnnotation: load={:.2}", self.soft)?;
+        match self.restriction {
+            TaskCountRestriction::None => {}
+            TaskCountRestriction::Exact(exact) => write!(f, ", exact={exact}")?,
+            TaskCountRestriction::Min(min) => write!(f, ", min={min}")?,
         }
         Ok(())
     }

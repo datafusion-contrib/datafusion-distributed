@@ -1,5 +1,6 @@
 use super::get_distributed_user_codecs;
 use crate::common::{deserialize_uuid, require_one_child, serialize_uuid};
+use crate::events::TaskCountRestriction;
 use crate::execution_plans::{
     BroadcastExec, ChildrenIsolatorUnionExec, NetworkBroadcastExec, NetworkCoalesceExec,
     SamplerExec,
@@ -11,7 +12,7 @@ use crate::{DistributedTaskContext, NetworkBoundary, TaskCountAnnotation};
 use bytes::Bytes;
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::common::Result;
+use datafusion::common::{Result, internal_datafusion_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::equivalence::{EquivalenceClass, EquivalenceGroup};
@@ -34,6 +35,7 @@ use datafusion_proto::protobuf;
 use datafusion_proto::protobuf::proto_error;
 use itertools::Itertools;
 use prost::Message;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use url::Url;
 
@@ -289,11 +291,9 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     children: inputs.to_vec(),
                     child_annotations: child_annotations
                         .iter()
-                        .map(|annotation| TaskCountAnnotation {
-                            soft: annotation.soft,
-                            hard: annotation.hard.map(|n| n as usize),
-                        })
-                        .collect(),
+                        .cloned()
+                        .map(parse_task_count_annotation)
+                        .collect::<Result<Vec<_>>>()?,
                     task_idx_map: task_idx_map
                         .iter()
                         .map(|entry| {
@@ -480,10 +480,8 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 child_annotations: node
                     .child_annotations
                     .iter()
-                    .map(|annotation| TaskCountAnnotationProto {
-                        soft: annotation.soft,
-                        hard: annotation.hard.map(|n| n as u64),
-                    })
+                    .copied()
+                    .map(serialize_task_count_annotation)
                     .collect_vec(),
             };
 
@@ -547,6 +545,36 @@ fn parse_equivalence_properties(
     let mut properties = EquivalenceProperties::new(schema);
     properties.add_equivalence_group(EquivalenceGroup::new(classes))?;
     Ok(properties)
+}
+
+fn parse_task_count_annotation(value: TaskCountAnnotationProto) -> Result<TaskCountAnnotation> {
+    // Keep decoding the existing protobuf fields, including older annotations containing both
+    // a minimum and an exact count. `merge` validates that the exact count satisfies the minimum.
+    let mut annotation = TaskCountAnnotation::soft(value.soft);
+    if let Some(min) = value.min {
+        let min = NonZeroUsize::new(min as usize)
+            .ok_or_else(|| internal_datafusion_err!("Task-count minimum must be nonzero"))?;
+        annotation = TaskCountAnnotation::min(min, value.soft);
+    }
+    if let Some(exact) = value.hard {
+        let exact = NonZeroUsize::new(exact as usize)
+            .ok_or_else(|| internal_datafusion_err!("Exact task count must be nonzero"))?;
+        annotation = annotation.merge(TaskCountAnnotation::exact(exact, value.soft))?;
+    }
+    Ok(annotation)
+}
+
+fn serialize_task_count_annotation(value: TaskCountAnnotation) -> TaskCountAnnotationProto {
+    let (hard, min) = match value.restriction {
+        TaskCountRestriction::None => (None, None),
+        TaskCountRestriction::Exact(exact) => (Some(exact.get() as u64), None),
+        TaskCountRestriction::Min(min) => (None, Some(min.get() as u64)),
+    };
+    TaskCountAnnotationProto {
+        soft: value.soft,
+        hard,
+        min,
+    }
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -643,6 +671,8 @@ pub struct TaskCountAnnotationProto {
     soft: f64,
     #[prost(uint64, optional, tag = "2")]
     hard: Option<u64>,
+    #[prost(uint64, optional, tag = "3")]
+    min: Option<u64>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -777,7 +807,10 @@ mod tests {
             Partitioning, PhysicalSortExpr,
             expressions::{Column, DynamicFilterPhysicalExpr, col, lit},
         },
-        physical_plan::{ExecutionPlan, displayable, sorts::sort::SortExec, union::UnionExec},
+        physical_plan::{
+            ChildrenPropertiesMode, ExecutionPlan, ReplaceChildrenOptions, displayable,
+            sorts::sort::SortExec, union::UnionExec,
+        },
     };
 
     fn empty_exec() -> Arc<dyn ExecutionPlan> {
@@ -1110,8 +1143,8 @@ mod tests {
             Arc::new(ChildrenIsolatorUnionExec::from_children_and_annotations(
                 vec![left.clone(), right.clone()],
                 vec![
-                    TaskCountAnnotation::soft(3.0),
-                    TaskCountAnnotation::soft(1.0).hard(1),
+                    TaskCountAnnotation::min(NonZeroUsize::new(4).unwrap(), 3.0),
+                    TaskCountAnnotation::exact(NonZeroUsize::MIN, 1.0),
                 ],
                 4,
             )?);
@@ -1125,9 +1158,20 @@ mod tests {
             .downcast_ref::<ChildrenIsolatorUnionExec>()
             .expect("decoded union");
         assert_eq!(decoded_union.child_annotations[0].soft, 3.0);
-        assert_eq!(decoded_union.child_annotations[0].hard, None);
+        assert_eq!(
+            decoded_union.child_annotations[0].restriction,
+            TaskCountRestriction::Min(NonZeroUsize::new(4).unwrap())
+        );
         assert_eq!(decoded_union.child_annotations[1].soft, 1.0);
-        assert_eq!(decoded_union.child_annotations[1].hard, Some(1));
+        assert_eq!(
+            decoded_union.child_annotations[1].restriction,
+            TaskCountRestriction::Exact(NonZeroUsize::MIN)
+        );
+        let rebuilt = Arc::clone(&decoded).replace_children(
+            decoded.children().into_iter().map(Arc::clone).collect(),
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+        )?;
+        assert_eq!(repr(&decoded), repr(&rebuilt));
 
         Ok(())
     }

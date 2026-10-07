@@ -25,6 +25,7 @@ use datafusion::physical_plan::{
 };
 use futures::{Stream, StreamExt};
 use std::any::TypeId;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
@@ -117,7 +118,10 @@ pub(super) async fn prepare_dynamic_plan(
                 stage_coordinator.seal_dynamic_filter_stage();
 
                 let (stats, consumer_tc) = if nb_type == TypeId::of::<NetworkCoalesceExec>() {
-                    (None, task_count.hard(1))
+                    (
+                        None,
+                        TaskCountAnnotation::exact(NonZeroUsize::MIN, task_count.soft),
+                    )
                 } else {
                     let (stats, new_metrics) =
                         gather_runtime_statistics(load_info_rxs, &input_stage.plan).await?;

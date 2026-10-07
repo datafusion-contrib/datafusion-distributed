@@ -1,15 +1,23 @@
 #[cfg(all(feature = "integration", test))]
 mod tests {
     use datafusion::arrow::util::pretty::pretty_format_batches;
+    use datafusion::catalog::memory::DataSourceExec;
+    use datafusion::datasource::physical_plan::FileScanConfig;
     use datafusion::execution::TaskContext;
+    use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_plan::{ExecutionPlan, execute_stream};
     use datafusion::prelude::SessionContext;
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::parquet::register_parquet_tables;
-    use datafusion_distributed::{DefaultSessionBuilder, assert_snapshot, display_plan_ascii};
+    use datafusion_distributed::{
+        DefaultSessionBuilder, DesiredTaskCountEvent, DesiredTaskCountEventResponse,
+        DistributedExt, assert_snapshot, display_plan_ascii,
+    };
     use futures::TryStreamExt;
     use std::error::Error;
+    use std::num::NonZeroUsize;
     use std::sync::Arc;
+    use test_case::test_case;
 
     #[tokio::test]
     async fn more_tasks_than_children() -> Result<(), Box<dyn Error>> {
@@ -289,6 +297,49 @@ mod tests {
         );
 
         exact_same_data(ctx.task_ctx(), physical, physical_distributed).await
+    }
+
+    #[test_case(false; "static_task_count")]
+    #[test_case(true; "dynamic_task_count")]
+    #[tokio::test]
+    async fn nested_union_preserves_hard_task_counts(
+        dynamic_task_count: bool,
+    ) -> Result<(), Box<dyn Error>> {
+        let (mut distributed, _guard, _) = start_localhost_context(4, DefaultSessionBuilder).await;
+        distributed.set_distributed_broadcast_joins(true)?;
+        distributed.set_distributed_dynamic_task_count(dynamic_task_count)?;
+        distributed.set_distributed_desired_task_count_handler(|ev: DesiredTaskCountEvent| {
+            let scan = ev.plan.downcast_ref::<DataSourceExec>()?;
+            let config = scan.data_source().downcast_ref::<FileScanConfig>()?;
+            let is_sibling = config.file_source.projection()?.iter().any(|expr| {
+                expr.expr
+                    .downcast_ref::<Column>()
+                    .is_some_and(|col| col.name() == "Rainfall")
+            });
+            Some(Ok(if is_sibling {
+                DesiredTaskCountEventResponse::soft(4.0)
+            } else {
+                DesiredTaskCountEventResponse::exact(NonZeroUsize::new(2).unwrap(), 0.0)
+            }))
+        });
+        let local = SessionContext::default();
+        *local.state_ref().write().config_mut() = distributed.copied_config();
+        register_parquet_tables(&local).await?;
+        register_parquet_tables(&distributed).await?;
+
+        let query = r#"
+            SELECT v FROM (VALUES (1), (2)) AS copies(n) CROSS JOIN (
+                SELECT "MinTemp" AS v FROM weather
+                UNION ALL
+                SELECT "MaxTemp" AS v FROM weather
+            ) AS inner_union
+            UNION ALL
+            SELECT "Rainfall" FROM weather
+            ORDER BY v
+        "#;
+        let local_plan = local.sql(query).await?.create_physical_plan().await?;
+        let distributed_plan = distributed.sql(query).await?.create_physical_plan().await?;
+        exact_same_data(local.task_ctx(), local_plan, distributed_plan).await
     }
 
     async fn exact_same_data(
