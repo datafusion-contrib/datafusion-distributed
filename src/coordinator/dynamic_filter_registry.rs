@@ -51,7 +51,7 @@ pub(super) struct PlannedDynamicFilter {
     /// Populated upon task registration when a producer is found.
     ///
     /// The behavior to take when an update arrives from a producer.
-    pub(super) merge_mode: Option<DynamicFilterMergePolicy>,
+    merge_mode: Option<DynamicFilterMergePolicy>,
     /// Schema of the original producer arguments, shared by all producer tasks.
     pub(super) producer_schema: Option<SchemaRef>,
 
