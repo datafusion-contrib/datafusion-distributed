@@ -302,7 +302,7 @@ mod tests {
     #[test_case(false; "static_task_count")]
     #[test_case(true; "dynamic_task_count")]
     #[tokio::test]
-    async fn nested_union_preserves_hard_task_counts(
+    async fn nested_union_preserves_exact_task_counts(
         dynamic_task_count: bool,
     ) -> Result<(), Box<dyn Error>> {
         let (mut distributed, _guard, _) = start_localhost_context(4, DefaultSessionBuilder).await;

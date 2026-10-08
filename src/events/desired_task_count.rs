@@ -40,6 +40,11 @@ impl TaskCountAnnotation {
         }
     }
 
+    /// Gets the soft task count.
+    pub fn get_soft(&self) -> f64 {
+        self.soft
+    }
+
     /// Requires the node to execute in exactly `exact` tasks, while retaining `soft` as its load
     /// estimate. If another node imposes an incompatible exact count, planning fails.
     ///
@@ -51,6 +56,15 @@ impl TaskCountAnnotation {
         Self {
             soft: soft.as_(),
             restriction: TaskCountRestriction::Exact(exact),
+        }
+    }
+
+    /// Gets the exact task count if any.
+    pub fn get_exact(&self) -> Option<NonZeroUsize> {
+        match self.restriction {
+            TaskCountRestriction::None => None,
+            TaskCountRestriction::Exact(v) => Some(v),
+            TaskCountRestriction::Min(_) => None,
         }
     }
 
@@ -124,8 +138,8 @@ pub trait DesiredTaskCountHandler: Send + Sync + 'static {
     /// Handlers are asynchronous and may await metadata or external services. Handler functions
     /// return a [`DesiredTaskCountFuture`] so their futures can borrow from the event.
     ///
-    /// Some nodes like unions and joins are managed by this project, and this event handler will
-    /// not run on those nodes.
+    /// Some nodes like unions and certain types of joins are managed by this project, and this
+    /// event handler will not run on those nodes.
     ///
     /// If no estimation is returned from any of the registered [DesiredTaskCountHandler]s, then:
     /// - If the node is a leaf node, an exact count of one is assumed, so the leaf

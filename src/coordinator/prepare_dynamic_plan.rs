@@ -118,10 +118,7 @@ pub(super) async fn prepare_dynamic_plan(
                 stage_coordinator.seal_dynamic_filter_stage();
 
                 let (stats, consumer_tc) = if nb_type == TypeId::of::<NetworkCoalesceExec>() {
-                    (
-                        None,
-                        TaskCountAnnotation::exact(NonZeroUsize::MIN, task_count.soft),
-                    )
+                    (None, TaskCountAnnotation::exact(NonZeroUsize::MIN, 0.0))
                 } else {
                     let (stats, new_metrics) =
                         gather_runtime_statistics(load_info_rxs, &input_stage.plan).await?;

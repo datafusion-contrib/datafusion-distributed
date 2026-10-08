@@ -266,13 +266,11 @@ async fn _inject_network_boundaries(
         // the union's minimum task count.
         let mut load: f64 = 0.0;
         let mut min: Option<NonZeroUsize> = None;
-        let mut max: f64 = 0.0;
         for child in &processed_children {
             let child_count = nb_ctx.task_count(child)?;
-            load += child_count.soft;
-            max += match child_count.restriction {
-                TaskCountRestriction::Exact(count) => count.get() as f64,
-                _ => f64::INFINITY,
+            load += match child_count.restriction {
+                TaskCountRestriction::Exact(count) => child_count.soft.min(count.get() as f64),
+                _ => child_count.soft,
             };
             if let TaskCountRestriction::Exact(count) | TaskCountRestriction::Min(count) =
                 child_count.restriction
@@ -283,8 +281,8 @@ async fn _inject_network_boundaries(
         // Exact children cannot use more tasks than their combined counts. A flexible child
         // can absorb additional tasks, so it leaves the upper bound unlimited.
         match min {
-            Some(value) => TaskCountAnnotation::min(value, load.min(max)),
-            None => TaskCountAnnotation::soft(load.min(max)),
+            Some(value) => TaskCountAnnotation::min(value, load),
+            None => TaskCountAnnotation::soft(load),
         }
     } else if let Some(node) = plan.downcast_ref::<HashJoinExec>()
         && node.mode == PartitionMode::CollectLeft
@@ -531,8 +529,9 @@ impl InjectNetworkBoundaryContext<'_> {
             // determine which children to run and which to exclude depending on the task index in
             // which it's running.
             //
-            // Soft counts determine each child's relative share. Hard counts impose exact
-            // counts, and a light exact child can share a slot with a flexible sibling.
+            // Soft counts determine each child's relative share. Exact counts impose a specific
+            // amount of tasks in which a child needs to run on, which allows multiple children with
+            // a low soft load to be collocated in the same task even if the exact count is higher.
             let children = plan.children();
             let c_i_union = ChildrenIsolatorUnionExec::from_children_and_annotations(
                 children.iter().map(|v| Arc::clone(v)),
