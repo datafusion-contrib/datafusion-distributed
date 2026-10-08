@@ -243,7 +243,8 @@ pub(crate) fn apply_dynamic_filter_update(
     // 2. The inner expression which has unremapped children (this is only
     //    required when the source is another consumer)
     //
-    // TODO: Avoid needing to encode to proto.
+    // TODO: Avoid needing to encode to proto:
+    //  https://github.com/datafusion-contrib/datafusion-distributed/issues/768
     let source_proto = source.to_proto(task_ctx)?;
     if source_proto.expr_id != target.expression_id() {
         return internal_err!("dynamic filter update has a mismatched expression ID");
