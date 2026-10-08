@@ -220,7 +220,7 @@ pub(crate) fn maybe_roundtrip_plan_to_sever_in_memory_dynamic_filter_relationshi
 /// and is stored. Then, the consumers call current(), reading from the shared inner state,
 /// to get the remapped `phone_number > 123` and `telephone > 123` expressions respectively.
 ///
-/// ## Failiure Mode
+/// ## Failure Mode
 ///
 /// The source expression may be a consumer and cause remapping to fail.
 ///
