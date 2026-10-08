@@ -1,6 +1,6 @@
 use crate::common::TreeNodeExt;
 use crate::dynamic_filtering::{
-    DiscoveredDynamicFilter, apply_dynamic_filter_update, discover_dynamic_filter_consumers,
+    apply_dynamic_filter_update, discover_dynamic_filter_consumers,
     discover_dynamic_filter_producers,
 };
 use crate::events::{WorkerPlanRewriteEvent, WorkerPlanRewriteHandlers};
@@ -11,14 +11,13 @@ use crate::protocol::grpc::on_drop_stream;
 use crate::work_unit_feed::{RemoteWorkUnitFeedRegistry, set_work_unit_received_time};
 use crate::worker::task_data::TaskDataMetrics;
 use crate::{
-    ApplyDynamicFilter, CoordinatorToWorkerMsg, DistributedConfig, DistributedExt,
-    DistributedTaskContext, MaybeEncoded, ProducedDynamicFilter, SetPlanRequest,
-    TaskCompletedDynamicFilters, TaskData, TaskDynamicFilter, TaskMetrics, Worker,
-    WorkerQueryContext, WorkerToCoordinatorMsg,
+    CoordinatorToWorkerMsg, DistributedConfig, DistributedExt, DistributedTaskContext,
+    MaybeEncoded, ProducedDynamicFilter, SetPlanRequest, TaskCompletedDynamicFilters, TaskData,
+    TaskDynamicFilter, TaskMetrics, Worker, WorkerQueryContext, WorkerToCoordinatorMsg,
 };
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{
-    DataFusionError, HashMap, HashSet, Result, exec_datafusion_err, internal_err,
+    DataFusionError, HashMap, HashSet, Result, exec_datafusion_err, internal_datafusion_err,
 };
 use datafusion::execution::{SessionStateBuilder, TaskContext};
 use datafusion::physical_expr::PhysicalExpr;
@@ -148,11 +147,12 @@ impl Worker {
         let producer_filters = discover_dynamic_filter_producers(&task_data.base_plan)?
             .into_iter()
             .filter(|producer| dynamic_filter_remote_producer_ids.contains(&producer.id));
-        let dynamic_filter_consumers = discover_dynamic_filter_consumers(&task_data.base_plan)?
-            .consumers
-            .into_iter()
-            .map(|consumer| (consumer.id, consumer))
-            .collect();
+        let dynamic_filter_consumers: HashMap<_, _> =
+            discover_dynamic_filter_consumers(&task_data.base_plan)?
+                .consumers
+                .into_iter()
+                .map(|consumer| (consumer.id, consumer))
+                .collect();
         let (producer_cancel_tx, producer_cancel_rx) = watch::channel(false);
 
         // Continue reading remaining messages (work unit feed data) in the background.
@@ -209,11 +209,23 @@ impl Worker {
                         sampler_gate.kick_off();
                     }
                     CoordinatorToWorkerMsg::ApplyDynamicFilter(filter) => {
-                        if let Err(error) = apply_merged_dynamic_filter(
-                            *filter,
-                            &dynamic_filter_consumers,
-                            &dynamic_filter_task_ctx,
-                        ) {
+                        let result = dynamic_filter_consumers
+                            .get(&filter.expression_id)
+                            .ok_or_else(|| {
+                                internal_datafusion_err!(
+                                    "received dynamic filter update for unknown consumer {}",
+                                    filter.expression_id
+                                )
+                            })
+                            .and_then(|consumer| {
+                                apply_dynamic_filter_update(
+                                    &consumer.expression,
+                                    &filter.expression,
+                                    filter.producer_schema.as_ref(),
+                                    &dynamic_filter_task_ctx,
+                                )
+                            });
+                        if let Err(error) = result {
                             let _ = dynamic_filters_error_tx.try_send(error);
                             // Continue to read messages. Let the coordinator handle the error
                             // sent on the channel and gracefully terminate the worker.impl
@@ -358,26 +370,6 @@ fn produced_dynamic_filter_stream(
         Some((message, next))
     })
     .boxed()
-}
-
-fn apply_merged_dynamic_filter(
-    filter: ApplyDynamicFilter,
-    consumers: &HashMap<u64, DiscoveredDynamicFilter>,
-    task_ctx: &Arc<TaskContext>,
-) -> Result<()> {
-    let Some(consumer) = consumers.get(&filter.expression_id) else {
-        return internal_err!(
-            "received dynamic filter update for unknown consumer {}",
-            filter.expression_id
-        );
-    };
-
-    apply_dynamic_filter_update(
-        &consumer.expression,
-        &filter.expression,
-        filter.producer_schema.as_ref(),
-        task_ctx,
-    )
 }
 
 /// Finds all consumed dynamic filters for the completed task report.
