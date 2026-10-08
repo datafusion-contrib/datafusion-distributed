@@ -308,7 +308,6 @@ pub(super) fn complexity_cpu(node: &Arc<dyn ExecutionPlan>) -> Complexity {
     // so there is no global n*log(n) term.
     // https://github.com/apache/datafusion/blob/branch-54/datafusion/physical-plan/src/sorts/partial_sort.rs
     if let Some(node) = node.downcast_ref::<PartialSortExec>() {
-        // All the input rows still need to be read one by one.
         let mut n = Complexity::Linear(LinearComplexity::AllColumns);
         // The sort comparators read every sort key on every row.
         for expr in node.expr() {
@@ -322,8 +321,6 @@ pub(super) fn complexity_cpu(node: &Arc<dyn ExecutionPlan>) -> Complexity {
     // https://github.com/apache/datafusion/blob/branch-54/datafusion/physical-plan/src/sorts/partitioned_topk.rs
     if let Some(node) = node.downcast_ref::<PartitionedTopKExec>() {
         let mut n = Complexity::Linear(LinearComplexity::AllColumns);
-        // `expr()` carries the partition-prefix columns and the order keys; both are read per
-        // row to route into the right heap and to insert into it.
         for expr in node.expr() {
             n = n.plus(hash_or_comparison_key_complexity(&expr.expr))
         }
