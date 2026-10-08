@@ -104,7 +104,7 @@ side of the screen for the answer.
    :caption: Blog
    :hidden:
 
-   blog/2026-09-20-distributed-dynamic-filtering
+   blog/distributed-dynamic-filtering
 
 .. toctree::
    :maxdepth: 1
