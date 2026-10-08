@@ -1,11 +1,15 @@
 use datafusion::arrow::datatypes::DataType;
-use datafusion::common::{Result, ScalarValue, SplitPoint};
+use datafusion::common::test_util::batches_to_sort_string;
+use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
+use datafusion::common::{Result, ScalarValue, SplitPoint, internal_err};
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::listing::{
     ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl,
 };
 use datafusion::logical_expr::{Partitioning, RangePartitioning};
-use datafusion::physical_plan::collect;
+use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_expr::expressions::{Column, DynamicFilterPhysicalExpr, UnKnownColumn};
+use datafusion::physical_plan::{ExecutionPlan, collect};
 use datafusion::prelude::{SessionContext, col};
 use datafusion_distributed::test_utils::localhost::start_localhost_context;
 use datafusion_distributed::test_utils::parquet::register_parquet_tables;
@@ -13,8 +17,8 @@ use datafusion_distributed::test_utils::routing::{
     ColocateAllTasksHandler, UrlEmitterRouteTaskHandler,
 };
 use datafusion_distributed::{
-    DefaultSessionBuilder, DistributedExt, display_plan_ascii,
-    rewrite_distributed_plan_with_dynamic_filters,
+    DefaultSessionBuilder, DistributedConfig, DistributedExt, DistributedLeafExec,
+    display_plan_ascii, rewrite_distributed_plan_with_dynamic_filters,
 };
 use std::sync::Arc;
 
@@ -23,9 +27,10 @@ pub(crate) struct TestQuery<'a> {
     expected_rows: usize,
     broadcast_joins: bool,
     one_task_per_leaf: bool,
+    dynamic_task_count: bool,
     collect_dynamic_filters: bool,
     remote_dynamic_filters: bool,
-    expect_dynamic_filter_updates: Option<bool>,
+    normalized_filter_hashes: bool,
 }
 
 impl<'a> TestQuery<'a> {
@@ -35,9 +40,10 @@ impl<'a> TestQuery<'a> {
             expected_rows: 1,
             broadcast_joins: false,
             one_task_per_leaf: false,
+            dynamic_task_count: false,
             collect_dynamic_filters: true,
             remote_dynamic_filters: true,
-            expect_dynamic_filter_updates: None,
+            normalized_filter_hashes: false,
         }
     }
 
@@ -59,27 +65,28 @@ impl<'a> TestQuery<'a> {
         self
     }
 
+    /// Enables the dynamic task-count planner.
+    pub(crate) fn with_dynamic_task_count(mut self) -> Self {
+        self.dynamic_task_count = true;
+        self
+    }
+
     /// Disables dynamic filter collection.
     pub(crate) fn without_dynamic_filter_collection(mut self) -> Self {
         self.collect_dynamic_filters = false;
         self
     }
 
-    /// Disables distributing dynamic filters across network boundaries.
+    /// Disables distributing dynamic filters across network boundaries and asserts that
+    /// the coordinator received no dynamic filter updates.
     pub(crate) fn without_remote_dynamic_filters(mut self) -> Self {
         self.remote_dynamic_filters = false;
         self
     }
 
-    /// Asserts that the coordinator received at least one dynamic filter update.
-    pub(crate) fn expect_dynamic_filter_updates(mut self) -> Self {
-        self.expect_dynamic_filter_updates = Some(true);
-        self
-    }
-
-    /// Asserts that the coordinator received no dynamic filter updates.
-    pub(crate) fn expect_no_dynamic_filter_updates(mut self) -> Self {
-        self.expect_dynamic_filter_updates = Some(false);
+    /// Adds column-independent predicate labels for comparing remapped consumers.
+    pub(crate) fn with_normalized_filter_hashes(mut self) -> Self {
+        self.normalized_filter_hashes = true;
         self
     }
 
@@ -89,6 +96,7 @@ impl<'a> TestQuery<'a> {
             .with_distributed_broadcast_joins(self.broadcast_joins)?
             .with_distributed_dynamic_filter_collection(self.collect_dynamic_filters)?
             .with_distributed_remote_dynamic_filters(self.remote_dynamic_filters)?;
+        ctx.set_distributed_dynamic_task_count(self.dynamic_task_count)?;
         if self.one_task_per_leaf {
             ctx = ctx.with_distributed_desired_task_count_handler(1usize);
         }
@@ -108,7 +116,7 @@ impl<'a> TestQuery<'a> {
             self.sql,
             self.expected_rows,
             self.collect_dynamic_filters,
-            self.expect_dynamic_filter_updates,
+            self.normalized_filter_hashes,
         )
         .await
     }
@@ -140,7 +148,7 @@ pub(crate) async fn execute_range_partitioned_query(
     register_range_partitioned_table(&ctx, "dim", "testdata/join/parquet/dim", "d_dkey").await?;
     register_range_partitioned_table(&ctx, "fact", "testdata/join/parquet/fact", "f_dkey").await?;
 
-    execute_query_and_display(&ctx, sql, expected_rows, true, None).await
+    execute_query_and_display(&ctx, sql, expected_rows, true, false).await
 }
 
 async fn register_range_partitioned_table(
@@ -172,15 +180,29 @@ async fn execute_query_and_display(
     sql: &str,
     expected_rows: usize,
     collect_dynamic_filters: bool,
-    expect_dynamic_filter_updates: Option<bool>,
+    normalized_filter_hashes: bool,
 ) -> Result<String> {
+    set_dynamic_filter_pushdown(ctx, true)?;
     let plan = ctx.sql(sql).await?.create_physical_plan().await?;
     let task_ctx = ctx.task_ctx();
 
-    let results = collect(Arc::clone(&plan), Arc::clone(&task_ctx)).await?;
+    let results_with_dynamic_filters = collect(Arc::clone(&plan), Arc::clone(&task_ctx)).await?;
     assert_eq!(
-        results.iter().map(|batch| batch.num_rows()).sum::<usize>(),
+        results_with_dynamic_filters
+            .iter()
+            .map(|batch| batch.num_rows())
+            .sum::<usize>(),
         expected_rows
+    );
+
+    set_dynamic_filter_pushdown(ctx, false)?;
+    let plan_without_dynamic_filters = ctx.sql(sql).await?.create_physical_plan().await?;
+    let results_without_dynamic_filters =
+        collect(plan_without_dynamic_filters, ctx.task_ctx()).await?;
+    assert_eq!(
+        batches_to_sort_string(&results_with_dynamic_filters),
+        batches_to_sort_string(&results_without_dynamic_filters),
+        "query results changed when dynamic filtering was enabled",
     );
 
     let original_display = display_plan_ascii(plan.as_ref(), false);
@@ -192,27 +214,115 @@ async fn execute_query_and_display(
     );
     assert_eq!(display_plan_ascii(plan.as_ref(), false), original_display);
 
-    if let Some(expect_updates) = expect_dynamic_filter_updates {
+    if !DistributedConfig::from_task_context(&task_ctx)?.remote_dynamic_filters {
         let updates = plan
             .metrics()
             .expect("DistributedExec has metrics")
             .sum(|metric| metric.value().name() == "dynamic_filter_updates_received")
             .map_or(0, |metric| metric.as_usize());
-        if expect_updates {
-            assert!(
-                updates > 0,
-                "expected dynamic_filter_updates_received > 0, got {updates}"
-            );
-        } else {
-            assert_eq!(
-                updates, 0,
-                "expected dynamic_filter_updates_received == 0, got {updates}"
-            );
-        }
+        assert_eq!(
+            updates, 0,
+            "expected dynamic_filter_updates_received == 0, got {updates}"
+        );
     }
+    display_with_dynamic_filter_labels(&plan_with_dynamic_filters, normalized_filter_hashes)
+}
 
-    Ok(display_plan_ascii(
-        plan_with_dynamic_filters.as_ref(),
-        false,
-    ))
+fn set_dynamic_filter_pushdown(ctx: &SessionContext, enabled: bool) -> Result<()> {
+    let state = ctx.state_ref();
+    state.write().config_mut().options_mut().set(
+        "datafusion.optimizer.enable_dynamic_filter_pushdown",
+        &enabled.to_string(),
+    )
+}
+
+/// Encodes dynamic filter expressions in the plan deterministically for consistent snapshots.
+///
+/// They are encoded as `expression_id_{}_hash_{}` where expression_id is the expression id
+/// of the filter (which generally denotes the producer it came from) and hash of the expression.
+///
+/// Both of these are normalized to be monotonic integers starting from `0` for readability,
+/// assigned during a pre-order traversal of the plan.
+///
+/// If `normalized_filter_hashes` is non empty, then we append the suffix `_normalized_hash_{}`
+/// containing the hash of the expression without column names.
+fn display_with_dynamic_filter_labels(
+    plan: &Arc<dyn ExecutionPlan>,
+    normalized_filter_hashes: bool,
+) -> Result<String> {
+    let mut nodes = Vec::new();
+    plan.apply(|node| {
+        if let Some(leaf) = node.downcast_ref::<DistributedLeafExec>() {
+            for variant in leaf.variants() {
+                variant.apply(|node| {
+                    nodes.push(Arc::clone(node));
+                    Ok(TreeNodeRecursion::Continue)
+                })?;
+            }
+        }
+        Ok(TreeNodeRecursion::Continue)
+    })?;
+
+    let mut expression_ids = Vec::new();
+    let mut predicates = Vec::new();
+    let mut normalized_predicates = Vec::new();
+    let mut updates = Vec::new();
+    for node in nodes {
+        node.apply_expressions(&mut |root| {
+            root.apply(|expression| {
+                let Ok(dynamic_filter) =
+                    Arc::downcast::<DynamicFilterPhysicalExpr>(expression.clone())
+                else {
+                    return Ok(TreeNodeRecursion::Continue);
+                };
+                if expression.snapshot_generation() == 1 {
+                    return Ok(TreeNodeRecursion::Continue);
+                }
+                let Some(expression_id) = expression.expression_id() else {
+                    return internal_err!("dynamic filter did not have an expression ID");
+                };
+                let expression_id = intern(&mut expression_ids, expression_id);
+                let predicate = dynamic_filter.current()?;
+                let predicate_id = intern(&mut predicates, Arc::clone(&predicate));
+                let mut label = format!("expression_id_{expression_id}_hash_{predicate_id}");
+                if normalized_filter_hashes {
+                    let normalized_id =
+                        intern(&mut normalized_predicates, normalize_columns(predicate)?);
+                    label.push_str(&format!("_normalized_hash_{normalized_id}"));
+                }
+                updates.push((dynamic_filter, label));
+                Ok(TreeNodeRecursion::Continue)
+            })
+        })?;
+    }
+    // Read every predicate before changing any potentially shared filter state.
+    for (dynamic_filter, label) in updates {
+        dynamic_filter.update(Arc::new(UnKnownColumn::new(&label)))?;
+    }
+    Ok(display_plan_ascii(plan.as_ref(), false))
+}
+
+fn intern<T: PartialEq>(values: &mut Vec<T>, value: T) -> usize {
+    values
+        .iter()
+        .position(|existing| existing.eq(&value))
+        .unwrap_or_else(|| {
+            let id = values.len();
+            values.push(value);
+            id
+        })
+}
+
+/// Replaces every column with `column_0@0`.
+fn normalize_columns(predicate: Arc<dyn PhysicalExpr>) -> Result<Arc<dyn PhysicalExpr>> {
+    Ok(predicate
+        .transform_down(|expression| {
+            if expression.downcast_ref::<Column>().is_none() {
+                return Ok(Transformed::no(expression));
+            }
+            Ok(Transformed::yes(
+                Arc::new(Column::new("column_0", 0)) as Arc<dyn PhysicalExpr>
+            ))
+        })?
+        .data)
 }

@@ -1,7 +1,8 @@
-use crate::dynamic_filtering::discover_dynamic_filter_consumers;
+use crate::dynamic_filtering::{discover_dynamic_filter_consumers, dynamic_filter_producer_schema};
 use crate::{
     ApplyDynamicFilter, CoordinatorToWorkerMsg, MaybeEncoded, ProducedDynamicFilter, TaskKey,
 };
+use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::common::{HashMap, HashSet, Result, exec_err, internal_err};
 use datafusion::execution::TaskContext;
@@ -22,29 +23,40 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum DynamicFilterMergeMode {
+enum DynamicFilterMergePolicy {
     /// Wait for every planned producer task to report a complete dynamic filter, then
-    /// merge and forward the filter. Used for partitioned joins.
-    AllProducersComplete,
+    /// union and forward the filter. Used for partitioned joins.
+    UnionWhenAllComplete,
     /// Wait for any producer to report a complete dynamic filter and forward it.
     /// Used for collect left joins.
-    FirstProducerComplete,
-    /// Forward any update received from any producer, merging updates from
-    /// different producers. Used for TopK dynamic filters in aggregates and sorts.
-    Incremental,
+    ForwardFirstComplete,
+    /// Intersect all updates from producers and immediately forward them. Used
+    /// for TopK and Min/Max aggregate dynamic filters where intersecting updates
+    /// is safe.
+    IntersectOnUpdate,
 }
 
 #[derive(Default)]
 pub(super) struct PlannedDynamicFilter {
-    pub(super) merge_mode: Option<DynamicFilterMergeMode>,
     // Producer and consumer tasks for a dynamic filter.
     //
     // Note that it is not guaranteed that every task within a stage produces / consumes dynamic filters. For
     // example, a distributed union may prevent a dynamic filter from appearing in all tasks. So, we
     // store task keys rather than stage ids.
+    //
     /// Registered producers and their latest accepted snapshots, if any.
     pub(super) producers: HashMap<TaskKey, Option<PhysicalDynamicFilterNode>>,
     pub(super) consumer_tasks: HashSet<TaskKey>,
+
+    /// Populated upon task registration when a producer is found.
+    ///
+    /// The behavior to take when an update arrives from a producer.
+    merge_mode: Option<DynamicFilterMergePolicy>,
+    /// Schema of the original producer arguments, shared by all producer tasks.
+    pub(super) producer_schema: Option<SchemaRef>,
+
+    /// Populated when an update is ready to be sent to consumers.
+    ///
     /// Full dynamic filter containing the merged predicate and its completion state.
     pub(super) merged: Option<PhysicalDynamicFilterNode>,
     /// Immutable snapshot shared by local and remote delivery, encoded once per change.
@@ -110,11 +122,11 @@ impl DynamicFilterRegistry {
                 .downcast_ref::<HashJoinExec>()
                 .is_some_and(|join| matches!(join.partition_mode(), PartitionMode::CollectLeft))
             {
-                DynamicFilterMergeMode::FirstProducerComplete
+                DynamicFilterMergePolicy::ForwardFirstComplete
             } else if node.is::<SortExec>() || node.is::<AggregateExec>() {
-                DynamicFilterMergeMode::Incremental
+                DynamicFilterMergePolicy::IntersectOnUpdate
             } else {
-                DynamicFilterMergeMode::AllProducersComplete
+                DynamicFilterMergePolicy::UnionWhenAllComplete
             };
             let produced_ids: HashSet<_> = node
                 .dynamic_expressions_produced()
@@ -131,7 +143,14 @@ impl DynamicFilterRegistry {
                     }
                 })
                 .collect::<Result<_>>()?;
-            producers.extend(produced_ids.iter().map(|id| (*id, merge_mode)));
+            if !produced_ids.is_empty() {
+                let schema = dynamic_filter_producer_schema(node.as_ref())?;
+                producers.extend(
+                    produced_ids
+                        .iter()
+                        .map(|id| (*id, merge_mode, Arc::clone(&schema))),
+                );
+            }
             Ok(TreeNodeRecursion::Continue)
         })?;
         // We can safely ignore anchors because they are not evaluated by network boundaries. This
@@ -139,8 +158,14 @@ impl DynamicFilterRegistry {
         let consumers = discover_dynamic_filter_consumers(task_specialized_plan)?.consumers;
 
         let mut state = self.state.lock().expect("dynamic filter registry poisoned");
-        for (id, merge_mode) in producers {
+        for (id, merge_mode, producer_schema) in producers {
             let filter = state.filters.entry(id).or_default();
+            if let Some(existing) = &filter.producer_schema
+                && existing != &producer_schema
+            {
+                return internal_err!("Dynamic filter {id} has conflicting producer schemas");
+            }
+            filter.producer_schema.get_or_insert(producer_schema);
             filter.merge_mode = Some(match filter.merge_mode {
                 Some(existing) if existing != merge_mode => {
                     return internal_err!(
@@ -234,7 +259,7 @@ impl DynamicFilterRegistry {
                 report.expression_id
             );
         };
-        if (filter.merge_mode != Some(DynamicFilterMergeMode::Incremental)
+        if (filter.merge_mode != Some(DynamicFilterMergePolicy::IntersectOnUpdate)
             && !dynamic_filter.is_complete)
             || previous
                 .as_ref()
@@ -267,7 +292,7 @@ impl DynamicFilterRegistry {
                 state.sealed_stages.contains(&task.stage_id)
                     && report.as_ref().is_some_and(|report| report.is_complete)
             });
-        if mode == DynamicFilterMergeMode::AllProducersComplete && !all_complete {
+        if mode == DynamicFilterMergePolicy::UnionWhenAllComplete && !all_complete {
             return false;
         }
 
@@ -277,7 +302,7 @@ impl DynamicFilterRegistry {
             .filter_map(|(task, report)| report.as_ref().map(|report| (task, report)))
             .collect();
         reports.sort_unstable_by_key(|(key, _)| (key.stage_id, key.task_number));
-        if mode == DynamicFilterMergeMode::FirstProducerComplete {
+        if mode == DynamicFilterMergePolicy::ForwardFirstComplete {
             reports.truncate(1);
         }
         let Some((_, template)) = reports.first() else {
@@ -288,9 +313,10 @@ impl DynamicFilterRegistry {
                 .iter()
                 .filter_map(|(_, report)| report.inner_expr.as_deref().cloned())
                 .collect(),
+            mode,
         )
         .map(Box::new);
-        let is_complete = mode == DynamicFilterMergeMode::FirstProducerComplete || all_complete;
+        let is_complete = mode == DynamicFilterMergePolicy::ForwardFirstComplete || all_complete;
         if previous.is_some_and(|previous| {
             previous.inner_expr == inner_expr && previous.is_complete == is_complete
         }) {
@@ -328,6 +354,11 @@ impl DynamicFilterRegistry {
         let Some(expression) = &filter.merged_bytes else {
             return Ok(());
         };
+        let Some(producer_schema) = &filter.producer_schema else {
+            return internal_err!(
+                "Dynamic filter {id} has a merged predicate but no producer schema"
+            );
+        };
         for &task_key in &filter.consumer_tasks {
             // A task-local consumer is already updated directly by its producer.
             if filter.producers.contains_key(&task_key) || state.delivered.contains(&(id, task_key))
@@ -340,6 +371,7 @@ impl DynamicFilterRegistry {
             let update = CoordinatorToWorkerMsg::ApplyDynamicFilter(Box::new(ApplyDynamicFilter {
                 expression_id: id,
                 expression: MaybeEncoded::Encoded(expression.clone()),
+                producer_schema: Arc::clone(producer_schema),
             }));
             if sender.send(update).is_err() {
                 // Closing the channel is expected only once query shutdown has started.
@@ -356,8 +388,12 @@ impl DynamicFilterRegistry {
     }
 }
 
-/// Merges [`PhysicalExprNode`] together by ORing them.
-fn merge_predicates(mut predicates: Vec<PhysicalExprNode>) -> Option<PhysicalExprNode> {
+/// Merges [`PhysicalExprNode`] together. Merge behavior (ex. AND vs OR) is determined
+/// by the provided [`DynamicFilterMergePolicy`].
+fn merge_predicates(
+    mut predicates: Vec<PhysicalExprNode>,
+    mode: DynamicFilterMergePolicy,
+) -> Option<PhysicalExprNode> {
     match predicates.len() {
         0 => None,
         1 => predicates.pop(),
@@ -366,7 +402,12 @@ fn merge_predicates(mut predicates: Vec<PhysicalExprNode>) -> Option<PhysicalExp
             expr_type: Some(ExprType::BinaryExpr(Box::new(PhysicalBinaryExprNode {
                 l: None,
                 r: None,
-                op: "Or".to_owned(),
+                op: if mode == DynamicFilterMergePolicy::IntersectOnUpdate {
+                    "And"
+                } else {
+                    "Or"
+                }
+                .to_owned(),
                 operands: predicates,
             }))),
         }),

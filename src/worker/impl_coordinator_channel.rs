@@ -1,6 +1,7 @@
 use crate::common::TreeNodeExt;
 use crate::dynamic_filtering::{
-    discover_dynamic_filter_consumers, discover_dynamic_filter_producers,
+    apply_dynamic_filter_update, discover_dynamic_filter_consumers,
+    discover_dynamic_filter_producers,
 };
 use crate::events::{WorkerPlanRewriteEvent, WorkerPlanRewriteHandlers};
 use crate::execution_plans::SamplerExec;
@@ -15,7 +16,9 @@ use crate::{
     TaskDynamicFilter, TaskMetrics, Worker, WorkerQueryContext, WorkerToCoordinatorMsg,
 };
 use datafusion::common::tree_node::TreeNodeRecursion;
-use datafusion::common::{DataFusionError, HashSet, Result, exec_datafusion_err};
+use datafusion::common::{
+    DataFusionError, HashMap, HashSet, Result, exec_datafusion_err, internal_datafusion_err,
+};
 use datafusion::execution::{SessionStateBuilder, TaskContext};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr::expressions::DynamicFilterPhysicalExpr;
@@ -27,8 +30,10 @@ use http::HeaderMap;
 #[cfg(feature = "integration")]
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, OnceLock};
+use tokio::sync::mpsc::channel;
 use tokio::sync::oneshot::Sender;
 use tokio::sync::{oneshot, watch};
+use tokio_stream::wrappers::ReceiverStream;
 
 /// Return value of the [Worker::coordinator_channel] method.
 pub struct CoordinatorChannelResult {
@@ -61,6 +66,7 @@ impl Worker {
 
         let (metrics_tx, metrics_rx) = oneshot::channel();
         let (dynamic_filters_tx, dynamic_filters_rx) = oneshot::channel();
+        let (dynamic_filters_error_tx, dynamic_filters_error_rx) = channel(1);
 
         let task_data = || async {
             let mut cfg = SessionConfig::default()
@@ -141,11 +147,18 @@ impl Worker {
         let producer_filters = discover_dynamic_filter_producers(&task_data.base_plan)?
             .into_iter()
             .filter(|producer| dynamic_filter_remote_producer_ids.contains(&producer.id));
+        let dynamic_filter_consumers: HashMap<_, _> =
+            discover_dynamic_filter_consumers(&task_data.base_plan)?
+                .consumers
+                .into_iter()
+                .map(|consumer| (consumer.id, consumer))
+                .collect();
         let (producer_cancel_tx, producer_cancel_rx) = watch::channel(false);
 
         // Continue reading remaining messages (work unit feed data) in the background.
         let mut work_unit_senders = Some(remote_work_unit_feed_registry.senders);
         let task_data_entries = Arc::clone(&self.task_data_entries);
+        let dynamic_filter_task_ctx = Arc::clone(&task_data.task_ctx);
 
         // This tokio task takes ownership of the final-report senders that keep the
         // worker->coordinator stream alive. As soon as this task ends, the runtime metrics and
@@ -195,9 +208,29 @@ impl Worker {
                     CoordinatorToWorkerMsg::KickOffSampling => {
                         sampler_gate.kick_off();
                     }
-                    CoordinatorToWorkerMsg::ApplyDynamicFilter(_) => {
-                        // Runtime application is introduced independently from the routing
-                        // protocol. Until then, accepting the message is intentionally a no-op.
+                    CoordinatorToWorkerMsg::ApplyDynamicFilter(filter) => {
+                        let result = dynamic_filter_consumers
+                            .get(&filter.expression_id)
+                            .ok_or_else(|| {
+                                internal_datafusion_err!(
+                                    "received dynamic filter update for unknown consumer {}",
+                                    filter.expression_id
+                                )
+                            })
+                            .and_then(|consumer| {
+                                apply_dynamic_filter_update(
+                                    &consumer.expression,
+                                    &filter.expression,
+                                    filter.producer_schema.as_ref(),
+                                    &dynamic_filter_task_ctx,
+                                )
+                            });
+                        if let Err(error) = result {
+                            let _ = dynamic_filters_error_tx.try_send(error);
+                            // Continue to read messages. Let the coordinator handle the error
+                            // sent on the channel and gracefully terminate the worker.impl
+                            continue;
+                        }
                     }
                 }
             }
@@ -272,13 +305,15 @@ impl Worker {
                 )
             }));
 
+        let dynamic_filters_error_stream = ReceiverStream::new(dynamic_filters_error_rx);
+
         let stream = select_all([
-            produced_dynamic_filters_stream.boxed(),
-            load_info_stream.boxed(),
-            metrics_stream.boxed(),
-            dynamic_filters_stream.boxed(),
+            produced_dynamic_filters_stream.map(Ok).boxed(),
+            load_info_stream.map(Ok).boxed(),
+            metrics_stream.map(Ok).boxed(),
+            dynamic_filters_stream.map(Ok).boxed(),
+            dynamic_filters_error_stream.map(Err).boxed(),
         ])
-        .map(Ok)
         .boxed();
 
         #[cfg(feature = "integration")]
@@ -350,6 +385,10 @@ fn build_task_completed_dynamic_filters(
 ) -> Result<TaskCompletedDynamicFilters> {
     let mut filters = vec![];
     for consumer in discover_dynamic_filter_consumers(plan)?.consumers {
+        // Generation numbers start at 1. Avoid sending any empty filters.
+        if consumer.expression.snapshot_generation() <= 1 {
+            continue;
+        }
         filters.push(TaskDynamicFilter {
             expression_id: consumer.id,
             expression: MaybeEncoded::Decoded(consumer.expression),
