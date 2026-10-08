@@ -2,9 +2,12 @@ use crate::BroadcastExec;
 use crate::distributed_planner::statistics::complexity::{Complexity, LinearComplexity};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::aggregates::AggregateExec;
+use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::joins::{
-    CrossJoinExec, HashJoinExec, NestedLoopJoinExec, SortMergeJoinExec, SymmetricHashJoinExec,
+    CrossJoinExec, HashJoinExec, NestedLoopJoinExec, PiecewiseMergeJoinExec, SortMergeJoinExec,
+    SymmetricHashJoinExec,
 };
+use datafusion::physical_plan::sorts::partitioned_topk::PartitionedTopKExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion::physical_plan::windows::{BoundedWindowAggExec, WindowAggExec};
@@ -90,6 +93,26 @@ pub(super) fn complexity_memory(node: &Arc<dyn ExecutionPlan>) -> Complexity {
     // BroadcastExec retains batches so several consumers can replay the same input partition.
     if node.is::<BroadcastExec>() {
         return Complexity::Linear(LinearComplexity::AllOutputColumns);
+    }
+
+    // FilterExec accumulates filtered rows through a BatchCoalescer up to the session batch
+    // size before emitting, so it retains one record batch of working state.
+    // https://github.com/apache/datafusion/blob/branch-54/datafusion/physical-plan/src/filter.rs
+    if node.is::<FilterExec>() {
+        return Complexity::Constant(1.);
+    }
+
+    // PartitionedTopKExec: one bounded top-K heap per distinct partition key; the retained
+    // state is K per group, i.e. bounded by output size.
+    // https://github.com/apache/datafusion/blob/branch-54/datafusion/physical-plan/src/sorts/partitioned_topk.rs
+    if node.is::<PartitionedTopKExec>() {
+        return Complexity::Linear(LinearComplexity::AllOutputColumns);
+    }
+
+    // PiecewiseMergeJoinExec buffers the left (build) side and streams the right side.
+    // https://github.com/apache/datafusion/blob/branch-54/datafusion/physical-plan/src/joins/piecewise_merge_join/exec.rs
+    if node.is::<PiecewiseMergeJoinExec>() {
+        return Complexity::Linear(LinearComplexity::AllColumnsFromLeft);
     }
 
     Complexity::Constant(0.)
@@ -196,7 +219,7 @@ mod tests {
          M(1) | AggregateExec: mode=Final, gby=[], aggr=[count(Int64(1))]
           M(0) | CoalescePartitionsExec
            M(1) | AggregateExec: mode=Partial, gby=[], aggr=[count(Int64(1))]
-            M(0) | FilterExec: MinTemp@0 > 5, projection=[]
+            M(1) | FilterExec: MinTemp@0 > 5, projection=[]
              M(0) | RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
               M(0) | DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp], file_type=parquet, predicate=MinTemp@0 > 5, pruning_predicate=MinTemp_null_count@1 != row_count@2 AND MinTemp_max@0 > 5, required_guarantees=[]
         ");

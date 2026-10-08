@@ -79,7 +79,7 @@ mod tests {
         assert_snapshot!(format!("{cost:#?}"), @r"
         Cost {
             cpu: Inexact(154841),
-            memory: Inexact(0),
+            memory: Inexact(1),
             network: Inexact(0),
         }
         ");

@@ -6,19 +6,24 @@ use datafusion::common::JoinSide;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::aggregates::AggregateExec;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
+use datafusion::physical_plan::coop::CooperativeExec;
 use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::expressions::{Column, Literal};
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::joins::utils::{ColumnIndex, JoinFilter};
 use datafusion::physical_plan::joins::{
-    CrossJoinExec, HashJoinExec, NestedLoopJoinExec, SortMergeJoinExec, SymmetricHashJoinExec,
+    CrossJoinExec, HashJoinExec, NestedLoopJoinExec, PiecewiseMergeJoinExec, SortMergeJoinExec,
+    SymmetricHashJoinExec,
 };
 use datafusion::physical_plan::limit::{GlobalLimitExec, LocalLimitExec};
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
+use datafusion::physical_plan::sorts::partial_sort::PartialSortExec;
+use datafusion::physical_plan::sorts::partitioned_topk::PartitionedTopKExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion::physical_plan::union::{InterleaveExec, UnionExec};
+use datafusion::physical_plan::unnest::UnnestExec;
 use datafusion::physical_plan::windows::{BoundedWindowAggExec, WindowAggExec};
 use datafusion::physical_plan::{ExecutionPlan, Partitioning};
 use std::sync::Arc;
@@ -285,6 +290,52 @@ pub(super) fn complexity_cpu(node: &Arc<dyn ExecutionPlan>) -> Complexity {
     // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/empty.rs
     if node.is::<EmptyExec>() {
         return Complexity::Constant(1.);
+    }
+
+    // CooperativeExec: pass-through wrapper that yields back to the Tokio scheduler.
+    // https://github.com/apache/datafusion/blob/branch-54/datafusion/physical-plan/src/coop.rs
+    if node.is::<CooperativeExec>() {
+        return Complexity::Constant(1.);
+    }
+
+    // UnnestExec: explodes list/struct columns, streaming row-by-row.
+    // https://github.com/apache/datafusion/blob/branch-54/datafusion/physical-plan/src/unnest.rs
+    if node.is::<UnnestExec>() {
+        return Complexity::Linear(LinearComplexity::AllColumns);
+    }
+
+    // PartialSortExec: like SortExec but each segment is bounded by the common-prefix ordering,
+    // so there is no global n*log(n) term.
+    // https://github.com/apache/datafusion/blob/branch-54/datafusion/physical-plan/src/sorts/partial_sort.rs
+    if let Some(node) = node.downcast_ref::<PartialSortExec>() {
+        // All the input rows still need to be read one by one.
+        let mut n = Complexity::Linear(LinearComplexity::AllColumns);
+        // The sort comparators read every sort key on every row.
+        for expr in node.expr() {
+            n = n.plus(hash_or_comparison_key_complexity(&expr.expr))
+        }
+        return n;
+    }
+
+    // PartitionedTopKExec: bounded top-K heap per distinct partition key. Insertions cost
+    // log(K) but K is bounded, so the log term drops out.
+    // https://github.com/apache/datafusion/blob/branch-54/datafusion/physical-plan/src/sorts/partitioned_topk.rs
+    if let Some(node) = node.downcast_ref::<PartitionedTopKExec>() {
+        let mut n = Complexity::Linear(LinearComplexity::AllColumns);
+        // `expr()` carries the partition-prefix columns and the order keys; both are read per
+        // row to route into the right heap and to insert into it.
+        for expr in node.expr() {
+            n = n.plus(hash_or_comparison_key_complexity(&expr.expr))
+        }
+        return n;
+    }
+
+    // PiecewiseMergeJoinExec: streams a single range filter (<, <=, >, >=). Left is buffered
+    // and sorted; right is sorted per batch and merged against left with the range comparison.
+    // https://github.com/apache/datafusion/blob/branch-54/datafusion/physical-plan/src/joins/piecewise_merge_join/exec.rs
+    if node.is::<PiecewiseMergeJoinExec>() {
+        return Complexity::Linear(LinearComplexity::AllColumnsFromLeft)
+            .plus(Complexity::Linear(LinearComplexity::AllColumnsFromRight));
     }
 
     // For unknown node types, assume we have to do an O(N) operation over all the rows.
