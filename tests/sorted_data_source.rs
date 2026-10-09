@@ -366,8 +366,8 @@ mod tests {
           ┌───── Stage 1 ── tasks=2, partitions=4
           │ SortExec: expr=[value@0 ASC NULLS LAST], preserve_partitioning=[true]
           │   DistributedLeafExec:
-          │     t0: DataSourceExec: file_groups={2 groups: [[testdata/sorted_csv/0.csv:<int>..<int>], [testdata/sorted_csv/2.csv:<int>..<int>]]}, projection=[value], file_type=csv, has_header=true
-          │     t1: DataSourceExec: file_groups={2 groups: [[testdata/sorted_csv/0.csv:<int>..<int>, testdata/sorted_csv/1.csv:<int>..<int>], [testdata/sorted_csv/2.csv:<int>..<int>]]}, projection=[value], file_type=csv, has_header=true
+          │     t0: DataSourceExec: file_groups={2 groups: [[testdata/sorted_csv/0.csv:<int>..<int>], [testdata/sorted_csv/1.csv:<int>..<int>]]}, projection=[value], output_ordering=[value@0 ASC NULLS LAST], file_type=csv, has_header=true
+          │     t1: DataSourceExec: file_groups={2 groups: [[testdata/sorted_csv/0.csv:<int>..<int>], [testdata/sorted_csv/2.csv:<int>..<int>]]}, projection=[value], output_ordering=[value@0 ASC NULLS LAST], file_type=csv, has_header=true
           └──────────────────────────────────────────────────
         ");
         assert_snapshot!(result, @r"

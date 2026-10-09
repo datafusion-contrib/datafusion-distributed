@@ -7,7 +7,9 @@ use crate::{DistributedConfig, ok_or_some_err};
 use datafusion::catalog::memory::DataSourceExec;
 use datafusion::common::plan_err;
 use datafusion::datasource::physical_plan::{FileGroup, FileGroupPartitioner, FileScanConfig};
+use datafusion::datasource::source::DataSource;
 use datafusion::error::Result;
+use datafusion::physical_expr::Partitioning;
 use datafusion::physical_plan::ExecutionPlanProperties;
 use std::sync::Arc;
 
@@ -46,8 +48,11 @@ pub(crate) fn file_scan_config_scale_up_leaf_node(
     file_scan_template.file_groups.clear();
     let mut file_scans = vec![file_scan_template; ev.task_count];
 
-    let is_sorted = !file_scan.output_ordering.is_empty();
-    let is_pre_partitioned = file_scan.output_partitioning.is_some();
+    let is_sorted = file_scan.eq_properties().output_ordering().is_some();
+    let is_pre_partitioned = !matches!(
+        file_scan.output_partitioning(),
+        Partitioning::UnknownPartitioning(_) | Partitioning::RoundRobinBatch(_)
+    );
 
     match (is_sorted, is_pre_partitioned) {
         // partitioned, whether it's sorted or not.
