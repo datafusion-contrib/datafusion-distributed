@@ -11,6 +11,7 @@ mod config;
 mod data_source;
 mod distributed_desired_task_count_handler;
 mod iceberg_ext;
+mod partitioning;
 mod proto;
 mod table_provider;
 mod work_unit_feed;

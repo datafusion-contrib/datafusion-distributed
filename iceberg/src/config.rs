@@ -16,6 +16,9 @@ extensions_options! {
         pub row_selection_enabled: bool, default = false
         /// Whether to include column statistics read during planning
         pub column_stats_enabled: bool, default = false
+        /// Whether scans declare hash partitioning over the identity partition columns of the
+        /// table, routing each data file to the partition its rows hash to.
+        pub hash_partitioning_enabled: bool, default = false
     }
 }
 

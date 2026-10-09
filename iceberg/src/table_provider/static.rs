@@ -7,7 +7,6 @@ use datafusion::catalog::{Session, TableProvider};
 use datafusion::common::{Result, exec_datafusion_err, plan_datafusion_err};
 use datafusion::datasource::TableType;
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown};
-use datafusion::physical_expr::Partitioning;
 use datafusion::physical_plan::ExecutionPlan;
 use iceberg::arrow::schema_to_arrow_schema;
 
@@ -81,19 +80,20 @@ impl TableProvider for IcebergStaticTableProvider {
                 "Snapshot {id} not found in table's metadata"
             ));
         }
+        let iceberg_config = IcebergConfig::from_task_context(&state.task_ctx());
         let mut data_source = IcebergDataSource::new(
             self.table.clone(),
             self.schema.clone(),
-            Partitioning::UnknownPartitioning(state.config().target_partitions()),
+            state.config().target_partitions(),
             IcebergDataSourceOptions {
                 snapshot_id: self.snapshot_id,
                 projection,
                 filters,
                 fetch: limit,
+                hash_partitioning_enabled: iceberg_config.hash_partitioning_enabled,
                 iceberg_runtime: Some(self.iceberg_runtime.clone()),
             },
         );
-        let iceberg_config = IcebergConfig::from_task_context(&state.task_ctx());
         if iceberg_config.column_stats_enabled {
             data_source = data_source
                 .with_column_statistics(self.table.clone(), projection)
