@@ -442,8 +442,8 @@ impl InjectNetworkBoundaryContext<'_> {
         plan: &Arc<dyn ExecutionPlan>,
         task_count: TaskCountAnnotation,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        // Handle leaf nodes.
-        if plan.children().is_empty() {
+        // Remote network boundaries have no children, but still need shuffle preparation.
+        if plan.children().is_empty() && !plan.is_network_boundary() {
             let ev = ScaleUpLeafNodeEvent {
                 plan,
                 task_count: task_count.as_usize(),
@@ -476,10 +476,18 @@ impl InjectNetworkBoundaryContext<'_> {
                     let two_phase_shuffle: Arc<dyn ExecutionPlan> =
                         Arc::new(shuffle.to_two_phase_salted());
                     self.set_task_count(&two_phase_shuffle, task_count);
-                    let consumer_repartition = Arc::new(RepartitionExec::try_new(
-                        two_phase_shuffle,
-                        shuffle.producer_partitioning.clone(),
-                    )?) as Arc<dyn ExecutionPlan>;
+                    let consumer_repartition = Arc::new(
+                        RepartitionExec::try_new(
+                            two_phase_shuffle,
+                            shuffle.producer_partitioning.clone(),
+                        )?
+                        // Delegate ordering checks to with_preserve_order using the ordering
+                        // advertised by NetworkShuffleExec. calling these method here does not
+                        // necessarily mean that we are always going to be preserving order,
+                        // we will just if there's any ordering exposed by the
+                        // NetworkShuffleExec below.
+                        .with_preserve_order(),
+                    ) as Arc<dyn ExecutionPlan>;
                     return Ok(self.plan_with_task_count(consumer_repartition, task_count));
                 }
             }

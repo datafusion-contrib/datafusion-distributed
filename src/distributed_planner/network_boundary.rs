@@ -44,6 +44,8 @@ pub enum ProducerHead {
     /// The head node should be a [RepartitionExec].
     RepartitionExec {
         partitioning: MaybeEncoded<Partitioning>,
+        /// Whether the producer must preserve its input's output ordering.
+        preserve_order: bool,
     },
 }
 
@@ -74,8 +76,12 @@ impl NetworkBoundaryExt for dyn ExecutionPlan {
 impl ProducerHead {
     pub(crate) fn ensure_decoded(self, schema: SchemaRef, ctx: &TaskContext) -> Result<Self> {
         Ok(match self {
-            Self::RepartitionExec { partitioning } => Self::RepartitionExec {
+            Self::RepartitionExec {
+                partitioning,
+                preserve_order,
+            } => Self::RepartitionExec {
                 partitioning: MaybeEncoded::Decoded(partitioning.decode(schema, ctx)?),
+                preserve_order,
             },
             v => v,
         })
@@ -97,10 +103,17 @@ impl ProducerHead {
                 let partitions = input.output_partitioning().partition_count();
                 Arc::new(BroadcastExec::new(input, output_partitions / partitions))
             }
-            ProducerHead::RepartitionExec { partitioning } => Arc::new(RepartitionExec::try_new(
-                input,
-                partitioning.try_decoded()?,
-            )?),
+            ProducerHead::RepartitionExec {
+                partitioning,
+                preserve_order,
+            } => {
+                let repartition = RepartitionExec::try_new(input, partitioning.try_decoded()?)?;
+                Arc::new(if preserve_order {
+                    repartition.with_preserve_order()
+                } else {
+                    repartition
+                })
+            }
         };
         Ok(plan)
     }

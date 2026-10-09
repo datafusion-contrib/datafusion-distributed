@@ -279,6 +279,9 @@ pub struct RepartitionExecHead {
     /// `Partitioning` message from datafusion.proto
     #[prost(bytes = "vec", tag = "1")]
     pub partitioning: ::prost::alloc::vec::Vec<u8>,
+    /// Whether the producer must preserve its input's output ordering.
+    #[prost(bool, tag = "2")]
+    pub preserve_order: bool,
 }
 /// A key that uniquely identifies a task in a query.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

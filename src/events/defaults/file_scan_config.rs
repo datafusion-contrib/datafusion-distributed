@@ -5,8 +5,11 @@ use crate::events::{
 use crate::execution_plans::DistributedLeafExec;
 use crate::{DistributedConfig, ok_or_some_err};
 use datafusion::catalog::memory::DataSourceExec;
+use datafusion::common::plan_err;
 use datafusion::datasource::physical_plan::{FileGroup, FileGroupPartitioner, FileScanConfig};
+use datafusion::datasource::source::DataSource;
 use datafusion::error::Result;
+use datafusion::physical_expr::Partitioning;
 use datafusion::physical_plan::ExecutionPlanProperties;
 use std::sync::Arc;
 
@@ -38,34 +41,89 @@ pub(crate) fn file_scan_config_scale_up_leaf_node(
 ) -> Option<Result<ScaleUpLeafNodeEventResponse>> {
     let dse = ev.plan.downcast_ref::<DataSourceExec>()?;
     let file_scan = dse.data_source().downcast_ref::<FileScanConfig>()?;
-    let partition_count = ev.plan.output_partitioning().partition_count();
 
-    let rebalanced = if file_scan.output_partitioning.is_some() {
-        let all_partitioned_files = file_scan
-            .file_groups
-            .iter()
-            .flat_map(|file_group| file_group.iter().cloned())
-            .collect::<Vec<_>>();
-        rebalance_round_robin(all_partitioned_files, partition_count * ev.task_count)
-            .into_iter()
-            .map(FileGroup::new)
-            .collect::<Vec<_>>()
-    } else {
-        FileGroupPartitioner::new()
-            .with_target_partitions(partition_count * ev.task_count)
-            .with_repartition_file_min_size(0)
-            .with_preserve_order_within_groups(!file_scan.output_ordering.is_empty())
-            .repartition_file_groups(&file_scan.file_groups)
-            .unwrap_or_else(|| file_scan.file_groups.clone())
-            .into_iter()
-            .collect()
-    };
+    let partition_count = ev.plan.output_partitioning().partition_count();
 
     let mut file_scan_template = file_scan.clone();
     file_scan_template.file_groups.clear();
     let mut file_scans = vec![file_scan_template; ev.task_count];
-    for (i, file_group) in rebalanced.into_iter().enumerate() {
-        file_scans[i % ev.task_count].file_groups.push(file_group);
+
+    let is_sorted = file_scan.eq_properties().output_ordering().is_some();
+    let is_pre_partitioned = !matches!(
+        file_scan.output_partitioning(),
+        Partitioning::UnknownPartitioning(_) | Partitioning::RoundRobinBatch(_)
+    );
+
+    match (is_sorted, is_pre_partitioned) {
+        // partitioned, whether it's sorted or not.
+        (_, true) => {
+            let all_partitioned_files = file_scan
+                .file_groups
+                .iter()
+                .flat_map(|file_group| file_group.iter().cloned())
+                .collect::<Vec<_>>();
+            let rebalanced =
+                rebalance_round_robin(all_partitioned_files, partition_count * ev.task_count)
+                    .into_iter()
+                    .map(FileGroup::new)
+                    .collect::<Vec<_>>();
+            for (i, file_group) in rebalanced.into_iter().enumerate() {
+                file_scans[i % ev.task_count].file_groups.push(file_group);
+            }
+        }
+        // sorted but not partitioned.
+        (true, false) => {
+            // Preserve each input group's order while splitting its files and byte ranges
+            // across every task. Each task receives one fragment of every original group.
+            for file_group in &file_scan.file_groups {
+                let mut group_config = file_scan.clone();
+                group_config.file_groups = vec![file_group.clone()];
+                // The source decides whether byte-range splitting is supported (e.g.
+                // CSV with embedded newlines must remain intact). With one input group,
+                // the default splitter keeps the sequence of files and ranges intact.
+                let repartitioned = ok_or_some_err!(file_scan.file_source.repartitioned(
+                    ev.task_count,
+                    0,
+                    None,
+                    &group_config,
+                ));
+                let mut fragments = repartitioned
+                    .map(|config| config.file_groups)
+                    .unwrap_or_else(|| vec![file_group.clone()]);
+                if fragments.len() > ev.task_count {
+                    return Some(plan_err!(
+                        "File source returned {} groups for {} requested partitions",
+                        fragments.len(),
+                        ev.task_count
+                    ));
+                }
+                fragments.resize(ev.task_count, FileGroup::default());
+                for (file_scan, fragment) in file_scans.iter_mut().zip(fragments) {
+                    file_scan.file_groups.push(fragment);
+                }
+            }
+        }
+        // neither sorted nor partitioned.
+        (false, false) => {
+            let rebalanced = FileGroupPartitioner::new()
+                .with_target_partitions(partition_count * ev.task_count)
+                .with_repartition_file_min_size(0)
+                .repartition_file_groups(&file_scan.file_groups)
+                .unwrap_or_else(|| file_scan.file_groups.clone());
+            // The original FileScanConfig might have declared some ordering that was not able to
+            // guarantee on every partition, and therefore hiding the ordering guarantees to the
+            // rest of the plan.
+            //
+            // However, after re-partitioning, some FileScanConfig partitions might collaterally
+            // regain that ordering by luck, just because the FileGroups that happen to have fall
+            // in it can guarantee ordering.
+            for file_scan in &mut file_scans {
+                file_scan.output_ordering.clear();
+            }
+            for (i, file_group) in rebalanced.into_iter().enumerate() {
+                file_scans[i % ev.task_count].file_groups.push(file_group);
+            }
+        }
     }
 
     let distributed_leaf_result = DistributedLeafExec::try_new(

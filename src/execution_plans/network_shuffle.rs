@@ -248,6 +248,7 @@ impl NetworkBoundary for NetworkShuffleExec {
         };
         Ok(ProducerHead::RepartitionExec {
             partitioning: MaybeEncoded::Decoded(partitioning),
+            preserve_order: self.properties.output_ordering().is_some(),
         })
     }
 }
