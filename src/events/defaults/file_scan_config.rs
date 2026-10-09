@@ -92,17 +92,6 @@ pub(crate) fn file_scan_config_scale_up_leaf_node(
         }
     }
 
-    let variant_partition_count = file_scans
-        .iter()
-        .map(|file_scan| file_scan.file_groups.len())
-        .max()
-        .unwrap_or_default();
-    for file_scan in &mut file_scans {
-        while file_scan.file_groups.len() < variant_partition_count {
-            file_scan.file_groups.push(FileGroup::default());
-        }
-    }
-
     let distributed_leaf_result = DistributedLeafExec::try_new(
         Arc::clone(ev.plan),
         file_scans
