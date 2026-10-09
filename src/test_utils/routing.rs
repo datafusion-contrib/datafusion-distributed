@@ -262,7 +262,7 @@ pub fn url_emitter_desired_task_count(
 ) -> Option<Result<DesiredTaskCountEventResponse>> {
     ev.plan
         .downcast_ref::<URLEmitterExec>()
-        .map(|exec| Ok(DesiredTaskCountEventResponse::desired(exec.task_count)))
+        .map(|exec| Ok(DesiredTaskCountEventResponse::soft(exec.task_count)))
 }
 
 pub fn url_emitter_scale_up_leaf_node(

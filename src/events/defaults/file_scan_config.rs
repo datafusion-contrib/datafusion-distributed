@@ -30,7 +30,7 @@ pub(crate) fn file_scan_config_desired_task_count(
     let target_partitions = cfg.target_partitions().max(1) as f64;
     let task_count = total_bytes as f64 / bytes_per_partition / target_partitions;
 
-    Some(Ok(DesiredTaskCountEventResponse::desired(task_count)))
+    Some(Ok(DesiredTaskCountEventResponse::soft(task_count)))
 }
 
 pub(crate) fn file_scan_config_scale_up_leaf_node(
@@ -197,11 +197,11 @@ mod tests {
     }
 
     fn desired_ten(_: DesiredTaskCountEvent) -> Option<Result<DesiredTaskCountEventResponse>> {
-        Some(Ok(DesiredTaskCountEventResponse::desired(10)))
+        Some(Ok(DesiredTaskCountEventResponse::soft(10)))
     }
 
     fn desired_twenty(_: DesiredTaskCountEvent) -> Option<Result<DesiredTaskCountEventResponse>> {
-        Some(Ok(DesiredTaskCountEventResponse::desired(20)))
+        Some(Ok(DesiredTaskCountEventResponse::soft(20)))
     }
 
     fn no_desired_task_count(
@@ -211,6 +211,6 @@ mod tests {
     }
 
     fn desired_thirty(_: DesiredTaskCountEvent) -> Option<Result<DesiredTaskCountEventResponse>> {
-        Some(Ok(DesiredTaskCountEventResponse::desired(30)))
+        Some(Ok(DesiredTaskCountEventResponse::soft(30)))
     }
 }

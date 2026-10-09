@@ -1,11 +1,10 @@
 use crate::distributed_planner::insert_broadcast::is_left_broadcast_safe;
-use crate::events::TaskCountAnnotation::{Desired, Maximum};
 use crate::events::{
     DesiredTaskCountEvent, DesiredTaskCountHandlers, ScaleUpLeafNodeEvent, ScaleUpLeafNodeHandlers,
-    TaskCountAnnotation,
+    TaskCountAnnotation, TaskCountRestriction,
 };
+use crate::execution_plans::ChildrenIsolatorUnionExec;
 use crate::execution_plans::ShuffleMode;
-use crate::execution_plans::{ChildWeight, ChildrenIsolatorUnionExec};
 use crate::stage::LocalStage;
 use crate::worker_resolver::WorkerResolverExtension;
 use crate::{
@@ -14,7 +13,7 @@ use crate::{
 };
 use async_trait::async_trait;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
-use datafusion::common::{HashMap, JoinType, Result, plan_err};
+use datafusion::common::{HashMap, JoinType, Result, internal_err, plan_err};
 use datafusion::physical_expr::Partitioning;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::execution_plan::CardinalityEffect;
@@ -28,6 +27,7 @@ use datafusion::physical_plan::{
 };
 use datafusion::prelude::SessionConfig;
 use std::any::TypeId;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -250,25 +250,40 @@ async fn _inject_network_boundaries(
         plan: &plan,
         session_config: nb_ctx.cfg,
     };
-    let desired_task_count = DesiredTaskCountHandlers::handle(ev)
-        .await
-        .transpose()?
-        .map(|v| v.task_count);
 
-    let task_count = if plan.children().is_empty() {
+    let mut task_count = if plan.children().is_empty() {
         // This is a leaf node, maybe a DataSourceExec, or maybe something else custom from the user.
         // If we could not determine how many tasks this leaf node should run on, we need to assume
         // it cannot be distributed and use just 1 task.
-        desired_task_count.unwrap_or(Maximum(1))
+        DesiredTaskCountHandlers::handle(ev)
+            .await
+            .transpose()?
+            .map(|v| v.task_count)
+            .unwrap_or(TaskCountAnnotation::exact(NonZeroUsize::MIN, 0.0))
     } else if plan.is::<ChildrenIsolatorUnionExec>() {
-        // Isolating unions have the chance to decide how many tasks they should run on. If there
-        // is a union with a bunch of children, the user might want to increase parallelism and the
-        // task count for the stage running that.
-        let mut count = 0.0;
-        for processed_child in processed_children.iter() {
-            count += nb_ctx.task_count(processed_child)?.as_f64();
+        // In ChildrenIsolatorUnionExec, load estimates are summed because all the children are
+        // executed concurrently. The largest child exact count or inherited minimum sets
+        // the union's minimum task count.
+        let mut load: f64 = 0.0;
+        let mut min: Option<NonZeroUsize> = None;
+        for child in &processed_children {
+            let child_count = nb_ctx.task_count(child)?;
+            load += match child_count.restriction {
+                TaskCountRestriction::Exact(count) => child_count.soft.min(count.get() as f64),
+                _ => child_count.soft,
+            };
+            if let TaskCountRestriction::Exact(count) | TaskCountRestriction::Min(count) =
+                child_count.restriction
+            {
+                min = Some(min.map_or(count, |current| current.max(count)));
+            }
         }
-        Desired(count)
+        // Exact children cannot use more tasks than their combined counts. A flexible child
+        // can absorb additional tasks, so it leaves the upper bound unlimited.
+        match min {
+            Some(value) => TaskCountAnnotation::min(value, load),
+            None => TaskCountAnnotation::soft(load),
+        }
     } else if let Some(node) = plan.downcast_ref::<HashJoinExec>()
         && node.mode == PartitionMode::CollectLeft
         && (!broadcast_joins_enabled
@@ -283,7 +298,11 @@ async fn _inject_network_boundaries(
         // by [normalize_collect_joins], so they never reach this arm. `!is_left_broadcast_safe()`
         // captures any remaining types that were not rewritten (for instance, cases where both
         // sides have one output partition).
-        Maximum(1)
+        let mut task_count = TaskCountAnnotation::exact(NonZeroUsize::MIN, 0.0);
+        for processed_child in &processed_children {
+            task_count = task_count.merge(nb_ctx.task_count(processed_child)?)?
+        }
+        task_count
     } else if let Some(node) = plan.downcast_ref::<NestedLoopJoinExec>()
         && (!broadcast_joins_enabled
             || node.join_type() == &JoinType::Full
@@ -296,20 +315,28 @@ async fn _inject_network_boundaries(
         // to probe-side-emitting ones by [normalize_collect_joins]. `!is_left_broadcast_safe()`
         // captures any remaining types that were not rewritten (for instance, cases where both
         // sides have one output partition).
-        Maximum(1)
+        let mut task_count = TaskCountAnnotation::exact(NonZeroUsize::MIN, 0.0);
+        for processed_child in &processed_children {
+            task_count = task_count.merge(nb_ctx.task_count(processed_child)?)?
+        }
+        task_count
     } else if plan.is::<CrossJoinExec>() && !broadcast_joins_enabled {
         // A CrossJoin also collects its entire left side in every task. It is always safe to
         // broadcast (it emits only pair rows), so it is only restricted to a single task when
         // broadcasts are unavailable.
-        Maximum(1)
+        let mut task_count = TaskCountAnnotation::exact(NonZeroUsize::MIN, 0.0);
+        for processed_child in &processed_children {
+            task_count = task_count.merge(nb_ctx.task_count(processed_child)?)?
+        }
+        task_count
     } else {
-        let mut task_count = desired_task_count.unwrap_or(Desired(0.0));
-        // The task count for this plan is decided by the biggest task count from the children; unless
-        // a child specifies a maximum task count, in that case, the maximum is respected. Some
-        // nodes can only run in one task. If there is a subplan with a single node declaring that
-        // it can only run in one task, all the rest of the nodes in the stage need to respect it.
-        for processed_child in processed_children.iter() {
-            task_count = task_count.merge(nb_ctx.task_count(processed_child)?)
+        let mut task_count = DesiredTaskCountHandlers::handle(ev)
+            .await
+            .transpose()?
+            .map(|v| v.task_count)
+            .unwrap_or(TaskCountAnnotation::soft(0.0));
+        for processed_child in &processed_children {
+            task_count = task_count.merge(nb_ctx.task_count(processed_child)?)?
         }
         task_count
     };
@@ -319,7 +346,16 @@ async fn _inject_network_boundaries(
         ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
     )?;
     // Cap the reconciled task count by the configured max-per-stage budget.
-    let task_count = task_count.limit(nb_ctx.max_tasks()?);
+    let max_tasks = nb_ctx.max_tasks()?;
+    if let TaskCountRestriction::Exact(count) | TaskCountRestriction::Min(count) =
+        task_count.restriction
+        && count.get() > max_tasks
+    {
+        return plan_err!(
+            "Cannot assign a required task count of {count}, the max task slots available are {max_tasks}"
+        );
+    }
+    task_count.soft = task_count.soft.min(max_tasks as f64);
 
     // Upon reaching a hash repartition, we need to introduce a network shuffle right above it.
     if let Some(r_exec) = plan.downcast_ref::<RepartitionExec>()
@@ -377,10 +413,9 @@ async fn _inject_network_boundaries(
             .nb_builder
             .build(input_stage, TypeId::of::<NetworkCoalesceExec>(), nb_ctx)
             .await?;
-        if !matches!(result.consumer_task_count, Maximum(1)) {
-            return plan_err!(
-                "A NetworkCoalesceExec must return exactly a Maximum(1) annotation above"
-            );
+        if result.consumer_task_count.restriction != TaskCountRestriction::Exact(NonZeroUsize::MIN)
+        {
+            return plan_err!("A NetworkCoalesceExec must return an exact task count of 1");
         }
         // The parent that triggered this branch is a `CoalescePartitionsExec` or
         // `SortPreservingMergeExec`, both of which fold all partitions into one — so the
@@ -494,20 +529,15 @@ impl InjectNetworkBoundaryContext<'_> {
             // determine which children to run and which to exclude depending on the task index in
             // which it's running.
             //
-            // Each child's bottom-up task count becomes its relative weight (children that want
-            // more parallelism get a proportionally larger share of the stage's budget). A
-            // `Maximum(N)` annotation maps to a hard cap so the allocator never assigns the
-            // child more than `N` task slots; surplus budget is redistributed to uncapped
-            // siblings, or stays empty if every child is capped.
+            // Soft counts determine each child's relative share. Exact counts impose a specific
+            // amount of tasks in which a child needs to run on, which allows multiple children with
+            // a low soft load to be collocated in the same task even if the exact count is higher.
             let children = plan.children();
-            let c_i_union = ChildrenIsolatorUnionExec::from_children_and_weights(
+            let c_i_union = ChildrenIsolatorUnionExec::from_children_and_annotations(
                 children.iter().map(|v| Arc::clone(v)),
                 children
                     .iter()
-                    .map(|v| match self.task_count(v)? {
-                        Desired(n) => Ok(ChildWeight::desired(n)),
-                        Maximum(n) => Ok(ChildWeight::maximum(n)),
-                    })
+                    .map(|v| self.task_count(v))
                     .collect::<Result<Vec<_>>>()?,
                 task_count.as_usize(),
             )?;
@@ -517,10 +547,15 @@ impl InjectNetworkBoundaryContext<'_> {
                 .children()
                 .into_iter()
                 .zip(c_i_union.child_task_counts());
-            for (child, task_count) in children_and_task_count {
-                new_children.push(
-                    self.propagate_task_count_until_network_boundaries(child, Maximum(task_count))?,
-                );
+            for (child, child_task_count) in children_and_task_count {
+                // This child's allocation is already resolved; the parent's minimum
+                // applies to the union's outer slots, not to each isolated child.
+                let Some(exact) = NonZeroUsize::new(child_task_count) else {
+                    return internal_err!("Child task allocation cannot be zero");
+                };
+                let task_count = TaskCountAnnotation::exact(exact, task_count.soft);
+                new_children
+                    .push(self.propagate_task_count_until_network_boundaries(child, task_count)?);
             }
             let c_i_union = Arc::new(c_i_union).replace_children(
                 new_children,
@@ -633,15 +668,14 @@ impl NetworkBoundaryBuilder for CardinalityBasedNetworkBoundaryBuilder {
         nb_type: TypeId,
         nb_ctx: &'a InjectNetworkBoundaryContext<'a>,
     ) -> Result<NetworkBoundaryBuilderResult> {
-        input_stage.plan = nb_ctx.propagate_task_count_until_network_boundaries(
-            &input_stage.plan,
-            Desired(input_stage.tasks as f64),
-        )?;
+        let tc = nb_ctx.task_count(&input_stage.plan)?;
+        input_stage.plan =
+            nb_ctx.propagate_task_count_until_network_boundaries(&input_stage.plan, tc)?;
         let input_properties = Arc::clone(input_stage.plan.properties());
 
         if nb_type == TypeId::of::<NetworkCoalesceExec>() {
             return Ok(NetworkBoundaryBuilderResult {
-                consumer_task_count: Maximum(1),
+                consumer_task_count: TaskCountAnnotation::exact(NonZeroUsize::MIN, tc.soft),
                 input_stage: Stage::Local(input_stage),
                 input_properties,
             });
@@ -671,7 +705,7 @@ impl NetworkBoundaryBuilder for CardinalityBasedNetworkBoundaryBuilder {
         let f = calculate_scale_factor(&input_stage.plan, nb_ctx.d_cfg);
 
         Ok(NetworkBoundaryBuilderResult {
-            consumer_task_count: Desired(f * input_stage.tasks as f64),
+            consumer_task_count: TaskCountAnnotation::soft(input_stage.tasks as f64 * f),
             input_stage: Stage::Local(input_stage),
             input_properties,
         })
@@ -686,7 +720,11 @@ mod tests {
     use crate::distributed_planner::normalize_collect_joins::normalize_collect_joins;
     use crate::test_utils::plans::{TestPlanBuilder, build_side_one_desired_task_count_handler};
     use crate::{DesiredTaskCountEvent, DesiredTaskCountEventResponse, assert_snapshot};
+    use datafusion::catalog::memory::DataSourceExec;
+    use datafusion::datasource::physical_plan::FileScanConfig;
+    use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
+    use std::num::NonZeroUsize;
     /* schema for the "weather" table
 
      MinTemp [type=DOUBLE] [repetitiontype=OPTIONAL]
@@ -725,7 +763,7 @@ mod tests {
             .distributed_planner(false)
             .broadcast_joins(false);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
-        assert_snapshot!(annotated, @"DistributedLeafExec: task_count=Desired(4)")
+        assert_snapshot!(annotated, @"DistributedLeafExec: task_count=TaskCountAnnotation: load=4.00")
     }
 
     #[tokio::test]
@@ -741,16 +779,16 @@ mod tests {
             .distributed_planner(false)
             .broadcast_joins(false);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
-        assert_snapshot!(annotated, @"
-        SortPreservingMergeExec: task_count=Maximum(1)
-          NetworkCoalesceExec: task_count=Maximum(1)
-            ProjectionExec: task_count=Desired(3)
-              SortExec: task_count=Desired(3)
-                AggregateExec: task_count=Desired(3)
-                  NetworkShuffleExec: task_count=Desired(3)
-                    RepartitionExec: task_count=Desired(4)
-                      AggregateExec: task_count=Desired(4)
-                        DistributedLeafExec: task_count=Desired(4)
+        assert_snapshot!(annotated, @r"
+        SortPreservingMergeExec: task_count=TaskCountAnnotation: load=2.67, exact=1
+          NetworkCoalesceExec: task_count=TaskCountAnnotation: load=2.67, exact=1
+            ProjectionExec: task_count=TaskCountAnnotation: load=2.67
+              SortExec: task_count=TaskCountAnnotation: load=2.67
+                AggregateExec: task_count=TaskCountAnnotation: load=2.67
+                  NetworkShuffleExec: task_count=TaskCountAnnotation: load=2.67
+                    RepartitionExec: task_count=TaskCountAnnotation: load=4.00
+                      AggregateExec: task_count=TaskCountAnnotation: load=4.00
+                        DistributedLeafExec: task_count=TaskCountAnnotation: load=4.00
         ")
     }
 
@@ -766,14 +804,14 @@ mod tests {
             .distributed_planner(false)
             .broadcast_joins(false);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
-        assert_snapshot!(annotated, @"
-        HashJoinExec: task_count=Desired(4)
-          NetworkShuffleExec: task_count=Desired(4)
-            RepartitionExec: task_count=Desired(4)
-              DistributedLeafExec: task_count=Desired(4)
-          NetworkShuffleExec: task_count=Desired(4)
-            RepartitionExec: task_count=Desired(4)
-              DistributedLeafExec: task_count=Desired(4)
+        assert_snapshot!(annotated, @r"
+        HashJoinExec: task_count=TaskCountAnnotation: load=4.00
+          NetworkShuffleExec: task_count=TaskCountAnnotation: load=4.00
+            RepartitionExec: task_count=TaskCountAnnotation: load=4.00
+              DistributedLeafExec: task_count=TaskCountAnnotation: load=4.00
+          NetworkShuffleExec: task_count=TaskCountAnnotation: load=4.00
+            RepartitionExec: task_count=TaskCountAnnotation: load=4.00
+              DistributedLeafExec: task_count=TaskCountAnnotation: load=4.00
         ")
     }
 
@@ -810,28 +848,28 @@ mod tests {
             .distributed_planner(false)
             .broadcast_joins(false);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
-        assert_snapshot!(annotated, @"
-        HashJoinExec: task_count=Desired(1.33)
-          NetworkShuffleExec: task_count=Desired(1.33)
-            RepartitionExec: task_count=Desired(2)
-              ProjectionExec: task_count=Desired(2)
-                AggregateExec: task_count=Desired(2)
-                  NetworkShuffleExec: task_count=Desired(2)
-                    RepartitionExec: task_count=Desired(4)
-                      AggregateExec: task_count=Desired(4)
-                        FilterExec: task_count=Desired(4)
-                          RepartitionExec: task_count=Desired(4)
-                            DistributedLeafExec: task_count=Desired(4)
-          NetworkShuffleExec: task_count=Desired(1.33)
-            RepartitionExec: task_count=Desired(2)
-              ProjectionExec: task_count=Desired(2)
-                AggregateExec: task_count=Desired(2)
-                  NetworkShuffleExec: task_count=Desired(2)
-                    RepartitionExec: task_count=Desired(4)
-                      AggregateExec: task_count=Desired(4)
-                        FilterExec: task_count=Desired(4)
-                          RepartitionExec: task_count=Desired(4)
-                            DistributedLeafExec: task_count=Desired(4)
+        assert_snapshot!(annotated, @r"
+        HashJoinExec: task_count=TaskCountAnnotation: load=1.33
+          NetworkShuffleExec: task_count=TaskCountAnnotation: load=1.33
+            RepartitionExec: task_count=TaskCountAnnotation: load=1.78
+              ProjectionExec: task_count=TaskCountAnnotation: load=1.78
+                AggregateExec: task_count=TaskCountAnnotation: load=1.78
+                  NetworkShuffleExec: task_count=TaskCountAnnotation: load=1.78
+                    RepartitionExec: task_count=TaskCountAnnotation: load=4.00
+                      AggregateExec: task_count=TaskCountAnnotation: load=4.00
+                        FilterExec: task_count=TaskCountAnnotation: load=4.00
+                          RepartitionExec: task_count=TaskCountAnnotation: load=4.00
+                            DistributedLeafExec: task_count=TaskCountAnnotation: load=4.00
+          NetworkShuffleExec: task_count=TaskCountAnnotation: load=1.33
+            RepartitionExec: task_count=TaskCountAnnotation: load=1.78
+              ProjectionExec: task_count=TaskCountAnnotation: load=1.78
+                AggregateExec: task_count=TaskCountAnnotation: load=1.78
+                  NetworkShuffleExec: task_count=TaskCountAnnotation: load=1.78
+                    RepartitionExec: task_count=TaskCountAnnotation: load=4.00
+                      AggregateExec: task_count=TaskCountAnnotation: load=4.00
+                        FilterExec: task_count=TaskCountAnnotation: load=4.00
+                          RepartitionExec: task_count=TaskCountAnnotation: load=4.00
+                            DistributedLeafExec: task_count=TaskCountAnnotation: load=4.00
         ")
     }
 
@@ -850,11 +888,11 @@ mod tests {
             .broadcast_joins(false);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
-        HashJoinExec: task_count=Maximum(1)
-          CoalescePartitionsExec: task_count=Maximum(1)
-            NetworkCoalesceExec: task_count=Maximum(1)
-              DistributedLeafExec: task_count=Desired(4)
-          DistributedLeafExec: task_count=Maximum(1)
+        HashJoinExec: task_count=TaskCountAnnotation: load=4.00, exact=1
+          CoalescePartitionsExec: task_count=TaskCountAnnotation: load=4.00, exact=1
+            NetworkCoalesceExec: task_count=TaskCountAnnotation: load=4.00, exact=1
+              DistributedLeafExec: task_count=TaskCountAnnotation: load=4.00
+          DistributedLeafExec: task_count=TaskCountAnnotation: load=4.00, exact=1
         ")
     }
 
@@ -872,11 +910,11 @@ mod tests {
             .broadcast_joins(false);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
-        AggregateExec: task_count=Desired(2.67)
-          NetworkShuffleExec: task_count=Desired(2.67)
-            RepartitionExec: task_count=Desired(4)
-              AggregateExec: task_count=Desired(4)
-                DistributedLeafExec: task_count=Desired(4)
+        AggregateExec: task_count=TaskCountAnnotation: load=2.67
+          NetworkShuffleExec: task_count=TaskCountAnnotation: load=2.67
+            RepartitionExec: task_count=TaskCountAnnotation: load=4.00
+              AggregateExec: task_count=TaskCountAnnotation: load=4.00
+                DistributedLeafExec: task_count=TaskCountAnnotation: load=4.00
         ")
     }
 
@@ -895,14 +933,14 @@ mod tests {
             .broadcast_joins(false);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
-        ChildrenIsolatorUnionExec: task_count=Desired(4)
-          FilterExec: task_count=Maximum(2)
-            RepartitionExec: task_count=Maximum(2)
-              DistributedLeafExec: task_count=Maximum(2)
-          ProjectionExec: task_count=Maximum(2)
-            FilterExec: task_count=Maximum(2)
-              RepartitionExec: task_count=Maximum(2)
-                DistributedLeafExec: task_count=Maximum(2)
+        ChildrenIsolatorUnionExec: task_count=TaskCountAnnotation: load=4.00
+          FilterExec: task_count=TaskCountAnnotation: load=4.00, exact=2
+            RepartitionExec: task_count=TaskCountAnnotation: load=4.00, exact=2
+              DistributedLeafExec: task_count=TaskCountAnnotation: load=4.00, exact=2
+          ProjectionExec: task_count=TaskCountAnnotation: load=4.00, exact=2
+            FilterExec: task_count=TaskCountAnnotation: load=4.00, exact=2
+              RepartitionExec: task_count=TaskCountAnnotation: load=4.00, exact=2
+                DistributedLeafExec: task_count=TaskCountAnnotation: load=4.00, exact=2
         ")
     }
 
@@ -920,11 +958,11 @@ mod tests {
             .broadcast_joins(false)
             .desired_task_count_handler(zero_leaf_desired_task_count_handler);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
-        // Two 0.0 leaf hints remain neutral while the union still receives one concrete task.
+        // Two 0.0 leaf hints remain neutral; resolving the task count still gives one task.
         assert_snapshot!(annotated, @r"
-        ChildrenIsolatorUnionExec: task_count=Desired(0)
-          DataSourceExec: task_count=Maximum(1)
-          DataSourceExec: task_count=Maximum(1)
+        ChildrenIsolatorUnionExec: task_count=TaskCountAnnotation: load=0.00
+          DataSourceExec: task_count=TaskCountAnnotation: load=0.00, exact=1
+          DataSourceExec: task_count=TaskCountAnnotation: load=0.00, exact=1
         ")
     }
 
@@ -943,9 +981,9 @@ mod tests {
             .broadcast_joins(false);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
-        FilterExec: task_count=Desired(4)
-          RepartitionExec: task_count=Desired(4)
-            DistributedLeafExec: task_count=Desired(4)
+        FilterExec: task_count=TaskCountAnnotation: load=4.00
+          RepartitionExec: task_count=TaskCountAnnotation: load=4.00
+            DistributedLeafExec: task_count=TaskCountAnnotation: load=4.00
         ")
     }
 
@@ -962,13 +1000,13 @@ mod tests {
             .distributed_planner(false)
             .broadcast_joins(false);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
-        assert_snapshot!(annotated, @"
-        ProjectionExec: task_count=Desired(4)
-          BoundedWindowAggExec: task_count=Desired(4)
-            SortExec: task_count=Desired(4)
-              NetworkShuffleExec: task_count=Desired(4)
-                RepartitionExec: task_count=Desired(4)
-                  DistributedLeafExec: task_count=Desired(4)
+        assert_snapshot!(annotated, @r"
+        ProjectionExec: task_count=TaskCountAnnotation: load=4.00
+          BoundedWindowAggExec: task_count=TaskCountAnnotation: load=4.00
+            SortExec: task_count=TaskCountAnnotation: load=4.00
+              NetworkShuffleExec: task_count=TaskCountAnnotation: load=4.00
+                RepartitionExec: task_count=TaskCountAnnotation: load=4.00
+                  DistributedLeafExec: task_count=TaskCountAnnotation: load=4.00
         ")
     }
 
@@ -989,18 +1027,18 @@ mod tests {
             .broadcast_joins(false);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
-        ChildrenIsolatorUnionExec: task_count=Desired(4)
-          FilterExec: task_count=Maximum(2)
-            RepartitionExec: task_count=Maximum(2)
-              DistributedLeafExec: task_count=Maximum(2)
-          ProjectionExec: task_count=Maximum(1)
-            FilterExec: task_count=Maximum(1)
-              RepartitionExec: task_count=Maximum(1)
-                DistributedLeafExec: task_count=Maximum(1)
-          ProjectionExec: task_count=Maximum(1)
-            FilterExec: task_count=Maximum(1)
-              RepartitionExec: task_count=Maximum(1)
-                DistributedLeafExec: task_count=Maximum(1)
+        ChildrenIsolatorUnionExec: task_count=TaskCountAnnotation: load=4.00
+          FilterExec: task_count=TaskCountAnnotation: load=4.00, exact=2
+            RepartitionExec: task_count=TaskCountAnnotation: load=4.00, exact=2
+              DistributedLeafExec: task_count=TaskCountAnnotation: load=4.00, exact=2
+          ProjectionExec: task_count=TaskCountAnnotation: load=4.00, exact=1
+            FilterExec: task_count=TaskCountAnnotation: load=4.00, exact=1
+              RepartitionExec: task_count=TaskCountAnnotation: load=4.00, exact=1
+                DistributedLeafExec: task_count=TaskCountAnnotation: load=4.00, exact=1
+          ProjectionExec: task_count=TaskCountAnnotation: load=4.00, exact=1
+            FilterExec: task_count=TaskCountAnnotation: load=4.00, exact=1
+              RepartitionExec: task_count=TaskCountAnnotation: load=4.00, exact=1
+                DistributedLeafExec: task_count=TaskCountAnnotation: load=4.00, exact=1
         ")
     }
 
@@ -1019,9 +1057,9 @@ mod tests {
             .desired_task_count_handler(fractional_leaf_desired_task_count_handler);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
-        ChildrenIsolatorUnionExec: task_count=Desired(0.80)
-          DataSourceExec: task_count=Maximum(1)
-          DataSourceExec: task_count=Maximum(1)
+        ChildrenIsolatorUnionExec: task_count=TaskCountAnnotation: load=0.80
+          DataSourceExec: task_count=TaskCountAnnotation: load=0.80, exact=1
+          DataSourceExec: task_count=TaskCountAnnotation: load=0.80, exact=1
         ")
     }
 
@@ -1038,12 +1076,12 @@ mod tests {
             .broadcast_joins(false)
             .desired_task_count_handler(repartition_max_one_desired_task_count_handler);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
-        assert_snapshot!(annotated, @"
-        AggregateExec: task_count=Desired(1)
-          NetworkShuffleExec: task_count=Desired(1)
-            RepartitionExec: task_count=Desired(1)
-              AggregateExec: task_count=Desired(1)
-                DistributedLeafExec: task_count=Desired(1)
+        assert_snapshot!(annotated, @r"
+        AggregateExec: task_count=TaskCountAnnotation: load=1.00
+          NetworkShuffleExec: task_count=TaskCountAnnotation: load=1.00
+            RepartitionExec: task_count=TaskCountAnnotation: load=4.00, exact=1
+              AggregateExec: task_count=TaskCountAnnotation: load=4.00, exact=1
+                DistributedLeafExec: task_count=TaskCountAnnotation: load=4.00, exact=1
         ")
     }
 
@@ -1063,14 +1101,102 @@ mod tests {
             .desired_task_count_handler(repartition_max_one_desired_task_count_handler);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
-        ChildrenIsolatorUnionExec: task_count=Desired(2)
-          FilterExec: task_count=Maximum(1)
-            RepartitionExec: task_count=Maximum(1)
-              DistributedLeafExec: task_count=Maximum(1)
-          ProjectionExec: task_count=Maximum(1)
-            FilterExec: task_count=Maximum(1)
-              RepartitionExec: task_count=Maximum(1)
-                DistributedLeafExec: task_count=Maximum(1)
+        ChildrenIsolatorUnionExec: task_count=TaskCountAnnotation: load=2.00, min=1
+          FilterExec: task_count=TaskCountAnnotation: load=2.00, exact=1
+            RepartitionExec: task_count=TaskCountAnnotation: load=2.00, exact=1
+              DistributedLeafExec: task_count=TaskCountAnnotation: load=2.00, exact=1
+          ProjectionExec: task_count=TaskCountAnnotation: load=2.00, exact=1
+            FilterExec: task_count=TaskCountAnnotation: load=2.00, exact=1
+              RepartitionExec: task_count=TaskCountAnnotation: load=2.00, exact=1
+                DistributedLeafExec: task_count=TaskCountAnnotation: load=2.00, exact=1
+        ")
+    }
+
+    #[tokio::test]
+    async fn test_nested_union_all() {
+        let test_plan_builder = TestPlanBuilder::new()
+            .target_partitions(4)
+            .num_workers(4)
+            .distributed_planner(false)
+            .broadcast_joins(true)
+            .desired_task_count_handler(|ev: DesiredTaskCountEvent| {
+                let scan = ev.plan.downcast_ref::<DataSourceExec>()?;
+                let config = scan.data_source().downcast_ref::<FileScanConfig>()?;
+                // UNION aliases can be pushed into scans; inspect the source column.
+                let is_sibling = config.file_source.projection()?.iter().any(|expr| {
+                    expr.expr
+                        .downcast_ref::<Column>()
+                        .is_some_and(|col| col.name() == "Rainfall")
+                });
+                Some(Ok(if is_sibling {
+                    DesiredTaskCountEventResponse::soft(4.0)
+                } else {
+                    DesiredTaskCountEventResponse::exact(
+                        NonZeroUsize::new(2).expect("2 is nonzero"),
+                        0.0,
+                    )
+                }))
+            });
+
+        // CROSS JOIN prevents union flattening. Broadcasting its VALUES input keeps
+        // both unions in the same stage (unlike DISTINCT, which inserts a shuffle).
+        // The inner union's min(2) propagates through the cross join to the outer
+        // union. Its children keep their exact(2), even when the outer union's proportional
+        // allocation would otherwise give the inner union only one task.
+        let nested_query = r#"
+            SELECT v FROM (VALUES (1), (2)) AS copies(n) CROSS JOIN (
+                SELECT "MinTemp" AS v FROM weather
+                UNION ALL
+                SELECT "MaxTemp" AS v FROM weather
+            ) AS inner_union
+            UNION ALL
+            SELECT "Rainfall" FROM weather
+        "#;
+        let annotated = annotate_test_plan(test_plan_builder, nested_query).await;
+        assert_snapshot!(annotated, @r"
+        ChildrenIsolatorUnionExec: task_count=TaskCountAnnotation: load=4.00, min=2
+          CrossJoinExec: task_count=TaskCountAnnotation: load=4.00, exact=2
+            CoalescePartitionsExec: task_count=TaskCountAnnotation: load=4.00, exact=2
+              NetworkBroadcastExec: task_count=TaskCountAnnotation: load=4.00, exact=2
+                BroadcastExec: task_count=TaskCountAnnotation: load=0.00, exact=1
+                  DataSourceExec: task_count=TaskCountAnnotation: load=0.00, exact=1
+            ChildrenIsolatorUnionExec: task_count=TaskCountAnnotation: load=4.00, exact=2
+              DistributedLeafExec: task_count=TaskCountAnnotation: load=4.00, exact=2
+              DistributedLeafExec: task_count=TaskCountAnnotation: load=4.00, exact=2
+          DistributedLeafExec: task_count=TaskCountAnnotation: load=4.00, exact=3
+        ");
+    }
+
+    #[tokio::test]
+    async fn test_union_exact_children_keep_exact_counts() {
+        let query = r#"
+        SELECT "MinTemp" FROM weather WHERE "RainToday" = 'yes'
+        UNION ALL
+        SELECT "MaxTemp" FROM weather WHERE "RainToday" = 'no'
+        UNION ALL
+        SELECT "Rainfall" FROM weather WHERE "RainTomorrow" = 'yes'
+        "#;
+        let test_plan_builder = TestPlanBuilder::new()
+            .target_partitions(4)
+            .num_workers(4)
+            // annotate_test_plan wants this as false so its s a single node plan
+            .distributed_planner(false)
+            .broadcast_joins(false)
+            .desired_task_count_handler(repartition_max_one_desired_task_count_handler);
+        let annotated = annotate_test_plan(test_plan_builder, query).await;
+        assert_snapshot!(annotated, @r"
+        ChildrenIsolatorUnionExec: task_count=TaskCountAnnotation: load=3.00, min=1
+          FilterExec: task_count=TaskCountAnnotation: load=3.00, exact=1
+            RepartitionExec: task_count=TaskCountAnnotation: load=3.00, exact=1
+              DistributedLeafExec: task_count=TaskCountAnnotation: load=3.00, exact=1
+          ProjectionExec: task_count=TaskCountAnnotation: load=3.00, exact=1
+            FilterExec: task_count=TaskCountAnnotation: load=3.00, exact=1
+              RepartitionExec: task_count=TaskCountAnnotation: load=3.00, exact=1
+                DistributedLeafExec: task_count=TaskCountAnnotation: load=3.00, exact=1
+          ProjectionExec: task_count=TaskCountAnnotation: load=3.00, exact=1
+            FilterExec: task_count=TaskCountAnnotation: load=3.00, exact=1
+              RepartitionExec: task_count=TaskCountAnnotation: load=3.00, exact=1
+                DistributedLeafExec: task_count=TaskCountAnnotation: load=3.00, exact=1
         ")
     }
 
@@ -1089,12 +1215,12 @@ mod tests {
             .broadcast_joins(true);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
-        HashJoinExec: task_count=Desired(4)
-          CoalescePartitionsExec: task_count=Desired(4)
-            NetworkBroadcastExec: task_count=Desired(4)
-              BroadcastExec: task_count=Desired(4)
-                DistributedLeafExec: task_count=Desired(4)
-          DistributedLeafExec: task_count=Desired(4)
+        HashJoinExec: task_count=TaskCountAnnotation: load=4.00
+          CoalescePartitionsExec: task_count=TaskCountAnnotation: load=4.00
+            NetworkBroadcastExec: task_count=TaskCountAnnotation: load=4.00
+              BroadcastExec: task_count=TaskCountAnnotation: load=4.00
+                DistributedLeafExec: task_count=TaskCountAnnotation: load=4.00
+          DistributedLeafExec: task_count=TaskCountAnnotation: load=4.00
         ")
     }
 
@@ -1130,12 +1256,12 @@ mod tests {
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert!(annotated.contains("Broadcast"));
         assert_snapshot!(annotated, @r"
-        HashJoinExec: task_count=Desired(4)
-          CoalescePartitionsExec: task_count=Desired(4)
-            NetworkBroadcastExec: task_count=Desired(4)
-              BroadcastExec: task_count=Desired(4)
-                DistributedLeafExec: task_count=Desired(4)
-          DistributedLeafExec: task_count=Desired(4)
+        HashJoinExec: task_count=TaskCountAnnotation: load=4.00
+          CoalescePartitionsExec: task_count=TaskCountAnnotation: load=4.00
+            NetworkBroadcastExec: task_count=TaskCountAnnotation: load=4.00
+              BroadcastExec: task_count=TaskCountAnnotation: load=4.00
+                DistributedLeafExec: task_count=TaskCountAnnotation: load=4.00
+          DistributedLeafExec: task_count=TaskCountAnnotation: load=4.00
         ");
     }
 
@@ -1155,12 +1281,12 @@ mod tests {
             .desired_task_count_handler(build_side_one_desired_task_count_handler);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
-        HashJoinExec: task_count=Desired(3)
-          CoalescePartitionsExec: task_count=Desired(3)
-            NetworkBroadcastExec: task_count=Desired(3)
-              BroadcastExec: task_count=Desired(1)
-                DistributedLeafExec: task_count=Desired(1)
-          DistributedLeafExec: task_count=Desired(3)
+        HashJoinExec: task_count=TaskCountAnnotation: load=3.00
+          CoalescePartitionsExec: task_count=TaskCountAnnotation: load=3.00
+            NetworkBroadcastExec: task_count=TaskCountAnnotation: load=3.00
+              BroadcastExec: task_count=TaskCountAnnotation: load=0.00, exact=1
+                DistributedLeafExec: task_count=TaskCountAnnotation: load=0.00, exact=1
+          DistributedLeafExec: task_count=TaskCountAnnotation: load=3.00
         ");
     }
 
@@ -1180,12 +1306,12 @@ mod tests {
             .desired_task_count_handler(broadcast_build_coalesce_max_desired_task_count_handler);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
-        HashJoinExec: task_count=Maximum(1)
-          CoalescePartitionsExec: task_count=Maximum(1)
-            NetworkBroadcastExec: task_count=Maximum(1)
-              BroadcastExec: task_count=Desired(3)
-                DistributedLeafExec: task_count=Desired(3)
-          DistributedLeafExec: task_count=Maximum(1)
+        HashJoinExec: task_count=TaskCountAnnotation: load=3.00, exact=1
+          CoalescePartitionsExec: task_count=TaskCountAnnotation: load=3.00, exact=1
+            NetworkBroadcastExec: task_count=TaskCountAnnotation: load=3.00, exact=1
+              BroadcastExec: task_count=TaskCountAnnotation: load=3.00
+                DistributedLeafExec: task_count=TaskCountAnnotation: load=3.00
+          DistributedLeafExec: task_count=TaskCountAnnotation: load=3.00, exact=1
         ");
     }
 
@@ -1206,11 +1332,11 @@ mod tests {
             .broadcast_joins(true);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
-        HashJoinExec: task_count=Maximum(1)
-          CoalescePartitionsExec: task_count=Maximum(1)
-            NetworkCoalesceExec: task_count=Maximum(1)
-              DistributedLeafExec: task_count=Desired(4)
-          DistributedLeafExec: task_count=Maximum(1)
+        HashJoinExec: task_count=TaskCountAnnotation: load=4.00, exact=1
+          CoalescePartitionsExec: task_count=TaskCountAnnotation: load=4.00, exact=1
+            NetworkCoalesceExec: task_count=TaskCountAnnotation: load=4.00, exact=1
+              DistributedLeafExec: task_count=TaskCountAnnotation: load=4.00
+          DistributedLeafExec: task_count=TaskCountAnnotation: load=4.00, exact=1
         ");
     }
 
@@ -1230,13 +1356,13 @@ mod tests {
             .distributed_planner(false)
             .broadcast_joins(true);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
-        assert_snapshot!(annotated, @"
-        NestedLoopJoinExec: task_count=Desired(4)
-          CoalescePartitionsExec: task_count=Desired(4)
-            NetworkBroadcastExec: task_count=Desired(4)
-              BroadcastExec: task_count=Desired(4)
-                DistributedLeafExec: task_count=Desired(4)
-          DistributedLeafExec: task_count=Desired(4)
+        assert_snapshot!(annotated, @r"
+        NestedLoopJoinExec: task_count=TaskCountAnnotation: load=4.00
+          CoalescePartitionsExec: task_count=TaskCountAnnotation: load=4.00
+            NetworkBroadcastExec: task_count=TaskCountAnnotation: load=4.00
+              BroadcastExec: task_count=TaskCountAnnotation: load=4.00
+                DistributedLeafExec: task_count=TaskCountAnnotation: load=4.00
+          DistributedLeafExec: task_count=TaskCountAnnotation: load=4.00
         ");
     }
 
@@ -1258,11 +1384,11 @@ mod tests {
             .broadcast_joins(true);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
-        NestedLoopJoinExec: task_count=Maximum(1)
-          CoalescePartitionsExec: task_count=Maximum(1)
-            NetworkCoalesceExec: task_count=Maximum(1)
-              DistributedLeafExec: task_count=Desired(4)
-          DistributedLeafExec: task_count=Maximum(1)
+        NestedLoopJoinExec: task_count=TaskCountAnnotation: load=4.00, exact=1
+          CoalescePartitionsExec: task_count=TaskCountAnnotation: load=4.00, exact=1
+            NetworkCoalesceExec: task_count=TaskCountAnnotation: load=4.00, exact=1
+              DistributedLeafExec: task_count=TaskCountAnnotation: load=4.00
+          DistributedLeafExec: task_count=TaskCountAnnotation: load=4.00, exact=1
         ");
     }
 
@@ -1282,11 +1408,11 @@ mod tests {
             .broadcast_joins(false);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
-        CrossJoinExec: task_count=Maximum(1)
-          CoalescePartitionsExec: task_count=Maximum(1)
-            NetworkCoalesceExec: task_count=Maximum(1)
-              DistributedLeafExec: task_count=Desired(4)
-          DistributedLeafExec: task_count=Maximum(1)
+        CrossJoinExec: task_count=TaskCountAnnotation: load=4.00, exact=1
+          CoalescePartitionsExec: task_count=TaskCountAnnotation: load=4.00, exact=1
+            NetworkCoalesceExec: task_count=TaskCountAnnotation: load=4.00, exact=1
+              DistributedLeafExec: task_count=TaskCountAnnotation: load=4.00
+          DistributedLeafExec: task_count=TaskCountAnnotation: load=4.00, exact=1
         ");
     }
 
@@ -1307,11 +1433,11 @@ mod tests {
         // With broadcast disabled, no broadcast annotation should appear
         assert!(!annotated.contains("Broadcast"));
         assert_snapshot!(annotated, @r"
-        HashJoinExec: task_count=Maximum(1)
-          CoalescePartitionsExec: task_count=Maximum(1)
-            NetworkCoalesceExec: task_count=Maximum(1)
-              DistributedLeafExec: task_count=Desired(4)
-          DistributedLeafExec: task_count=Maximum(1)
+        HashJoinExec: task_count=TaskCountAnnotation: load=4.00, exact=1
+          CoalescePartitionsExec: task_count=TaskCountAnnotation: load=4.00, exact=1
+            NetworkCoalesceExec: task_count=TaskCountAnnotation: load=4.00, exact=1
+              DistributedLeafExec: task_count=TaskCountAnnotation: load=4.00
+          DistributedLeafExec: task_count=TaskCountAnnotation: load=4.00, exact=1
         ")
     }
 
@@ -1331,17 +1457,17 @@ mod tests {
             .broadcast_joins(true);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
-        HashJoinExec: task_count=Desired(4)
-          CoalescePartitionsExec: task_count=Desired(4)
-            NetworkBroadcastExec: task_count=Desired(4)
-              BroadcastExec: task_count=Desired(4)
-                HashJoinExec: task_count=Desired(4)
-                  CoalescePartitionsExec: task_count=Desired(4)
-                    NetworkBroadcastExec: task_count=Desired(4)
-                      BroadcastExec: task_count=Desired(4)
-                        DistributedLeafExec: task_count=Desired(4)
-                  DistributedLeafExec: task_count=Desired(4)
-          DistributedLeafExec: task_count=Desired(4)
+        HashJoinExec: task_count=TaskCountAnnotation: load=4.00
+          CoalescePartitionsExec: task_count=TaskCountAnnotation: load=4.00
+            NetworkBroadcastExec: task_count=TaskCountAnnotation: load=4.00
+              BroadcastExec: task_count=TaskCountAnnotation: load=4.00
+                HashJoinExec: task_count=TaskCountAnnotation: load=4.00
+                  CoalescePartitionsExec: task_count=TaskCountAnnotation: load=4.00
+                    NetworkBroadcastExec: task_count=TaskCountAnnotation: load=4.00
+                      BroadcastExec: task_count=TaskCountAnnotation: load=4.00
+                        DistributedLeafExec: task_count=TaskCountAnnotation: load=4.00
+                  DistributedLeafExec: task_count=TaskCountAnnotation: load=4.00
+          DistributedLeafExec: task_count=TaskCountAnnotation: load=4.00
         ")
     }
 
@@ -1371,25 +1497,25 @@ mod tests {
         // With ChildrenIsolatorUnionExec, each broadcast task_count should be limited to their
         // context.
         assert_snapshot!(annotated, @r"
-        ChildrenIsolatorUnionExec: task_count=Desired(4)
-          HashJoinExec: task_count=Maximum(2)
-            CoalescePartitionsExec: task_count=Maximum(2)
-              NetworkBroadcastExec: task_count=Maximum(2)
-                BroadcastExec: task_count=Desired(4)
-                  DistributedLeafExec: task_count=Desired(4)
-            DistributedLeafExec: task_count=Maximum(2)
-          HashJoinExec: task_count=Maximum(1)
-            CoalescePartitionsExec: task_count=Maximum(1)
-              NetworkBroadcastExec: task_count=Maximum(1)
-                BroadcastExec: task_count=Desired(4)
-                  DistributedLeafExec: task_count=Desired(4)
-            DistributedLeafExec: task_count=Maximum(1)
-          HashJoinExec: task_count=Maximum(1)
-            CoalescePartitionsExec: task_count=Maximum(1)
-              NetworkBroadcastExec: task_count=Maximum(1)
-                BroadcastExec: task_count=Desired(4)
-                  DistributedLeafExec: task_count=Desired(4)
-            DistributedLeafExec: task_count=Maximum(1)
+        ChildrenIsolatorUnionExec: task_count=TaskCountAnnotation: load=4.00
+          HashJoinExec: task_count=TaskCountAnnotation: load=4.00, exact=2
+            CoalescePartitionsExec: task_count=TaskCountAnnotation: load=4.00, exact=2
+              NetworkBroadcastExec: task_count=TaskCountAnnotation: load=4.00, exact=2
+                BroadcastExec: task_count=TaskCountAnnotation: load=4.00
+                  DistributedLeafExec: task_count=TaskCountAnnotation: load=4.00
+            DistributedLeafExec: task_count=TaskCountAnnotation: load=4.00, exact=2
+          HashJoinExec: task_count=TaskCountAnnotation: load=4.00, exact=1
+            CoalescePartitionsExec: task_count=TaskCountAnnotation: load=4.00, exact=1
+              NetworkBroadcastExec: task_count=TaskCountAnnotation: load=4.00, exact=1
+                BroadcastExec: task_count=TaskCountAnnotation: load=4.00
+                  DistributedLeafExec: task_count=TaskCountAnnotation: load=4.00
+            DistributedLeafExec: task_count=TaskCountAnnotation: load=4.00, exact=1
+          HashJoinExec: task_count=TaskCountAnnotation: load=4.00, exact=1
+            CoalescePartitionsExec: task_count=TaskCountAnnotation: load=4.00, exact=1
+              NetworkBroadcastExec: task_count=TaskCountAnnotation: load=4.00, exact=1
+                BroadcastExec: task_count=TaskCountAnnotation: load=4.00
+                  DistributedLeafExec: task_count=TaskCountAnnotation: load=4.00
+            DistributedLeafExec: task_count=TaskCountAnnotation: load=4.00, exact=1
         ");
     }
 
@@ -1404,14 +1530,14 @@ mod tests {
             .distributed_planner(false)
             .broadcast_joins(false);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
-        assert_snapshot!(annotated, @"
-        ProjectionExec: task_count=Desired(20)
-          AggregateExec: task_count=Desired(20)
-            RepartitionExec: task_count=Desired(20)
-              NetworkShuffleExec: task_count=Desired(20)
-                RepartitionExec: task_count=Desired(20)
-                  AggregateExec: task_count=Desired(20)
-                    DistributedLeafExec: task_count=Desired(20)
+        assert_snapshot!(annotated, @r"
+        ProjectionExec: task_count=TaskCountAnnotation: load=20.00
+          AggregateExec: task_count=TaskCountAnnotation: load=20.00
+            RepartitionExec: task_count=TaskCountAnnotation: load=20.00
+              NetworkShuffleExec: task_count=TaskCountAnnotation: load=20.00
+                RepartitionExec: task_count=TaskCountAnnotation: load=20.00
+                  AggregateExec: task_count=TaskCountAnnotation: load=20.00
+                    DistributedLeafExec: task_count=TaskCountAnnotation: load=20.00
         ");
     }
 
@@ -1426,16 +1552,16 @@ mod tests {
             .distributed_planner(false)
             .broadcast_joins(false);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
-        assert_snapshot!(annotated, @"
-        HashJoinExec: task_count=Desired(20)
-          RepartitionExec: task_count=Desired(20)
-            NetworkShuffleExec: task_count=Desired(20)
-              RepartitionExec: task_count=Desired(20)
-                DistributedLeafExec: task_count=Desired(20)
-          RepartitionExec: task_count=Desired(20)
-            NetworkShuffleExec: task_count=Desired(20)
-              RepartitionExec: task_count=Desired(20)
-                DistributedLeafExec: task_count=Desired(20)
+        assert_snapshot!(annotated, @r"
+        HashJoinExec: task_count=TaskCountAnnotation: load=20.00
+          RepartitionExec: task_count=TaskCountAnnotation: load=20.00
+            NetworkShuffleExec: task_count=TaskCountAnnotation: load=20.00
+              RepartitionExec: task_count=TaskCountAnnotation: load=20.00
+                DistributedLeafExec: task_count=TaskCountAnnotation: load=20.00
+          RepartitionExec: task_count=TaskCountAnnotation: load=20.00
+            NetworkShuffleExec: task_count=TaskCountAnnotation: load=20.00
+              RepartitionExec: task_count=TaskCountAnnotation: load=20.00
+                DistributedLeafExec: task_count=TaskCountAnnotation: load=20.00
         ");
     }
 
@@ -1443,7 +1569,10 @@ mod tests {
         ev: DesiredTaskCountEvent,
     ) -> Option<Result<DesiredTaskCountEventResponse>> {
         ev.plan.downcast_ref::<RepartitionExec>()?;
-        Some(Ok(DesiredTaskCountEventResponse::maximum(1)))
+        Some(Ok(DesiredTaskCountEventResponse::exact(
+            NonZeroUsize::MIN,
+            0.0,
+        )))
     }
 
     fn fractional_leaf_desired_task_count_handler(
@@ -1452,7 +1581,7 @@ mod tests {
         ev.plan
             .children()
             .is_empty()
-            .then(|| Ok(DesiredTaskCountEventResponse::desired(0.4)))
+            .then(|| Ok(DesiredTaskCountEventResponse::soft(0.4)))
     }
 
     fn zero_leaf_desired_task_count_handler(
@@ -1461,7 +1590,7 @@ mod tests {
         ev.plan
             .children()
             .is_empty()
-            .then(|| Ok(DesiredTaskCountEventResponse::desired(0.0)))
+            .then(|| Ok(DesiredTaskCountEventResponse::soft(0.0)))
     }
 
     fn broadcast_build_coalesce_max_desired_task_count_handler(
@@ -1471,7 +1600,10 @@ mod tests {
             .downcast_ref::<CoalescePartitionsExec>()?
             .input()
             .downcast_ref::<BroadcastExec>()?;
-        Some(Ok(DesiredTaskCountEventResponse::maximum(1)))
+        Some(Ok(DesiredTaskCountEventResponse::exact(
+            NonZeroUsize::MIN,
+            0.0,
+        )))
     }
 
     async fn annotate_test_plan(test_plan_builder: TestPlanBuilder, query: &str) -> String {
