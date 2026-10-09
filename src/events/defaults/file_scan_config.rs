@@ -66,11 +66,27 @@ pub(crate) fn file_scan_config_scale_up_leaf_node(
             // Preserve each input group's order while splitting its files and byte ranges
             // across every task. Each task receives one fragment of every original group.
             for file_group in &file_scan.file_groups {
-                let mut fragments = FileGroupPartitioner::new()
-                    .with_target_partitions(ev.task_count)
-                    .with_repartition_file_min_size(0)
-                    .repartition_file_groups(std::slice::from_ref(file_group))
+                let mut group_config = file_scan.clone();
+                group_config.file_groups = vec![file_group.clone()];
+                // The source decides whether byte-range splitting is supported (e.g.
+                // CSV with embedded newlines must remain intact). With one input group,
+                // the default splitter keeps the sequence of files and ranges intact.
+                let repartitioned = ok_or_some_err!(file_scan.file_source.repartitioned(
+                    ev.task_count,
+                    0,
+                    None,
+                    &group_config,
+                ));
+                let mut fragments = repartitioned
+                    .map(|config| config.file_groups)
                     .unwrap_or_else(|| vec![file_group.clone()]);
+                if fragments.len() > ev.task_count {
+                    return Some(plan_err!(
+                        "File source returned {} groups for {} requested partitions",
+                        fragments.len(),
+                        ev.task_count
+                    ));
+                }
                 fragments.resize(ev.task_count, FileGroup::default());
                 for (file_scan, fragment) in file_scans.iter_mut().zip(fragments) {
                     file_scan.file_groups.push(fragment);
