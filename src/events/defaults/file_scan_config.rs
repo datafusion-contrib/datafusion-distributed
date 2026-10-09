@@ -40,10 +40,6 @@ pub(crate) fn file_scan_config_scale_up_leaf_node(
     let dse = ev.plan.downcast_ref::<DataSourceExec>()?;
     let file_scan = dse.data_source().downcast_ref::<FileScanConfig>()?;
 
-    if ev.task_count == 1 {
-        return Some(Ok(ScaleUpLeafNodeEventResponse::new(Arc::clone(ev.plan))));
-    }
-
     let partition_count = ev.plan.output_partitioning().partition_count();
 
     let mut file_scan_template = file_scan.clone();
@@ -56,10 +52,19 @@ pub(crate) fn file_scan_config_scale_up_leaf_node(
     match (is_sorted, is_pre_partitioned) {
         // partitioned, whether it's sorted or not.
         (_, true) => {
-            return Some(plan_err!(
-                "Scaling up a pre-partitioned FileScanConfig is not yet supported. Please open an\
-                issue in https://github.com/datafusion-contrib/datafusion-distributed/issues."
-            ));
+            let all_partitioned_files = file_scan
+                .file_groups
+                .iter()
+                .flat_map(|file_group| file_group.iter().cloned())
+                .collect::<Vec<_>>();
+            let rebalanced =
+                rebalance_round_robin(all_partitioned_files, partition_count * ev.task_count)
+                    .into_iter()
+                    .map(FileGroup::new)
+                    .collect::<Vec<_>>();
+            for (i, file_group) in rebalanced.into_iter().enumerate() {
+                file_scans[i % ev.task_count].file_groups.push(file_group);
+            }
         }
         // sorted but not partitioned.
         (true, false) => {
@@ -117,6 +122,16 @@ pub(crate) fn file_scan_config_scale_up_leaf_node(
     Some(Ok(ScaleUpLeafNodeEventResponse::new(Arc::new(
         distributed_leaf,
     ))))
+}
+
+fn rebalance_round_robin<T>(items: Vec<T>, target_groups: usize) -> Vec<Vec<T>> {
+    let mut groups = (0..target_groups)
+        .map(|_| Vec::new())
+        .collect::<Vec<Vec<T>>>();
+    for (idx, item) in items.into_iter().enumerate() {
+        groups[idx % target_groups].push(item);
+    }
+    groups
 }
 
 #[cfg(test)]
@@ -179,6 +194,24 @@ mod tests {
         .expect("a file scan should be recognized")?;
         assert_eq!(response.task_count.as_usize(), 3);
         Ok(())
+    }
+
+    #[test]
+    fn test_rebalance_round_robin_fixes_group_boundary_skew() {
+        let groups = rebalance_round_robin((0..8).collect(), 5);
+        assert_eq!(
+            groups.iter().map(Vec::len).collect::<Vec<_>>(),
+            vec![2, 2, 2, 1, 1]
+        );
+    }
+
+    #[test]
+    fn test_rebalance_round_robin_pads_with_empty_groups() {
+        let groups = rebalance_round_robin(vec![10, 20, 30], 5);
+        assert_eq!(
+            groups.iter().map(Vec::len).collect::<Vec<_>>(),
+            vec![1, 1, 1, 0, 0]
+        );
     }
 
     fn total_scan_bytes(plan: &Arc<dyn ExecutionPlan>) -> usize {
