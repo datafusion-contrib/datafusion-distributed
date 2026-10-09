@@ -94,8 +94,8 @@ mod tests {
           │ AggregateExec: mode=Partial, gby=[], aggr=[count(Int64(1))]
           │   RepartitionExec: partitioning=RoundRobinBatch(2), input_partitions=1
           │     DistributedLeafExec:
-          │       t0: DataSourceExec: file_groups={1 group: [[testdata/sorted_csv/0.csv]]}, file_type=csv, has_header=true
-          │       t1: DataSourceExec: file_groups={1 group: [[]]}, file_type=csv, has_header=true
+          │       t0: DataSourceExec: file_groups={1 group: [[testdata/sorted_csv/0.csv:<int>..<int>]]}, file_type=csv, has_header=true
+          │       t1: DataSourceExec: file_groups={1 group: [[testdata/sorted_csv/0.csv:<int>..<int>]]}, file_type=csv, has_header=true
           └──────────────────────────────────────────────────
         ");
         assert_snapshot!(result, @r"
@@ -126,8 +126,8 @@ mod tests {
           │ AggregateExec: mode=Partial, gby=[], aggr=[count(Int64(1))]
           │   RepartitionExec: partitioning=RoundRobinBatch(2), input_partitions=1
           │     DistributedLeafExec:
-          │       t0: DataSourceExec: file_groups={1 group: [[testdata/sorted_csv/0.csv]]}, file_type=csv, has_header=true
-          │       t1: DataSourceExec: file_groups={1 group: [[]]}, file_type=csv, has_header=true
+          │       t0: DataSourceExec: file_groups={1 group: [[testdata/sorted_csv/0.csv:<int>..<int>]]}, file_type=csv, has_header=true
+          │       t1: DataSourceExec: file_groups={1 group: [[testdata/sorted_csv/0.csv:<int>..<int>]]}, file_type=csv, has_header=true
           └──────────────────────────────────────────────────
         ");
         assert_snapshot!(result, @r"
@@ -366,8 +366,8 @@ mod tests {
           ┌───── Stage 1 ── tasks=2, partitions=4
           │ SortExec: expr=[value@0 ASC NULLS LAST], preserve_partitioning=[true]
           │   DistributedLeafExec:
-          │     t0: DataSourceExec: file_groups={2 groups: [[testdata/sorted_csv/0.csv:<int>..<int>], [testdata/sorted_csv/1.csv:<int>..<int>]]}, projection=[value], output_ordering=[value@0 ASC NULLS LAST], file_type=csv, has_header=true
-          │     t1: DataSourceExec: file_groups={2 groups: [[testdata/sorted_csv/0.csv:<int>..<int>], [testdata/sorted_csv/2.csv:<int>..<int>]]}, projection=[value], output_ordering=[value@0 ASC NULLS LAST], file_type=csv, has_header=true
+          │     t0: DataSourceExec: file_groups={2 groups: [[testdata/sorted_csv/0.csv:<int>..<int>], [testdata/sorted_csv/1.csv:<int>..<int>]]}, projection=[value], file_type=csv, has_header=true
+          │     t1: DataSourceExec: file_groups={2 groups: [[testdata/sorted_csv/0.csv:<int>..<int>], [testdata/sorted_csv/2.csv:<int>..<int>]]}, projection=[value], file_type=csv, has_header=true
           └──────────────────────────────────────────────────
         ");
         assert_snapshot!(result, @r"

@@ -110,6 +110,16 @@ pub(crate) fn file_scan_config_scale_up_leaf_node(
                 .with_repartition_file_min_size(0)
                 .repartition_file_groups(&file_scan.file_groups)
                 .unwrap_or_else(|| file_scan.file_groups.clone());
+            // The original FileScanConfig might have declared some ordering that was not able to
+            // guarantee on every partition, and therefore hiding the ordering guarantees to the
+            // rest of the plan.
+            //
+            // However, after re-partitioning, some FileScanConfig partitions might collaterally
+            // regain that ordering by luck, just because the FileGroups that happen to have fall
+            // in it can guarantee ordering.
+            for file_scan in &mut file_scans {
+                file_scan.output_ordering.clear();
+            }
             for (i, file_group) in rebalanced.into_iter().enumerate() {
                 file_scans[i % ev.task_count].file_groups.push(file_group);
             }
