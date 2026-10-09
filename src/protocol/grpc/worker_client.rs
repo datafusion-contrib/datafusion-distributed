@@ -452,11 +452,13 @@ pub(super) fn encode_producer_head(
                 output_partitions: output_partitions as u64,
             })
         }
-        ProducerHead::RepartitionExec { partitioning } => {
-            pb::execute_task_request::ProducerHead::Repartition(pb::RepartitionExecHead {
-                partitioning: partitioning.encode(ctx)?,
-            })
-        }
+        ProducerHead::RepartitionExec {
+            partitioning,
+            preserve_order,
+        } => pb::execute_task_request::ProducerHead::Repartition(pb::RepartitionExecHead {
+            partitioning: partitioning.encode(ctx)?,
+            preserve_order,
+        }),
     })
 }
 
@@ -781,10 +783,60 @@ impl<O, F: Future<Output = O>> Future for ElapsedComputeFuture<F> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::worker_service::decode_producer_head;
     use super::*;
+    use datafusion::arrow::array::Int64Array;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::catalog::memory::{DataSourceExec, MemorySourceConfig};
+    use datafusion::physical_expr::expressions::col;
+    use datafusion::physical_expr::{LexOrdering, Partitioning, PhysicalSortExpr};
+    use datafusion::physical_plan::ExecutionPlanProperties;
+    use datafusion::prelude::SessionContext;
     use datafusion_proto::protobuf::PhysicalExprNode;
     use futures::StreamExt;
     use futures::stream::unfold;
+
+    /// The message must determine ordering even when the supplied plan has no
+    /// existing RepartitionExec from which to infer that setting.
+    #[test]
+    fn repartition_producer_head_preserves_order_over_the_wire() -> Result<()> {
+        let ctx = SessionContext::new().task_ctx();
+        let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int64, false)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int64Array::from(vec![1, 2]))],
+        )?;
+        let ordering =
+            LexOrdering::new(vec![PhysicalSortExpr::new_default(col("k", &schema)?)]).unwrap();
+        let source = MemorySourceConfig::try_new(
+            &[vec![batch.clone()], vec![batch]],
+            Arc::clone(&schema),
+            None,
+        )?
+        .try_with_sort_information(vec![ordering])?;
+        let input = DataSourceExec::from_data_source(source);
+
+        for preserve_order in [false, true] {
+            let encoded = encode_producer_head(
+                ProducerHead::RepartitionExec {
+                    partitioning: MaybeEncoded::Decoded(Partitioning::RoundRobinBatch(2)),
+                    preserve_order,
+                },
+                &ctx,
+            )?;
+            let pb::execute_task_request::ProducerHead::Repartition(encoded) = encoded else {
+                panic!("expected repartition producer head");
+            };
+            let decoded = pb::RepartitionExecHead::decode(encoded.encode_to_vec().as_slice())
+                .expect("decode repartition producer head");
+            let head =
+                decode_producer_head(pb::execute_task_request::ProducerHead::Repartition(decoded))
+                    .ensure_decoded(Arc::clone(&schema), &ctx)?;
+            let plan = head.insert(input.clone())?;
+            assert_eq!(plan.output_ordering().is_some(), preserve_order);
+        }
+        Ok(())
+    }
 
     #[tokio::test]
     async fn elapsed_compute_future() {

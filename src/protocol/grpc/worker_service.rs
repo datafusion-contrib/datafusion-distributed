@@ -260,6 +260,7 @@ pub(super) fn decode_producer_head(proto: pb::execute_task_request::ProducerHead
         },
         pb::execute_task_request::ProducerHead::Repartition(v) => ProducerHead::RepartitionExec {
             partitioning: MaybeEncoded::Encoded(v.partitioning),
+            preserve_order: v.preserve_order,
         },
     }
 }

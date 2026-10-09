@@ -208,6 +208,8 @@ message BroadcastExecHead {
 message RepartitionExecHead {
   // `Partitioning` message from datafusion.proto
   bytes partitioning = 1;
+  // Whether the producer must preserve its input's output ordering.
+  bool preserve_order = 2;
 }
 
 // A key that uniquely identifies a task in a query.

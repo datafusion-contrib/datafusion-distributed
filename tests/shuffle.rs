@@ -121,7 +121,7 @@ mod tests {
             │     t1: DataSourceExec: file_groups={2 groups: [[/testdata/join/parquet/dim/d_dkey=B/data0.parquet:<int>..<int>, /testdata/join/parquet/dim/d_dkey=C/data0.parquet:<int>..<int>], [/testdata/join/parquet/dim/d_dkey=D/data0.parquet:<int>..<int>]]}, projection=[env, service, host, d_dkey], file_type=parquet
             └──────────────────────────────────────────────────
             ┌───── Stage 2 ── tasks=2, partitions=4
-            │ RepartitionExec: partitioning=Hash([f_dkey@2], 4), input_partitions=2
+            │ RepartitionExec: partitioning=Hash([f_dkey@2], 4), input_partitions=2, preserve_order=true, sort_exprs=f_dkey@2 ASC NULLS LAST, timestamp@0 ASC NULLS LAST
             │   DistributedLeafExec:
             │     t0: DataSourceExec: file_groups={2 groups: [[/testdata/join/parquet/fact/f_dkey=A/data0.parquet:<int>..<int>], [/testdata/join/parquet/fact/f_dkey=C/data0.parquet:<int>..<int>]]}, projection=[timestamp, value, f_dkey], output_ordering=[f_dkey@2 ASC NULLS LAST, timestamp@0 ASC NULLS LAST], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
             │     t1: DataSourceExec: file_groups={2 groups: [[/testdata/join/parquet/fact/f_dkey=A/data0.parquet:<int>..<int>, /testdata/join/parquet/fact/f_dkey=B/data0.parquet:<int>..<int>], [/testdata/join/parquet/fact/f_dkey=C/data0.parquet:<int>..<int>, /testdata/join/parquet/fact/f_dkey=D/data0.parquet:<int>..<int>]]}, projection=[timestamp, value, f_dkey], output_ordering=[f_dkey@2 ASC NULLS LAST, timestamp@0 ASC NULLS LAST], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
