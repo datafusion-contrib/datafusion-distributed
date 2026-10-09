@@ -95,13 +95,23 @@ impl DistributedLeafExec {
                     properties = Some(Arc::clone(plan_properties));
                     return Ok(plan);
                 };
-                if prev.partitioning.partition_count()
-                    != plan_properties.partitioning.partition_count()
-                {
-                    return plan_err!("Different partition count where provided in two different variants of DistributedLeafExec")
+
+                let prev_partition_count = prev.partitioning.partition_count();
+                let new_partition_count = plan_properties.partitioning.partition_count();
+                if prev_partition_count != new_partition_count {
+                    return plan_err!("Different partition count where provided in two different variants of DistributedLeafExec: {prev_partition_count} vs {new_partition_count}");
                 }
-                if !prev.eq_properties.schema().eq(plan_properties.eq_properties.schema()) {
-                    return plan_err!("Different schemas where provided in two different variants of DistributedLeafExec")
+
+                let prev_schema = prev.eq_properties.schema();
+                let new_schema = plan_properties.eq_properties.schema();
+                if prev_schema != new_schema {
+                    return plan_err!("Different schemas where provided in two different variants of DistributedLeafExec: {prev_schema:?} vs {new_schema:?}");
+                }
+
+                let prev_output_ordering = prev.output_ordering();
+                let new_output_ordering = plan_properties.output_ordering();
+                if prev_output_ordering != new_output_ordering {
+                    return plan_err!("Different output orderings where provided in two different variants of DistributedLeafExec: {prev_output_ordering:?} vs {new_output_ordering:?}");
                 }
 
                 Ok(plan)
