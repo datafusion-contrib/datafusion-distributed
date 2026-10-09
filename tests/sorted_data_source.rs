@@ -340,6 +340,50 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn sorted_csv_files_with_unordered_ranges() -> Result<()> {
+        let (plan, result) = CsvTest::new(&[
+            r#"value
+                7
+                8
+                9
+            "#,
+            r#"value
+                0
+            "#,
+            r#"value
+                1
+            "#,
+        ])
+        .query("SELECT value FROM records ORDER BY value")
+        .await?;
+        // A task must not acquire an ordering that the other task cannot guarantee.
+        assert_snapshot!(plan, @r"
+        ┌───── DistributedExec
+        │ SortPreservingMergeExec: [value@0 ASC NULLS LAST]
+        │   [Stage 1] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
+        └──────────────────────────────────────────────────
+          ┌───── Stage 1 ── tasks=2, partitions=4
+          │ SortExec: expr=[value@0 ASC NULLS LAST], preserve_partitioning=[true]
+          │   DistributedLeafExec:
+          │     t0: DataSourceExec: file_groups={2 groups: [[testdata/sorted_csv/0.csv:<int>..<int>], [testdata/sorted_csv/2.csv:<int>..<int>]]}, projection=[value], file_type=csv, has_header=true
+          │     t1: DataSourceExec: file_groups={2 groups: [[testdata/sorted_csv/0.csv:<int>..<int>, testdata/sorted_csv/1.csv:<int>..<int>], [testdata/sorted_csv/2.csv:<int>..<int>]]}, projection=[value], file_type=csv, has_header=true
+          └──────────────────────────────────────────────────
+        ");
+        assert_snapshot!(result, @r"
+        +-------+
+        | value |
+        +-------+
+        | 0     |
+        | 1     |
+        | 7     |
+        | 8     |
+        | 9     |
+        +-------+
+        ");
+        Ok(())
+    }
+
     struct CsvTest<'a> {
         bodies: &'a [&'a str],
         newlines_in_values: bool,
