@@ -101,6 +101,13 @@ side of the screen for the answer.
 
 .. toctree::
    :maxdepth: 1
+   :caption: Blog
+   :hidden:
+
+   blog/distributed-dynamic-filtering
+
+.. toctree::
+   :maxdepth: 1
    :caption: Contributor Guide
    :hidden:
 

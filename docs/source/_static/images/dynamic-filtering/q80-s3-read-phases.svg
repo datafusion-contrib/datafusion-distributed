@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Licensed to the Apache Software Foundation (ASF) under the Apache License, Version 2.0. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 400" role="img" aria-labelledby="title desc">
+  <title id="title">Q80 with dynamic filtering off and on over S3</title>
+  <desc id="desc">Without dynamic filtering, one combined S3 range read begins streaming batches. With dynamic filtering, five dependent reads evaluate progressively, and each red wait represents another S3 call.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0 0L8 4L0 8Z" fill="#8b949e"/>
+    </marker>
+    <style>
+      .scene{font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+      .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+      .panel{fill:#fff;stroke:#d8dee4;stroke-width:1.5}
+      .active{fill:none;stroke:#218bff;stroke-width:2.5;opacity:0}
+      .stage{fill:#57606a;font-size:12px;font-weight:750;letter-spacing:.055em}
+      .heading{fill:#24292f;font-size:13px;font-weight:700}
+      .label{fill:#57606a;font-size:11px}
+      .note{fill:#6e7781;font-size:10px}
+      .read{fill:#eef2f6;stroke:#afb8c1;stroke-width:1.1}
+      .read-active{fill:#ddf4ff;stroke:#218bff;stroke-width:1.7;opacity:0}
+      .box{fill:#f6f8fa;stroke:#afb8c1;stroke-width:1.2}
+      .good{fill:#dafbe1;stroke:#2da44e;stroke-width:1.3}
+      .flow{fill:none;stroke:#8b949e;stroke-width:1.5;marker-end:url(#arrow)}
+      .wait{fill:#d74633;stroke:#9a2f22;stroke-width:1}
+      .wait-active{fill:#ff6a55;opacity:0}
+      .wait-star{fill:#fff;font-size:10px;font-weight:800;text-anchor:middle}
+      .badge{fill:#6f42c1}
+      .badge-text{fill:#fff;font-size:10px;font-weight:750;text-anchor:middle}
+      .progress-track{fill:#dbeafe}
+      .progress-fill{fill:#218bff;transform-box:fill-box;transform-origin:left center;animation:progress 10s linear infinite}
+      .p1{animation:p1 10s linear infinite}.p2{animation:p2 10s linear infinite}
+      .fill{fill:#54aeff;opacity:.35;transform-box:fill-box;transform-origin:left center;animation:fill 10s ease-in-out infinite}
+      .batch-off{opacity:0;animation:batchOff 10s linear infinite}
+      .r1{animation:r1 10s linear infinite}.w1{animation:w1 10s linear infinite}
+      .r2{animation:r2 10s linear infinite}.w2{animation:w2 10s linear infinite}
+      .r3{animation:r3 10s linear infinite}.w3{animation:w3 10s linear infinite}
+      .r4{animation:r4 10s linear infinite}.w4{animation:w4 10s linear infinite}
+      .r5{animation:r5 10s linear infinite}.result-on{opacity:0;animation:resultOn 10s linear infinite}
+      @keyframes p1{0%,3%{opacity:0}5%,40%{opacity:1}43%,100%{opacity:0}}
+      @keyframes p2{0%,42%{opacity:0}45%,98%{opacity:1}100%{opacity:0}}
+      @keyframes fill{0%,5%{transform:scaleX(0)}28%,40%{transform:scaleX(1)}43%,100%{transform:scaleX(0)}}
+      @keyframes batchOff{0%,25%{opacity:0}29%,40%{opacity:1}43%,100%{opacity:0}}
+      @keyframes r1{0%,44%{opacity:0}46%,51%{opacity:1}53%,100%{opacity:0}}
+      @keyframes w1{0%,49%{opacity:0}51%,55%{opacity:1}57%,100%{opacity:0}}
+      @keyframes r2{0%,53%{opacity:0}55%,60%{opacity:1}62%,100%{opacity:0}}
+      @keyframes w2{0%,58%{opacity:0}60%,64%{opacity:1}66%,100%{opacity:0}}
+      @keyframes r3{0%,62%{opacity:0}64%,69%{opacity:1}71%,100%{opacity:0}}
+      @keyframes w3{0%,67%{opacity:0}69%,73%{opacity:1}75%,100%{opacity:0}}
+      @keyframes r4{0%,71%{opacity:0}73%,78%{opacity:1}80%,100%{opacity:0}}
+      @keyframes w4{0%,76%{opacity:0}78%,82%{opacity:1}84%,100%{opacity:0}}
+      @keyframes r5{0%,80%{opacity:0}82%,88%{opacity:1}91%,100%{opacity:0}}
+      @keyframes resultOn{0%,87%{opacity:0}90%,98%{opacity:1}100%{opacity:0}}
+      @keyframes progress{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+      @media(prefers-reduced-motion:reduce){*{animation:none!important}.active,.read-active,.wait-active{opacity:0}.fill{transform:scaleX(1)}.batch-off,.result-on{opacity:1}}
+    </style>
+  </defs>
+  <g class="scene">
+    <rect width="960" height="400" rx="16" fill="#fbfcfd"/>
+    <g aria-label="Animation progress">
+      <rect x="780" y="18" width="150" height="4" rx="2" class="progress-track"/>
+      <rect x="780" y="18" width="150" height="4" rx="2" class="progress-fill"/>
+    </g>
+
+    <rect x="25" y="38" width="445" height="332" rx="14" class="panel"/>
+    <rect x="25" y="38" width="445" height="332" rx="14" class="active p1"/>
+    <circle cx="49" cy="63" r="12" class="badge"/><text x="49" y="67" class="badge-text">1</text>
+    <text x="69" y="67" class="stage">DYNAMIC FILTERING OFF</text>
+    <text x="48" y="119" class="label">S3</text>
+    <rect x="91" y="91" width="247" height="48" rx="8" class="read"/>
+    <rect x="99" y="99" width="231" height="32" rx="5" class="fill"/>
+    <text x="214" y="119" class="heading" text-anchor="middle">one combined range read</text>
+    <path d="M338 115H366" class="flow"/>
+    <g class="batch-off"><rect x="376" y="94" width="70" height="42" rx="8" class="good"/><text x="411" y="119" class="heading" text-anchor="middle">batch</text></g>
+    <text x="48" y="222" class="label">Shuffle</text>
+    <g class="batch-off"><rect x="91" y="199" width="79" height="42" rx="8" class="box"/><text x="130" y="224" class="heading" text-anchor="middle">batch</text><path d="M170 220H217" class="flow"/><rect x="227" y="199" width="79" height="42" rx="8" class="box"/><text x="266" y="224" class="heading" text-anchor="middle">batch</text><path d="M306 220H354" class="flow"/><rect x="364" y="199" width="82" height="42" rx="8" class="good"/><text x="405" y="224" class="heading" text-anchor="middle">join</text></g>
+    <text x="247" y="291" class="note" text-anchor="middle">batches stream while the scan is running</text>
+    <text x="247" y="335" class="heading" text-anchor="middle">baseline · 1.00x</text>
+
+    <rect x="490" y="38" width="445" height="332" rx="14" class="panel"/>
+    <rect x="490" y="38" width="445" height="332" rx="14" class="active p2"/>
+    <circle cx="514" cy="63" r="12" class="badge"/><text x="514" y="67" class="badge-text">2</text>
+    <text x="534" y="67" class="stage">DYNAMIC FILTERING ON</text>
+    <g><rect x="515" y="92" width="48" height="40" rx="7" class="read"/><rect x="515" y="92" width="48" height="40" rx="7" class="read-active r1"/><text x="539" y="116" class="note mono" text-anchor="middle">read 1</text></g>
+    <g><circle cx="580" cy="112" r="9" class="wait"/><circle cx="580" cy="112" r="9" class="wait-active w1"/><text x="580" y="116" class="wait-star">*</text></g>
+    <g><rect x="594" y="92" width="48" height="40" rx="7" class="read"/><rect x="594" y="92" width="48" height="40" rx="7" class="read-active r2"/><text x="618" y="116" class="note mono" text-anchor="middle">read 2</text></g>
+    <g><circle cx="654" cy="112" r="9" class="wait"/><circle cx="654" cy="112" r="9" class="wait-active w2"/><text x="654" y="116" class="wait-star">*</text></g>
+    <g><rect x="668" y="92" width="48" height="40" rx="7" class="read"/><rect x="668" y="92" width="48" height="40" rx="7" class="read-active r3"/><text x="692" y="116" class="note mono" text-anchor="middle">read 3</text></g>
+    <g><circle cx="728" cy="112" r="9" class="wait"/><circle cx="728" cy="112" r="9" class="wait-active w3"/><text x="728" y="116" class="wait-star">*</text></g>
+    <g><rect x="742" y="92" width="48" height="40" rx="7" class="read"/><rect x="742" y="92" width="48" height="40" rx="7" class="read-active r4"/><text x="766" y="116" class="note mono" text-anchor="middle">read 4</text></g>
+    <g><circle cx="802" cy="112" r="9" class="wait"/><circle cx="802" cy="112" r="9" class="wait-active w4"/><text x="802" y="116" class="wait-star">*</text></g>
+    <g><rect x="816" y="92" width="48" height="40" rx="7" class="read"/><rect x="816" y="92" width="48" height="40" rx="7" class="read-active r5"/><text x="840" y="116" class="note mono" text-anchor="middle">read 5</text></g>
+    <g class="result-on"><text x="513" y="222" class="label">Shuffle</text><rect x="565" y="199" width="102" height="42" rx="8" class="box"/><text x="616" y="217" class="heading" text-anchor="middle">sparse rows</text><text x="616" y="232" class="note" text-anchor="middle">buffered</text><path d="M667 220H721" class="flow"/><text x="695" y="206" class="note" text-anchor="middle">EOF</text><rect x="731" y="199" width="78" height="42" rx="8" class="box"/><text x="770" y="224" class="heading" text-anchor="middle">flush</text><path d="M809 220H833" class="flow"/><rect x="843" y="199" width="68" height="42" rx="8" class="good"/><text x="877" y="224" class="heading" text-anchor="middle">join</text></g>
+    <text x="712" y="291" class="note" text-anchor="middle">* each dependent read is a separate S3 call</text>
+    <text x="712" y="335" class="heading" text-anchor="middle">slower critical path · 0.855x</text>
+  </g>
+</svg>

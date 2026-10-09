@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Licensed to the Apache Software Foundation (ASF) under the Apache License, Version 2.0. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 260" role="img" aria-labelledby="title desc">
+  <title id="title">Hash join build and probe sides</title>
+  <desc id="desc">A small dimension-table build side and a large fact-table probe side flow upward into a hash join.</desc>
+  <defs>
+    <marker id="join-data-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0 0L8 4L0 8Z" fill="#8b95a7"/>
+    </marker>
+  </defs>
+  <rect width="500" height="260" rx="14" fill="#fbfcfd"/>
+  <rect x="132" y="16" width="156" height="68" rx="13" fill="#6f42c1"/>
+  <text x="210" y="45" text-anchor="middle" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="18" font-weight="700" fill="#fff">Hash Join</text>
+  <text x="210" y="67" text-anchor="middle" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13" fill="#eee5f7">matching keys</text>
+  <rect x="14" y="150" width="86" height="52" rx="10" fill="#f3effa" stroke="#9d7bc4" stroke-width="2"/>
+  <text x="57" y="171" text-anchor="middle" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14" font-weight="700" fill="#241735">dim</text>
+  <text x="57" y="189" text-anchor="middle" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="9" fill="#675b73">build side · small</text>
+  <rect x="192" y="150" width="294" height="92" rx="14" fill="#f5f7fa" stroke="#aab4c2" stroke-width="2"/>
+  <text x="339" y="188" text-anchor="middle" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="22" font-weight="700" fill="#241735">fact</text>
+  <text x="339" y="218" text-anchor="middle" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="16" fill="#675b73">probe side · large</text>
+  <path d="M57 150C57 116 145 111 177 84" fill="none" stroke="#8b95a7" stroke-width="2.5" marker-end="url(#join-data-arrow)"/>
+  <path d="M339 150C339 115 270 99 243 84" fill="none" stroke="#8b95a7" stroke-width="2.5" marker-end="url(#join-data-arrow)"/>
+</svg>

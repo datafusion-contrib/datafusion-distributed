@@ -147,6 +147,34 @@ Details: 8rem for search box etc*/
     white-space: normal;
 }
 
+/* Center numbered blog tables without changing other docs tables. */
+.bd-content .pst-scrollable-table-container:has(> table.blog-numbered-table) {
+    display: block;
+    margin-inline: auto;
+    max-width: 100%;
+    text-align: center;
+    width: fit-content;
+}
+
+.bd-content table.blog-numbered-table {
+    display: table;
+    margin-inline: auto;
+    text-align: left;
+    width: auto;
+}
+
+.bd-content .table-number {
+    text-align: center;
+}
+
+.bd-content .table-number p {
+    margin-top: 0.5rem;
+}
+
+.bd-content table.dynamic-filter-merge-table tbody tr:first-child {
+    background-color: rgba(72, 118, 214, 0.12);
+}
+
 /* Maintain striped styling when table scrolls */
 .bd-content table tbody tr:nth-of-type(odd) {
     background-color: rgba(0, 0, 0, 0.03);
