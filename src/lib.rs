@@ -26,11 +26,11 @@ pub use distributed_planner::{
 };
 pub use dynamic_filtering::rewrite_distributed_plan_with_dynamic_filters;
 pub use events::{
-    CoordinatorToWorkerDialer, DesiredTaskCountEvent, DesiredTaskCountEventResponse,
+    CoordinatorToWorkerDialer, Cost, DesiredTaskCountEvent, DesiredTaskCountEventResponse,
     DesiredTaskCountHandler, RouteTaskEvent, RouteTaskEventResponse, RouteTaskHandler,
-    ScaleUpLeafNodeEvent, ScaleUpLeafNodeEventResponse, ScaleUpLeafNodeHandler,
-    TaskCountAnnotation, WorkerPlanRewriteEvent, WorkerPlanRewriteEventResponse,
-    WorkerPlanRewriteHandler,
+    ScaleUpLeafNodeEvent, ScaleUpLeafNodeEventResponse, ScaleUpLeafNodeHandler, StageBuiltEvent,
+    StageBuiltEventResponse, StageBuiltHandler, TaskCountAnnotation, WorkerPlanRewriteEvent,
+    WorkerPlanRewriteEventResponse, WorkerPlanRewriteHandler,
 };
 pub use execution_plans::{
     BroadcastExec, DistributedLeafExec, NetworkBroadcastExec, NetworkCoalesceExec,
