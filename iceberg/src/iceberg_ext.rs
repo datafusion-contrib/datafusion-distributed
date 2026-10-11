@@ -64,6 +64,14 @@ pub trait IcebergExt: Sized {
 
     fn set_iceberg_column_stats_enabled(&mut self, enabled: bool);
     fn with_iceberg_column_stats_enabled(self, enabled: bool) -> Self;
+
+    /// Enables or disables declaring hash partitioning over the identity partition columns of
+    /// Iceberg scans.
+    fn set_iceberg_hash_partitioning_enabled(&mut self, enabled: bool);
+
+    /// Enables or disables declaring hash partitioning over the identity partition columns of
+    /// Iceberg scans.
+    fn with_iceberg_hash_partitioning_enabled(self, enabled: bool) -> Self;
 }
 
 trait IcebergConfigExt {
@@ -71,6 +79,7 @@ trait IcebergConfigExt {
     fn set_iceberg_row_group_filtering_enabled(&mut self, enabled: bool);
     fn set_iceberg_row_selection_enabled(&mut self, enabled: bool);
     fn set_iceberg_column_stats_enabled(&mut self, enabled: bool);
+    fn set_iceberg_hash_partitioning_enabled(&mut self, enabled: bool);
 }
 
 impl IcebergConfigExt for SessionConfig {
@@ -88,6 +97,10 @@ impl IcebergConfigExt for SessionConfig {
 
     fn set_iceberg_column_stats_enabled(&mut self, enabled: bool) {
         iceberg_config_mut(self).column_stats_enabled = enabled;
+    }
+
+    fn set_iceberg_hash_partitioning_enabled(&mut self, enabled: bool) {
+        iceberg_config_mut(self).hash_partitioning_enabled = enabled;
     }
 }
 
@@ -159,6 +172,7 @@ impl IcebergExt for SessionStateBuilder {
             fn set_iceberg_row_group_filtering_enabled(&mut self, enabled: bool);
             fn set_iceberg_row_selection_enabled(&mut self, enabled: bool);
             fn set_iceberg_column_stats_enabled(&mut self, enabled: bool);
+            fn set_iceberg_hash_partitioning_enabled(&mut self, enabled: bool);
         }
 
         to self {
@@ -181,6 +195,10 @@ impl IcebergExt for SessionStateBuilder {
             #[call(set_iceberg_column_stats_enabled)]
             #[expr($;self)]
             fn with_iceberg_column_stats_enabled(mut self, enabled: bool) -> Self;
+
+            #[call(set_iceberg_hash_partitioning_enabled)]
+            #[expr($;self)]
+            fn with_iceberg_hash_partitioning_enabled(mut self, enabled: bool) -> Self;
         }
     }
 }
@@ -196,6 +214,7 @@ impl IcebergExt for SessionState {
             fn set_iceberg_row_group_filtering_enabled(&mut self, enabled: bool);
             fn set_iceberg_row_selection_enabled(&mut self, enabled: bool);
             fn set_iceberg_column_stats_enabled(&mut self, enabled: bool);
+            fn set_iceberg_hash_partitioning_enabled(&mut self, enabled: bool);
         }
 
         to self {
@@ -218,6 +237,10 @@ impl IcebergExt for SessionState {
             #[call(set_iceberg_column_stats_enabled)]
             #[expr($;self)]
             fn with_iceberg_column_stats_enabled(mut self, enabled: bool) -> Self;
+
+            #[call(set_iceberg_hash_partitioning_enabled)]
+            #[expr($;self)]
+            fn with_iceberg_hash_partitioning_enabled(mut self, enabled: bool) -> Self;
         }
     }
 }
@@ -230,6 +253,7 @@ impl IcebergExt for SessionContext {
             fn set_iceberg_row_group_filtering_enabled(&mut self, enabled: bool);
             fn set_iceberg_row_selection_enabled(&mut self, enabled: bool);
             fn set_iceberg_column_stats_enabled(&mut self, enabled: bool);
+            fn set_iceberg_hash_partitioning_enabled(&mut self, enabled: bool);
         }
 
         to self {
@@ -252,6 +276,10 @@ impl IcebergExt for SessionContext {
             #[call(set_iceberg_column_stats_enabled)]
             #[expr($;self)]
             fn with_iceberg_column_stats_enabled(mut self, enabled: bool) -> Self;
+
+            #[call(set_iceberg_hash_partitioning_enabled)]
+            #[expr($;self)]
+            fn with_iceberg_hash_partitioning_enabled(mut self, enabled: bool) -> Self;
         }
     }
 }
