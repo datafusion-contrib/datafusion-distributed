@@ -83,6 +83,8 @@ mod tests {
             .newlines_in_values(true)
             .query("SELECT count(*) AS n FROM records")
             .await?;
+        // When the CSV DataSource is configured with `.newlines_in_values(true)` it cannot be
+        // byte range split, so there's only one file to read.
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec
         │ ProjectionExec: expr=[count(Int64(1))@0 as n]
@@ -94,8 +96,8 @@ mod tests {
           │ AggregateExec: mode=Partial, gby=[], aggr=[count(Int64(1))]
           │   RepartitionExec: partitioning=RoundRobinBatch(2), input_partitions=1
           │     DistributedLeafExec:
-          │       t0: DataSourceExec: file_groups={1 group: [[testdata/sorted_csv/0.csv:<int>..<int>]]}, file_type=csv, has_header=true
-          │       t1: DataSourceExec: file_groups={1 group: [[testdata/sorted_csv/0.csv:<int>..<int>]]}, file_type=csv, has_header=true
+          │       t0: DataSourceExec: file_groups={1 group: [[testdata/sorted_csv/0.csv]]}, file_type=csv, has_header=true
+          │       t1: DataSourceExec: file_groups={1 group: [[]]}, file_type=csv, has_header=true
           └──────────────────────────────────────────────────
         ");
         assert_snapshot!(result, @r"
@@ -115,6 +117,8 @@ mod tests {
             .adaptive(true)
             .query("SELECT count(*) AS n FROM records")
             .await?;
+        // When the CSV DataSource is configured with `.newlines_in_values(true)` it cannot be
+        // byte range split, so there's only one file to read.
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec
         │ ProjectionExec: expr=[count(Int64(1))@0 as n]
@@ -126,8 +130,8 @@ mod tests {
           │ AggregateExec: mode=Partial, gby=[], aggr=[count(Int64(1))]
           │   RepartitionExec: partitioning=RoundRobinBatch(2), input_partitions=1
           │     DistributedLeafExec:
-          │       t0: DataSourceExec: file_groups={1 group: [[testdata/sorted_csv/0.csv:<int>..<int>]]}, file_type=csv, has_header=true
-          │       t1: DataSourceExec: file_groups={1 group: [[testdata/sorted_csv/0.csv:<int>..<int>]]}, file_type=csv, has_header=true
+          │       t0: DataSourceExec: file_groups={1 group: [[testdata/sorted_csv/0.csv]]}, file_type=csv, has_header=true
+          │       t1: DataSourceExec: file_groups={1 group: [[]]}, file_type=csv, has_header=true
           └──────────────────────────────────────────────────
         ");
         assert_snapshot!(result, @r"
@@ -344,16 +348,16 @@ mod tests {
     async fn sorted_csv_files_with_unordered_ranges() -> Result<()> {
         let (plan, result) = CsvTest::new(&[
             r#"value
-                7
-                8
-                9
-            "#,
+7
+8
+9
+"#,
             r#"value
-                0
-            "#,
+0
+"#,
             r#"value
-                1
-            "#,
+1
+"#,
         ])
         .query("SELECT value FROM records ORDER BY value")
         .await?;
@@ -366,8 +370,8 @@ mod tests {
           ┌───── Stage 1 ── tasks=2, partitions=4
           │ SortExec: expr=[value@0 ASC NULLS LAST], preserve_partitioning=[true]
           │   DistributedLeafExec:
-          │     t0: DataSourceExec: file_groups={2 groups: [[testdata/sorted_csv/0.csv:<int>..<int>], [testdata/sorted_csv/1.csv:<int>..<int>]]}, projection=[value], file_type=csv, has_header=true
-          │     t1: DataSourceExec: file_groups={2 groups: [[testdata/sorted_csv/0.csv:<int>..<int>], [testdata/sorted_csv/2.csv:<int>..<int>]]}, projection=[value], file_type=csv, has_header=true
+          │     t0: DataSourceExec: file_groups={2 groups: [[testdata/sorted_csv/0.csv:<int>..<int>], [testdata/sorted_csv/1.csv:<int>..<int>, testdata/sorted_csv/2.csv:<int>..<int>]]}, projection=[value], file_type=csv, has_header=true
+          │     t1: DataSourceExec: file_groups={2 groups: [[testdata/sorted_csv/0.csv:<int>..<int>, testdata/sorted_csv/1.csv:<int>..<int>], [testdata/sorted_csv/2.csv:<int>..<int>]]}, projection=[value], file_type=csv, has_header=true
           └──────────────────────────────────────────────────
         ");
         assert_snapshot!(result, @r"
@@ -379,6 +383,56 @@ mod tests {
         | 7     |
         | 8     |
         | 9     |
+        +-------+
+        ");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unsplittable_csv_files_with_unordered_groups() -> Result<()> {
+        // Multi-file groups lack ordering statistics, while singleton groups can expose
+        // the per-file ordering. Redistributing whole files must not mix these guarantees.
+        let (plan, result) = CsvTest::new(&[
+            r#"value
+0
+"#,
+            r#"value
+1
+"#,
+            r#"value
+2
+"#,
+            r#"value
+3
+"#,
+            r#"value
+4
+"#,
+        ])
+        .newlines_in_values(true)
+        .query("SELECT value FROM records ORDER BY value")
+        .await?;
+        assert_snapshot!(plan, @r"
+        ┌───── DistributedExec
+        │ SortPreservingMergeExec: [value@0 ASC NULLS LAST]
+        │   [Stage 1] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
+        └──────────────────────────────────────────────────
+          ┌───── Stage 1 ── tasks=2, partitions=4
+          │ SortExec: expr=[value@0 ASC NULLS LAST], preserve_partitioning=[true]
+          │   DistributedLeafExec:
+          │     t0: DataSourceExec: file_groups={2 groups: [[testdata/sorted_csv/0.csv, testdata/sorted_csv/4.csv], [testdata/sorted_csv/2.csv]]}, projection=[value], file_type=csv, has_header=true
+          │     t1: DataSourceExec: file_groups={2 groups: [[testdata/sorted_csv/1.csv], [testdata/sorted_csv/3.csv]]}, projection=[value], file_type=csv, has_header=true
+          └──────────────────────────────────────────────────
+        ");
+        assert_snapshot!(result, @r"
+        +-------+
+        | value |
+        +-------+
+        | 0     |
+        | 1     |
+        | 2     |
+        | 3     |
+        | 4     |
         +-------+
         ");
         Ok(())
@@ -418,15 +472,19 @@ mod tests {
 
         async fn query(self, sql: &str) -> Result<(String, String)> {
             let (ctx, dir) = self.context().await?;
-            let plan = ctx.sql(sql).await?.create_physical_plan().await?;
-            assert!(plan.is::<DistributedExec>());
-            let batches = collect(Arc::clone(&plan), ctx.task_ctx()).await?;
-            let plan = display_plan_ascii(plan.as_ref(), false).replace(
-                dir.to_str().unwrap().trim_start_matches('/'),
-                "testdata/sorted_csv",
-            );
+            let result = async {
+                let plan = ctx.sql(sql).await?.create_physical_plan().await?;
+                assert!(plan.is::<DistributedExec>());
+                let batches = collect(Arc::clone(&plan), ctx.task_ctx()).await?;
+                let plan = display_plan_ascii(plan.as_ref(), false).replace(
+                    dir.to_str().unwrap().trim_start_matches('/'),
+                    "testdata/sorted_csv",
+                );
+                Ok((plan, pretty_format_batches(&batches)?.to_string()))
+            }
+            .await;
             fs::remove_dir_all(dir)?;
-            Ok((plan, pretty_format_batches(&batches)?.to_string()))
+            result
         }
 
         async fn context(&self) -> Result<(SessionContext, PathBuf)> {

@@ -44,19 +44,31 @@ pub(crate) fn file_scan_config_scale_up_leaf_node(
 
     let partition_count = ev.plan.output_partitioning().partition_count();
 
-    let mut file_scan_template = file_scan.clone();
-    file_scan_template.file_groups.clear();
-    let mut file_scans = vec![file_scan_template; ev.task_count];
-
     let is_sorted = file_scan.eq_properties().output_ordering().is_some();
     let is_pre_partitioned = !matches!(
         file_scan.output_partitioning(),
         Partitioning::UnknownPartitioning(_) | Partitioning::RoundRobinBatch(_)
     );
+    let supports_byte_range_partitioning = !file_scan.file_compression_type.is_compressed()
+        && file_scan.file_source.supports_repartitioning();
+    let supports_repartitioning = supports_byte_range_partitioning && !is_pre_partitioned;
 
-    match (is_sorted, is_pre_partitioned) {
-        // partitioned, whether it's sorted or not.
-        (_, true) => {
+    let mut file_scan_template = file_scan.clone();
+    file_scan_template.file_groups.clear();
+    if !is_sorted {
+        // The original scan may declare per-file ordering that cannot be guaranteed
+        // across every file group, so its output exposes no ordering.
+        //
+        // After repartitioning, some scans may regain that ordering because
+        // their new groups happen to be ordered, but we need all scans to maintain
+        // the same ordering, so we clear it here.
+        file_scan_template.output_ordering.clear();
+    }
+    let mut file_scans = vec![file_scan_template; ev.task_count];
+
+    match (is_sorted, supports_repartitioning) {
+        // does not support repartitioning
+        (_, false) => {
             let all_partitioned_files = file_scan
                 .file_groups
                 .iter()
@@ -71,8 +83,8 @@ pub(crate) fn file_scan_config_scale_up_leaf_node(
                 file_scans[i % ev.task_count].file_groups.push(file_group);
             }
         }
-        // sorted but not partitioned.
-        (true, false) => {
+        // sorted and supports repartitioning
+        (true, true) => {
             // Preserve each input group's order while splitting its files and byte ranges
             // across every task. Each task receives one fragment of every original group.
             for file_group in &file_scan.file_groups {
@@ -103,23 +115,15 @@ pub(crate) fn file_scan_config_scale_up_leaf_node(
                 }
             }
         }
-        // neither sorted nor partitioned.
-        (false, false) => {
+        // not sorted and supports repartitioning
+        (false, true) => {
+            // The source may refuse byte splitting, e.g. CSV with embedded newlines.
             let rebalanced = FileGroupPartitioner::new()
                 .with_target_partitions(partition_count * ev.task_count)
                 .with_repartition_file_min_size(0)
                 .repartition_file_groups(&file_scan.file_groups)
                 .unwrap_or_else(|| file_scan.file_groups.clone());
-            // The original FileScanConfig might have declared some ordering that was not able to
-            // guarantee on every partition, and therefore hiding the ordering guarantees to the
-            // rest of the plan.
-            //
-            // However, after re-partitioning, some FileScanConfig partitions might collaterally
-            // regain that ordering by luck, just because the FileGroups that happen to have fall
-            // in it can guarantee ordering.
-            for file_scan in &mut file_scans {
-                file_scan.output_ordering.clear();
-            }
+
             for (i, file_group) in rebalanced.into_iter().enumerate() {
                 file_scans[i % ev.task_count].file_groups.push(file_group);
             }
