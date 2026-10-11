@@ -53,12 +53,32 @@ jobs:
         env:
           ADAPTIVE: ${{ matrix.planning_mode == 'adaptive' }}
 
+  tpch-sorted-correctness-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        planning_mode: [ "adaptive", "static" ]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: cargo test --features tpch --test tpch_sorted_correctness_test
+        env:
+          ADAPTIVE: ${{ matrix.planning_mode == 'adaptive' }}
+
   tpch-plans-test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
       - run: cargo test --features tpch --test tpch_plans_test
+
+  tpch-sorted-plans-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: cargo test --features tpch --test tpch_sorted_plans_test
 
   tpcds-correctness-test:
     runs-on: ubuntu-latest

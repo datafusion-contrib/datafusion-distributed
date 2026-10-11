@@ -5,8 +5,11 @@ use crate::events::{
 use crate::execution_plans::DistributedLeafExec;
 use crate::{DistributedConfig, ok_or_some_err};
 use datafusion::catalog::memory::DataSourceExec;
+use datafusion::common::plan_err;
 use datafusion::datasource::physical_plan::{FileGroup, FileGroupPartitioner, FileScanConfig};
+use datafusion::datasource::source::DataSource;
 use datafusion::error::Result;
+use datafusion::physical_expr::Partitioning;
 use datafusion::physical_plan::ExecutionPlanProperties;
 use std::sync::Arc;
 
@@ -38,34 +41,93 @@ pub(crate) fn file_scan_config_scale_up_leaf_node(
 ) -> Option<Result<ScaleUpLeafNodeEventResponse>> {
     let dse = ev.plan.downcast_ref::<DataSourceExec>()?;
     let file_scan = dse.data_source().downcast_ref::<FileScanConfig>()?;
+
     let partition_count = ev.plan.output_partitioning().partition_count();
 
-    let rebalanced = if file_scan.output_partitioning.is_some() {
-        let all_partitioned_files = file_scan
-            .file_groups
-            .iter()
-            .flat_map(|file_group| file_group.iter().cloned())
-            .collect::<Vec<_>>();
-        rebalance_round_robin(all_partitioned_files, partition_count * ev.task_count)
-            .into_iter()
-            .map(FileGroup::new)
-            .collect::<Vec<_>>()
-    } else {
-        FileGroupPartitioner::new()
-            .with_target_partitions(partition_count * ev.task_count)
-            .with_repartition_file_min_size(0)
-            .with_preserve_order_within_groups(!file_scan.output_ordering.is_empty())
-            .repartition_file_groups(&file_scan.file_groups)
-            .unwrap_or_else(|| file_scan.file_groups.clone())
-            .into_iter()
-            .collect()
-    };
+    let is_sorted = file_scan.eq_properties().output_ordering().is_some();
+    let is_pre_partitioned = !matches!(
+        file_scan.output_partitioning(),
+        Partitioning::UnknownPartitioning(_) | Partitioning::RoundRobinBatch(_)
+    );
+    let supports_byte_range_partitioning = !file_scan.file_compression_type.is_compressed()
+        && file_scan.file_source.supports_repartitioning();
+    let supports_repartitioning = supports_byte_range_partitioning && !is_pre_partitioned;
 
     let mut file_scan_template = file_scan.clone();
     file_scan_template.file_groups.clear();
+    if !is_sorted {
+        // The original scan may declare per-file ordering that cannot be guaranteed
+        // across every file group, so its output exposes no ordering.
+        //
+        // After repartitioning, some scans may regain that ordering because
+        // their new groups happen to be ordered, but we need all scans to maintain
+        // the same ordering, so we clear it here.
+        file_scan_template.output_ordering.clear();
+    }
     let mut file_scans = vec![file_scan_template; ev.task_count];
-    for (i, file_group) in rebalanced.into_iter().enumerate() {
-        file_scans[i % ev.task_count].file_groups.push(file_group);
+
+    match (is_sorted, supports_repartitioning) {
+        // does not support repartitioning
+        (_, false) => {
+            let all_partitioned_files = file_scan
+                .file_groups
+                .iter()
+                .flat_map(|file_group| file_group.iter().cloned())
+                .collect::<Vec<_>>();
+            let rebalanced =
+                rebalance_round_robin(all_partitioned_files, partition_count * ev.task_count)
+                    .into_iter()
+                    .map(FileGroup::new)
+                    .collect::<Vec<_>>();
+            for (i, file_group) in rebalanced.into_iter().enumerate() {
+                file_scans[i % ev.task_count].file_groups.push(file_group);
+            }
+        }
+        // sorted and supports repartitioning
+        (true, true) => {
+            // Preserve each input group's order while splitting its files and byte ranges
+            // across every task. Each task receives one fragment of every original group.
+            for file_group in &file_scan.file_groups {
+                let mut group_config = file_scan.clone();
+                group_config.file_groups = vec![file_group.clone()];
+                // The source decides whether byte-range splitting is supported (e.g.
+                // CSV with embedded newlines must remain intact). With one input group,
+                // the default splitter keeps the sequence of files and ranges intact.
+                let repartitioned = ok_or_some_err!(file_scan.file_source.repartitioned(
+                    ev.task_count,
+                    0,
+                    None,
+                    &group_config,
+                ));
+                let mut fragments = repartitioned
+                    .map(|config| config.file_groups)
+                    .unwrap_or_else(|| vec![file_group.clone()]);
+                if fragments.len() > ev.task_count {
+                    return Some(plan_err!(
+                        "File source returned {} groups for {} requested partitions",
+                        fragments.len(),
+                        ev.task_count
+                    ));
+                }
+                fragments.resize(ev.task_count, FileGroup::default());
+                for (file_scan, fragment) in file_scans.iter_mut().zip(fragments) {
+                    file_scan.file_groups.push(fragment);
+                }
+            }
+        }
+        // not sorted and supports repartitioning
+        (false, true) => {
+            // The source may refuse byte splitting, e.g. CSV with embedded newlines.
+            let rebalanced = FileGroupPartitioner::new()
+                .with_target_partitions(partition_count * ev.task_count)
+                .with_repartition_file_min_size(0)
+                .repartition_file_groups(&file_scan.file_groups)
+                .unwrap_or_else(|| file_scan.file_groups.clone());
+
+            for (i, file_group) in rebalanced.into_iter().enumerate() {
+                file_scans[i % ev.task_count].file_groups.push(file_group);
+            }
+        }
     }
 
     let distributed_leaf_result = DistributedLeafExec::try_new(
