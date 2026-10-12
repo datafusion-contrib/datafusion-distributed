@@ -16,6 +16,10 @@ extensions_options! {
         pub row_selection_enabled: bool, default = false
         /// Whether to include column statistics read during planning
         pub column_stats_enabled: bool, default = false
+        /// Discover and retain file tasks during physical planning instead of execution.
+        pub plan_files: bool, default = false
+        /// Fail planning if the number of retained file tasks exceeds this limit.
+        pub planning_max_files: usize, default = 100_000
     }
 }
 
