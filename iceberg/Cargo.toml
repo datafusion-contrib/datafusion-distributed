@@ -16,9 +16,11 @@ async-trait = "0.1"
 bytes = "1"
 datafusion = { workspace = true, features = ["sql"] }
 datafusion-proto = { workspace = true }
+# Match datafusion-iceberg's iceberg-rust revision so FileScanTask has one shared type.
+iceberg-datafusion = { git = "https://github.com/apache/datafusion-iceberg.git", rev = "b3d4edcc975046d624f7c5b17e7f27843f15afcc" }
 futures = "0.3"
-iceberg = { git = "https://github.com/apache/iceberg-rust.git", rev = "4d83bc77dc10cff851a3ef427c451ff977bc3643" }
-iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust.git", rev = "4d83bc77dc10cff851a3ef427c451ff977bc3643", default-features = false, features = ["opendal-fs", "opendal-s3", "opendal-gcs"] }
+iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "8cb2adeddb4f8da1ca7bd86ca303337f011c12e2" }
+iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust", rev = "8cb2adeddb4f8da1ca7bd86ca303337f011c12e2", default-features = false, features = ["opendal-fs", "opendal-s3", "opendal-gcs"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 typetag = "0.2"
