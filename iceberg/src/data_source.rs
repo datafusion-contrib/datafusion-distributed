@@ -29,8 +29,9 @@ use iceberg::spec::{
     SnapshotRef,
 };
 use iceberg::table::Table;
+use iceberg_datafusion::read::convert_filters_to_predicate;
 
-use crate::common::{convert_filters_to_predicate, df_err, iceberg_err};
+use crate::common::{df_err, iceberg_err};
 use crate::{IcebergConfig, IcebergWorkUnitFeed};
 
 /// Snapshot summary keys defined by the Iceberg table spec:
