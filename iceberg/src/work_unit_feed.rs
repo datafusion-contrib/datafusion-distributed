@@ -7,6 +7,7 @@ use datafusion::common::{Result, exec_datafusion_err, exec_err, internal_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::Partitioning;
+use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
 use datafusion_distributed::{DistributedWorkUnitFeedContext, WorkUnitFeedProvider};
 use futures::StreamExt;
 use futures::stream::BoxStream;
@@ -181,6 +182,7 @@ pub struct IcebergWorkUnitFeed {
     /// TODO: Today, only Partitioning::UnknownPartitioning partitioning is supported.
     ///  Ideally, both Range partitioning and hash partitioning should be supported.
     pub(crate) partitioning: Partitioning,
+    pub(crate) metrics: ExecutionPlanMetricsSet,
     /// Container for the lazily initialized task that scans the Iceberg table.
     /// It will start as soon as the first [IcebergWorkUnitFeed::feed] is called.
     pub(crate) sync_manager: OnceLock<Result<SyncManager, Arc<DataFusionError>>>,
@@ -194,6 +196,7 @@ impl Clone for IcebergWorkUnitFeed {
             projection: self.projection.clone(),
             predicates: self.predicates.clone(),
             partitioning: self.partitioning.clone(),
+            metrics: self.metrics.clone(),
             sync_manager: Default::default(),
         }
     }
@@ -209,6 +212,10 @@ pub(crate) struct SyncManager {
 
 impl WorkUnitFeedProvider for IcebergWorkUnitFeed {
     type WorkUnit = FileScanTaskWorkUnit;
+
+    fn metrics(&self) -> ExecutionPlanMetricsSet {
+        self.metrics.clone()
+    }
 
     fn feed(
         &self,
