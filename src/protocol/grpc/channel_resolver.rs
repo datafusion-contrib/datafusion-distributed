@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use datafusion::common::{DataFusionError, config_datafusion_err, exec_datafusion_err};
 use futures::FutureExt;
 use futures::future::Shared;
+use std::future::Future;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use tonic::body::Body;
@@ -33,6 +34,7 @@ pub type BoxCloneSyncChannel = tower::util::BoxCloneSyncService<
 >;
 
 type ChannelCacheValue = Shared<BoxFuture<BoxCloneSyncChannel, Arc<DataFusionError>>>;
+type ChannelFactory = dyn Fn(Url) -> BoxFuture<BoxCloneSyncChannel, DataFusionError> + Send + Sync;
 
 /// Default implementation of a [ChannelResolver] that connects to the workers given the URL once
 /// and stores the connection instance in a TTI cache.
@@ -42,10 +44,31 @@ type ChannelCacheValue = Shared<BoxFuture<BoxCloneSyncChannel, Arc<DataFusionErr
 #[derive(Clone)]
 pub struct DefaultChannelResolver {
     cache: Arc<moka::sync::Cache<Url, ChannelCacheValue>>,
+    channel_factory: Arc<ChannelFactory>,
 }
 
 impl Default for DefaultChannelResolver {
     fn default() -> Self {
+        Self::with_channel_factory(connect_channel)
+    }
+}
+
+impl DefaultChannelResolver {
+    /// Construct a cached resolver with application-defined channel construction.
+    ///
+    /// The factory receives the original worker URL on a cache miss. It can configure
+    /// the endpoint, supply a custom connector, or wrap the channel in tower layers.
+    /// The resolver checks service readiness and shares in-flight construction and
+    /// successful channels across requests and clones. Failed construction is evicted
+    /// so the next request can retry. TLS credentials and verification policy remain
+    /// the application's responsibility.
+    ///
+    /// See the `custom_channel_factory` example for a runnable custom connection.
+    pub fn with_channel_factory<F, Fut>(factory: F) -> Self
+    where
+        F: Fn(Url) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<BoxCloneSyncChannel, DataFusionError>> + Send + 'static,
+    {
         Self {
             cache: Arc::new(
                 moka::sync::Cache::builder()
@@ -56,29 +79,17 @@ impl Default for DefaultChannelResolver {
                     .time_to_idle(Duration::from_secs(5 * 60))
                     .build(),
             ),
+            channel_factory: Arc::new(move |url| factory(url).boxed()),
         }
     }
-}
 
-impl DefaultChannelResolver {
     /// Gets the cached [BoxCloneSyncChannel] for the given URL, or builds a new one.
     pub async fn get_channel(&self, url: &Url) -> Result<BoxCloneSyncChannel, DataFusionError> {
         let channel = self.cache.get_with_by_ref(url, move || {
-            let url = url.to_string();
+            let url = url.clone();
+            let factory = Arc::clone(&self.channel_factory);
             async move {
-                let endpoint = Channel::from_shared(url.clone()).map_err(|err| {
-                    config_datafusion_err!(
-                        "Invalid URL '{url}' returned by WorkerResolver implementation: {err}"
-                    )
-                })?;
-                let mut channel = endpoint.connect().await.map_err(|err| {
-                    DataFusionError::Context(
-                        format!("{err:?}"),
-                        Box::new(exec_datafusion_err!(
-                            "Error connecting to Distributed DataFusion worker on '{url}': {err}"
-                        )),
-                    )
-                })?;
+                let mut channel = factory(url.clone()).await?;
                 channel.ready().await.map_err(|err| {
                     DataFusionError::Context(
                         format!("{err:?}"),
@@ -87,7 +98,8 @@ impl DefaultChannelResolver {
                         )),
                     )
                 })?;
-                Ok(BoxCloneSyncChannel::new(channel))
+                // Drop this ready instance's reservation instead of retaining it in Shared.
+                Ok(channel.clone())
             }
                 .boxed()
                 .shared()
@@ -98,6 +110,24 @@ impl DefaultChannelResolver {
             DataFusionError::Shared(err)
         })
     }
+}
+
+async fn connect_channel(url: Url) -> Result<BoxCloneSyncChannel, DataFusionError> {
+    let url = url.to_string();
+    let endpoint = Channel::from_shared(url.clone()).map_err(|err| {
+        config_datafusion_err!(
+            "Invalid URL '{url}' returned by WorkerResolver implementation: {err}"
+        )
+    })?;
+    let channel = endpoint.connect().await.map_err(|err| {
+        DataFusionError::Context(
+            format!("{err:?}"),
+            Box::new(exec_datafusion_err!(
+                "Error connecting to Distributed DataFusion worker on '{url}': {err}"
+            )),
+        )
+    })?;
+    Ok(BoxCloneSyncChannel::new(channel))
 }
 
 #[async_trait]

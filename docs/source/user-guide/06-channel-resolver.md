@@ -31,6 +31,39 @@ The easiest way is to build on `grpc::DefaultChannelResolver` (which caches chan
 or to use the `grpc::create_worker_client` helper.
 ```
 
+## Custom channel construction
+
+When only connection establishment needs customization, use
+`DefaultChannelResolver::with_channel_factory` rather than implementing a new
+cache. The async factory receives the original worker URL on a cache miss and
+returns a `grpc::BoxCloneSyncChannel`:
+
+```rust
+use datafusion::common::{config_datafusion_err, exec_datafusion_err};
+use datafusion_distributed::grpc::{BoxCloneSyncChannel, DefaultChannelResolver};
+use std::time::Duration;
+use tonic::transport::Endpoint;
+
+let channel_resolver = DefaultChannelResolver::with_channel_factory(|url| async move {
+    let endpoint = Endpoint::from_shared(url.to_string())
+        .map_err(|err| config_datafusion_err!("Invalid worker endpoint: {err}"))?
+        .connect_timeout(Duration::from_secs(10));
+    let channel = endpoint.connect().await
+        .map_err(|err| exec_datafusion_err!("Worker connection failed: {err}"))?;
+    Ok(BoxCloneSyncChannel::new(channel))
+});
+```
+
+The factory can supply a custom connector or tower service, including
+application-owned TLS credentials. The resolver still checks service readiness,
+shares in-flight construction and cached channels across clones, and evicts
+failures so a later request can retry. Existing `default()` behavior is
+unchanged. Connection and authentication policy belong to the application;
+changing captured credentials does not invalidate existing cached channels.
+
+See the runnable [custom channel factory example](../../../examples/custom_channel_factory.md).
+Register the resolver on both coordinator and worker sessions as shown below.
+
 ## Providing your own
 
 The simplest custom resolver wraps `grpc::DefaultChannelResolver`, delegating to it for
