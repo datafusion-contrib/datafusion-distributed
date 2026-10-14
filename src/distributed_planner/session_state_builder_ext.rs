@@ -2,8 +2,9 @@ use crate::distributed_planner::DistributedConfig;
 use crate::distributed_planner::distributed_query_planner::DistributedQueryPlanner;
 use crate::events::{
     DesiredTaskCountHandlers, RandomRouteTaskHandler, RouteTaskHandlers, ScaleUpLeafNodeHandlers,
-    SingleTaskChildUrlRouteTaskHandler, SingleTaskCoordinatorRouteTaskHandler,
-    file_scan_config_desired_task_count, file_scan_config_scale_up_leaf_node,
+    SingleTaskChildUrlRouteTaskHandler, SingleTaskCoordinatorRouteTaskHandler, StageBuiltHandlers,
+    cost_based_stage_built_event_handler, file_scan_config_desired_task_count,
+    file_scan_config_scale_up_leaf_node,
 };
 use datafusion::execution::SessionStateBuilder;
 use std::sync::Arc;
@@ -46,6 +47,10 @@ impl SessionStateBuilderExt for SessionStateBuilder {
                 Arc::new(RandomRouteTaskHandler),
             ],
         );
+
+        // Adds the default stage built event handler that leaves the plan untouched and assigns
+        // tasks based on the compute cost (if present).
+        StageBuiltHandlers::push_builtin(cfg, Arc::new(cost_based_stage_built_event_handler));
 
         let prev = std::mem::take(self.query_planner());
         self.with_query_planner(Arc::new(DistributedQueryPlanner { prev }))
