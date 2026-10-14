@@ -480,10 +480,10 @@ mod tests {
         assert_snapshot!(plan + &results, @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST]
-        │   [Stage 1] => NetworkCoalesceExec: output_partitions=6, input_tasks=3
+        │   [Stage 1] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── tasks=3, partitions=6
-          │ DistributedUnionExec: t0:[c0(0/2)] t1:[c0(1/2)] t2:[c1]
+          ┌───── Stage 1 ── tasks=2, partitions=6
+          │ DistributedUnionExec: t0:[c0(0/2), c1] t1:[c0(1/2)]
           │   SortExec: expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
           │     RowGeneratorExec: tag=feed, tasks=2, partition_ops=[[rows(2)], [rows(1)], [rows(1)], [rows(2)]]
           │   ProjectionExec: expr=[static as tag, 0 as task, 0 as partition, x as letter]

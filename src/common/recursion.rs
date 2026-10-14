@@ -336,9 +336,8 @@ impl TreeNodeExt for Arc<dyn ExecutionPlan> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::execution_plans::ChildWeight;
     use crate::stage::RemoteStage;
-    use crate::{NetworkCoalesceExec, Stage};
+    use crate::{NetworkCoalesceExec, Stage, TaskCountAnnotation};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::common::{JoinType, NullEquality, exec_err};
     use datafusion::physical_expr::PhysicalExpr;
@@ -1023,11 +1022,11 @@ mod tests {
         task_count: usize,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         Ok(Arc::new(
-            ChildrenIsolatorUnionExec::from_children_and_weights(
+            ChildrenIsolatorUnionExec::from_children_and_annotations(
                 children,
                 child_task_counts
                     .iter()
-                    .map(|v| ChildWeight::desired(*v as f64)),
+                    .map(|v| TaskCountAnnotation::soft(*v)),
                 task_count,
             )?,
         ))
