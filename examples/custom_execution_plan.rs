@@ -321,7 +321,7 @@ fn numbers_desired_task_count_handler(
     let task_count = (plan.ranges_per_task[0].end - plan.ranges_per_task[0].start) as f64
         / cfg.numbers_per_task as f64;
 
-    Some(Ok(DesiredTaskCountEventResponse::desired(task_count)))
+    Some(Ok(DesiredTaskCountEventResponse::soft(task_count)))
 }
 
 fn numbers_scale_up_leaf_node_handler(

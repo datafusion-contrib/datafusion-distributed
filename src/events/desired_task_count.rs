@@ -1,7 +1,6 @@
-use super::TaskCountAnnotation::{Desired, Maximum};
 use super::common::EventHandlerChain;
 use async_trait::async_trait;
-use datafusion::common::Result;
+use datafusion::common::{Result, plan_err};
 use datafusion::execution::config::SessionConfig;
 use datafusion::physical_plan::ExecutionPlan;
 use num_traits::AsPrimitive;
@@ -11,16 +10,49 @@ use std::sync::Arc;
 /// Annotation attached to a single [ExecutionPlan] that determines how many distributed tasks
 /// it should run on.
 #[derive(Clone, Copy)]
-pub enum TaskCountAnnotation {
-    /// The desired number of distributed tasks for this node. The final task count for the
-    /// annotated node might not be exactly this number, it is more like a hint, so depending
-    /// on the desired task count of adjacent nodes, the final task count might change. Fractional
-    /// values are preserved while hints are combined and rounded up when a concrete task count is
-    /// required.
-    Desired(f64),
-    /// Sets a maximum number of distributed tasks for this node. Typically used with the inner
-    /// value of 1, stating that this node cannot be executed in a distributed fashion.
-    Maximum(usize),
+pub struct TaskCountAnnotation {
+    /// The load of a node measured in tasks required to properly execute it. This number is used
+    /// as a hint for the distributed planner to decide on a final task count for a stage.
+    /// This value is reconciled with other [TaskCountAnnotation]s provided by other nodes in the
+    /// same stage.
+    pub soft: f64,
+    /// Exact number of tasks that should be allocated to the node.
+    pub hard: Option<usize>,
+}
+
+impl TaskCountAnnotation {
+    /// Builds a new [TaskCountAnnotation] with a provided `soft` value and no `hard` value.
+    ///
+    /// A `soft` value is a fractional number indicating the amount of ideal tasks in which a node
+    /// should be executed. It's "soft" in the sense that the provided value is not a strictly
+    /// required, and therefore, it might get reconciled with other values resulting in a different
+    /// task count outcome.
+    ///
+    /// The `soft` value of a [TaskCountAnnotation] is linearly proportional to the load of the
+    /// node, whether this is memory of CPU.
+    pub fn soft<T: AsPrimitive<f64> + 'static>(value: T) -> Self {
+        Self {
+            soft: value.as_(),
+            hard: None,
+        }
+    }
+
+    /// Annotates an existing [TaskCountAnnotation] with a `hard` value, meaning that the planner
+    /// should respect the provided value no matter what. If the planner tries to reconcile this
+    /// value with a different incompatible one, it will fail (e.g. hard=1 + hard=3).
+    ///
+    /// The `hard` value is optional, but the `soft` value is mandatory, users wanting to build a
+    /// [TaskCountAnnotation] must always pass through providing a `soft` value as well:
+    ///
+    /// ```rust
+    /// # use datafusion_distributed::TaskCountAnnotation;
+    ///
+    /// let annotation = TaskCountAnnotation::soft(0.15).hard(1);
+    /// ```
+    pub fn hard(mut self, value: usize) -> Self {
+        self.hard = Some(value);
+        self
+    }
 }
 
 /// Information supplied when the planner asks a handler for a node's desired task count.
@@ -50,40 +82,23 @@ pub struct DesiredTaskCountEventResponse {
 }
 
 impl DesiredTaskCountEventResponse {
-    /// Tells the distributed planner that the evaluated stage can have **at maximum** the provided
-    /// number of tasks, setting a hard upper limit.
-    ///
-    /// Returning `DesiredTaskCountEventResponse::maximum(1)` tells the distributed planner that the
-    /// evaluated stage cannot be distributed.
-    ///
-    /// Even if a `DesiredTaskCountEventResponse::maximum(N)` is provided, any other node in the
-    /// same stage providing a value of `DesiredTaskCountEventResponse::maximum(M)` where `M` < `N`
-    /// will have preference.
-    pub fn maximum(value: usize) -> Self {
-        DesiredTaskCountEventResponse {
-            task_count: Maximum(value),
-        }
+    pub fn hard(mut self, value: usize) -> Self {
+        self.task_count.hard = Some(value);
+        self
     }
 
-    /// Tells the distributed planner that the evaluated can **optimally** have the provided
-    /// number of tasks, setting a soft task count hint that can be overridden by others.
-    ///
-    /// The provided `DesiredTaskCountEventResponse::desired(N)` can be overridden by:
-    /// - Other nodes providing a `DesiredTaskCountEventResponse::desired(M)` where `M` > `N`.
-    /// - Any other node providing a `DesiredTaskCountEventResponse::maximum(M)` where `M` can be
-    ///   anything.
-    ///
-    /// Fractional values let several isolated union children contribute less than one task each;
-    /// the planner combines those values before rounding the final task count up.
-    pub fn desired<T: AsPrimitive<f64> + 'static>(value: T) -> Self {
+    pub fn soft<T: AsPrimitive<f64> + 'static>(value: T) -> Self {
         DesiredTaskCountEventResponse {
-            task_count: Desired(value.as_()),
+            task_count: TaskCountAnnotation {
+                soft: value.as_(),
+                hard: None,
+            },
         }
     }
 
     /// Tells the distributed planner that this node does not impose a finite desired task count.
     pub fn unbounded() -> Self {
-        DesiredTaskCountEventResponse::desired(f64::MAX)
+        DesiredTaskCountEventResponse::soft(f64::MAX)
     }
 }
 
@@ -119,45 +134,37 @@ impl From<TaskCountAnnotation> for usize {
 
 impl TaskCountAnnotation {
     pub fn as_usize(&self) -> usize {
-        match self {
-            Desired(desired) => (desired.ceil() as usize).max(1),
-            Maximum(maximum) => *maximum,
+        if let Some(exact) = self.hard {
+            return exact;
         }
+        (self.soft.ceil() as usize).max(1)
     }
 
-    pub(crate) fn as_f64(&self) -> f64 {
-        match self {
-            Desired(desired) => *desired,
-            Maximum(maximum) => *maximum as f64,
-        }
-    }
-
-    pub(crate) fn limit(self, limit: usize) -> Self {
-        match self {
-            Desired(desired) => Desired(desired.min(limit as f64)),
-            Maximum(maximum) => Maximum(maximum.min(limit)),
-        }
-    }
-
-    pub(crate) fn merge(self, other: TaskCountAnnotation) -> Self {
-        match (self, other) {
-            (Desired(a), Desired(b)) => Desired(a.max(b)),
-            (Desired(_), Maximum(b)) => Maximum(b),
-            (Maximum(a), Desired(_)) => Maximum(a),
-            (Maximum(a), Maximum(b)) => Maximum(std::cmp::min(a, b)),
-        }
+    pub(crate) fn merge(self, other: TaskCountAnnotation) -> Result<Self> {
+        Ok(Self {
+            hard: match (self.hard, other.hard) {
+                (Some(a), Some(b)) => {
+                    if a != b {
+                        return plan_err!("Incompatible hard task counts {a} and {b}");
+                    }
+                    Some(a)
+                }
+                (Some(a), None) => Some(a),
+                (None, Some(b)) => Some(b),
+                (None, None) => None,
+            },
+            soft: self.soft.max(other.soft),
+        })
     }
 }
 
 impl Debug for TaskCountAnnotation {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            // Keep whole-number hints formatted as `Desired(3)` so existing plan output remains
-            // stable while fractional hints use a compact, predictable precision.
-            Desired(desired) if desired.fract() == 0.0 => write!(f, "Desired({desired})"),
-            Desired(desired) => write!(f, "Desired({desired:.2})"),
-            Maximum(maximum) => write!(f, "Maximum({maximum})"),
+        write!(f, "TaskCountAnnotation: soft={:.2}", self.soft)?;
+        if let Some(hard) = self.hard {
+            write!(f, ", hard={hard}")?;
         }
+        Ok(())
     }
 }
 
@@ -184,7 +191,7 @@ impl DesiredTaskCountHandler for usize {
         ev.plan
             .children()
             .is_empty()
-            .then(|| Ok(DesiredTaskCountEventResponse::desired(*self)))
+            .then(|| Ok(DesiredTaskCountEventResponse::soft(*self)))
     }
 }
 

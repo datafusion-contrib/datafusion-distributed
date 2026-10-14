@@ -226,7 +226,7 @@ mod tests {
         let physical_distributed_str = display_plan_ascii(physical_distributed.as_ref(), false);
 
         assert_snapshot!(physical_distributed_str,
-            @"
+            @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [MinTemp@0 ASC NULLS LAST, RainToday@1 ASC NULLS LAST]
         │   [Stage 7] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
