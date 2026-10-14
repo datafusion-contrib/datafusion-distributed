@@ -61,7 +61,6 @@ failures so a later request can retry. Existing `default()` behavior is
 unchanged. Connection and authentication policy belong to the application;
 changing captured credentials does not invalidate existing cached channels.
 
-See the runnable [custom channel factory example](../../../examples/custom_channel_factory.md).
 Register the resolver on both coordinator and worker sessions as shown below.
 
 ## Providing your own

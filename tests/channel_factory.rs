@@ -1,13 +1,17 @@
-#![cfg(feature = "grpc")]
-
+#[cfg(all(feature = "integration", test))]
 mod tests {
+    use datafusion::arrow::util::pretty::pretty_format_batches;
     use datafusion::common::runtime::SpawnedTask;
     use datafusion::common::{
         DataFusionError, assert_contains, config_datafusion_err, exec_datafusion_err, exec_err,
     };
     use datafusion_distributed::grpc::{BoxCloneSyncChannel, DefaultChannelResolver};
-    use datafusion_distributed::{ChannelResolver, GetWorkerInfoRequest, Worker};
-    use futures::future::join_all;
+    use datafusion_distributed::test_utils::localhost::start_localhost_context;
+    use datafusion_distributed::test_utils::parquet::register_parquet_tables;
+    use datafusion_distributed::{
+        ChannelResolver, DistributedExt, GetWorkerInfoRequest, Worker, WorkerQueryContext,
+        assert_snapshot,
+    };
     use std::error::Error;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -18,32 +22,46 @@ mod tests {
     use url::Url;
 
     #[tokio::test]
-    async fn custom_channels_are_shared_across_requests_and_clones() -> Result<(), Box<dyn Error>> {
-        let (endpoint, _server) = worker().await?;
+    async fn custom_channels_are_reused_across_distributed_queries() -> Result<(), Box<dyn Error>> {
         let attempts = Arc::new(AtomicUsize::new(0));
         let count = Arc::clone(&attempts);
-        let resolver = DefaultChannelResolver::with_channel_factory(move |url: Url| {
-            assert_eq!(url.host_str(), Some("logical-worker.invalid"));
+        let resolver = DefaultChannelResolver::with_channel_factory(move |url| {
             count.fetch_add(1, Ordering::SeqCst);
-            connect(endpoint.clone())
+            connect(url)
         });
-        let route = Url::parse("http://logical-worker.invalid:1234")?;
-        for result in join_all((0..8).map(|_| info(&resolver, &route))).await {
-            assert_eq!(result?, "custom-channel-test");
-        }
-        assert_eq!(
-            info(&resolver.clone(), &route).await?,
-            "custom-channel-test"
-        );
-        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        let worker_resolver = resolver.clone();
+        let (mut ctx, _guard, _) =
+            start_localhost_context(3, move |worker_ctx: WorkerQueryContext| {
+                let resolver = worker_resolver.clone();
+                async move {
+                    Ok(worker_ctx
+                        .builder
+                        .with_distributed_channel_resolver(resolver)
+                        .build())
+                }
+            })
+            .await;
+        ctx.set_distributed_channel_resolver(resolver);
+        register_parquet_tables(&ctx).await?;
 
-        let mut another_route = route.clone();
-        another_route.set_port(Some(5678)).unwrap();
-        assert_eq!(
-            info(&resolver, &another_route).await?,
-            "custom-channel-test"
-        );
-        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        let query = r#"SELECT "MinTemp", "RainToday" FROM weather WHERE "MinTemp" > 20.0 ORDER BY "MinTemp" DESC"#;
+        let mut results = vec![];
+        for _ in 0..2 {
+            let batches =
+                tokio::time::timeout(Duration::from_secs(5), ctx.sql(query).await?.collect())
+                    .await??;
+            results.push(pretty_format_batches(&batches)?.to_string());
+            // The helper executes one worker locally; the other two share cached channels.
+            assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        }
+        assert_eq!(results[0], results[1]);
+        assert_snapshot!(results[0], @r"
+        +---------+-----------+
+        | MinTemp | RainToday |
+        +---------+-----------+
+        | 20.9    | No        |
+        +---------+-----------+
+        ");
         Ok(())
     }
 

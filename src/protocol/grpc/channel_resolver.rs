@@ -63,7 +63,8 @@ impl DefaultChannelResolver {
     /// so the next request can retry. TLS credentials and verification policy remain
     /// the application's responsibility.
     ///
-    /// See the `custom_channel_factory` example for a runnable custom connection.
+    /// See the [custom worker connections guide](https://datafusion-contrib.github.io/datafusion-distributed/user-guide/06-channel-resolver.html)
+    /// for configuration examples.
     pub fn with_channel_factory<F, Fut>(factory: F) -> Self
     where
         F: Fn(Url) -> Fut + Send + Sync + 'static,
