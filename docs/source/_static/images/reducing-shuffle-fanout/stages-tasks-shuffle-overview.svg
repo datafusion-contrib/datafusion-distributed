@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Licensed to the Apache Software Foundation (ASF) under the Apache License, Version 2.0. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 535" preserveAspectRatio="xMidYMid meet" role="img" aria-labelledby="title desc">
+  <title id="title">Stages, tasks, and shuffles in distributed execution</title>
+  <desc id="desc">Three stages contain groups of tasks. Orange shuffle paths carry rows upward from producing tasks in one stage to consuming tasks in the next stage.</desc>
+
+  <defs>
+    <marker id="arrow-orange" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0 0L8 4L0 8Z" fill="#b45309"/>
+    </marker>
+    <style>
+      .scene{font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+      .section{fill:#57606a;font-size:13px;font-weight:600;letter-spacing:.08em}
+      .heading{fill:#24292f;font-size:16px;font-weight:600}
+      .label{fill:#3d444d;font-size:14px}
+      .small{fill:#667085;font-size:12px}
+      .stage{fill:#f6fdf9;stroke:#55a86a;stroke-width:1.4}
+      .task{fill:#eaf3ff;stroke:#1677d2;stroke-width:1.4}
+      .shuffle{fill:none;stroke:#b45309;stroke-width:1.8}
+      .shuffle-arrow{fill:none;stroke:#b45309;stroke-width:1.8;marker-end:url(#arrow-orange)}
+      .shuffle-label{fill:#fff8eb;stroke:#d97706;stroke-width:1.1}
+      .divider{stroke:#d8dee4;stroke-width:1.1}
+    </style>
+  </defs>
+
+  <g class="scene">
+    <rect width="900" height="535" fill="#fff"/>
+
+    <text x="30" y="30" class="section">STAGES, TASKS, AND SHUFFLES</text>
+    <g transform="translate(528 15)">
+      <rect width="34" height="18" rx="3" class="stage"/>
+      <text x="43" y="14" class="small">stage</text>
+      <rect x="98" width="34" height="18" rx="3" class="task"/>
+      <text x="141" y="14" class="small">task</text>
+      <path d="M200 9H230" class="shuffle-arrow"/>
+      <text x="239" y="14" class="small">shuffle</text>
+    </g>
+
+    <rect x="120" y="55" width="750" height="100" rx="8" class="stage"/>
+    <text x="30" y="110" class="heading">Stage 2</text>
+    <rect x="420" y="80" width="150" height="50" rx="6" class="task"/>
+    <text x="495" y="111" class="heading" text-anchor="middle">Task G</text>
+
+    <path d="M255 230V187M405 230V187M555 230V187M705 230V187" class="shuffle"/>
+    <path d="M255 187H705" class="shuffle"/>
+    <path d="M495 187V163" class="shuffle-arrow"/>
+    <rect x="625" y="170" width="148" height="32" rx="16" class="shuffle-label"/>
+    <text x="699" y="191" class="small" text-anchor="middle">SHUFFLE</text>
+
+    <rect x="120" y="215" width="750" height="100" rx="8" class="stage"/>
+    <text x="30" y="270" class="heading">Stage 1</text>
+    <rect x="180" y="240" width="150" height="50" rx="6" class="task"/>
+    <text x="255" y="271" class="heading" text-anchor="middle">Task C</text>
+    <rect x="330" y="240" width="150" height="50" rx="6" class="task"/>
+    <text x="405" y="271" class="heading" text-anchor="middle">Task D</text>
+    <rect x="480" y="240" width="150" height="50" rx="6" class="task"/>
+    <text x="555" y="271" class="heading" text-anchor="middle">Task E</text>
+    <rect x="630" y="240" width="150" height="50" rx="6" class="task"/>
+    <text x="705" y="271" class="heading" text-anchor="middle">Task F</text>
+
+    <path d="M345 390V347M645 390V347" class="shuffle"/>
+    <path d="M255 347H705" class="shuffle"/>
+    <path d="M255 347V323M405 347V323M555 347V323M705 347V323" class="shuffle-arrow"/>
+    <rect x="330" y="331" width="240" height="32" rx="16" class="shuffle-label"/>
+    <text x="450" y="352" class="small" text-anchor="middle">SHUFFLE · producers → consumers</text>
+
+    <rect x="120" y="375" width="750" height="100" rx="8" class="stage"/>
+    <text x="30" y="430" class="heading">Stage 0</text>
+    <rect x="270" y="400" width="150" height="50" rx="6" class="task"/>
+    <text x="345" y="431" class="heading" text-anchor="middle">Task A</text>
+    <rect x="570" y="400" width="150" height="50" rx="6" class="task"/>
+    <text x="645" y="431" class="heading" text-anchor="middle">Task B</text>
+
+    <line x1="30" y1="495" x2="870" y2="495" class="divider"/>
+    <text x="450" y="519" class="label" text-anchor="middle">A stage is a group of tasks. A shuffle moves rows between stages.</text>
+  </g>
+</svg>

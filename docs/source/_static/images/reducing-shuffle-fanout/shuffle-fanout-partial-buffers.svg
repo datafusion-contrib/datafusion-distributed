@@ -1,0 +1,1455 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Licensed to the Apache Software Foundation (ASF) under the Apache License, Version 2.0. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 565" preserveAspectRatio="xMidYMid meet" role="img" aria-labelledby="title desc">
+  <title id="title">Every producer owns one route to every destination partition</title>
+  <desc id="desc">Four producing tasks each apply hash of a modulo 256. Every producer has 16 separate routes into each of 16 consuming tasks, for 256 output partitions per producer and 1024 routes overall.</desc>
+
+  <defs>
+    <pattern id="partition-grid" width="5" height="12" patternUnits="userSpaceOnUse">
+      <rect width="4" height="12" fill="#fff8eb" stroke="#d97706" stroke-width=".6"/>
+      <rect y="8" width="4" height="4" fill="#fdba74"/>
+    </pattern>
+    <style>
+      .scene{font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+      .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+      .section{fill:#57606a;font-size:13px;font-weight:600;letter-spacing:.08em}
+      .heading{fill:#24292f;font-size:16px;font-weight:600}
+      .label{fill:#3d444d;font-size:14px}
+      .small{fill:#667085;font-size:12px}
+      .strong{fill:#3d444d;font-weight:700}
+      .producer{fill:#eaf3ff;stroke:#1677d2;stroke-width:1.4}
+      .repartition{fill:#fff;stroke:#1677d2;stroke-width:1.2}
+      .consumer{fill:#ecfdf5;stroke:#16856b;stroke-width:1.3}
+      .partition-strip{fill:url(#partition-grid);stroke:#d97706;stroke-width:.7}
+      .partition-route{stroke:#c2410c;stroke-width:.42;stroke-opacity:.13}
+      .partition-link{stroke:#c2410c;stroke-width:.65;stroke-opacity:.55}
+      .callout{fill:#fff;fill-opacity:.97;stroke:#d0d7de;stroke-width:1.1}
+      .divider{stroke:#d8dee4;stroke-width:1.1}
+    </style>
+  </defs>
+
+  <g class="scene">
+    <rect width="900" height="565" fill="#fff"/>
+
+    <text x="30" y="30" class="section">HIGH-FANOUT SHUFFLE</text>
+    <text x="870" y="30" class="label mono" text-anchor="end">bucket = hash(a) mod 256</text>
+
+    <text x="30" y="70" class="heading">Stage 1 · 16 consuming tasks × 16 partitions = 256 buckets</text>
+    <g transform="translate(676 54)">
+      <rect width="79" height="12" class="partition-strip"/>
+      <text x="91" y="11" class="small">16 partitions / task</text>
+    </g>
+
+    <g id="producer-0-routes">
+      <line x1="46.32" y1="405" x2="40.5" y2="158" class="partition-route"/>
+      <line x1="46.96" y1="405" x2="45.5" y2="158" class="partition-route"/>
+      <line x1="47.59" y1="405" x2="50.5" y2="158" class="partition-route"/>
+      <line x1="48.23" y1="405" x2="55.5" y2="158" class="partition-route"/>
+      <line x1="48.87" y1="405" x2="60.5" y2="158" class="partition-route"/>
+      <line x1="49.50" y1="405" x2="65.5" y2="158" class="partition-route"/>
+      <line x1="50.14" y1="405" x2="70.5" y2="158" class="partition-route"/>
+      <line x1="50.78" y1="405" x2="75.5" y2="158" class="partition-route"/>
+      <line x1="51.41" y1="405" x2="80.5" y2="158" class="partition-route"/>
+      <line x1="52.05" y1="405" x2="85.5" y2="158" class="partition-route"/>
+      <line x1="52.69" y1="405" x2="90.5" y2="158" class="partition-route"/>
+      <line x1="53.32" y1="405" x2="95.5" y2="158" class="partition-route"/>
+      <line x1="53.96" y1="405" x2="100.5" y2="158" class="partition-route"/>
+      <line x1="54.60" y1="405" x2="105.5" y2="158" class="partition-route"/>
+      <line x1="55.23" y1="405" x2="110.5" y2="158" class="partition-route"/>
+      <line x1="55.87" y1="405" x2="115.5" y2="158" class="partition-route"/>
+      <line x1="56.51" y1="405" x2="145.5" y2="158" class="partition-route"/>
+      <line x1="57.14" y1="405" x2="150.5" y2="158" class="partition-route"/>
+      <line x1="57.78" y1="405" x2="155.5" y2="158" class="partition-route"/>
+      <line x1="58.42" y1="405" x2="160.5" y2="158" class="partition-route"/>
+      <line x1="59.05" y1="405" x2="165.5" y2="158" class="partition-route"/>
+      <line x1="59.69" y1="405" x2="170.5" y2="158" class="partition-route"/>
+      <line x1="60.33" y1="405" x2="175.5" y2="158" class="partition-route"/>
+      <line x1="60.96" y1="405" x2="180.5" y2="158" class="partition-route"/>
+      <line x1="61.60" y1="405" x2="185.5" y2="158" class="partition-route"/>
+      <line x1="62.24" y1="405" x2="190.5" y2="158" class="partition-route"/>
+      <line x1="62.87" y1="405" x2="195.5" y2="158" class="partition-route"/>
+      <line x1="63.51" y1="405" x2="200.5" y2="158" class="partition-route"/>
+      <line x1="64.15" y1="405" x2="205.5" y2="158" class="partition-route"/>
+      <line x1="64.78" y1="405" x2="210.5" y2="158" class="partition-route"/>
+      <line x1="65.42" y1="405" x2="215.5" y2="158" class="partition-route"/>
+      <line x1="66.06" y1="405" x2="220.5" y2="158" class="partition-route"/>
+      <line x1="66.69" y1="405" x2="250.5" y2="158" class="partition-route"/>
+      <line x1="67.33" y1="405" x2="255.5" y2="158" class="partition-route"/>
+      <line x1="67.97" y1="405" x2="260.5" y2="158" class="partition-route"/>
+      <line x1="68.60" y1="405" x2="265.5" y2="158" class="partition-route"/>
+      <line x1="69.24" y1="405" x2="270.5" y2="158" class="partition-route"/>
+      <line x1="69.88" y1="405" x2="275.5" y2="158" class="partition-route"/>
+      <line x1="70.51" y1="405" x2="280.5" y2="158" class="partition-route"/>
+      <line x1="71.15" y1="405" x2="285.5" y2="158" class="partition-route"/>
+      <line x1="71.79" y1="405" x2="290.5" y2="158" class="partition-route"/>
+      <line x1="72.42" y1="405" x2="295.5" y2="158" class="partition-route"/>
+      <line x1="73.06" y1="405" x2="300.5" y2="158" class="partition-route"/>
+      <line x1="73.70" y1="405" x2="305.5" y2="158" class="partition-route"/>
+      <line x1="74.33" y1="405" x2="310.5" y2="158" class="partition-route"/>
+      <line x1="74.97" y1="405" x2="315.5" y2="158" class="partition-route"/>
+      <line x1="75.61" y1="405" x2="320.5" y2="158" class="partition-route"/>
+      <line x1="76.24" y1="405" x2="325.5" y2="158" class="partition-route"/>
+      <line x1="76.88" y1="405" x2="355.5" y2="158" class="partition-route"/>
+      <line x1="77.52" y1="405" x2="360.5" y2="158" class="partition-route"/>
+      <line x1="78.15" y1="405" x2="365.5" y2="158" class="partition-route"/>
+      <line x1="78.79" y1="405" x2="370.5" y2="158" class="partition-route"/>
+      <line x1="79.43" y1="405" x2="375.5" y2="158" class="partition-route"/>
+      <line x1="80.06" y1="405" x2="380.5" y2="158" class="partition-route"/>
+      <line x1="80.70" y1="405" x2="385.5" y2="158" class="partition-route"/>
+      <line x1="81.34" y1="405" x2="390.5" y2="158" class="partition-route"/>
+      <line x1="81.97" y1="405" x2="395.5" y2="158" class="partition-route"/>
+      <line x1="82.61" y1="405" x2="400.5" y2="158" class="partition-route"/>
+      <line x1="83.25" y1="405" x2="405.5" y2="158" class="partition-route"/>
+      <line x1="83.88" y1="405" x2="410.5" y2="158" class="partition-route"/>
+      <line x1="84.52" y1="405" x2="415.5" y2="158" class="partition-route"/>
+      <line x1="85.16" y1="405" x2="420.5" y2="158" class="partition-route"/>
+      <line x1="85.79" y1="405" x2="425.5" y2="158" class="partition-route"/>
+      <line x1="86.43" y1="405" x2="430.5" y2="158" class="partition-route"/>
+      <line x1="87.07" y1="405" x2="460.5" y2="158" class="partition-route"/>
+      <line x1="87.71" y1="405" x2="465.5" y2="158" class="partition-route"/>
+      <line x1="88.34" y1="405" x2="470.5" y2="158" class="partition-route"/>
+      <line x1="88.98" y1="405" x2="475.5" y2="158" class="partition-route"/>
+      <line x1="89.62" y1="405" x2="480.5" y2="158" class="partition-route"/>
+      <line x1="90.25" y1="405" x2="485.5" y2="158" class="partition-route"/>
+      <line x1="90.89" y1="405" x2="490.5" y2="158" class="partition-route"/>
+      <line x1="91.53" y1="405" x2="495.5" y2="158" class="partition-route"/>
+      <line x1="92.16" y1="405" x2="500.5" y2="158" class="partition-route"/>
+      <line x1="92.80" y1="405" x2="505.5" y2="158" class="partition-route"/>
+      <line x1="93.44" y1="405" x2="510.5" y2="158" class="partition-route"/>
+      <line x1="94.07" y1="405" x2="515.5" y2="158" class="partition-route"/>
+      <line x1="94.71" y1="405" x2="520.5" y2="158" class="partition-route"/>
+      <line x1="95.35" y1="405" x2="525.5" y2="158" class="partition-route"/>
+      <line x1="95.98" y1="405" x2="530.5" y2="158" class="partition-route"/>
+      <line x1="96.62" y1="405" x2="535.5" y2="158" class="partition-route"/>
+      <line x1="97.26" y1="405" x2="565.5" y2="158" class="partition-route"/>
+      <line x1="97.89" y1="405" x2="570.5" y2="158" class="partition-route"/>
+      <line x1="98.53" y1="405" x2="575.5" y2="158" class="partition-route"/>
+      <line x1="99.17" y1="405" x2="580.5" y2="158" class="partition-route"/>
+      <line x1="99.80" y1="405" x2="585.5" y2="158" class="partition-route"/>
+      <line x1="100.44" y1="405" x2="590.5" y2="158" class="partition-route"/>
+      <line x1="101.08" y1="405" x2="595.5" y2="158" class="partition-route"/>
+      <line x1="101.71" y1="405" x2="600.5" y2="158" class="partition-route"/>
+      <line x1="102.35" y1="405" x2="605.5" y2="158" class="partition-route"/>
+      <line x1="102.99" y1="405" x2="610.5" y2="158" class="partition-route"/>
+      <line x1="103.62" y1="405" x2="615.5" y2="158" class="partition-route"/>
+      <line x1="104.26" y1="405" x2="620.5" y2="158" class="partition-route"/>
+      <line x1="104.90" y1="405" x2="625.5" y2="158" class="partition-route"/>
+      <line x1="105.53" y1="405" x2="630.5" y2="158" class="partition-route"/>
+      <line x1="106.17" y1="405" x2="635.5" y2="158" class="partition-route"/>
+      <line x1="106.81" y1="405" x2="640.5" y2="158" class="partition-route"/>
+      <line x1="107.44" y1="405" x2="670.5" y2="158" class="partition-route"/>
+      <line x1="108.08" y1="405" x2="675.5" y2="158" class="partition-route"/>
+      <line x1="108.72" y1="405" x2="680.5" y2="158" class="partition-route"/>
+      <line x1="109.35" y1="405" x2="685.5" y2="158" class="partition-route"/>
+      <line x1="109.99" y1="405" x2="690.5" y2="158" class="partition-route"/>
+      <line x1="110.63" y1="405" x2="695.5" y2="158" class="partition-route"/>
+      <line x1="111.26" y1="405" x2="700.5" y2="158" class="partition-route"/>
+      <line x1="111.90" y1="405" x2="705.5" y2="158" class="partition-route"/>
+      <line x1="112.54" y1="405" x2="710.5" y2="158" class="partition-route"/>
+      <line x1="113.17" y1="405" x2="715.5" y2="158" class="partition-route"/>
+      <line x1="113.81" y1="405" x2="720.5" y2="158" class="partition-route"/>
+      <line x1="114.45" y1="405" x2="725.5" y2="158" class="partition-route"/>
+      <line x1="115.08" y1="405" x2="730.5" y2="158" class="partition-route"/>
+      <line x1="115.72" y1="405" x2="735.5" y2="158" class="partition-route"/>
+      <line x1="116.36" y1="405" x2="740.5" y2="158" class="partition-route"/>
+      <line x1="116.99" y1="405" x2="745.5" y2="158" class="partition-route"/>
+      <line x1="117.63" y1="405" x2="775.5" y2="158" class="partition-route"/>
+      <line x1="118.27" y1="405" x2="780.5" y2="158" class="partition-route"/>
+      <line x1="118.90" y1="405" x2="785.5" y2="158" class="partition-route"/>
+      <line x1="119.54" y1="405" x2="790.5" y2="158" class="partition-route"/>
+      <line x1="120.18" y1="405" x2="795.5" y2="158" class="partition-route"/>
+      <line x1="120.81" y1="405" x2="800.5" y2="158" class="partition-route"/>
+      <line x1="121.45" y1="405" x2="805.5" y2="158" class="partition-route"/>
+      <line x1="122.09" y1="405" x2="810.5" y2="158" class="partition-route"/>
+      <line x1="122.72" y1="405" x2="815.5" y2="158" class="partition-route"/>
+      <line x1="123.36" y1="405" x2="820.5" y2="158" class="partition-route"/>
+      <line x1="124.00" y1="405" x2="825.5" y2="158" class="partition-route"/>
+      <line x1="124.63" y1="405" x2="830.5" y2="158" class="partition-route"/>
+      <line x1="125.27" y1="405" x2="835.5" y2="158" class="partition-route"/>
+      <line x1="125.91" y1="405" x2="840.5" y2="158" class="partition-route"/>
+      <line x1="126.54" y1="405" x2="845.5" y2="158" class="partition-route"/>
+      <line x1="127.18" y1="405" x2="850.5" y2="158" class="partition-route"/>
+      <line x1="127.82" y1="405" x2="40.5" y2="245" class="partition-route"/>
+      <line x1="128.46" y1="405" x2="45.5" y2="245" class="partition-route"/>
+      <line x1="129.09" y1="405" x2="50.5" y2="245" class="partition-route"/>
+      <line x1="129.73" y1="405" x2="55.5" y2="245" class="partition-route"/>
+      <line x1="130.37" y1="405" x2="60.5" y2="245" class="partition-route"/>
+      <line x1="131.00" y1="405" x2="65.5" y2="245" class="partition-route"/>
+      <line x1="131.64" y1="405" x2="70.5" y2="245" class="partition-route"/>
+      <line x1="132.28" y1="405" x2="75.5" y2="245" class="partition-route"/>
+      <line x1="132.91" y1="405" x2="80.5" y2="245" class="partition-route"/>
+      <line x1="133.55" y1="405" x2="85.5" y2="245" class="partition-route"/>
+      <line x1="134.19" y1="405" x2="90.5" y2="245" class="partition-route"/>
+      <line x1="134.82" y1="405" x2="95.5" y2="245" class="partition-route"/>
+      <line x1="135.46" y1="405" x2="100.5" y2="245" class="partition-route"/>
+      <line x1="136.10" y1="405" x2="105.5" y2="245" class="partition-route"/>
+      <line x1="136.73" y1="405" x2="110.5" y2="245" class="partition-route"/>
+      <line x1="137.37" y1="405" x2="115.5" y2="245" class="partition-route"/>
+      <line x1="138.01" y1="405" x2="145.5" y2="245" class="partition-route"/>
+      <line x1="138.64" y1="405" x2="150.5" y2="245" class="partition-route"/>
+      <line x1="139.28" y1="405" x2="155.5" y2="245" class="partition-route"/>
+      <line x1="139.92" y1="405" x2="160.5" y2="245" class="partition-route"/>
+      <line x1="140.55" y1="405" x2="165.5" y2="245" class="partition-route"/>
+      <line x1="141.19" y1="405" x2="170.5" y2="245" class="partition-route"/>
+      <line x1="141.83" y1="405" x2="175.5" y2="245" class="partition-route"/>
+      <line x1="142.46" y1="405" x2="180.5" y2="245" class="partition-route"/>
+      <line x1="143.10" y1="405" x2="185.5" y2="245" class="partition-route"/>
+      <line x1="143.74" y1="405" x2="190.5" y2="245" class="partition-route"/>
+      <line x1="144.37" y1="405" x2="195.5" y2="245" class="partition-route"/>
+      <line x1="145.01" y1="405" x2="200.5" y2="245" class="partition-route"/>
+      <line x1="145.65" y1="405" x2="205.5" y2="245" class="partition-route"/>
+      <line x1="146.28" y1="405" x2="210.5" y2="245" class="partition-route"/>
+      <line x1="146.92" y1="405" x2="215.5" y2="245" class="partition-route"/>
+      <line x1="147.56" y1="405" x2="220.5" y2="245" class="partition-route"/>
+      <line x1="148.19" y1="405" x2="250.5" y2="245" class="partition-route"/>
+      <line x1="148.83" y1="405" x2="255.5" y2="245" class="partition-route"/>
+      <line x1="149.47" y1="405" x2="260.5" y2="245" class="partition-route"/>
+      <line x1="150.10" y1="405" x2="265.5" y2="245" class="partition-route"/>
+      <line x1="150.74" y1="405" x2="270.5" y2="245" class="partition-route"/>
+      <line x1="151.38" y1="405" x2="275.5" y2="245" class="partition-route"/>
+      <line x1="152.01" y1="405" x2="280.5" y2="245" class="partition-route"/>
+      <line x1="152.65" y1="405" x2="285.5" y2="245" class="partition-route"/>
+      <line x1="153.29" y1="405" x2="290.5" y2="245" class="partition-route"/>
+      <line x1="153.92" y1="405" x2="295.5" y2="245" class="partition-route"/>
+      <line x1="154.56" y1="405" x2="300.5" y2="245" class="partition-route"/>
+      <line x1="155.20" y1="405" x2="305.5" y2="245" class="partition-route"/>
+      <line x1="155.83" y1="405" x2="310.5" y2="245" class="partition-route"/>
+      <line x1="156.47" y1="405" x2="315.5" y2="245" class="partition-route"/>
+      <line x1="157.11" y1="405" x2="320.5" y2="245" class="partition-route"/>
+      <line x1="157.74" y1="405" x2="325.5" y2="245" class="partition-route"/>
+      <line x1="158.38" y1="405" x2="355.5" y2="245" class="partition-route"/>
+      <line x1="159.02" y1="405" x2="360.5" y2="245" class="partition-route"/>
+      <line x1="159.65" y1="405" x2="365.5" y2="245" class="partition-route"/>
+      <line x1="160.29" y1="405" x2="370.5" y2="245" class="partition-route"/>
+      <line x1="160.93" y1="405" x2="375.5" y2="245" class="partition-route"/>
+      <line x1="161.56" y1="405" x2="380.5" y2="245" class="partition-route"/>
+      <line x1="162.20" y1="405" x2="385.5" y2="245" class="partition-route"/>
+      <line x1="162.84" y1="405" x2="390.5" y2="245" class="partition-route"/>
+      <line x1="163.47" y1="405" x2="395.5" y2="245" class="partition-route"/>
+      <line x1="164.11" y1="405" x2="400.5" y2="245" class="partition-route"/>
+      <line x1="164.75" y1="405" x2="405.5" y2="245" class="partition-route"/>
+      <line x1="165.38" y1="405" x2="410.5" y2="245" class="partition-route"/>
+      <line x1="166.02" y1="405" x2="415.5" y2="245" class="partition-route"/>
+      <line x1="166.66" y1="405" x2="420.5" y2="245" class="partition-route"/>
+      <line x1="167.29" y1="405" x2="425.5" y2="245" class="partition-route"/>
+      <line x1="167.93" y1="405" x2="430.5" y2="245" class="partition-route"/>
+      <line x1="168.57" y1="405" x2="460.5" y2="245" class="partition-route"/>
+      <line x1="169.21" y1="405" x2="465.5" y2="245" class="partition-route"/>
+      <line x1="169.84" y1="405" x2="470.5" y2="245" class="partition-route"/>
+      <line x1="170.48" y1="405" x2="475.5" y2="245" class="partition-route"/>
+      <line x1="171.12" y1="405" x2="480.5" y2="245" class="partition-route"/>
+      <line x1="171.75" y1="405" x2="485.5" y2="245" class="partition-route"/>
+      <line x1="172.39" y1="405" x2="490.5" y2="245" class="partition-route"/>
+      <line x1="173.03" y1="405" x2="495.5" y2="245" class="partition-route"/>
+      <line x1="173.66" y1="405" x2="500.5" y2="245" class="partition-route"/>
+      <line x1="174.30" y1="405" x2="505.5" y2="245" class="partition-route"/>
+      <line x1="174.94" y1="405" x2="510.5" y2="245" class="partition-route"/>
+      <line x1="175.57" y1="405" x2="515.5" y2="245" class="partition-route"/>
+      <line x1="176.21" y1="405" x2="520.5" y2="245" class="partition-route"/>
+      <line x1="176.85" y1="405" x2="525.5" y2="245" class="partition-route"/>
+      <line x1="177.48" y1="405" x2="530.5" y2="245" class="partition-route"/>
+      <line x1="178.12" y1="405" x2="535.5" y2="245" class="partition-route"/>
+      <line x1="178.76" y1="405" x2="565.5" y2="245" class="partition-route"/>
+      <line x1="179.39" y1="405" x2="570.5" y2="245" class="partition-route"/>
+      <line x1="180.03" y1="405" x2="575.5" y2="245" class="partition-route"/>
+      <line x1="180.67" y1="405" x2="580.5" y2="245" class="partition-route"/>
+      <line x1="181.30" y1="405" x2="585.5" y2="245" class="partition-route"/>
+      <line x1="181.94" y1="405" x2="590.5" y2="245" class="partition-route"/>
+      <line x1="182.58" y1="405" x2="595.5" y2="245" class="partition-route"/>
+      <line x1="183.21" y1="405" x2="600.5" y2="245" class="partition-route"/>
+      <line x1="183.85" y1="405" x2="605.5" y2="245" class="partition-route"/>
+      <line x1="184.49" y1="405" x2="610.5" y2="245" class="partition-route"/>
+      <line x1="185.12" y1="405" x2="615.5" y2="245" class="partition-route"/>
+      <line x1="185.76" y1="405" x2="620.5" y2="245" class="partition-route"/>
+      <line x1="186.40" y1="405" x2="625.5" y2="245" class="partition-route"/>
+      <line x1="187.03" y1="405" x2="630.5" y2="245" class="partition-route"/>
+      <line x1="187.67" y1="405" x2="635.5" y2="245" class="partition-route"/>
+      <line x1="188.31" y1="405" x2="640.5" y2="245" class="partition-route"/>
+      <line x1="188.94" y1="405" x2="670.5" y2="245" class="partition-route"/>
+      <line x1="189.58" y1="405" x2="675.5" y2="245" class="partition-route"/>
+      <line x1="190.22" y1="405" x2="680.5" y2="245" class="partition-route"/>
+      <line x1="190.85" y1="405" x2="685.5" y2="245" class="partition-route"/>
+      <line x1="191.49" y1="405" x2="690.5" y2="245" class="partition-route"/>
+      <line x1="192.13" y1="405" x2="695.5" y2="245" class="partition-route"/>
+      <line x1="192.76" y1="405" x2="700.5" y2="245" class="partition-route"/>
+      <line x1="193.40" y1="405" x2="705.5" y2="245" class="partition-route"/>
+      <line x1="194.04" y1="405" x2="710.5" y2="245" class="partition-route"/>
+      <line x1="194.67" y1="405" x2="715.5" y2="245" class="partition-route"/>
+      <line x1="195.31" y1="405" x2="720.5" y2="245" class="partition-route"/>
+      <line x1="195.95" y1="405" x2="725.5" y2="245" class="partition-route"/>
+      <line x1="196.58" y1="405" x2="730.5" y2="245" class="partition-route"/>
+      <line x1="197.22" y1="405" x2="735.5" y2="245" class="partition-route"/>
+      <line x1="197.86" y1="405" x2="740.5" y2="245" class="partition-route"/>
+      <line x1="198.49" y1="405" x2="745.5" y2="245" class="partition-route"/>
+      <line x1="199.13" y1="405" x2="775.5" y2="245" class="partition-route"/>
+      <line x1="199.77" y1="405" x2="780.5" y2="245" class="partition-route"/>
+      <line x1="200.40" y1="405" x2="785.5" y2="245" class="partition-route"/>
+      <line x1="201.04" y1="405" x2="790.5" y2="245" class="partition-route"/>
+      <line x1="201.68" y1="405" x2="795.5" y2="245" class="partition-route"/>
+      <line x1="202.31" y1="405" x2="800.5" y2="245" class="partition-route"/>
+      <line x1="202.95" y1="405" x2="805.5" y2="245" class="partition-route"/>
+      <line x1="203.59" y1="405" x2="810.5" y2="245" class="partition-route"/>
+      <line x1="204.22" y1="405" x2="815.5" y2="245" class="partition-route"/>
+      <line x1="204.86" y1="405" x2="820.5" y2="245" class="partition-route"/>
+      <line x1="205.50" y1="405" x2="825.5" y2="245" class="partition-route"/>
+      <line x1="206.13" y1="405" x2="830.5" y2="245" class="partition-route"/>
+      <line x1="206.77" y1="405" x2="835.5" y2="245" class="partition-route"/>
+      <line x1="207.41" y1="405" x2="840.5" y2="245" class="partition-route"/>
+      <line x1="208.04" y1="405" x2="845.5" y2="245" class="partition-route"/>
+      <line x1="208.68" y1="405" x2="850.5" y2="245" class="partition-route"/>
+    </g>
+    <g id="producer-1-routes">
+      <line x1="261.32" y1="405" x2="40.5" y2="158" class="partition-route"/>
+      <line x1="261.96" y1="405" x2="45.5" y2="158" class="partition-route"/>
+      <line x1="262.59" y1="405" x2="50.5" y2="158" class="partition-route"/>
+      <line x1="263.23" y1="405" x2="55.5" y2="158" class="partition-route"/>
+      <line x1="263.87" y1="405" x2="60.5" y2="158" class="partition-route"/>
+      <line x1="264.50" y1="405" x2="65.5" y2="158" class="partition-route"/>
+      <line x1="265.14" y1="405" x2="70.5" y2="158" class="partition-route"/>
+      <line x1="265.78" y1="405" x2="75.5" y2="158" class="partition-route"/>
+      <line x1="266.41" y1="405" x2="80.5" y2="158" class="partition-route"/>
+      <line x1="267.05" y1="405" x2="85.5" y2="158" class="partition-route"/>
+      <line x1="267.69" y1="405" x2="90.5" y2="158" class="partition-route"/>
+      <line x1="268.32" y1="405" x2="95.5" y2="158" class="partition-route"/>
+      <line x1="268.96" y1="405" x2="100.5" y2="158" class="partition-route"/>
+      <line x1="269.60" y1="405" x2="105.5" y2="158" class="partition-route"/>
+      <line x1="270.23" y1="405" x2="110.5" y2="158" class="partition-route"/>
+      <line x1="270.87" y1="405" x2="115.5" y2="158" class="partition-route"/>
+      <line x1="271.51" y1="405" x2="145.5" y2="158" class="partition-route"/>
+      <line x1="272.14" y1="405" x2="150.5" y2="158" class="partition-route"/>
+      <line x1="272.78" y1="405" x2="155.5" y2="158" class="partition-route"/>
+      <line x1="273.42" y1="405" x2="160.5" y2="158" class="partition-route"/>
+      <line x1="274.05" y1="405" x2="165.5" y2="158" class="partition-route"/>
+      <line x1="274.69" y1="405" x2="170.5" y2="158" class="partition-route"/>
+      <line x1="275.33" y1="405" x2="175.5" y2="158" class="partition-route"/>
+      <line x1="275.96" y1="405" x2="180.5" y2="158" class="partition-route"/>
+      <line x1="276.60" y1="405" x2="185.5" y2="158" class="partition-route"/>
+      <line x1="277.24" y1="405" x2="190.5" y2="158" class="partition-route"/>
+      <line x1="277.87" y1="405" x2="195.5" y2="158" class="partition-route"/>
+      <line x1="278.51" y1="405" x2="200.5" y2="158" class="partition-route"/>
+      <line x1="279.15" y1="405" x2="205.5" y2="158" class="partition-route"/>
+      <line x1="279.78" y1="405" x2="210.5" y2="158" class="partition-route"/>
+      <line x1="280.42" y1="405" x2="215.5" y2="158" class="partition-route"/>
+      <line x1="281.06" y1="405" x2="220.5" y2="158" class="partition-route"/>
+      <line x1="281.69" y1="405" x2="250.5" y2="158" class="partition-route"/>
+      <line x1="282.33" y1="405" x2="255.5" y2="158" class="partition-route"/>
+      <line x1="282.97" y1="405" x2="260.5" y2="158" class="partition-route"/>
+      <line x1="283.60" y1="405" x2="265.5" y2="158" class="partition-route"/>
+      <line x1="284.24" y1="405" x2="270.5" y2="158" class="partition-route"/>
+      <line x1="284.88" y1="405" x2="275.5" y2="158" class="partition-route"/>
+      <line x1="285.51" y1="405" x2="280.5" y2="158" class="partition-route"/>
+      <line x1="286.15" y1="405" x2="285.5" y2="158" class="partition-route"/>
+      <line x1="286.79" y1="405" x2="290.5" y2="158" class="partition-route"/>
+      <line x1="287.42" y1="405" x2="295.5" y2="158" class="partition-route"/>
+      <line x1="288.06" y1="405" x2="300.5" y2="158" class="partition-route"/>
+      <line x1="288.70" y1="405" x2="305.5" y2="158" class="partition-route"/>
+      <line x1="289.33" y1="405" x2="310.5" y2="158" class="partition-route"/>
+      <line x1="289.97" y1="405" x2="315.5" y2="158" class="partition-route"/>
+      <line x1="290.61" y1="405" x2="320.5" y2="158" class="partition-route"/>
+      <line x1="291.24" y1="405" x2="325.5" y2="158" class="partition-route"/>
+      <line x1="291.88" y1="405" x2="355.5" y2="158" class="partition-route"/>
+      <line x1="292.52" y1="405" x2="360.5" y2="158" class="partition-route"/>
+      <line x1="293.15" y1="405" x2="365.5" y2="158" class="partition-route"/>
+      <line x1="293.79" y1="405" x2="370.5" y2="158" class="partition-route"/>
+      <line x1="294.43" y1="405" x2="375.5" y2="158" class="partition-route"/>
+      <line x1="295.06" y1="405" x2="380.5" y2="158" class="partition-route"/>
+      <line x1="295.70" y1="405" x2="385.5" y2="158" class="partition-route"/>
+      <line x1="296.34" y1="405" x2="390.5" y2="158" class="partition-route"/>
+      <line x1="296.97" y1="405" x2="395.5" y2="158" class="partition-route"/>
+      <line x1="297.61" y1="405" x2="400.5" y2="158" class="partition-route"/>
+      <line x1="298.25" y1="405" x2="405.5" y2="158" class="partition-route"/>
+      <line x1="298.88" y1="405" x2="410.5" y2="158" class="partition-route"/>
+      <line x1="299.52" y1="405" x2="415.5" y2="158" class="partition-route"/>
+      <line x1="300.16" y1="405" x2="420.5" y2="158" class="partition-route"/>
+      <line x1="300.79" y1="405" x2="425.5" y2="158" class="partition-route"/>
+      <line x1="301.43" y1="405" x2="430.5" y2="158" class="partition-route"/>
+      <line x1="302.07" y1="405" x2="460.5" y2="158" class="partition-route"/>
+      <line x1="302.71" y1="405" x2="465.5" y2="158" class="partition-route"/>
+      <line x1="303.34" y1="405" x2="470.5" y2="158" class="partition-route"/>
+      <line x1="303.98" y1="405" x2="475.5" y2="158" class="partition-route"/>
+      <line x1="304.62" y1="405" x2="480.5" y2="158" class="partition-route"/>
+      <line x1="305.25" y1="405" x2="485.5" y2="158" class="partition-route"/>
+      <line x1="305.89" y1="405" x2="490.5" y2="158" class="partition-route"/>
+      <line x1="306.53" y1="405" x2="495.5" y2="158" class="partition-route"/>
+      <line x1="307.16" y1="405" x2="500.5" y2="158" class="partition-route"/>
+      <line x1="307.80" y1="405" x2="505.5" y2="158" class="partition-route"/>
+      <line x1="308.44" y1="405" x2="510.5" y2="158" class="partition-route"/>
+      <line x1="309.07" y1="405" x2="515.5" y2="158" class="partition-route"/>
+      <line x1="309.71" y1="405" x2="520.5" y2="158" class="partition-route"/>
+      <line x1="310.35" y1="405" x2="525.5" y2="158" class="partition-route"/>
+      <line x1="310.98" y1="405" x2="530.5" y2="158" class="partition-route"/>
+      <line x1="311.62" y1="405" x2="535.5" y2="158" class="partition-route"/>
+      <line x1="312.26" y1="405" x2="565.5" y2="158" class="partition-route"/>
+      <line x1="312.89" y1="405" x2="570.5" y2="158" class="partition-route"/>
+      <line x1="313.53" y1="405" x2="575.5" y2="158" class="partition-route"/>
+      <line x1="314.17" y1="405" x2="580.5" y2="158" class="partition-route"/>
+      <line x1="314.80" y1="405" x2="585.5" y2="158" class="partition-route"/>
+      <line x1="315.44" y1="405" x2="590.5" y2="158" class="partition-route"/>
+      <line x1="316.08" y1="405" x2="595.5" y2="158" class="partition-route"/>
+      <line x1="316.71" y1="405" x2="600.5" y2="158" class="partition-route"/>
+      <line x1="317.35" y1="405" x2="605.5" y2="158" class="partition-route"/>
+      <line x1="317.99" y1="405" x2="610.5" y2="158" class="partition-route"/>
+      <line x1="318.62" y1="405" x2="615.5" y2="158" class="partition-route"/>
+      <line x1="319.26" y1="405" x2="620.5" y2="158" class="partition-route"/>
+      <line x1="319.90" y1="405" x2="625.5" y2="158" class="partition-route"/>
+      <line x1="320.53" y1="405" x2="630.5" y2="158" class="partition-route"/>
+      <line x1="321.17" y1="405" x2="635.5" y2="158" class="partition-route"/>
+      <line x1="321.81" y1="405" x2="640.5" y2="158" class="partition-route"/>
+      <line x1="322.44" y1="405" x2="670.5" y2="158" class="partition-route"/>
+      <line x1="323.08" y1="405" x2="675.5" y2="158" class="partition-route"/>
+      <line x1="323.72" y1="405" x2="680.5" y2="158" class="partition-route"/>
+      <line x1="324.35" y1="405" x2="685.5" y2="158" class="partition-route"/>
+      <line x1="324.99" y1="405" x2="690.5" y2="158" class="partition-route"/>
+      <line x1="325.63" y1="405" x2="695.5" y2="158" class="partition-route"/>
+      <line x1="326.26" y1="405" x2="700.5" y2="158" class="partition-route"/>
+      <line x1="326.90" y1="405" x2="705.5" y2="158" class="partition-route"/>
+      <line x1="327.54" y1="405" x2="710.5" y2="158" class="partition-route"/>
+      <line x1="328.17" y1="405" x2="715.5" y2="158" class="partition-route"/>
+      <line x1="328.81" y1="405" x2="720.5" y2="158" class="partition-route"/>
+      <line x1="329.45" y1="405" x2="725.5" y2="158" class="partition-route"/>
+      <line x1="330.08" y1="405" x2="730.5" y2="158" class="partition-route"/>
+      <line x1="330.72" y1="405" x2="735.5" y2="158" class="partition-route"/>
+      <line x1="331.36" y1="405" x2="740.5" y2="158" class="partition-route"/>
+      <line x1="331.99" y1="405" x2="745.5" y2="158" class="partition-route"/>
+      <line x1="332.63" y1="405" x2="775.5" y2="158" class="partition-route"/>
+      <line x1="333.27" y1="405" x2="780.5" y2="158" class="partition-route"/>
+      <line x1="333.90" y1="405" x2="785.5" y2="158" class="partition-route"/>
+      <line x1="334.54" y1="405" x2="790.5" y2="158" class="partition-route"/>
+      <line x1="335.18" y1="405" x2="795.5" y2="158" class="partition-route"/>
+      <line x1="335.81" y1="405" x2="800.5" y2="158" class="partition-route"/>
+      <line x1="336.45" y1="405" x2="805.5" y2="158" class="partition-route"/>
+      <line x1="337.09" y1="405" x2="810.5" y2="158" class="partition-route"/>
+      <line x1="337.72" y1="405" x2="815.5" y2="158" class="partition-route"/>
+      <line x1="338.36" y1="405" x2="820.5" y2="158" class="partition-route"/>
+      <line x1="339.00" y1="405" x2="825.5" y2="158" class="partition-route"/>
+      <line x1="339.63" y1="405" x2="830.5" y2="158" class="partition-route"/>
+      <line x1="340.27" y1="405" x2="835.5" y2="158" class="partition-route"/>
+      <line x1="340.91" y1="405" x2="840.5" y2="158" class="partition-route"/>
+      <line x1="341.54" y1="405" x2="845.5" y2="158" class="partition-route"/>
+      <line x1="342.18" y1="405" x2="850.5" y2="158" class="partition-route"/>
+      <line x1="342.82" y1="405" x2="40.5" y2="245" class="partition-route"/>
+      <line x1="343.46" y1="405" x2="45.5" y2="245" class="partition-route"/>
+      <line x1="344.09" y1="405" x2="50.5" y2="245" class="partition-route"/>
+      <line x1="344.73" y1="405" x2="55.5" y2="245" class="partition-route"/>
+      <line x1="345.37" y1="405" x2="60.5" y2="245" class="partition-route"/>
+      <line x1="346.00" y1="405" x2="65.5" y2="245" class="partition-route"/>
+      <line x1="346.64" y1="405" x2="70.5" y2="245" class="partition-route"/>
+      <line x1="347.28" y1="405" x2="75.5" y2="245" class="partition-route"/>
+      <line x1="347.91" y1="405" x2="80.5" y2="245" class="partition-route"/>
+      <line x1="348.55" y1="405" x2="85.5" y2="245" class="partition-route"/>
+      <line x1="349.19" y1="405" x2="90.5" y2="245" class="partition-route"/>
+      <line x1="349.82" y1="405" x2="95.5" y2="245" class="partition-route"/>
+      <line x1="350.46" y1="405" x2="100.5" y2="245" class="partition-route"/>
+      <line x1="351.10" y1="405" x2="105.5" y2="245" class="partition-route"/>
+      <line x1="351.73" y1="405" x2="110.5" y2="245" class="partition-route"/>
+      <line x1="352.37" y1="405" x2="115.5" y2="245" class="partition-route"/>
+      <line x1="353.01" y1="405" x2="145.5" y2="245" class="partition-route"/>
+      <line x1="353.64" y1="405" x2="150.5" y2="245" class="partition-route"/>
+      <line x1="354.28" y1="405" x2="155.5" y2="245" class="partition-route"/>
+      <line x1="354.92" y1="405" x2="160.5" y2="245" class="partition-route"/>
+      <line x1="355.55" y1="405" x2="165.5" y2="245" class="partition-route"/>
+      <line x1="356.19" y1="405" x2="170.5" y2="245" class="partition-route"/>
+      <line x1="356.83" y1="405" x2="175.5" y2="245" class="partition-route"/>
+      <line x1="357.46" y1="405" x2="180.5" y2="245" class="partition-route"/>
+      <line x1="358.10" y1="405" x2="185.5" y2="245" class="partition-route"/>
+      <line x1="358.74" y1="405" x2="190.5" y2="245" class="partition-route"/>
+      <line x1="359.37" y1="405" x2="195.5" y2="245" class="partition-route"/>
+      <line x1="360.01" y1="405" x2="200.5" y2="245" class="partition-route"/>
+      <line x1="360.65" y1="405" x2="205.5" y2="245" class="partition-route"/>
+      <line x1="361.28" y1="405" x2="210.5" y2="245" class="partition-route"/>
+      <line x1="361.92" y1="405" x2="215.5" y2="245" class="partition-route"/>
+      <line x1="362.56" y1="405" x2="220.5" y2="245" class="partition-route"/>
+      <line x1="363.19" y1="405" x2="250.5" y2="245" class="partition-route"/>
+      <line x1="363.83" y1="405" x2="255.5" y2="245" class="partition-route"/>
+      <line x1="364.47" y1="405" x2="260.5" y2="245" class="partition-route"/>
+      <line x1="365.10" y1="405" x2="265.5" y2="245" class="partition-route"/>
+      <line x1="365.74" y1="405" x2="270.5" y2="245" class="partition-route"/>
+      <line x1="366.38" y1="405" x2="275.5" y2="245" class="partition-route"/>
+      <line x1="367.01" y1="405" x2="280.5" y2="245" class="partition-route"/>
+      <line x1="367.65" y1="405" x2="285.5" y2="245" class="partition-route"/>
+      <line x1="368.29" y1="405" x2="290.5" y2="245" class="partition-route"/>
+      <line x1="368.92" y1="405" x2="295.5" y2="245" class="partition-route"/>
+      <line x1="369.56" y1="405" x2="300.5" y2="245" class="partition-route"/>
+      <line x1="370.20" y1="405" x2="305.5" y2="245" class="partition-route"/>
+      <line x1="370.83" y1="405" x2="310.5" y2="245" class="partition-route"/>
+      <line x1="371.47" y1="405" x2="315.5" y2="245" class="partition-route"/>
+      <line x1="372.11" y1="405" x2="320.5" y2="245" class="partition-route"/>
+      <line x1="372.74" y1="405" x2="325.5" y2="245" class="partition-route"/>
+      <line x1="373.38" y1="405" x2="355.5" y2="245" class="partition-route"/>
+      <line x1="374.02" y1="405" x2="360.5" y2="245" class="partition-route"/>
+      <line x1="374.65" y1="405" x2="365.5" y2="245" class="partition-route"/>
+      <line x1="375.29" y1="405" x2="370.5" y2="245" class="partition-route"/>
+      <line x1="375.93" y1="405" x2="375.5" y2="245" class="partition-route"/>
+      <line x1="376.56" y1="405" x2="380.5" y2="245" class="partition-route"/>
+      <line x1="377.20" y1="405" x2="385.5" y2="245" class="partition-route"/>
+      <line x1="377.84" y1="405" x2="390.5" y2="245" class="partition-route"/>
+      <line x1="378.47" y1="405" x2="395.5" y2="245" class="partition-route"/>
+      <line x1="379.11" y1="405" x2="400.5" y2="245" class="partition-route"/>
+      <line x1="379.75" y1="405" x2="405.5" y2="245" class="partition-route"/>
+      <line x1="380.38" y1="405" x2="410.5" y2="245" class="partition-route"/>
+      <line x1="381.02" y1="405" x2="415.5" y2="245" class="partition-route"/>
+      <line x1="381.66" y1="405" x2="420.5" y2="245" class="partition-route"/>
+      <line x1="382.29" y1="405" x2="425.5" y2="245" class="partition-route"/>
+      <line x1="382.93" y1="405" x2="430.5" y2="245" class="partition-route"/>
+      <line x1="383.57" y1="405" x2="460.5" y2="245" class="partition-route"/>
+      <line x1="384.21" y1="405" x2="465.5" y2="245" class="partition-route"/>
+      <line x1="384.84" y1="405" x2="470.5" y2="245" class="partition-route"/>
+      <line x1="385.48" y1="405" x2="475.5" y2="245" class="partition-route"/>
+      <line x1="386.12" y1="405" x2="480.5" y2="245" class="partition-route"/>
+      <line x1="386.75" y1="405" x2="485.5" y2="245" class="partition-route"/>
+      <line x1="387.39" y1="405" x2="490.5" y2="245" class="partition-route"/>
+      <line x1="388.03" y1="405" x2="495.5" y2="245" class="partition-route"/>
+      <line x1="388.66" y1="405" x2="500.5" y2="245" class="partition-route"/>
+      <line x1="389.30" y1="405" x2="505.5" y2="245" class="partition-route"/>
+      <line x1="389.94" y1="405" x2="510.5" y2="245" class="partition-route"/>
+      <line x1="390.57" y1="405" x2="515.5" y2="245" class="partition-route"/>
+      <line x1="391.21" y1="405" x2="520.5" y2="245" class="partition-route"/>
+      <line x1="391.85" y1="405" x2="525.5" y2="245" class="partition-route"/>
+      <line x1="392.48" y1="405" x2="530.5" y2="245" class="partition-route"/>
+      <line x1="393.12" y1="405" x2="535.5" y2="245" class="partition-route"/>
+      <line x1="393.76" y1="405" x2="565.5" y2="245" class="partition-route"/>
+      <line x1="394.39" y1="405" x2="570.5" y2="245" class="partition-route"/>
+      <line x1="395.03" y1="405" x2="575.5" y2="245" class="partition-route"/>
+      <line x1="395.67" y1="405" x2="580.5" y2="245" class="partition-route"/>
+      <line x1="396.30" y1="405" x2="585.5" y2="245" class="partition-route"/>
+      <line x1="396.94" y1="405" x2="590.5" y2="245" class="partition-route"/>
+      <line x1="397.58" y1="405" x2="595.5" y2="245" class="partition-route"/>
+      <line x1="398.21" y1="405" x2="600.5" y2="245" class="partition-route"/>
+      <line x1="398.85" y1="405" x2="605.5" y2="245" class="partition-route"/>
+      <line x1="399.49" y1="405" x2="610.5" y2="245" class="partition-route"/>
+      <line x1="400.12" y1="405" x2="615.5" y2="245" class="partition-route"/>
+      <line x1="400.76" y1="405" x2="620.5" y2="245" class="partition-route"/>
+      <line x1="401.40" y1="405" x2="625.5" y2="245" class="partition-route"/>
+      <line x1="402.03" y1="405" x2="630.5" y2="245" class="partition-route"/>
+      <line x1="402.67" y1="405" x2="635.5" y2="245" class="partition-route"/>
+      <line x1="403.31" y1="405" x2="640.5" y2="245" class="partition-route"/>
+      <line x1="403.94" y1="405" x2="670.5" y2="245" class="partition-route"/>
+      <line x1="404.58" y1="405" x2="675.5" y2="245" class="partition-route"/>
+      <line x1="405.22" y1="405" x2="680.5" y2="245" class="partition-route"/>
+      <line x1="405.85" y1="405" x2="685.5" y2="245" class="partition-route"/>
+      <line x1="406.49" y1="405" x2="690.5" y2="245" class="partition-route"/>
+      <line x1="407.13" y1="405" x2="695.5" y2="245" class="partition-route"/>
+      <line x1="407.76" y1="405" x2="700.5" y2="245" class="partition-route"/>
+      <line x1="408.40" y1="405" x2="705.5" y2="245" class="partition-route"/>
+      <line x1="409.04" y1="405" x2="710.5" y2="245" class="partition-route"/>
+      <line x1="409.67" y1="405" x2="715.5" y2="245" class="partition-route"/>
+      <line x1="410.31" y1="405" x2="720.5" y2="245" class="partition-route"/>
+      <line x1="410.95" y1="405" x2="725.5" y2="245" class="partition-route"/>
+      <line x1="411.58" y1="405" x2="730.5" y2="245" class="partition-route"/>
+      <line x1="412.22" y1="405" x2="735.5" y2="245" class="partition-route"/>
+      <line x1="412.86" y1="405" x2="740.5" y2="245" class="partition-route"/>
+      <line x1="413.49" y1="405" x2="745.5" y2="245" class="partition-route"/>
+      <line x1="414.13" y1="405" x2="775.5" y2="245" class="partition-route"/>
+      <line x1="414.77" y1="405" x2="780.5" y2="245" class="partition-route"/>
+      <line x1="415.40" y1="405" x2="785.5" y2="245" class="partition-route"/>
+      <line x1="416.04" y1="405" x2="790.5" y2="245" class="partition-route"/>
+      <line x1="416.68" y1="405" x2="795.5" y2="245" class="partition-route"/>
+      <line x1="417.31" y1="405" x2="800.5" y2="245" class="partition-route"/>
+      <line x1="417.95" y1="405" x2="805.5" y2="245" class="partition-route"/>
+      <line x1="418.59" y1="405" x2="810.5" y2="245" class="partition-route"/>
+      <line x1="419.22" y1="405" x2="815.5" y2="245" class="partition-route"/>
+      <line x1="419.86" y1="405" x2="820.5" y2="245" class="partition-route"/>
+      <line x1="420.50" y1="405" x2="825.5" y2="245" class="partition-route"/>
+      <line x1="421.13" y1="405" x2="830.5" y2="245" class="partition-route"/>
+      <line x1="421.77" y1="405" x2="835.5" y2="245" class="partition-route"/>
+      <line x1="422.41" y1="405" x2="840.5" y2="245" class="partition-route"/>
+      <line x1="423.04" y1="405" x2="845.5" y2="245" class="partition-route"/>
+      <line x1="423.68" y1="405" x2="850.5" y2="245" class="partition-route"/>
+    </g>
+    <g id="producer-2-routes">
+      <line x1="476.32" y1="405" x2="40.5" y2="158" class="partition-route"/>
+      <line x1="476.96" y1="405" x2="45.5" y2="158" class="partition-route"/>
+      <line x1="477.59" y1="405" x2="50.5" y2="158" class="partition-route"/>
+      <line x1="478.23" y1="405" x2="55.5" y2="158" class="partition-route"/>
+      <line x1="478.87" y1="405" x2="60.5" y2="158" class="partition-route"/>
+      <line x1="479.50" y1="405" x2="65.5" y2="158" class="partition-route"/>
+      <line x1="480.14" y1="405" x2="70.5" y2="158" class="partition-route"/>
+      <line x1="480.78" y1="405" x2="75.5" y2="158" class="partition-route"/>
+      <line x1="481.41" y1="405" x2="80.5" y2="158" class="partition-route"/>
+      <line x1="482.05" y1="405" x2="85.5" y2="158" class="partition-route"/>
+      <line x1="482.69" y1="405" x2="90.5" y2="158" class="partition-route"/>
+      <line x1="483.32" y1="405" x2="95.5" y2="158" class="partition-route"/>
+      <line x1="483.96" y1="405" x2="100.5" y2="158" class="partition-route"/>
+      <line x1="484.60" y1="405" x2="105.5" y2="158" class="partition-route"/>
+      <line x1="485.23" y1="405" x2="110.5" y2="158" class="partition-route"/>
+      <line x1="485.87" y1="405" x2="115.5" y2="158" class="partition-route"/>
+      <line x1="486.51" y1="405" x2="145.5" y2="158" class="partition-route"/>
+      <line x1="487.14" y1="405" x2="150.5" y2="158" class="partition-route"/>
+      <line x1="487.78" y1="405" x2="155.5" y2="158" class="partition-route"/>
+      <line x1="488.42" y1="405" x2="160.5" y2="158" class="partition-route"/>
+      <line x1="489.05" y1="405" x2="165.5" y2="158" class="partition-route"/>
+      <line x1="489.69" y1="405" x2="170.5" y2="158" class="partition-route"/>
+      <line x1="490.33" y1="405" x2="175.5" y2="158" class="partition-route"/>
+      <line x1="490.96" y1="405" x2="180.5" y2="158" class="partition-route"/>
+      <line x1="491.60" y1="405" x2="185.5" y2="158" class="partition-route"/>
+      <line x1="492.24" y1="405" x2="190.5" y2="158" class="partition-route"/>
+      <line x1="492.87" y1="405" x2="195.5" y2="158" class="partition-route"/>
+      <line x1="493.51" y1="405" x2="200.5" y2="158" class="partition-route"/>
+      <line x1="494.15" y1="405" x2="205.5" y2="158" class="partition-route"/>
+      <line x1="494.78" y1="405" x2="210.5" y2="158" class="partition-route"/>
+      <line x1="495.42" y1="405" x2="215.5" y2="158" class="partition-route"/>
+      <line x1="496.06" y1="405" x2="220.5" y2="158" class="partition-route"/>
+      <line x1="496.69" y1="405" x2="250.5" y2="158" class="partition-route"/>
+      <line x1="497.33" y1="405" x2="255.5" y2="158" class="partition-route"/>
+      <line x1="497.97" y1="405" x2="260.5" y2="158" class="partition-route"/>
+      <line x1="498.60" y1="405" x2="265.5" y2="158" class="partition-route"/>
+      <line x1="499.24" y1="405" x2="270.5" y2="158" class="partition-route"/>
+      <line x1="499.88" y1="405" x2="275.5" y2="158" class="partition-route"/>
+      <line x1="500.51" y1="405" x2="280.5" y2="158" class="partition-route"/>
+      <line x1="501.15" y1="405" x2="285.5" y2="158" class="partition-route"/>
+      <line x1="501.79" y1="405" x2="290.5" y2="158" class="partition-route"/>
+      <line x1="502.42" y1="405" x2="295.5" y2="158" class="partition-route"/>
+      <line x1="503.06" y1="405" x2="300.5" y2="158" class="partition-route"/>
+      <line x1="503.70" y1="405" x2="305.5" y2="158" class="partition-route"/>
+      <line x1="504.33" y1="405" x2="310.5" y2="158" class="partition-route"/>
+      <line x1="504.97" y1="405" x2="315.5" y2="158" class="partition-route"/>
+      <line x1="505.61" y1="405" x2="320.5" y2="158" class="partition-route"/>
+      <line x1="506.24" y1="405" x2="325.5" y2="158" class="partition-route"/>
+      <line x1="506.88" y1="405" x2="355.5" y2="158" class="partition-route"/>
+      <line x1="507.52" y1="405" x2="360.5" y2="158" class="partition-route"/>
+      <line x1="508.15" y1="405" x2="365.5" y2="158" class="partition-route"/>
+      <line x1="508.79" y1="405" x2="370.5" y2="158" class="partition-route"/>
+      <line x1="509.43" y1="405" x2="375.5" y2="158" class="partition-route"/>
+      <line x1="510.06" y1="405" x2="380.5" y2="158" class="partition-route"/>
+      <line x1="510.70" y1="405" x2="385.5" y2="158" class="partition-route"/>
+      <line x1="511.34" y1="405" x2="390.5" y2="158" class="partition-route"/>
+      <line x1="511.97" y1="405" x2="395.5" y2="158" class="partition-route"/>
+      <line x1="512.61" y1="405" x2="400.5" y2="158" class="partition-route"/>
+      <line x1="513.25" y1="405" x2="405.5" y2="158" class="partition-route"/>
+      <line x1="513.88" y1="405" x2="410.5" y2="158" class="partition-route"/>
+      <line x1="514.52" y1="405" x2="415.5" y2="158" class="partition-route"/>
+      <line x1="515.16" y1="405" x2="420.5" y2="158" class="partition-route"/>
+      <line x1="515.79" y1="405" x2="425.5" y2="158" class="partition-route"/>
+      <line x1="516.43" y1="405" x2="430.5" y2="158" class="partition-route"/>
+      <line x1="517.07" y1="405" x2="460.5" y2="158" class="partition-route"/>
+      <line x1="517.71" y1="405" x2="465.5" y2="158" class="partition-route"/>
+      <line x1="518.34" y1="405" x2="470.5" y2="158" class="partition-route"/>
+      <line x1="518.98" y1="405" x2="475.5" y2="158" class="partition-route"/>
+      <line x1="519.62" y1="405" x2="480.5" y2="158" class="partition-route"/>
+      <line x1="520.25" y1="405" x2="485.5" y2="158" class="partition-route"/>
+      <line x1="520.89" y1="405" x2="490.5" y2="158" class="partition-route"/>
+      <line x1="521.53" y1="405" x2="495.5" y2="158" class="partition-route"/>
+      <line x1="522.16" y1="405" x2="500.5" y2="158" class="partition-route"/>
+      <line x1="522.80" y1="405" x2="505.5" y2="158" class="partition-route"/>
+      <line x1="523.44" y1="405" x2="510.5" y2="158" class="partition-route"/>
+      <line x1="524.07" y1="405" x2="515.5" y2="158" class="partition-route"/>
+      <line x1="524.71" y1="405" x2="520.5" y2="158" class="partition-route"/>
+      <line x1="525.35" y1="405" x2="525.5" y2="158" class="partition-route"/>
+      <line x1="525.98" y1="405" x2="530.5" y2="158" class="partition-route"/>
+      <line x1="526.62" y1="405" x2="535.5" y2="158" class="partition-route"/>
+      <line x1="527.26" y1="405" x2="565.5" y2="158" class="partition-route"/>
+      <line x1="527.89" y1="405" x2="570.5" y2="158" class="partition-route"/>
+      <line x1="528.53" y1="405" x2="575.5" y2="158" class="partition-route"/>
+      <line x1="529.17" y1="405" x2="580.5" y2="158" class="partition-route"/>
+      <line x1="529.80" y1="405" x2="585.5" y2="158" class="partition-route"/>
+      <line x1="530.44" y1="405" x2="590.5" y2="158" class="partition-route"/>
+      <line x1="531.08" y1="405" x2="595.5" y2="158" class="partition-route"/>
+      <line x1="531.71" y1="405" x2="600.5" y2="158" class="partition-route"/>
+      <line x1="532.35" y1="405" x2="605.5" y2="158" class="partition-route"/>
+      <line x1="532.99" y1="405" x2="610.5" y2="158" class="partition-route"/>
+      <line x1="533.62" y1="405" x2="615.5" y2="158" class="partition-route"/>
+      <line x1="534.26" y1="405" x2="620.5" y2="158" class="partition-route"/>
+      <line x1="534.90" y1="405" x2="625.5" y2="158" class="partition-route"/>
+      <line x1="535.53" y1="405" x2="630.5" y2="158" class="partition-route"/>
+      <line x1="536.17" y1="405" x2="635.5" y2="158" class="partition-route"/>
+      <line x1="536.81" y1="405" x2="640.5" y2="158" class="partition-route"/>
+      <line x1="537.44" y1="405" x2="670.5" y2="158" class="partition-route"/>
+      <line x1="538.08" y1="405" x2="675.5" y2="158" class="partition-route"/>
+      <line x1="538.72" y1="405" x2="680.5" y2="158" class="partition-route"/>
+      <line x1="539.35" y1="405" x2="685.5" y2="158" class="partition-route"/>
+      <line x1="539.99" y1="405" x2="690.5" y2="158" class="partition-route"/>
+      <line x1="540.63" y1="405" x2="695.5" y2="158" class="partition-route"/>
+      <line x1="541.26" y1="405" x2="700.5" y2="158" class="partition-route"/>
+      <line x1="541.90" y1="405" x2="705.5" y2="158" class="partition-route"/>
+      <line x1="542.54" y1="405" x2="710.5" y2="158" class="partition-route"/>
+      <line x1="543.17" y1="405" x2="715.5" y2="158" class="partition-route"/>
+      <line x1="543.81" y1="405" x2="720.5" y2="158" class="partition-route"/>
+      <line x1="544.45" y1="405" x2="725.5" y2="158" class="partition-route"/>
+      <line x1="545.08" y1="405" x2="730.5" y2="158" class="partition-route"/>
+      <line x1="545.72" y1="405" x2="735.5" y2="158" class="partition-route"/>
+      <line x1="546.36" y1="405" x2="740.5" y2="158" class="partition-route"/>
+      <line x1="546.99" y1="405" x2="745.5" y2="158" class="partition-route"/>
+      <line x1="547.63" y1="405" x2="775.5" y2="158" class="partition-route"/>
+      <line x1="548.27" y1="405" x2="780.5" y2="158" class="partition-route"/>
+      <line x1="548.90" y1="405" x2="785.5" y2="158" class="partition-route"/>
+      <line x1="549.54" y1="405" x2="790.5" y2="158" class="partition-route"/>
+      <line x1="550.18" y1="405" x2="795.5" y2="158" class="partition-route"/>
+      <line x1="550.81" y1="405" x2="800.5" y2="158" class="partition-route"/>
+      <line x1="551.45" y1="405" x2="805.5" y2="158" class="partition-route"/>
+      <line x1="552.09" y1="405" x2="810.5" y2="158" class="partition-route"/>
+      <line x1="552.72" y1="405" x2="815.5" y2="158" class="partition-route"/>
+      <line x1="553.36" y1="405" x2="820.5" y2="158" class="partition-route"/>
+      <line x1="554.00" y1="405" x2="825.5" y2="158" class="partition-route"/>
+      <line x1="554.63" y1="405" x2="830.5" y2="158" class="partition-route"/>
+      <line x1="555.27" y1="405" x2="835.5" y2="158" class="partition-route"/>
+      <line x1="555.91" y1="405" x2="840.5" y2="158" class="partition-route"/>
+      <line x1="556.54" y1="405" x2="845.5" y2="158" class="partition-route"/>
+      <line x1="557.18" y1="405" x2="850.5" y2="158" class="partition-route"/>
+      <line x1="557.82" y1="405" x2="40.5" y2="245" class="partition-route"/>
+      <line x1="558.46" y1="405" x2="45.5" y2="245" class="partition-route"/>
+      <line x1="559.09" y1="405" x2="50.5" y2="245" class="partition-route"/>
+      <line x1="559.73" y1="405" x2="55.5" y2="245" class="partition-route"/>
+      <line x1="560.37" y1="405" x2="60.5" y2="245" class="partition-route"/>
+      <line x1="561.00" y1="405" x2="65.5" y2="245" class="partition-route"/>
+      <line x1="561.64" y1="405" x2="70.5" y2="245" class="partition-route"/>
+      <line x1="562.28" y1="405" x2="75.5" y2="245" class="partition-route"/>
+      <line x1="562.91" y1="405" x2="80.5" y2="245" class="partition-route"/>
+      <line x1="563.55" y1="405" x2="85.5" y2="245" class="partition-route"/>
+      <line x1="564.19" y1="405" x2="90.5" y2="245" class="partition-route"/>
+      <line x1="564.82" y1="405" x2="95.5" y2="245" class="partition-route"/>
+      <line x1="565.46" y1="405" x2="100.5" y2="245" class="partition-route"/>
+      <line x1="566.10" y1="405" x2="105.5" y2="245" class="partition-route"/>
+      <line x1="566.73" y1="405" x2="110.5" y2="245" class="partition-route"/>
+      <line x1="567.37" y1="405" x2="115.5" y2="245" class="partition-route"/>
+      <line x1="568.01" y1="405" x2="145.5" y2="245" class="partition-route"/>
+      <line x1="568.64" y1="405" x2="150.5" y2="245" class="partition-route"/>
+      <line x1="569.28" y1="405" x2="155.5" y2="245" class="partition-route"/>
+      <line x1="569.92" y1="405" x2="160.5" y2="245" class="partition-route"/>
+      <line x1="570.55" y1="405" x2="165.5" y2="245" class="partition-route"/>
+      <line x1="571.19" y1="405" x2="170.5" y2="245" class="partition-route"/>
+      <line x1="571.83" y1="405" x2="175.5" y2="245" class="partition-route"/>
+      <line x1="572.46" y1="405" x2="180.5" y2="245" class="partition-route"/>
+      <line x1="573.10" y1="405" x2="185.5" y2="245" class="partition-route"/>
+      <line x1="573.74" y1="405" x2="190.5" y2="245" class="partition-route"/>
+      <line x1="574.37" y1="405" x2="195.5" y2="245" class="partition-route"/>
+      <line x1="575.01" y1="405" x2="200.5" y2="245" class="partition-route"/>
+      <line x1="575.65" y1="405" x2="205.5" y2="245" class="partition-route"/>
+      <line x1="576.28" y1="405" x2="210.5" y2="245" class="partition-route"/>
+      <line x1="576.92" y1="405" x2="215.5" y2="245" class="partition-route"/>
+      <line x1="577.56" y1="405" x2="220.5" y2="245" class="partition-route"/>
+      <line x1="578.19" y1="405" x2="250.5" y2="245" class="partition-route"/>
+      <line x1="578.83" y1="405" x2="255.5" y2="245" class="partition-route"/>
+      <line x1="579.47" y1="405" x2="260.5" y2="245" class="partition-route"/>
+      <line x1="580.10" y1="405" x2="265.5" y2="245" class="partition-route"/>
+      <line x1="580.74" y1="405" x2="270.5" y2="245" class="partition-route"/>
+      <line x1="581.38" y1="405" x2="275.5" y2="245" class="partition-route"/>
+      <line x1="582.01" y1="405" x2="280.5" y2="245" class="partition-route"/>
+      <line x1="582.65" y1="405" x2="285.5" y2="245" class="partition-route"/>
+      <line x1="583.29" y1="405" x2="290.5" y2="245" class="partition-route"/>
+      <line x1="583.92" y1="405" x2="295.5" y2="245" class="partition-route"/>
+      <line x1="584.56" y1="405" x2="300.5" y2="245" class="partition-route"/>
+      <line x1="585.20" y1="405" x2="305.5" y2="245" class="partition-route"/>
+      <line x1="585.83" y1="405" x2="310.5" y2="245" class="partition-route"/>
+      <line x1="586.47" y1="405" x2="315.5" y2="245" class="partition-route"/>
+      <line x1="587.11" y1="405" x2="320.5" y2="245" class="partition-route"/>
+      <line x1="587.74" y1="405" x2="325.5" y2="245" class="partition-route"/>
+      <line x1="588.38" y1="405" x2="355.5" y2="245" class="partition-route"/>
+      <line x1="589.02" y1="405" x2="360.5" y2="245" class="partition-route"/>
+      <line x1="589.65" y1="405" x2="365.5" y2="245" class="partition-route"/>
+      <line x1="590.29" y1="405" x2="370.5" y2="245" class="partition-route"/>
+      <line x1="590.93" y1="405" x2="375.5" y2="245" class="partition-route"/>
+      <line x1="591.56" y1="405" x2="380.5" y2="245" class="partition-route"/>
+      <line x1="592.20" y1="405" x2="385.5" y2="245" class="partition-route"/>
+      <line x1="592.84" y1="405" x2="390.5" y2="245" class="partition-route"/>
+      <line x1="593.47" y1="405" x2="395.5" y2="245" class="partition-route"/>
+      <line x1="594.11" y1="405" x2="400.5" y2="245" class="partition-route"/>
+      <line x1="594.75" y1="405" x2="405.5" y2="245" class="partition-route"/>
+      <line x1="595.38" y1="405" x2="410.5" y2="245" class="partition-route"/>
+      <line x1="596.02" y1="405" x2="415.5" y2="245" class="partition-route"/>
+      <line x1="596.66" y1="405" x2="420.5" y2="245" class="partition-route"/>
+      <line x1="597.29" y1="405" x2="425.5" y2="245" class="partition-route"/>
+      <line x1="597.93" y1="405" x2="430.5" y2="245" class="partition-route"/>
+      <line x1="598.57" y1="405" x2="460.5" y2="245" class="partition-route"/>
+      <line x1="599.21" y1="405" x2="465.5" y2="245" class="partition-route"/>
+      <line x1="599.84" y1="405" x2="470.5" y2="245" class="partition-route"/>
+      <line x1="600.48" y1="405" x2="475.5" y2="245" class="partition-route"/>
+      <line x1="601.12" y1="405" x2="480.5" y2="245" class="partition-route"/>
+      <line x1="601.75" y1="405" x2="485.5" y2="245" class="partition-route"/>
+      <line x1="602.39" y1="405" x2="490.5" y2="245" class="partition-route"/>
+      <line x1="603.03" y1="405" x2="495.5" y2="245" class="partition-route"/>
+      <line x1="603.66" y1="405" x2="500.5" y2="245" class="partition-route"/>
+      <line x1="604.30" y1="405" x2="505.5" y2="245" class="partition-route"/>
+      <line x1="604.94" y1="405" x2="510.5" y2="245" class="partition-route"/>
+      <line x1="605.57" y1="405" x2="515.5" y2="245" class="partition-route"/>
+      <line x1="606.21" y1="405" x2="520.5" y2="245" class="partition-route"/>
+      <line x1="606.85" y1="405" x2="525.5" y2="245" class="partition-route"/>
+      <line x1="607.48" y1="405" x2="530.5" y2="245" class="partition-route"/>
+      <line x1="608.12" y1="405" x2="535.5" y2="245" class="partition-route"/>
+      <line x1="608.76" y1="405" x2="565.5" y2="245" class="partition-route"/>
+      <line x1="609.39" y1="405" x2="570.5" y2="245" class="partition-route"/>
+      <line x1="610.03" y1="405" x2="575.5" y2="245" class="partition-route"/>
+      <line x1="610.67" y1="405" x2="580.5" y2="245" class="partition-route"/>
+      <line x1="611.30" y1="405" x2="585.5" y2="245" class="partition-route"/>
+      <line x1="611.94" y1="405" x2="590.5" y2="245" class="partition-route"/>
+      <line x1="612.58" y1="405" x2="595.5" y2="245" class="partition-route"/>
+      <line x1="613.21" y1="405" x2="600.5" y2="245" class="partition-route"/>
+      <line x1="613.85" y1="405" x2="605.5" y2="245" class="partition-route"/>
+      <line x1="614.49" y1="405" x2="610.5" y2="245" class="partition-route"/>
+      <line x1="615.12" y1="405" x2="615.5" y2="245" class="partition-route"/>
+      <line x1="615.76" y1="405" x2="620.5" y2="245" class="partition-route"/>
+      <line x1="616.40" y1="405" x2="625.5" y2="245" class="partition-route"/>
+      <line x1="617.03" y1="405" x2="630.5" y2="245" class="partition-route"/>
+      <line x1="617.67" y1="405" x2="635.5" y2="245" class="partition-route"/>
+      <line x1="618.31" y1="405" x2="640.5" y2="245" class="partition-route"/>
+      <line x1="618.94" y1="405" x2="670.5" y2="245" class="partition-route"/>
+      <line x1="619.58" y1="405" x2="675.5" y2="245" class="partition-route"/>
+      <line x1="620.22" y1="405" x2="680.5" y2="245" class="partition-route"/>
+      <line x1="620.85" y1="405" x2="685.5" y2="245" class="partition-route"/>
+      <line x1="621.49" y1="405" x2="690.5" y2="245" class="partition-route"/>
+      <line x1="622.13" y1="405" x2="695.5" y2="245" class="partition-route"/>
+      <line x1="622.76" y1="405" x2="700.5" y2="245" class="partition-route"/>
+      <line x1="623.40" y1="405" x2="705.5" y2="245" class="partition-route"/>
+      <line x1="624.04" y1="405" x2="710.5" y2="245" class="partition-route"/>
+      <line x1="624.67" y1="405" x2="715.5" y2="245" class="partition-route"/>
+      <line x1="625.31" y1="405" x2="720.5" y2="245" class="partition-route"/>
+      <line x1="625.95" y1="405" x2="725.5" y2="245" class="partition-route"/>
+      <line x1="626.58" y1="405" x2="730.5" y2="245" class="partition-route"/>
+      <line x1="627.22" y1="405" x2="735.5" y2="245" class="partition-route"/>
+      <line x1="627.86" y1="405" x2="740.5" y2="245" class="partition-route"/>
+      <line x1="628.49" y1="405" x2="745.5" y2="245" class="partition-route"/>
+      <line x1="629.13" y1="405" x2="775.5" y2="245" class="partition-route"/>
+      <line x1="629.77" y1="405" x2="780.5" y2="245" class="partition-route"/>
+      <line x1="630.40" y1="405" x2="785.5" y2="245" class="partition-route"/>
+      <line x1="631.04" y1="405" x2="790.5" y2="245" class="partition-route"/>
+      <line x1="631.68" y1="405" x2="795.5" y2="245" class="partition-route"/>
+      <line x1="632.31" y1="405" x2="800.5" y2="245" class="partition-route"/>
+      <line x1="632.95" y1="405" x2="805.5" y2="245" class="partition-route"/>
+      <line x1="633.59" y1="405" x2="810.5" y2="245" class="partition-route"/>
+      <line x1="634.22" y1="405" x2="815.5" y2="245" class="partition-route"/>
+      <line x1="634.86" y1="405" x2="820.5" y2="245" class="partition-route"/>
+      <line x1="635.50" y1="405" x2="825.5" y2="245" class="partition-route"/>
+      <line x1="636.13" y1="405" x2="830.5" y2="245" class="partition-route"/>
+      <line x1="636.77" y1="405" x2="835.5" y2="245" class="partition-route"/>
+      <line x1="637.41" y1="405" x2="840.5" y2="245" class="partition-route"/>
+      <line x1="638.04" y1="405" x2="845.5" y2="245" class="partition-route"/>
+      <line x1="638.68" y1="405" x2="850.5" y2="245" class="partition-route"/>
+    </g>
+    <g id="producer-3-routes">
+      <line x1="691.32" y1="405" x2="40.5" y2="158" class="partition-route"/>
+      <line x1="691.96" y1="405" x2="45.5" y2="158" class="partition-route"/>
+      <line x1="692.59" y1="405" x2="50.5" y2="158" class="partition-route"/>
+      <line x1="693.23" y1="405" x2="55.5" y2="158" class="partition-route"/>
+      <line x1="693.87" y1="405" x2="60.5" y2="158" class="partition-route"/>
+      <line x1="694.50" y1="405" x2="65.5" y2="158" class="partition-route"/>
+      <line x1="695.14" y1="405" x2="70.5" y2="158" class="partition-route"/>
+      <line x1="695.78" y1="405" x2="75.5" y2="158" class="partition-route"/>
+      <line x1="696.41" y1="405" x2="80.5" y2="158" class="partition-route"/>
+      <line x1="697.05" y1="405" x2="85.5" y2="158" class="partition-route"/>
+      <line x1="697.69" y1="405" x2="90.5" y2="158" class="partition-route"/>
+      <line x1="698.32" y1="405" x2="95.5" y2="158" class="partition-route"/>
+      <line x1="698.96" y1="405" x2="100.5" y2="158" class="partition-route"/>
+      <line x1="699.60" y1="405" x2="105.5" y2="158" class="partition-route"/>
+      <line x1="700.23" y1="405" x2="110.5" y2="158" class="partition-route"/>
+      <line x1="700.87" y1="405" x2="115.5" y2="158" class="partition-route"/>
+      <line x1="701.51" y1="405" x2="145.5" y2="158" class="partition-route"/>
+      <line x1="702.14" y1="405" x2="150.5" y2="158" class="partition-route"/>
+      <line x1="702.78" y1="405" x2="155.5" y2="158" class="partition-route"/>
+      <line x1="703.42" y1="405" x2="160.5" y2="158" class="partition-route"/>
+      <line x1="704.05" y1="405" x2="165.5" y2="158" class="partition-route"/>
+      <line x1="704.69" y1="405" x2="170.5" y2="158" class="partition-route"/>
+      <line x1="705.33" y1="405" x2="175.5" y2="158" class="partition-route"/>
+      <line x1="705.96" y1="405" x2="180.5" y2="158" class="partition-route"/>
+      <line x1="706.60" y1="405" x2="185.5" y2="158" class="partition-route"/>
+      <line x1="707.24" y1="405" x2="190.5" y2="158" class="partition-route"/>
+      <line x1="707.87" y1="405" x2="195.5" y2="158" class="partition-route"/>
+      <line x1="708.51" y1="405" x2="200.5" y2="158" class="partition-route"/>
+      <line x1="709.15" y1="405" x2="205.5" y2="158" class="partition-route"/>
+      <line x1="709.78" y1="405" x2="210.5" y2="158" class="partition-route"/>
+      <line x1="710.42" y1="405" x2="215.5" y2="158" class="partition-route"/>
+      <line x1="711.06" y1="405" x2="220.5" y2="158" class="partition-route"/>
+      <line x1="711.69" y1="405" x2="250.5" y2="158" class="partition-route"/>
+      <line x1="712.33" y1="405" x2="255.5" y2="158" class="partition-route"/>
+      <line x1="712.97" y1="405" x2="260.5" y2="158" class="partition-route"/>
+      <line x1="713.60" y1="405" x2="265.5" y2="158" class="partition-route"/>
+      <line x1="714.24" y1="405" x2="270.5" y2="158" class="partition-route"/>
+      <line x1="714.88" y1="405" x2="275.5" y2="158" class="partition-route"/>
+      <line x1="715.51" y1="405" x2="280.5" y2="158" class="partition-route"/>
+      <line x1="716.15" y1="405" x2="285.5" y2="158" class="partition-route"/>
+      <line x1="716.79" y1="405" x2="290.5" y2="158" class="partition-route"/>
+      <line x1="717.42" y1="405" x2="295.5" y2="158" class="partition-route"/>
+      <line x1="718.06" y1="405" x2="300.5" y2="158" class="partition-route"/>
+      <line x1="718.70" y1="405" x2="305.5" y2="158" class="partition-route"/>
+      <line x1="719.33" y1="405" x2="310.5" y2="158" class="partition-route"/>
+      <line x1="719.97" y1="405" x2="315.5" y2="158" class="partition-route"/>
+      <line x1="720.61" y1="405" x2="320.5" y2="158" class="partition-route"/>
+      <line x1="721.24" y1="405" x2="325.5" y2="158" class="partition-route"/>
+      <line x1="721.88" y1="405" x2="355.5" y2="158" class="partition-route"/>
+      <line x1="722.52" y1="405" x2="360.5" y2="158" class="partition-route"/>
+      <line x1="723.15" y1="405" x2="365.5" y2="158" class="partition-route"/>
+      <line x1="723.79" y1="405" x2="370.5" y2="158" class="partition-route"/>
+      <line x1="724.43" y1="405" x2="375.5" y2="158" class="partition-route"/>
+      <line x1="725.06" y1="405" x2="380.5" y2="158" class="partition-route"/>
+      <line x1="725.70" y1="405" x2="385.5" y2="158" class="partition-route"/>
+      <line x1="726.34" y1="405" x2="390.5" y2="158" class="partition-route"/>
+      <line x1="726.97" y1="405" x2="395.5" y2="158" class="partition-route"/>
+      <line x1="727.61" y1="405" x2="400.5" y2="158" class="partition-route"/>
+      <line x1="728.25" y1="405" x2="405.5" y2="158" class="partition-route"/>
+      <line x1="728.88" y1="405" x2="410.5" y2="158" class="partition-route"/>
+      <line x1="729.52" y1="405" x2="415.5" y2="158" class="partition-route"/>
+      <line x1="730.16" y1="405" x2="420.5" y2="158" class="partition-route"/>
+      <line x1="730.79" y1="405" x2="425.5" y2="158" class="partition-route"/>
+      <line x1="731.43" y1="405" x2="430.5" y2="158" class="partition-route"/>
+      <line x1="732.07" y1="405" x2="460.5" y2="158" class="partition-route"/>
+      <line x1="732.71" y1="405" x2="465.5" y2="158" class="partition-route"/>
+      <line x1="733.34" y1="405" x2="470.5" y2="158" class="partition-route"/>
+      <line x1="733.98" y1="405" x2="475.5" y2="158" class="partition-route"/>
+      <line x1="734.62" y1="405" x2="480.5" y2="158" class="partition-route"/>
+      <line x1="735.25" y1="405" x2="485.5" y2="158" class="partition-route"/>
+      <line x1="735.89" y1="405" x2="490.5" y2="158" class="partition-route"/>
+      <line x1="736.53" y1="405" x2="495.5" y2="158" class="partition-route"/>
+      <line x1="737.16" y1="405" x2="500.5" y2="158" class="partition-route"/>
+      <line x1="737.80" y1="405" x2="505.5" y2="158" class="partition-route"/>
+      <line x1="738.44" y1="405" x2="510.5" y2="158" class="partition-route"/>
+      <line x1="739.07" y1="405" x2="515.5" y2="158" class="partition-route"/>
+      <line x1="739.71" y1="405" x2="520.5" y2="158" class="partition-route"/>
+      <line x1="740.35" y1="405" x2="525.5" y2="158" class="partition-route"/>
+      <line x1="740.98" y1="405" x2="530.5" y2="158" class="partition-route"/>
+      <line x1="741.62" y1="405" x2="535.5" y2="158" class="partition-route"/>
+      <line x1="742.26" y1="405" x2="565.5" y2="158" class="partition-route"/>
+      <line x1="742.89" y1="405" x2="570.5" y2="158" class="partition-route"/>
+      <line x1="743.53" y1="405" x2="575.5" y2="158" class="partition-route"/>
+      <line x1="744.17" y1="405" x2="580.5" y2="158" class="partition-route"/>
+      <line x1="744.80" y1="405" x2="585.5" y2="158" class="partition-route"/>
+      <line x1="745.44" y1="405" x2="590.5" y2="158" class="partition-route"/>
+      <line x1="746.08" y1="405" x2="595.5" y2="158" class="partition-route"/>
+      <line x1="746.71" y1="405" x2="600.5" y2="158" class="partition-route"/>
+      <line x1="747.35" y1="405" x2="605.5" y2="158" class="partition-route"/>
+      <line x1="747.99" y1="405" x2="610.5" y2="158" class="partition-route"/>
+      <line x1="748.62" y1="405" x2="615.5" y2="158" class="partition-route"/>
+      <line x1="749.26" y1="405" x2="620.5" y2="158" class="partition-route"/>
+      <line x1="749.90" y1="405" x2="625.5" y2="158" class="partition-route"/>
+      <line x1="750.53" y1="405" x2="630.5" y2="158" class="partition-route"/>
+      <line x1="751.17" y1="405" x2="635.5" y2="158" class="partition-route"/>
+      <line x1="751.81" y1="405" x2="640.5" y2="158" class="partition-route"/>
+      <line x1="752.44" y1="405" x2="670.5" y2="158" class="partition-route"/>
+      <line x1="753.08" y1="405" x2="675.5" y2="158" class="partition-route"/>
+      <line x1="753.72" y1="405" x2="680.5" y2="158" class="partition-route"/>
+      <line x1="754.35" y1="405" x2="685.5" y2="158" class="partition-route"/>
+      <line x1="754.99" y1="405" x2="690.5" y2="158" class="partition-route"/>
+      <line x1="755.63" y1="405" x2="695.5" y2="158" class="partition-route"/>
+      <line x1="756.26" y1="405" x2="700.5" y2="158" class="partition-route"/>
+      <line x1="756.90" y1="405" x2="705.5" y2="158" class="partition-route"/>
+      <line x1="757.54" y1="405" x2="710.5" y2="158" class="partition-route"/>
+      <line x1="758.17" y1="405" x2="715.5" y2="158" class="partition-route"/>
+      <line x1="758.81" y1="405" x2="720.5" y2="158" class="partition-route"/>
+      <line x1="759.45" y1="405" x2="725.5" y2="158" class="partition-route"/>
+      <line x1="760.08" y1="405" x2="730.5" y2="158" class="partition-route"/>
+      <line x1="760.72" y1="405" x2="735.5" y2="158" class="partition-route"/>
+      <line x1="761.36" y1="405" x2="740.5" y2="158" class="partition-route"/>
+      <line x1="761.99" y1="405" x2="745.5" y2="158" class="partition-route"/>
+      <line x1="762.63" y1="405" x2="775.5" y2="158" class="partition-route"/>
+      <line x1="763.27" y1="405" x2="780.5" y2="158" class="partition-route"/>
+      <line x1="763.90" y1="405" x2="785.5" y2="158" class="partition-route"/>
+      <line x1="764.54" y1="405" x2="790.5" y2="158" class="partition-route"/>
+      <line x1="765.18" y1="405" x2="795.5" y2="158" class="partition-route"/>
+      <line x1="765.81" y1="405" x2="800.5" y2="158" class="partition-route"/>
+      <line x1="766.45" y1="405" x2="805.5" y2="158" class="partition-route"/>
+      <line x1="767.09" y1="405" x2="810.5" y2="158" class="partition-route"/>
+      <line x1="767.72" y1="405" x2="815.5" y2="158" class="partition-route"/>
+      <line x1="768.36" y1="405" x2="820.5" y2="158" class="partition-route"/>
+      <line x1="769.00" y1="405" x2="825.5" y2="158" class="partition-route"/>
+      <line x1="769.63" y1="405" x2="830.5" y2="158" class="partition-route"/>
+      <line x1="770.27" y1="405" x2="835.5" y2="158" class="partition-route"/>
+      <line x1="770.91" y1="405" x2="840.5" y2="158" class="partition-route"/>
+      <line x1="771.54" y1="405" x2="845.5" y2="158" class="partition-route"/>
+      <line x1="772.18" y1="405" x2="850.5" y2="158" class="partition-route"/>
+      <line x1="772.82" y1="405" x2="40.5" y2="245" class="partition-route"/>
+      <line x1="773.46" y1="405" x2="45.5" y2="245" class="partition-route"/>
+      <line x1="774.09" y1="405" x2="50.5" y2="245" class="partition-route"/>
+      <line x1="774.73" y1="405" x2="55.5" y2="245" class="partition-route"/>
+      <line x1="775.37" y1="405" x2="60.5" y2="245" class="partition-route"/>
+      <line x1="776.00" y1="405" x2="65.5" y2="245" class="partition-route"/>
+      <line x1="776.64" y1="405" x2="70.5" y2="245" class="partition-route"/>
+      <line x1="777.28" y1="405" x2="75.5" y2="245" class="partition-route"/>
+      <line x1="777.91" y1="405" x2="80.5" y2="245" class="partition-route"/>
+      <line x1="778.55" y1="405" x2="85.5" y2="245" class="partition-route"/>
+      <line x1="779.19" y1="405" x2="90.5" y2="245" class="partition-route"/>
+      <line x1="779.82" y1="405" x2="95.5" y2="245" class="partition-route"/>
+      <line x1="780.46" y1="405" x2="100.5" y2="245" class="partition-route"/>
+      <line x1="781.10" y1="405" x2="105.5" y2="245" class="partition-route"/>
+      <line x1="781.73" y1="405" x2="110.5" y2="245" class="partition-route"/>
+      <line x1="782.37" y1="405" x2="115.5" y2="245" class="partition-route"/>
+      <line x1="783.01" y1="405" x2="145.5" y2="245" class="partition-route"/>
+      <line x1="783.64" y1="405" x2="150.5" y2="245" class="partition-route"/>
+      <line x1="784.28" y1="405" x2="155.5" y2="245" class="partition-route"/>
+      <line x1="784.92" y1="405" x2="160.5" y2="245" class="partition-route"/>
+      <line x1="785.55" y1="405" x2="165.5" y2="245" class="partition-route"/>
+      <line x1="786.19" y1="405" x2="170.5" y2="245" class="partition-route"/>
+      <line x1="786.83" y1="405" x2="175.5" y2="245" class="partition-route"/>
+      <line x1="787.46" y1="405" x2="180.5" y2="245" class="partition-route"/>
+      <line x1="788.10" y1="405" x2="185.5" y2="245" class="partition-route"/>
+      <line x1="788.74" y1="405" x2="190.5" y2="245" class="partition-route"/>
+      <line x1="789.37" y1="405" x2="195.5" y2="245" class="partition-route"/>
+      <line x1="790.01" y1="405" x2="200.5" y2="245" class="partition-route"/>
+      <line x1="790.65" y1="405" x2="205.5" y2="245" class="partition-route"/>
+      <line x1="791.28" y1="405" x2="210.5" y2="245" class="partition-route"/>
+      <line x1="791.92" y1="405" x2="215.5" y2="245" class="partition-route"/>
+      <line x1="792.56" y1="405" x2="220.5" y2="245" class="partition-route"/>
+      <line x1="793.19" y1="405" x2="250.5" y2="245" class="partition-route"/>
+      <line x1="793.83" y1="405" x2="255.5" y2="245" class="partition-route"/>
+      <line x1="794.47" y1="405" x2="260.5" y2="245" class="partition-route"/>
+      <line x1="795.10" y1="405" x2="265.5" y2="245" class="partition-route"/>
+      <line x1="795.74" y1="405" x2="270.5" y2="245" class="partition-route"/>
+      <line x1="796.38" y1="405" x2="275.5" y2="245" class="partition-route"/>
+      <line x1="797.01" y1="405" x2="280.5" y2="245" class="partition-route"/>
+      <line x1="797.65" y1="405" x2="285.5" y2="245" class="partition-route"/>
+      <line x1="798.29" y1="405" x2="290.5" y2="245" class="partition-route"/>
+      <line x1="798.92" y1="405" x2="295.5" y2="245" class="partition-route"/>
+      <line x1="799.56" y1="405" x2="300.5" y2="245" class="partition-route"/>
+      <line x1="800.20" y1="405" x2="305.5" y2="245" class="partition-route"/>
+      <line x1="800.83" y1="405" x2="310.5" y2="245" class="partition-route"/>
+      <line x1="801.47" y1="405" x2="315.5" y2="245" class="partition-route"/>
+      <line x1="802.11" y1="405" x2="320.5" y2="245" class="partition-route"/>
+      <line x1="802.74" y1="405" x2="325.5" y2="245" class="partition-route"/>
+      <line x1="803.38" y1="405" x2="355.5" y2="245" class="partition-route"/>
+      <line x1="804.02" y1="405" x2="360.5" y2="245" class="partition-route"/>
+      <line x1="804.65" y1="405" x2="365.5" y2="245" class="partition-route"/>
+      <line x1="805.29" y1="405" x2="370.5" y2="245" class="partition-route"/>
+      <line x1="805.93" y1="405" x2="375.5" y2="245" class="partition-route"/>
+      <line x1="806.56" y1="405" x2="380.5" y2="245" class="partition-route"/>
+      <line x1="807.20" y1="405" x2="385.5" y2="245" class="partition-route"/>
+      <line x1="807.84" y1="405" x2="390.5" y2="245" class="partition-route"/>
+      <line x1="808.47" y1="405" x2="395.5" y2="245" class="partition-route"/>
+      <line x1="809.11" y1="405" x2="400.5" y2="245" class="partition-route"/>
+      <line x1="809.75" y1="405" x2="405.5" y2="245" class="partition-route"/>
+      <line x1="810.38" y1="405" x2="410.5" y2="245" class="partition-route"/>
+      <line x1="811.02" y1="405" x2="415.5" y2="245" class="partition-route"/>
+      <line x1="811.66" y1="405" x2="420.5" y2="245" class="partition-route"/>
+      <line x1="812.29" y1="405" x2="425.5" y2="245" class="partition-route"/>
+      <line x1="812.93" y1="405" x2="430.5" y2="245" class="partition-route"/>
+      <line x1="813.57" y1="405" x2="460.5" y2="245" class="partition-route"/>
+      <line x1="814.21" y1="405" x2="465.5" y2="245" class="partition-route"/>
+      <line x1="814.84" y1="405" x2="470.5" y2="245" class="partition-route"/>
+      <line x1="815.48" y1="405" x2="475.5" y2="245" class="partition-route"/>
+      <line x1="816.12" y1="405" x2="480.5" y2="245" class="partition-route"/>
+      <line x1="816.75" y1="405" x2="485.5" y2="245" class="partition-route"/>
+      <line x1="817.39" y1="405" x2="490.5" y2="245" class="partition-route"/>
+      <line x1="818.03" y1="405" x2="495.5" y2="245" class="partition-route"/>
+      <line x1="818.66" y1="405" x2="500.5" y2="245" class="partition-route"/>
+      <line x1="819.30" y1="405" x2="505.5" y2="245" class="partition-route"/>
+      <line x1="819.94" y1="405" x2="510.5" y2="245" class="partition-route"/>
+      <line x1="820.57" y1="405" x2="515.5" y2="245" class="partition-route"/>
+      <line x1="821.21" y1="405" x2="520.5" y2="245" class="partition-route"/>
+      <line x1="821.85" y1="405" x2="525.5" y2="245" class="partition-route"/>
+      <line x1="822.48" y1="405" x2="530.5" y2="245" class="partition-route"/>
+      <line x1="823.12" y1="405" x2="535.5" y2="245" class="partition-route"/>
+      <line x1="823.76" y1="405" x2="565.5" y2="245" class="partition-route"/>
+      <line x1="824.39" y1="405" x2="570.5" y2="245" class="partition-route"/>
+      <line x1="825.03" y1="405" x2="575.5" y2="245" class="partition-route"/>
+      <line x1="825.67" y1="405" x2="580.5" y2="245" class="partition-route"/>
+      <line x1="826.30" y1="405" x2="585.5" y2="245" class="partition-route"/>
+      <line x1="826.94" y1="405" x2="590.5" y2="245" class="partition-route"/>
+      <line x1="827.58" y1="405" x2="595.5" y2="245" class="partition-route"/>
+      <line x1="828.21" y1="405" x2="600.5" y2="245" class="partition-route"/>
+      <line x1="828.85" y1="405" x2="605.5" y2="245" class="partition-route"/>
+      <line x1="829.49" y1="405" x2="610.5" y2="245" class="partition-route"/>
+      <line x1="830.12" y1="405" x2="615.5" y2="245" class="partition-route"/>
+      <line x1="830.76" y1="405" x2="620.5" y2="245" class="partition-route"/>
+      <line x1="831.40" y1="405" x2="625.5" y2="245" class="partition-route"/>
+      <line x1="832.03" y1="405" x2="630.5" y2="245" class="partition-route"/>
+      <line x1="832.67" y1="405" x2="635.5" y2="245" class="partition-route"/>
+      <line x1="833.31" y1="405" x2="640.5" y2="245" class="partition-route"/>
+      <line x1="833.94" y1="405" x2="670.5" y2="245" class="partition-route"/>
+      <line x1="834.58" y1="405" x2="675.5" y2="245" class="partition-route"/>
+      <line x1="835.22" y1="405" x2="680.5" y2="245" class="partition-route"/>
+      <line x1="835.85" y1="405" x2="685.5" y2="245" class="partition-route"/>
+      <line x1="836.49" y1="405" x2="690.5" y2="245" class="partition-route"/>
+      <line x1="837.13" y1="405" x2="695.5" y2="245" class="partition-route"/>
+      <line x1="837.76" y1="405" x2="700.5" y2="245" class="partition-route"/>
+      <line x1="838.40" y1="405" x2="705.5" y2="245" class="partition-route"/>
+      <line x1="839.04" y1="405" x2="710.5" y2="245" class="partition-route"/>
+      <line x1="839.67" y1="405" x2="715.5" y2="245" class="partition-route"/>
+      <line x1="840.31" y1="405" x2="720.5" y2="245" class="partition-route"/>
+      <line x1="840.95" y1="405" x2="725.5" y2="245" class="partition-route"/>
+      <line x1="841.58" y1="405" x2="730.5" y2="245" class="partition-route"/>
+      <line x1="842.22" y1="405" x2="735.5" y2="245" class="partition-route"/>
+      <line x1="842.86" y1="405" x2="740.5" y2="245" class="partition-route"/>
+      <line x1="843.49" y1="405" x2="745.5" y2="245" class="partition-route"/>
+      <line x1="844.13" y1="405" x2="775.5" y2="245" class="partition-route"/>
+      <line x1="844.77" y1="405" x2="780.5" y2="245" class="partition-route"/>
+      <line x1="845.40" y1="405" x2="785.5" y2="245" class="partition-route"/>
+      <line x1="846.04" y1="405" x2="790.5" y2="245" class="partition-route"/>
+      <line x1="846.68" y1="405" x2="795.5" y2="245" class="partition-route"/>
+      <line x1="847.31" y1="405" x2="800.5" y2="245" class="partition-route"/>
+      <line x1="847.95" y1="405" x2="805.5" y2="245" class="partition-route"/>
+      <line x1="848.59" y1="405" x2="810.5" y2="245" class="partition-route"/>
+      <line x1="849.22" y1="405" x2="815.5" y2="245" class="partition-route"/>
+      <line x1="849.86" y1="405" x2="820.5" y2="245" class="partition-route"/>
+      <line x1="850.50" y1="405" x2="825.5" y2="245" class="partition-route"/>
+      <line x1="851.13" y1="405" x2="830.5" y2="245" class="partition-route"/>
+      <line x1="851.77" y1="405" x2="835.5" y2="245" class="partition-route"/>
+      <line x1="852.41" y1="405" x2="840.5" y2="245" class="partition-route"/>
+      <line x1="853.04" y1="405" x2="845.5" y2="245" class="partition-route"/>
+      <line x1="853.68" y1="405" x2="850.5" y2="245" class="partition-route"/>
+    </g>
+
+    <g transform="translate(30 88)">
+      <rect width="95" height="62" rx="6" class="consumer"/>
+      <text x="47.5" y="27" class="heading" text-anchor="middle">C0</text>
+      <rect x="8" y="39" width="79" height="12" class="partition-strip"/>
+    </g>
+    <g transform="translate(135 88)">
+      <rect width="95" height="62" rx="6" class="consumer"/>
+      <text x="47.5" y="27" class="heading" text-anchor="middle">C1</text>
+      <rect x="8" y="39" width="79" height="12" class="partition-strip"/>
+    </g>
+    <g transform="translate(240 88)">
+      <rect width="95" height="62" rx="6" class="consumer"/>
+      <text x="47.5" y="27" class="heading" text-anchor="middle">C2</text>
+      <rect x="8" y="39" width="79" height="12" class="partition-strip"/>
+    </g>
+    <g transform="translate(345 88)">
+      <rect width="95" height="62" rx="6" class="consumer"/>
+      <text x="47.5" y="27" class="heading" text-anchor="middle">C3</text>
+      <rect x="8" y="39" width="79" height="12" class="partition-strip"/>
+    </g>
+    <g transform="translate(450 88)">
+      <rect width="95" height="62" rx="6" class="consumer"/>
+      <text x="47.5" y="27" class="heading" text-anchor="middle">C4</text>
+      <rect x="8" y="39" width="79" height="12" class="partition-strip"/>
+    </g>
+    <g transform="translate(555 88)">
+      <rect width="95" height="62" rx="6" class="consumer"/>
+      <text x="47.5" y="27" class="heading" text-anchor="middle">C5</text>
+      <rect x="8" y="39" width="79" height="12" class="partition-strip"/>
+    </g>
+    <g transform="translate(660 88)">
+      <rect width="95" height="62" rx="6" class="consumer"/>
+      <text x="47.5" y="27" class="heading" text-anchor="middle">C6</text>
+      <rect x="8" y="39" width="79" height="12" class="partition-strip"/>
+    </g>
+    <g transform="translate(765 88)">
+      <rect width="95" height="62" rx="6" class="consumer"/>
+      <text x="47.5" y="27" class="heading" text-anchor="middle">C7</text>
+      <rect x="8" y="39" width="79" height="12" class="partition-strip"/>
+    </g>
+    <g transform="translate(30 175)">
+      <rect width="95" height="62" rx="6" class="consumer"/>
+      <text x="47.5" y="27" class="heading" text-anchor="middle">C8</text>
+      <rect x="8" y="39" width="79" height="12" class="partition-strip"/>
+    </g>
+    <g transform="translate(135 175)">
+      <rect width="95" height="62" rx="6" class="consumer"/>
+      <text x="47.5" y="27" class="heading" text-anchor="middle">C9</text>
+      <rect x="8" y="39" width="79" height="12" class="partition-strip"/>
+    </g>
+    <g transform="translate(240 175)">
+      <rect width="95" height="62" rx="6" class="consumer"/>
+      <text x="47.5" y="27" class="heading" text-anchor="middle">C10</text>
+      <rect x="8" y="39" width="79" height="12" class="partition-strip"/>
+    </g>
+    <g transform="translate(345 175)">
+      <rect width="95" height="62" rx="6" class="consumer"/>
+      <text x="47.5" y="27" class="heading" text-anchor="middle">C11</text>
+      <rect x="8" y="39" width="79" height="12" class="partition-strip"/>
+    </g>
+    <g transform="translate(450 175)">
+      <rect width="95" height="62" rx="6" class="consumer"/>
+      <text x="47.5" y="27" class="heading" text-anchor="middle">C12</text>
+      <rect x="8" y="39" width="79" height="12" class="partition-strip"/>
+    </g>
+    <g transform="translate(555 175)">
+      <rect width="95" height="62" rx="6" class="consumer"/>
+      <text x="47.5" y="27" class="heading" text-anchor="middle">C13</text>
+      <rect x="8" y="39" width="79" height="12" class="partition-strip"/>
+    </g>
+    <g transform="translate(660 175)">
+      <rect width="95" height="62" rx="6" class="consumer"/>
+      <text x="47.5" y="27" class="heading" text-anchor="middle">C14</text>
+      <rect x="8" y="39" width="79" height="12" class="partition-strip"/>
+    </g>
+    <g transform="translate(765 175)">
+      <rect width="95" height="62" rx="6" class="consumer"/>
+      <text x="47.5" y="27" class="heading" text-anchor="middle">C15</text>
+      <rect x="8" y="39" width="79" height="12" class="partition-strip"/>
+    </g>
+
+    <line x1="40.5" y1="158" x2="40.5" y2="139" class="partition-link"/>
+    <line x1="45.5" y1="158" x2="45.5" y2="139" class="partition-link"/>
+    <line x1="50.5" y1="158" x2="50.5" y2="139" class="partition-link"/>
+    <line x1="55.5" y1="158" x2="55.5" y2="139" class="partition-link"/>
+    <line x1="60.5" y1="158" x2="60.5" y2="139" class="partition-link"/>
+    <line x1="65.5" y1="158" x2="65.5" y2="139" class="partition-link"/>
+    <line x1="70.5" y1="158" x2="70.5" y2="139" class="partition-link"/>
+    <line x1="75.5" y1="158" x2="75.5" y2="139" class="partition-link"/>
+    <line x1="80.5" y1="158" x2="80.5" y2="139" class="partition-link"/>
+    <line x1="85.5" y1="158" x2="85.5" y2="139" class="partition-link"/>
+    <line x1="90.5" y1="158" x2="90.5" y2="139" class="partition-link"/>
+    <line x1="95.5" y1="158" x2="95.5" y2="139" class="partition-link"/>
+    <line x1="100.5" y1="158" x2="100.5" y2="139" class="partition-link"/>
+    <line x1="105.5" y1="158" x2="105.5" y2="139" class="partition-link"/>
+    <line x1="110.5" y1="158" x2="110.5" y2="139" class="partition-link"/>
+    <line x1="115.5" y1="158" x2="115.5" y2="139" class="partition-link"/>
+    <line x1="145.5" y1="158" x2="145.5" y2="139" class="partition-link"/>
+    <line x1="150.5" y1="158" x2="150.5" y2="139" class="partition-link"/>
+    <line x1="155.5" y1="158" x2="155.5" y2="139" class="partition-link"/>
+    <line x1="160.5" y1="158" x2="160.5" y2="139" class="partition-link"/>
+    <line x1="165.5" y1="158" x2="165.5" y2="139" class="partition-link"/>
+    <line x1="170.5" y1="158" x2="170.5" y2="139" class="partition-link"/>
+    <line x1="175.5" y1="158" x2="175.5" y2="139" class="partition-link"/>
+    <line x1="180.5" y1="158" x2="180.5" y2="139" class="partition-link"/>
+    <line x1="185.5" y1="158" x2="185.5" y2="139" class="partition-link"/>
+    <line x1="190.5" y1="158" x2="190.5" y2="139" class="partition-link"/>
+    <line x1="195.5" y1="158" x2="195.5" y2="139" class="partition-link"/>
+    <line x1="200.5" y1="158" x2="200.5" y2="139" class="partition-link"/>
+    <line x1="205.5" y1="158" x2="205.5" y2="139" class="partition-link"/>
+    <line x1="210.5" y1="158" x2="210.5" y2="139" class="partition-link"/>
+    <line x1="215.5" y1="158" x2="215.5" y2="139" class="partition-link"/>
+    <line x1="220.5" y1="158" x2="220.5" y2="139" class="partition-link"/>
+    <line x1="250.5" y1="158" x2="250.5" y2="139" class="partition-link"/>
+    <line x1="255.5" y1="158" x2="255.5" y2="139" class="partition-link"/>
+    <line x1="260.5" y1="158" x2="260.5" y2="139" class="partition-link"/>
+    <line x1="265.5" y1="158" x2="265.5" y2="139" class="partition-link"/>
+    <line x1="270.5" y1="158" x2="270.5" y2="139" class="partition-link"/>
+    <line x1="275.5" y1="158" x2="275.5" y2="139" class="partition-link"/>
+    <line x1="280.5" y1="158" x2="280.5" y2="139" class="partition-link"/>
+    <line x1="285.5" y1="158" x2="285.5" y2="139" class="partition-link"/>
+    <line x1="290.5" y1="158" x2="290.5" y2="139" class="partition-link"/>
+    <line x1="295.5" y1="158" x2="295.5" y2="139" class="partition-link"/>
+    <line x1="300.5" y1="158" x2="300.5" y2="139" class="partition-link"/>
+    <line x1="305.5" y1="158" x2="305.5" y2="139" class="partition-link"/>
+    <line x1="310.5" y1="158" x2="310.5" y2="139" class="partition-link"/>
+    <line x1="315.5" y1="158" x2="315.5" y2="139" class="partition-link"/>
+    <line x1="320.5" y1="158" x2="320.5" y2="139" class="partition-link"/>
+    <line x1="325.5" y1="158" x2="325.5" y2="139" class="partition-link"/>
+    <line x1="355.5" y1="158" x2="355.5" y2="139" class="partition-link"/>
+    <line x1="360.5" y1="158" x2="360.5" y2="139" class="partition-link"/>
+    <line x1="365.5" y1="158" x2="365.5" y2="139" class="partition-link"/>
+    <line x1="370.5" y1="158" x2="370.5" y2="139" class="partition-link"/>
+    <line x1="375.5" y1="158" x2="375.5" y2="139" class="partition-link"/>
+    <line x1="380.5" y1="158" x2="380.5" y2="139" class="partition-link"/>
+    <line x1="385.5" y1="158" x2="385.5" y2="139" class="partition-link"/>
+    <line x1="390.5" y1="158" x2="390.5" y2="139" class="partition-link"/>
+    <line x1="395.5" y1="158" x2="395.5" y2="139" class="partition-link"/>
+    <line x1="400.5" y1="158" x2="400.5" y2="139" class="partition-link"/>
+    <line x1="405.5" y1="158" x2="405.5" y2="139" class="partition-link"/>
+    <line x1="410.5" y1="158" x2="410.5" y2="139" class="partition-link"/>
+    <line x1="415.5" y1="158" x2="415.5" y2="139" class="partition-link"/>
+    <line x1="420.5" y1="158" x2="420.5" y2="139" class="partition-link"/>
+    <line x1="425.5" y1="158" x2="425.5" y2="139" class="partition-link"/>
+    <line x1="430.5" y1="158" x2="430.5" y2="139" class="partition-link"/>
+    <line x1="460.5" y1="158" x2="460.5" y2="139" class="partition-link"/>
+    <line x1="465.5" y1="158" x2="465.5" y2="139" class="partition-link"/>
+    <line x1="470.5" y1="158" x2="470.5" y2="139" class="partition-link"/>
+    <line x1="475.5" y1="158" x2="475.5" y2="139" class="partition-link"/>
+    <line x1="480.5" y1="158" x2="480.5" y2="139" class="partition-link"/>
+    <line x1="485.5" y1="158" x2="485.5" y2="139" class="partition-link"/>
+    <line x1="490.5" y1="158" x2="490.5" y2="139" class="partition-link"/>
+    <line x1="495.5" y1="158" x2="495.5" y2="139" class="partition-link"/>
+    <line x1="500.5" y1="158" x2="500.5" y2="139" class="partition-link"/>
+    <line x1="505.5" y1="158" x2="505.5" y2="139" class="partition-link"/>
+    <line x1="510.5" y1="158" x2="510.5" y2="139" class="partition-link"/>
+    <line x1="515.5" y1="158" x2="515.5" y2="139" class="partition-link"/>
+    <line x1="520.5" y1="158" x2="520.5" y2="139" class="partition-link"/>
+    <line x1="525.5" y1="158" x2="525.5" y2="139" class="partition-link"/>
+    <line x1="530.5" y1="158" x2="530.5" y2="139" class="partition-link"/>
+    <line x1="535.5" y1="158" x2="535.5" y2="139" class="partition-link"/>
+    <line x1="565.5" y1="158" x2="565.5" y2="139" class="partition-link"/>
+    <line x1="570.5" y1="158" x2="570.5" y2="139" class="partition-link"/>
+    <line x1="575.5" y1="158" x2="575.5" y2="139" class="partition-link"/>
+    <line x1="580.5" y1="158" x2="580.5" y2="139" class="partition-link"/>
+    <line x1="585.5" y1="158" x2="585.5" y2="139" class="partition-link"/>
+    <line x1="590.5" y1="158" x2="590.5" y2="139" class="partition-link"/>
+    <line x1="595.5" y1="158" x2="595.5" y2="139" class="partition-link"/>
+    <line x1="600.5" y1="158" x2="600.5" y2="139" class="partition-link"/>
+    <line x1="605.5" y1="158" x2="605.5" y2="139" class="partition-link"/>
+    <line x1="610.5" y1="158" x2="610.5" y2="139" class="partition-link"/>
+    <line x1="615.5" y1="158" x2="615.5" y2="139" class="partition-link"/>
+    <line x1="620.5" y1="158" x2="620.5" y2="139" class="partition-link"/>
+    <line x1="625.5" y1="158" x2="625.5" y2="139" class="partition-link"/>
+    <line x1="630.5" y1="158" x2="630.5" y2="139" class="partition-link"/>
+    <line x1="635.5" y1="158" x2="635.5" y2="139" class="partition-link"/>
+    <line x1="640.5" y1="158" x2="640.5" y2="139" class="partition-link"/>
+    <line x1="670.5" y1="158" x2="670.5" y2="139" class="partition-link"/>
+    <line x1="675.5" y1="158" x2="675.5" y2="139" class="partition-link"/>
+    <line x1="680.5" y1="158" x2="680.5" y2="139" class="partition-link"/>
+    <line x1="685.5" y1="158" x2="685.5" y2="139" class="partition-link"/>
+    <line x1="690.5" y1="158" x2="690.5" y2="139" class="partition-link"/>
+    <line x1="695.5" y1="158" x2="695.5" y2="139" class="partition-link"/>
+    <line x1="700.5" y1="158" x2="700.5" y2="139" class="partition-link"/>
+    <line x1="705.5" y1="158" x2="705.5" y2="139" class="partition-link"/>
+    <line x1="710.5" y1="158" x2="710.5" y2="139" class="partition-link"/>
+    <line x1="715.5" y1="158" x2="715.5" y2="139" class="partition-link"/>
+    <line x1="720.5" y1="158" x2="720.5" y2="139" class="partition-link"/>
+    <line x1="725.5" y1="158" x2="725.5" y2="139" class="partition-link"/>
+    <line x1="730.5" y1="158" x2="730.5" y2="139" class="partition-link"/>
+    <line x1="735.5" y1="158" x2="735.5" y2="139" class="partition-link"/>
+    <line x1="740.5" y1="158" x2="740.5" y2="139" class="partition-link"/>
+    <line x1="745.5" y1="158" x2="745.5" y2="139" class="partition-link"/>
+    <line x1="775.5" y1="158" x2="775.5" y2="139" class="partition-link"/>
+    <line x1="780.5" y1="158" x2="780.5" y2="139" class="partition-link"/>
+    <line x1="785.5" y1="158" x2="785.5" y2="139" class="partition-link"/>
+    <line x1="790.5" y1="158" x2="790.5" y2="139" class="partition-link"/>
+    <line x1="795.5" y1="158" x2="795.5" y2="139" class="partition-link"/>
+    <line x1="800.5" y1="158" x2="800.5" y2="139" class="partition-link"/>
+    <line x1="805.5" y1="158" x2="805.5" y2="139" class="partition-link"/>
+    <line x1="810.5" y1="158" x2="810.5" y2="139" class="partition-link"/>
+    <line x1="815.5" y1="158" x2="815.5" y2="139" class="partition-link"/>
+    <line x1="820.5" y1="158" x2="820.5" y2="139" class="partition-link"/>
+    <line x1="825.5" y1="158" x2="825.5" y2="139" class="partition-link"/>
+    <line x1="830.5" y1="158" x2="830.5" y2="139" class="partition-link"/>
+    <line x1="835.5" y1="158" x2="835.5" y2="139" class="partition-link"/>
+    <line x1="840.5" y1="158" x2="840.5" y2="139" class="partition-link"/>
+    <line x1="845.5" y1="158" x2="845.5" y2="139" class="partition-link"/>
+    <line x1="850.5" y1="158" x2="850.5" y2="139" class="partition-link"/>
+    <line x1="40.5" y1="245" x2="40.5" y2="226" class="partition-link"/>
+    <line x1="45.5" y1="245" x2="45.5" y2="226" class="partition-link"/>
+    <line x1="50.5" y1="245" x2="50.5" y2="226" class="partition-link"/>
+    <line x1="55.5" y1="245" x2="55.5" y2="226" class="partition-link"/>
+    <line x1="60.5" y1="245" x2="60.5" y2="226" class="partition-link"/>
+    <line x1="65.5" y1="245" x2="65.5" y2="226" class="partition-link"/>
+    <line x1="70.5" y1="245" x2="70.5" y2="226" class="partition-link"/>
+    <line x1="75.5" y1="245" x2="75.5" y2="226" class="partition-link"/>
+    <line x1="80.5" y1="245" x2="80.5" y2="226" class="partition-link"/>
+    <line x1="85.5" y1="245" x2="85.5" y2="226" class="partition-link"/>
+    <line x1="90.5" y1="245" x2="90.5" y2="226" class="partition-link"/>
+    <line x1="95.5" y1="245" x2="95.5" y2="226" class="partition-link"/>
+    <line x1="100.5" y1="245" x2="100.5" y2="226" class="partition-link"/>
+    <line x1="105.5" y1="245" x2="105.5" y2="226" class="partition-link"/>
+    <line x1="110.5" y1="245" x2="110.5" y2="226" class="partition-link"/>
+    <line x1="115.5" y1="245" x2="115.5" y2="226" class="partition-link"/>
+    <line x1="145.5" y1="245" x2="145.5" y2="226" class="partition-link"/>
+    <line x1="150.5" y1="245" x2="150.5" y2="226" class="partition-link"/>
+    <line x1="155.5" y1="245" x2="155.5" y2="226" class="partition-link"/>
+    <line x1="160.5" y1="245" x2="160.5" y2="226" class="partition-link"/>
+    <line x1="165.5" y1="245" x2="165.5" y2="226" class="partition-link"/>
+    <line x1="170.5" y1="245" x2="170.5" y2="226" class="partition-link"/>
+    <line x1="175.5" y1="245" x2="175.5" y2="226" class="partition-link"/>
+    <line x1="180.5" y1="245" x2="180.5" y2="226" class="partition-link"/>
+    <line x1="185.5" y1="245" x2="185.5" y2="226" class="partition-link"/>
+    <line x1="190.5" y1="245" x2="190.5" y2="226" class="partition-link"/>
+    <line x1="195.5" y1="245" x2="195.5" y2="226" class="partition-link"/>
+    <line x1="200.5" y1="245" x2="200.5" y2="226" class="partition-link"/>
+    <line x1="205.5" y1="245" x2="205.5" y2="226" class="partition-link"/>
+    <line x1="210.5" y1="245" x2="210.5" y2="226" class="partition-link"/>
+    <line x1="215.5" y1="245" x2="215.5" y2="226" class="partition-link"/>
+    <line x1="220.5" y1="245" x2="220.5" y2="226" class="partition-link"/>
+    <line x1="250.5" y1="245" x2="250.5" y2="226" class="partition-link"/>
+    <line x1="255.5" y1="245" x2="255.5" y2="226" class="partition-link"/>
+    <line x1="260.5" y1="245" x2="260.5" y2="226" class="partition-link"/>
+    <line x1="265.5" y1="245" x2="265.5" y2="226" class="partition-link"/>
+    <line x1="270.5" y1="245" x2="270.5" y2="226" class="partition-link"/>
+    <line x1="275.5" y1="245" x2="275.5" y2="226" class="partition-link"/>
+    <line x1="280.5" y1="245" x2="280.5" y2="226" class="partition-link"/>
+    <line x1="285.5" y1="245" x2="285.5" y2="226" class="partition-link"/>
+    <line x1="290.5" y1="245" x2="290.5" y2="226" class="partition-link"/>
+    <line x1="295.5" y1="245" x2="295.5" y2="226" class="partition-link"/>
+    <line x1="300.5" y1="245" x2="300.5" y2="226" class="partition-link"/>
+    <line x1="305.5" y1="245" x2="305.5" y2="226" class="partition-link"/>
+    <line x1="310.5" y1="245" x2="310.5" y2="226" class="partition-link"/>
+    <line x1="315.5" y1="245" x2="315.5" y2="226" class="partition-link"/>
+    <line x1="320.5" y1="245" x2="320.5" y2="226" class="partition-link"/>
+    <line x1="325.5" y1="245" x2="325.5" y2="226" class="partition-link"/>
+    <line x1="355.5" y1="245" x2="355.5" y2="226" class="partition-link"/>
+    <line x1="360.5" y1="245" x2="360.5" y2="226" class="partition-link"/>
+    <line x1="365.5" y1="245" x2="365.5" y2="226" class="partition-link"/>
+    <line x1="370.5" y1="245" x2="370.5" y2="226" class="partition-link"/>
+    <line x1="375.5" y1="245" x2="375.5" y2="226" class="partition-link"/>
+    <line x1="380.5" y1="245" x2="380.5" y2="226" class="partition-link"/>
+    <line x1="385.5" y1="245" x2="385.5" y2="226" class="partition-link"/>
+    <line x1="390.5" y1="245" x2="390.5" y2="226" class="partition-link"/>
+    <line x1="395.5" y1="245" x2="395.5" y2="226" class="partition-link"/>
+    <line x1="400.5" y1="245" x2="400.5" y2="226" class="partition-link"/>
+    <line x1="405.5" y1="245" x2="405.5" y2="226" class="partition-link"/>
+    <line x1="410.5" y1="245" x2="410.5" y2="226" class="partition-link"/>
+    <line x1="415.5" y1="245" x2="415.5" y2="226" class="partition-link"/>
+    <line x1="420.5" y1="245" x2="420.5" y2="226" class="partition-link"/>
+    <line x1="425.5" y1="245" x2="425.5" y2="226" class="partition-link"/>
+    <line x1="430.5" y1="245" x2="430.5" y2="226" class="partition-link"/>
+    <line x1="460.5" y1="245" x2="460.5" y2="226" class="partition-link"/>
+    <line x1="465.5" y1="245" x2="465.5" y2="226" class="partition-link"/>
+    <line x1="470.5" y1="245" x2="470.5" y2="226" class="partition-link"/>
+    <line x1="475.5" y1="245" x2="475.5" y2="226" class="partition-link"/>
+    <line x1="480.5" y1="245" x2="480.5" y2="226" class="partition-link"/>
+    <line x1="485.5" y1="245" x2="485.5" y2="226" class="partition-link"/>
+    <line x1="490.5" y1="245" x2="490.5" y2="226" class="partition-link"/>
+    <line x1="495.5" y1="245" x2="495.5" y2="226" class="partition-link"/>
+    <line x1="500.5" y1="245" x2="500.5" y2="226" class="partition-link"/>
+    <line x1="505.5" y1="245" x2="505.5" y2="226" class="partition-link"/>
+    <line x1="510.5" y1="245" x2="510.5" y2="226" class="partition-link"/>
+    <line x1="515.5" y1="245" x2="515.5" y2="226" class="partition-link"/>
+    <line x1="520.5" y1="245" x2="520.5" y2="226" class="partition-link"/>
+    <line x1="525.5" y1="245" x2="525.5" y2="226" class="partition-link"/>
+    <line x1="530.5" y1="245" x2="530.5" y2="226" class="partition-link"/>
+    <line x1="535.5" y1="245" x2="535.5" y2="226" class="partition-link"/>
+    <line x1="565.5" y1="245" x2="565.5" y2="226" class="partition-link"/>
+    <line x1="570.5" y1="245" x2="570.5" y2="226" class="partition-link"/>
+    <line x1="575.5" y1="245" x2="575.5" y2="226" class="partition-link"/>
+    <line x1="580.5" y1="245" x2="580.5" y2="226" class="partition-link"/>
+    <line x1="585.5" y1="245" x2="585.5" y2="226" class="partition-link"/>
+    <line x1="590.5" y1="245" x2="590.5" y2="226" class="partition-link"/>
+    <line x1="595.5" y1="245" x2="595.5" y2="226" class="partition-link"/>
+    <line x1="600.5" y1="245" x2="600.5" y2="226" class="partition-link"/>
+    <line x1="605.5" y1="245" x2="605.5" y2="226" class="partition-link"/>
+    <line x1="610.5" y1="245" x2="610.5" y2="226" class="partition-link"/>
+    <line x1="615.5" y1="245" x2="615.5" y2="226" class="partition-link"/>
+    <line x1="620.5" y1="245" x2="620.5" y2="226" class="partition-link"/>
+    <line x1="625.5" y1="245" x2="625.5" y2="226" class="partition-link"/>
+    <line x1="630.5" y1="245" x2="630.5" y2="226" class="partition-link"/>
+    <line x1="635.5" y1="245" x2="635.5" y2="226" class="partition-link"/>
+    <line x1="640.5" y1="245" x2="640.5" y2="226" class="partition-link"/>
+    <line x1="670.5" y1="245" x2="670.5" y2="226" class="partition-link"/>
+    <line x1="675.5" y1="245" x2="675.5" y2="226" class="partition-link"/>
+    <line x1="680.5" y1="245" x2="680.5" y2="226" class="partition-link"/>
+    <line x1="685.5" y1="245" x2="685.5" y2="226" class="partition-link"/>
+    <line x1="690.5" y1="245" x2="690.5" y2="226" class="partition-link"/>
+    <line x1="695.5" y1="245" x2="695.5" y2="226" class="partition-link"/>
+    <line x1="700.5" y1="245" x2="700.5" y2="226" class="partition-link"/>
+    <line x1="705.5" y1="245" x2="705.5" y2="226" class="partition-link"/>
+    <line x1="710.5" y1="245" x2="710.5" y2="226" class="partition-link"/>
+    <line x1="715.5" y1="245" x2="715.5" y2="226" class="partition-link"/>
+    <line x1="720.5" y1="245" x2="720.5" y2="226" class="partition-link"/>
+    <line x1="725.5" y1="245" x2="725.5" y2="226" class="partition-link"/>
+    <line x1="730.5" y1="245" x2="730.5" y2="226" class="partition-link"/>
+    <line x1="735.5" y1="245" x2="735.5" y2="226" class="partition-link"/>
+    <line x1="740.5" y1="245" x2="740.5" y2="226" class="partition-link"/>
+    <line x1="745.5" y1="245" x2="745.5" y2="226" class="partition-link"/>
+    <line x1="775.5" y1="245" x2="775.5" y2="226" class="partition-link"/>
+    <line x1="780.5" y1="245" x2="780.5" y2="226" class="partition-link"/>
+    <line x1="785.5" y1="245" x2="785.5" y2="226" class="partition-link"/>
+    <line x1="790.5" y1="245" x2="790.5" y2="226" class="partition-link"/>
+    <line x1="795.5" y1="245" x2="795.5" y2="226" class="partition-link"/>
+    <line x1="800.5" y1="245" x2="800.5" y2="226" class="partition-link"/>
+    <line x1="805.5" y1="245" x2="805.5" y2="226" class="partition-link"/>
+    <line x1="810.5" y1="245" x2="810.5" y2="226" class="partition-link"/>
+    <line x1="815.5" y1="245" x2="815.5" y2="226" class="partition-link"/>
+    <line x1="820.5" y1="245" x2="820.5" y2="226" class="partition-link"/>
+    <line x1="825.5" y1="245" x2="825.5" y2="226" class="partition-link"/>
+    <line x1="830.5" y1="245" x2="830.5" y2="226" class="partition-link"/>
+    <line x1="835.5" y1="245" x2="835.5" y2="226" class="partition-link"/>
+    <line x1="840.5" y1="245" x2="840.5" y2="226" class="partition-link"/>
+    <line x1="845.5" y1="245" x2="845.5" y2="226" class="partition-link"/>
+    <line x1="850.5" y1="245" x2="850.5" y2="226" class="partition-link"/>
+
+    <rect x="265" y="294" width="370" height="38" rx="7" class="callout"/>
+    <text x="450" y="318" class="label strong" text-anchor="middle">One output partition per bucket, per producer</text>
+
+    <line x1="30" y1="380" x2="870" y2="380" class="divider"/>
+    <text x="30" y="398" class="section">STAGE 0 · 4 PRODUCING TASKS</text>
+
+    <g transform="translate(30 405)">
+      <rect width="195" height="100" rx="7" class="producer"/>
+      <text x="16" y="27" class="heading">P0</text>
+      <text x="48" y="27" class="small">producing task</text>
+      <rect x="16" y="39" width="163" height="46" rx="5" class="repartition"/>
+      <text x="97.5" y="58" class="small mono" text-anchor="middle">hash(a) mod 256</text>
+      <text x="97.5" y="76" class="small mono strong" text-anchor="middle">256 output partitions</text>
+    </g>
+    <g transform="translate(245 405)">
+      <rect width="195" height="100" rx="7" class="producer"/>
+      <text x="16" y="27" class="heading">P1</text>
+      <text x="48" y="27" class="small">producing task</text>
+      <rect x="16" y="39" width="163" height="46" rx="5" class="repartition"/>
+      <text x="97.5" y="58" class="small mono" text-anchor="middle">hash(a) mod 256</text>
+      <text x="97.5" y="76" class="small mono strong" text-anchor="middle">256 output partitions</text>
+    </g>
+    <g transform="translate(460 405)">
+      <rect width="195" height="100" rx="7" class="producer"/>
+      <text x="16" y="27" class="heading">P2</text>
+      <text x="48" y="27" class="small">producing task</text>
+      <rect x="16" y="39" width="163" height="46" rx="5" class="repartition"/>
+      <text x="97.5" y="58" class="small mono" text-anchor="middle">hash(a) mod 256</text>
+      <text x="97.5" y="76" class="small mono strong" text-anchor="middle">256 output partitions</text>
+    </g>
+    <g transform="translate(675 405)">
+      <rect width="195" height="100" rx="7" class="producer"/>
+      <text x="16" y="27" class="heading">P3</text>
+      <text x="48" y="27" class="small">producing task</text>
+      <rect x="16" y="39" width="163" height="46" rx="5" class="repartition"/>
+      <text x="97.5" y="58" class="small mono" text-anchor="middle">hash(a) mod 256</text>
+      <text x="97.5" y="76" class="small mono strong" text-anchor="middle">256 output partitions</text>
+    </g>
+
+    <text x="450" y="544" class="label strong" text-anchor="middle">4 producers × 256 output partitions = 1,024 output partitions</text>
+  </g>
+</svg>

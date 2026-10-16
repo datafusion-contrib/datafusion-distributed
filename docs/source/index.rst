@@ -105,6 +105,7 @@ side of the screen for the answer.
    :hidden:
 
    blog/distributed-dynamic-filtering
+   blog/reducing-shuffle-fanout
 
 .. toctree::
    :maxdepth: 1
