@@ -6,10 +6,8 @@ use crate::dynamic_filtering::{
     discover_dynamic_filter_producers,
 };
 use crate::execution_plans::DistributedLeafExec;
-use crate::stage::{LocalStage, Stage, find_all_stages};
-use crate::{
-    DistributedTaskContext, MaybeEncoded, TaskCompletedDynamicFilters, TaskDynamicFilter, TaskKey,
-};
+use crate::stage::{Stage, find_all_stages};
+use crate::{DistributedTaskContext, MaybeEncoded, TaskDynamicFilter, TaskKey};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{HashMap, Result, internal_err};
@@ -92,7 +90,26 @@ pub async fn rewrite_distributed_plan_with_dynamic_filters(
         let Stage::Local(stage) = stage else {
             return internal_err!("expected local stages in the visualization plan");
         };
-        apply_reports_to_distributed_leaves(stage, &reports, &producer_schemas, task_ctx)?;
+        for task_number in 0..stage.tasks {
+            let task_key = TaskKey {
+                query_id: stage.query_id,
+                stage_id: stage.num,
+                task_number,
+            };
+            let Some(report) = reports.get(&task_key) else {
+                continue;
+            };
+            apply_filters_to_distributed_leaves(
+                &stage.plan,
+                DistributedTaskContext {
+                    task_index: task_number,
+                    task_count: stage.tasks,
+                },
+                &report.filters,
+                &producer_schemas,
+                task_ctx,
+            )?;
+        }
     }
     let plan = distributed_exec.with_plan_for_viz(Arc::clone(&plan_for_viz))?;
     plan.replace_children(
@@ -196,37 +213,6 @@ fn isolate_sort_dynamic_filters_for_display(
     .map(|transformed| transformed.data)
 }
 
-/// Applies successful worker reports only to the matching task-local visualization variants.
-fn apply_reports_to_distributed_leaves(
-    stage: &LocalStage,
-    reports: &HashMap<TaskKey, TaskCompletedDynamicFilters>,
-    producer_schemas: &HashMap<u64, SchemaRef>,
-    task_ctx: &Arc<TaskContext>,
-) -> Result<()> {
-    for task_number in 0..stage.tasks {
-        let task_key = TaskKey {
-            query_id: stage.query_id,
-            stage_id: stage.num,
-            task_number,
-        };
-        let Some(report) = reports.get(&task_key) else {
-            continue;
-        };
-        let d_ctx = DistributedTaskContext {
-            task_index: task_number,
-            task_count: stage.tasks,
-        };
-        apply_filters_to_distributed_leaves(
-            &stage.plan,
-            d_ctx,
-            &report.filters,
-            producer_schemas,
-            task_ctx,
-        )?;
-    }
-    Ok(())
-}
-
 /// Applies one task's filters without crossing network boundaries into other stages.
 fn apply_filters_to_distributed_leaves(
     plan: &Arc<dyn ExecutionPlan>,
@@ -284,7 +270,6 @@ mod tests {
     use datafusion::physical_plan::sorts::sort::SortExec;
     use datafusion::prelude::SessionContext;
     use insta::assert_snapshot;
-    use uuid::Uuid;
 
     #[test]
     fn visualization_variants_do_not_share_dynamic_filter_state() -> Result<()> {
@@ -316,30 +301,21 @@ mod tests {
             .downcast_ref::<DynamicFilterPhysicalExpr>()
             .unwrap()
             .mark_complete();
-        let report = TaskCompletedDynamicFilters {
-            filters: vec![TaskDynamicFilter {
-                expression_id: dynamic_filter.expression_id().unwrap(),
-                expression: MaybeEncoded::Decoded(Arc::clone(&dynamic_filter)),
-            }],
-        };
-        let reports = HashMap::from_iter([(
-            TaskKey {
-                query_id: Uuid::nil(),
-                stage_id: 1,
-                task_number: 0,
-            },
-            report,
-        )]);
-
-        let stage = LocalStage {
-            query_id: Uuid::nil(),
-            num: 1,
-            plan: Arc::clone(&isolated),
-            tasks: 2,
-            metrics_set: Default::default(),
-        };
+        let filters = [TaskDynamicFilter {
+            expression_id: dynamic_filter.expression_id().unwrap(),
+            expression: MaybeEncoded::Decoded(Arc::clone(&dynamic_filter)),
+        }];
         let producer_schemas = HashMap::from([(dynamic_filter.expression_id().unwrap(), schema)]);
-        apply_reports_to_distributed_leaves(&stage, &reports, &producer_schemas, &task_ctx)?;
+        apply_filters_to_distributed_leaves(
+            &isolated,
+            DistributedTaskContext {
+                task_index: 0,
+                task_count: 2,
+            },
+            &filters,
+            &producer_schemas,
+            &task_ctx,
+        )?;
         let leaf = isolated.downcast_ref::<DistributedLeafExec>().unwrap();
         let task_0 = displayable(leaf.variants()[0].as_ref())
             .one_line()
