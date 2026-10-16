@@ -23,7 +23,7 @@ use datafusion::common::instant::Instant;
 use datafusion::common::runtime::SpawnedTask;
 use datafusion::common::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
-use datafusion::execution::memory_pool::MemoryConsumer;
+use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion::physical_expr_common::metrics::{Count, Label, MetricBuilder, MetricValue, Time};
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, Gauge};
 use datafusion_proto::protobuf;
@@ -155,7 +155,6 @@ impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSy
         // for them in the memory pool.
         let memory_reservation =
             Arc::new(MemoryConsumer::new("WorkerConnection").register(ctx.memory_pool()));
-        let memory_reservation_clone = Arc::clone(&memory_reservation);
 
         // Track the maximum memory used to buffer received messages.
         let mut curr_max_mem = 0;
@@ -247,7 +246,8 @@ impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSy
                 // Backpressure gate. Per-partition channels are unbounded, so we cap
                 // total in-flight buffered bytes here by pausing the gRPC pull when
                 // consumers haven't drained enough. This propagates flow control all
-                // the way back to the worker without coupling sibling partitions.
+                // the way back to the worker. Abandoned queues must release their bytes
+                // and wake this gate so they cannot strand active sibling partitions.
                 // We always allow a message through when reservation == 0 to avoid
                 // livelock if a single message is larger than the budget.
                 while memory_reservation.size() >= buffer_budget_bytes {
@@ -322,12 +322,16 @@ impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSy
                     max_mem_used.set(curr_max_mem);
                 }
 
-                if o_tx.send(Ok((flight_data, flight_metadata))).is_err() {
+                let reservation = FlightReservation {
+                    reservation: Arc::clone(&memory_reservation),
+                    size,
+                    notify: Arc::clone(&mem_available_notify_for_task),
+                };
+                if o_tx.send(Ok((flight_data, reservation))).is_err() {
                     // The receiver for this partition was dropped (e.g. a hash join partition
                     // completed early without consuming its probe side). Don't exit: other
                     // partitions multiplexed over the same gRPC stream still need their data.
-                    // Undo the memory reservation that was grown for this dropped batch.
-                    memory_reservation.shrink(size);
+                    // The rejected message releases its reservation when dropped.
                     continue;
                 };
             }
@@ -349,12 +353,7 @@ impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSy
             .flatten_stream();
 
             let stream = stream.map_err(|err| FlightError::Tonic(Box::new(err)));
-            let reservation = Arc::clone(&memory_reservation_clone);
-            let mem_available_notify = Arc::clone(&mem_available_notify);
-            let stream = stream.map_ok(move |(data, _meta)| {
-                reservation.shrink(data.encoded_len());
-                // Wake the demux task in case it is blocked on the byte budget.
-                mem_available_notify.notify_one();
+            let stream = stream.map_ok(move |(data, _reservation)| {
                 let _ = &task; // <- keep the task that polls data from the network alive.
                 data
             });
@@ -393,7 +392,22 @@ impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSy
     }
 }
 
-type WorkerMsg = Result<(FlightData, FlightAppMetadata), Status>;
+type WorkerMsg = Result<(FlightData, FlightReservation), Status>;
+
+/// Release queued bytes on consumption, receiver cancellation, or a failed send.
+/// Waking the shared reader is necessary even when no consumer polls this partition again.
+struct FlightReservation {
+    reservation: Arc<MemoryReservation>,
+    size: usize,
+    notify: Arc<Notify>,
+}
+
+impl Drop for FlightReservation {
+    fn drop(&mut self) {
+        self.reservation.shrink(self.size);
+        self.notify.notify_one();
+    }
+}
 
 struct NetworkLatencyMetrics {
     metrics: ExecutionPlanMetricsSet,
