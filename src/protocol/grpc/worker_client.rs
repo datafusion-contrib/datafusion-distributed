@@ -3,7 +3,7 @@ use super::errors::{map_flight_to_datafusion_error, map_status_to_datafusion_err
 use super::generated::worker as pb;
 use super::metrics_proto::metrics_set_proto_to_df;
 use crate::common::{RetryOutcome, serialize_uuid};
-use crate::grpc::errors::{datafusion_error_to_tonic_status, tonic_status_to_datafusion_error};
+use crate::grpc::errors::tonic_status_to_datafusion_error;
 use crate::grpc::generated::worker::FlightAppMetadata;
 use crate::grpc::on_drop_stream::on_drop_stream;
 use crate::{
@@ -21,11 +21,9 @@ use async_trait::async_trait;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::common::instant::Instant;
 use datafusion::common::runtime::SpawnedTask;
-use datafusion::common::{DataFusionError, Result, exec_datafusion_err};
+use datafusion::common::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
-use datafusion::execution::disk_manager::DiskManager;
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
-use datafusion::execution::spill_file::SpillFile;
 use datafusion::physical_expr_common::metrics::{Count, Label, MetricBuilder, MetricValue, Time};
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, Gauge};
 use datafusion_proto::protobuf;
@@ -36,7 +34,6 @@ use http::{Extensions, HeaderMap};
 use pin_project::{pin_project, pinned_drop};
 use prost::Message;
 use std::borrow::Cow;
-use std::io::Write;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -158,9 +155,6 @@ impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSy
         // for them in the memory pool.
         let memory_reservation =
             Arc::new(MemoryConsumer::new("WorkerConnection").register(ctx.memory_pool()));
-        let disk_manager = Arc::clone(&ctx.runtime_env().disk_manager);
-        let spill_count = MetricBuilder::new(&metrics).spill_count(0);
-        let spilled_bytes = MetricBuilder::new(&metrics).spilled_bytes(0);
 
         // Track the maximum memory used to buffer received messages.
         let mut curr_max_mem = 0;
@@ -193,8 +187,7 @@ impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSy
         // are unbounded to avoid head-of-line blocking: a single bounded queue could block
         // the demux task and starve all sibling partitions even though they have capacity,
         // which deadlocks queries with cross-partition dependencies.
-        // Overflow spills instead of pausing the shared reader: a partition may remain
-        // unpolled while its siblings must still make progress.
+        // Total memory is bounded globally below via `mem_available_notify`.
         let mut per_partition_tx = Vec::with_capacity(target_partition_range.len());
         let mut per_partition_rx = Vec::with_capacity(target_partition_range.len());
         for _partition in target_partition_range.clone() {
@@ -202,6 +195,9 @@ impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSy
             per_partition_tx.push(tx);
             per_partition_rx.push(rx);
         }
+
+        let mem_available_notify = Arc::new(Notify::new());
+        let mem_available_notify_for_task = Arc::clone(&mem_available_notify);
 
         let first_poll_notify = Arc::new(Notify::new());
         let first_poll_notify_for_task = Arc::clone(&first_poll_notify);
@@ -247,6 +243,21 @@ impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSy
             };
 
             loop {
+                // Backpressure gate. Per-partition channels are unbounded, so we cap
+                // total in-flight buffered bytes here by pausing the gRPC pull when
+                // consumers haven't drained enough. This propagates flow control all
+                // the way back to the worker. Abandoned queues must release their bytes
+                // and wake this gate so they cannot strand active sibling partitions.
+                // We always allow a message through when reservation == 0 to avoid
+                // livelock if a single message is larger than the budget.
+                while memory_reservation.size() >= buffer_budget_bytes {
+                    tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => return,
+                        _ = mem_available_notify_for_task.notified() => {}
+                    }
+                }
+
                 // Check for cancellation while waiting for the next message.
                 let flight_data = tokio::select! {
                     biased;
@@ -295,46 +306,34 @@ impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSy
                     return fanout(&per_partition_tx, Status::internal(msg));
                 };
 
+                // We need to send the memory reservation in the same tuple as the actual message
+                // so that it gets dropped as soon as the message leaves the queue. Dropping the
+                // memory reservation means releasing the memory from the pool for that specific
+                // message
                 let size = flight_data.encoded_len();
+                memory_reservation.grow(size);
+
+                // Update memory related metrics.
                 msg_count.add(1);
                 bytes_transferred.add_bytes(size);
-                if o_tx.is_closed() {
-                    continue;
+                let curr_mem = memory_reservation.size();
+                if curr_mem > curr_max_mem {
+                    curr_max_mem = curr_mem;
+                    max_mem_used.set(curr_max_mem);
                 }
 
-                let msg = if memory_reservation.size() < buffer_budget_bytes
-                    && memory_reservation.try_grow(size).is_ok()
-                {
-                    let curr_mem = memory_reservation.size();
-                    if curr_mem > curr_max_mem {
-                        curr_max_mem = curr_mem;
-                        max_mem_used.set(curr_max_mem);
-                    }
-                    BufferedFlightData::Memory(
-                        flight_data,
-                        FlightReservation {
-                            reservation: Arc::clone(&memory_reservation),
-                            size,
-                        },
-                    )
-                } else {
-                    let spilled = tokio::select! {
-                        biased;
-                        _ = cancel.cancelled() => return,
-                        result = BufferedFlightData::spill(flight_data, Arc::clone(&disk_manager)) => result,
-                    };
-                    match spilled {
-                        Ok(msg) => {
-                            spill_count.add(1);
-                            spilled_bytes.add(size);
-                            msg
-                        }
-                        Err(err) => return fanout(&per_partition_tx, datafusion_error_to_tonic_status(err)),
-                    }
+                let reservation = FlightReservation {
+                    reservation: Arc::clone(&memory_reservation),
+                    size,
+                    notify: Arc::clone(&mem_available_notify_for_task),
                 };
-                // Dropping a queued message releases its reservation or spill file, including
-                // when the receiver disappears between the closed check and this send.
-                let _ = o_tx.send(Ok(msg));
+                if o_tx.send(Ok((flight_data, reservation))).is_err() {
+                    // The receiver for this partition was dropped (e.g. a hash join partition
+                    // completed early without consuming its probe side). Don't exit: other
+                    // partitions multiplexed over the same gRPC stream still need their data.
+                    // The rejected message releases its reservation when dropped.
+                    continue;
+                };
             }
         }.with_elapsed_compute(elapsed_compute));
 
@@ -353,13 +352,10 @@ impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSy
             }
             .flatten_stream();
 
-            let stream = stream.then(|msg| async move {
-                match msg {
-                    Ok(msg) => msg.into_flight_data().await.map_err(|err| {
-                        FlightError::Tonic(Box::new(datafusion_error_to_tonic_status(err)))
-                    }),
-                    Err(err) => Err(FlightError::Tonic(Box::new(err))),
-                }
+            let stream = stream.map_err(|err| FlightError::Tonic(Box::new(err)));
+            let stream = stream.map_ok(move |(data, _reservation)| {
+                let _ = &task; // <- keep the task that polls data from the network alive.
+                data
             });
             let stream = FlightRecordBatchStream::new_from_flight_data(stream);
             let stream = stream.map_err(map_flight_to_datafusion_error);
@@ -369,7 +365,6 @@ impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSy
             let not_consumed_streams = Arc::clone(&not_consumed_streams);
             result.push(
                 on_drop_stream(stream, move || {
-                    let _task = task; // Keep the shared reader alive until this stream is dropped.
                     let remaining_streams = not_consumed_streams.fetch_sub(1, Ordering::SeqCst) - 1;
                     if remaining_streams == 0 {
                         cancel_token.cancel();
@@ -397,55 +392,20 @@ impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSy
     }
 }
 
-type WorkerMsg = Result<BufferedFlightData, Status>;
+type WorkerMsg = Result<(FlightData, FlightReservation), Status>;
 
-/// Queue ownership also owns the bytes, so consumption, cancellation, and failed sends
-/// all release memory without depending on another poll of the partition stream.
+/// Release queued bytes on consumption, receiver cancellation, or a failed send.
+/// Waking the shared reader is necessary even when no consumer polls this partition again.
 struct FlightReservation {
     reservation: Arc<MemoryReservation>,
     size: usize,
+    notify: Arc<Notify>,
 }
 
 impl Drop for FlightReservation {
     fn drop(&mut self) {
         self.reservation.shrink(self.size);
-    }
-}
-
-enum BufferedFlightData {
-    Memory(FlightData, FlightReservation),
-    Spill(Arc<dyn SpillFile>),
-}
-
-impl BufferedFlightData {
-    async fn spill(data: FlightData, disk_manager: Arc<DiskManager>) -> Result<Self> {
-        // Use the configured spill backend and quotas. Each file holds one complete Flight
-        // message, retaining schemas/dictionaries and ordering without decoding batches here.
-        SpawnedTask::spawn_blocking(move || {
-            let file = disk_manager.create_tmp_file("buffering a worker Flight stream")?;
-            let mut writer = file.open_writer()?;
-            writer.write_all(&data.encode_to_vec())?;
-            writer.finish()?;
-            Ok(Self::Spill(file))
-        })
-        .join_unwind()
-        .await
-        .map_err(|err| exec_datafusion_err!("Worker Flight spill task failed: {err}"))?
-    }
-
-    async fn into_flight_data(self) -> Result<FlightData> {
-        match self {
-            Self::Memory(data, _reservation) => Ok(data),
-            Self::Spill(file) => {
-                let mut stream = file.read_stream()?;
-                let mut bytes = Vec::new();
-                while let Some(chunk) = stream.try_next().await? {
-                    bytes.extend_from_slice(&chunk);
-                }
-                FlightData::decode(bytes.as_slice())
-                    .map_err(|err| exec_datafusion_err!("Invalid spilled Flight message: {err}"))
-            }
-        }
+        self.notify.notify_one();
     }
 }
 
@@ -870,25 +830,16 @@ impl<O, F: Future<Output = O>> Future for ElapsedComputeFuture<F> {
 mod tests {
     use super::super::worker_service::decode_producer_head;
     use super::*;
-    use crate::grpc::DefaultChannelResolver;
-    use crate::worker::test_utils::worker_handles::{TcpWorkerHandle, test_task_key_with_query};
-    use crate::{ChannelResolver, DistributedExt};
-    use datafusion::arrow::array::{Int32Array, Int64Array};
+    use datafusion::arrow::array::Int64Array;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::catalog::memory::{DataSourceExec, MemorySourceConfig};
-    use datafusion::execution::disk_manager::{DiskManagerBuilder, DiskManagerMode};
-    use datafusion::execution::memory_pool::GreedyMemoryPool;
-    use datafusion::execution::runtime_env::RuntimeEnvBuilder;
     use datafusion::physical_expr::expressions::col;
     use datafusion::physical_expr::{LexOrdering, Partitioning, PhysicalSortExpr};
     use datafusion::physical_plan::ExecutionPlanProperties;
-    use datafusion::prelude::SessionConfig;
     use datafusion::prelude::SessionContext;
     use datafusion_proto::protobuf::PhysicalExprNode;
     use futures::StreamExt;
     use futures::stream::unfold;
-    use test_case::test_case;
-    use uuid::Uuid;
 
     /// The message must determine ordering even when the supplied plan has no
     /// existing RepartitionExec from which to infer that setting.
@@ -930,183 +881,6 @@ mod tests {
             assert_eq!(plan.output_ordering().is_some(), preserve_order);
         }
         Ok(())
-    }
-
-    /// An empty-build inner join can keep a probe partition open without polling it.
-    /// The shared Flight reader must not let that partition starve its sibling.
-    #[test_case(0; "all_spilled")]
-    #[test_case(128; "mixed_memory_and_spill")]
-    #[test_case(64 * 1024; "in_memory")]
-    #[tokio::test]
-    async fn unpolled_partition_does_not_block_sibling(budget: usize) -> Result<()> {
-        let ctx = SessionContext::new();
-        let (_worker, idle, active) = two_partition_worker_streams(ctx.clone(), budget).await?;
-        let batches = tokio::time::timeout(Duration::from_secs(5), active.try_collect::<Vec<_>>())
-            .await
-            .expect("active partition stalled while its sibling remained open but unpolled")?;
-        assert_partition_values(&batches);
-        // The idle partition's data must remain available after its sibling finishes.
-        let batches = tokio::time::timeout(Duration::from_secs(5), idle.try_collect::<Vec<_>>())
-            .await
-            .expect("idle partition should replay its queued data")?;
-        assert_partition_values(&batches);
-        assert_eq!(ctx.runtime_env().disk_manager.used_disk_space(), 0);
-        assert_eq!(ctx.runtime_env().memory_pool.reserved(), 0);
-        Ok(())
-    }
-
-    /// Both partition queues can also be consumed concurrently.
-    #[tokio::test]
-    async fn concurrent_partitions_complete() -> Result<()> {
-        let (_worker, idle, active) =
-            two_partition_worker_streams(SessionContext::new(), 128).await?;
-        let active = active.try_collect::<Vec<_>>();
-        let (idle_batches, active_batches) = tokio::time::timeout(Duration::from_secs(5), async {
-            futures::try_join!(idle.try_collect::<Vec<_>>(), active)
-        })
-        .await
-        .expect("both partitions should finish")?;
-        for batches in [idle_batches, active_batches] {
-            assert_eq!(
-                batches.iter().map(RecordBatch::num_rows).sum::<usize>(),
-                1024
-            );
-        }
-        Ok(())
-    }
-
-    #[test_case(0; "spill_files")]
-    #[test_case(64 * 1024; "memory_reservations")]
-    #[tokio::test]
-    async fn dropping_idle_partition_releases_queued_resources(budget: usize) -> Result<()> {
-        let ctx = SessionContext::new();
-        let (_worker, idle, active) = two_partition_worker_streams(ctx.clone(), budget).await?;
-        tokio::time::timeout(Duration::from_secs(5), active.try_collect::<Vec<_>>())
-            .await
-            .expect("active partition should finish")?;
-        if budget == 0 {
-            assert!(ctx.runtime_env().disk_manager.used_disk_space() > 0);
-        } else {
-            assert!(ctx.runtime_env().memory_pool.reserved() > 0);
-        }
-        drop(idle);
-        assert_eq!(ctx.runtime_env().disk_manager.used_disk_space(), 0);
-        assert_eq!(ctx.runtime_env().memory_pool.reserved(), 0);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn memory_pool_pressure_spills_instead_of_waiting() -> Result<()> {
-        let runtime = RuntimeEnvBuilder::new()
-            .with_memory_pool(Arc::new(GreedyMemoryPool::new(0)))
-            .build_arc()?;
-        let ctx = SessionContext::new_with_config_rt(SessionConfig::new(), runtime);
-        let (_worker, idle, active) = two_partition_worker_streams(ctx.clone(), 64 * 1024).await?;
-        let batches = tokio::time::timeout(Duration::from_secs(5), active.try_collect::<Vec<_>>())
-            .await
-            .expect("memory pressure must not stall the reader")?;
-        assert_partition_values(&batches);
-        assert_eq!(ctx.runtime_env().memory_pool.reserved(), 0);
-        drop(idle);
-        assert_eq!(ctx.runtime_env().disk_manager.used_disk_space(), 0);
-        Ok(())
-    }
-
-    #[test_case(true; "disabled_spilling")]
-    #[test_case(false; "disk_quota_exhausted")]
-    #[tokio::test]
-    async fn spill_failure_reaches_all_partitions(disabled: bool) -> Result<()> {
-        let disk_manager = if disabled {
-            DiskManagerBuilder::default().with_mode(DiskManagerMode::Disabled)
-        } else {
-            DiskManagerBuilder::default().with_max_temp_directory_size(0)
-        };
-        let runtime = RuntimeEnvBuilder::new()
-            .with_disk_manager_builder(disk_manager)
-            .build_arc()?;
-        let ctx = SessionContext::new_with_config_rt(SessionConfig::new(), runtime);
-        let (_worker, idle, active) = two_partition_worker_streams(ctx.clone(), 0).await?;
-        for stream in [active, idle] {
-            let err = tokio::time::timeout(Duration::from_secs(5), stream.try_collect::<Vec<_>>())
-                .await
-                .expect("spill failures must not hang")
-                .unwrap_err();
-            let expected = if disabled {
-                "DiskManager is disabled"
-            } else {
-                "exceeded the allowable limit"
-            };
-            assert!(err.to_string().contains(expected), "{err}");
-        }
-        assert_eq!(ctx.runtime_env().disk_manager.used_disk_space(), 0);
-        assert_eq!(ctx.runtime_env().memory_pool.reserved(), 0);
-        Ok(())
-    }
-
-    fn assert_partition_values(batches: &[RecordBatch]) {
-        let values: Vec<i32> = batches
-            .iter()
-            .flat_map(|batch| {
-                batch
-                    .column(0)
-                    .as_any()
-                    .downcast_ref::<Int32Array>()
-                    .unwrap()
-                    .values()
-                    .iter()
-                    .copied()
-            })
-            .collect();
-        assert_eq!(values, (0..1024).collect::<Vec<_>>());
-    }
-
-    async fn two_partition_worker_streams(
-        ctx: SessionContext,
-        budget: usize,
-    ) -> Result<(
-        TcpWorkerHandle,
-        BoxStream<'static, Result<RecordBatch>>,
-        BoxStream<'static, Result<RecordBatch>>,
-    )> {
-        let batch = RecordBatch::try_from_iter([(
-            "id",
-            Arc::new(Int32Array::from_iter_values(0..1024)) as _,
-        )])?;
-        let worker = TcpWorkerHandle::spawn(
-            0,
-            batch.schema(),
-            vec![
-                (0..4).map(|i| batch.slice(i * 256, 256)).collect(),
-                (0..4).map(|i| batch.slice(i * 256, 256)).collect(),
-            ],
-            None,
-        )
-        .await?;
-        let query_id = Uuid::new_v4();
-        worker.register_plan(query_id).await?;
-        let ctx = ctx
-            .with_distributed_option_extension(DistributedConfig::default())
-            .with_distributed_worker_connection_buffer_budget_bytes(budget)?;
-        let mut client = DefaultChannelResolver::default()
-            .get_worker_client_for_url(&worker.url)
-            .await?;
-        let mut streams = client
-            .execute_task(
-                HeaderMap::new(),
-                ExecuteTaskRequest {
-                    task_key: test_task_key_with_query(query_id, 0),
-                    target_partition_start: 0,
-                    target_partition_end: 2,
-                    producer_head: ProducerHead::None,
-                },
-                ExecutionPlanMetricsSet::new(),
-                &ctx.task_ctx(),
-            )
-            .await?;
-        assert_eq!(streams.len(), 2);
-        let active = streams.pop().unwrap();
-        let idle = streams.pop().unwrap();
-        Ok((worker, idle, active))
     }
 
     #[tokio::test]

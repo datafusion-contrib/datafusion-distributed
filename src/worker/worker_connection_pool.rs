@@ -24,13 +24,38 @@ use std::sync::{Arc, Mutex};
 ///   happens to be the same one issuing the request.
 /// - Lazily initializes connections per remote worker and requested partition range.
 pub(crate) struct WorkerConnectionPool {
-    lazy_stream_groups: Vec<DashMap<Range<usize>, SharedBoxFuture<StreamGroup>>>,
+    lazy_stream_groups: Vec<DashMap<Range<usize>, StreamGroup>>,
     pub(crate) metrics: ExecutionPlanMetricsSet,
 }
 
-/// A list of consumable RecordBatch streams, each one wrapped by `Mutex<Option<_>>` for
-/// exactly-once consumption semantics.
-type StreamGroup = Arc<Vec<Mutex<Option<BoxStream<'static, Result<RecordBatch>>>>>>;
+/// Slots exist before asynchronous connection setup, so dropping a consumer can cancel
+/// its receiver both before and after the worker returns the partition streams.
+struct StreamGroup {
+    slots: Vec<Arc<Mutex<StreamSlot>>>,
+    ready: SharedBoxFuture<()>,
+}
+
+#[derive(Default)]
+struct StreamSlot {
+    stream: Option<BoxStream<'static, Result<RecordBatch>>>,
+    claimed: bool,
+    closed: bool,
+}
+
+/// Owned by the returned lazy stream, even before its first poll.
+struct StreamLease(Arc<Mutex<StreamSlot>>);
+
+impl Drop for StreamLease {
+    fn drop(&mut self) {
+        let stream = {
+            let mut slot = self.0.lock().unwrap();
+            slot.closed = true;
+            slot.stream.take()
+        };
+        drop(stream);
+    }
+}
+
 /// Just some boilerplate for a shared future.
 type SharedBoxFuture<T> = Shared<BoxFuture<'static, Result<T, Arc<DataFusionError>>>>;
 
@@ -78,7 +103,12 @@ impl WorkerConnectionPool {
 
         let entry = worker_connection.entry(target_partitions.clone());
 
-        let streams_shared_future = entry.or_insert_with(|| {
+        let group = entry.or_insert_with(|| {
+            let slots: Vec<_> = target_partitions
+                .clone()
+                .map(|_| Arc::new(Mutex::new(StreamSlot::default())))
+                .collect();
+            let task_slots = slots.clone();
             let metrics = self.metrics.clone();
             let ctx = Arc::clone(ctx);
 
@@ -107,14 +137,25 @@ impl WorkerConnectionPool {
                 }?;
                 let headers = get_passthrough_headers(ctx.session_config());
                 let streams = client.execute_task(headers, request, metrics, &ctx).await?;
-                Ok(streams)
+                if streams.len() != task_slots.len() {
+                    return internal_err!(
+                        "Worker returned {} streams for {} partitions",
+                        streams.len(),
+                        task_slots.len()
+                    );
+                }
+                for (slot, stream) in task_slots.iter().zip(streams) {
+                    let mut slot = slot.lock().unwrap();
+                    if !slot.closed {
+                        slot.stream = Some(stream);
+                    }
+                }
+                Ok(())
             });
 
-            async move {
+            let ready = async move {
                 match streams_task.await {
-                    Ok(Ok(v)) => Ok(Arc::new(
-                        v.into_iter().map(|v| Mutex::new(Some(v))).collect(),
-                    )),
+                    Ok(Ok(())) => Ok(()),
                     Ok(Err(e)) => Err(Arc::new(e)),
                     Err(e) => Err(Arc::new(internal_datafusion_err!(
                         "JoinError instantiating streams {e}"
@@ -122,22 +163,38 @@ impl WorkerConnectionPool {
                 }
             }
             .boxed()
-            .shared()
+            .shared();
+            StreamGroup { slots, ready }
         });
 
-        let streams_future = streams_shared_future.clone();
-        Ok(async move {
-            let streams = streams_future.await.map_err(DataFusionError::Shared)?;
-            let Some(slot) = streams.get(target_partition - target_partitions.start) else {
-                return internal_err!(
-                    "WorkerConnections has no stream for partition {target_partition}. Was it already consumed?"
-                );
-            };
-            slot.lock().unwrap().take().ok_or_else(|| {
+        let slot = target_partition
+            .checked_sub(target_partitions.start)
+            .and_then(|index| group.slots.get(index))
+            .ok_or_else(|| {
                 internal_datafusion_err!(
-                    "WorkerConnections stream for partition {target_partition} was already consumed"
+                    "WorkerConnections has no stream for partition {target_partition}"
                 )
-            })
+            })?;
+        {
+            let mut slot = slot.lock().unwrap();
+            if slot.claimed {
+                return internal_err!(
+                    "WorkerConnections stream for partition {target_partition} was already claimed"
+                );
+            }
+            slot.claimed = true;
+        }
+        let lease = StreamLease(Arc::clone(slot));
+        let ready = group.ready.clone();
+        Ok(async move {
+            ready.await.map_err(DataFusionError::Shared)?;
+            let stream = lease.0.lock().unwrap().stream.take().ok_or_else(|| {
+                internal_datafusion_err!(
+                    "WorkerConnections has no stream for partition {target_partition}"
+                )
+            });
+            drop(lease);
+            stream
         }
         .try_flatten_stream()
         .inspect_ok(move |batch| {
@@ -168,5 +225,157 @@ impl Debug for WorkerConnectionPool {
 impl Clone for WorkerConnectionPool {
     fn clone(&self) -> Self {
         Self::new(self.lazy_stream_groups.len())
+    }
+}
+
+#[cfg(all(test, feature = "grpc"))]
+mod tests {
+    use super::*;
+    use crate::grpc::DefaultChannelResolver;
+    use crate::worker::test_utils::worker_handles::TcpWorkerHandle;
+    use crate::{DistributedConfig, DistributedExt};
+    use datafusion::arrow::array::Int32Array;
+    use datafusion::prelude::SessionContext;
+    use std::time::Duration;
+    use test_case::test_case;
+    use uuid::Uuid;
+
+    enum DropWhen {
+        BeforeSetup,
+        AfterSetup,
+        AfterBuffering,
+    }
+
+    #[test_case(DropWhen::BeforeSetup; "before_setup")]
+    #[test_case(DropWhen::AfterSetup; "after_setup")]
+    #[test_case(DropWhen::AfterBuffering; "after_buffering")]
+    #[tokio::test]
+    async fn abandoned_probe_does_not_block_sibling(when: DropWhen) -> Result<()> {
+        let fixture = Fixture::new().await?;
+        let idle = fixture.stream(0)?;
+        let mut active = Box::pin(fixture.stream(1)?.try_collect::<Vec<_>>());
+        match when {
+            DropWhen::BeforeSetup => {}
+            DropWhen::AfterSetup => fixture.wait_for_setup().await?,
+            DropWhen::AfterBuffering => {
+                assert!(
+                    tokio::time::timeout(Duration::from_secs(1), &mut active)
+                        .await
+                        .is_err()
+                );
+                assert!(fixture.ctx.memory_pool().reserved() >= 128);
+            }
+        }
+        // Models an inner join dropping an untouched probe after finding an empty build.
+        drop(idle);
+        let batches = tokio::time::timeout(Duration::from_secs(5), active)
+            .await
+            .expect("abandoned probe must not block its sibling")?;
+        assert_values(&batches);
+        // Keep the connection pool alive: cancellation must not depend on dropping the pool.
+        assert_eq!(fixture.ctx.memory_pool().reserved(), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn live_unpolled_partition_preserves_backpressure_and_data() -> Result<()> {
+        let fixture = Fixture::new().await?;
+        let idle = fixture.stream(0)?;
+        let mut active = Box::pin(fixture.stream(1)?.try_collect::<Vec<_>>());
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), &mut active)
+                .await
+                .is_err()
+        );
+        assert!(fixture.ctx.memory_pool().reserved() >= 128);
+        let (idle, active) = tokio::time::timeout(Duration::from_secs(5), async {
+            futures::try_join!(idle.try_collect::<Vec<_>>(), active)
+        })
+        .await
+        .expect("consuming both partitions should release backpressure")?;
+        assert_values(&idle);
+        assert_values(&active);
+        assert_eq!(fixture.ctx.memory_pool().reserved(), 0);
+        Ok(())
+    }
+
+    fn assert_values(batches: &[RecordBatch]) {
+        let values: Vec<_> = batches
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<Int32Array>()
+                    .unwrap()
+                    .values()
+                    .iter()
+                    .copied()
+            })
+            .collect();
+        assert_eq!(values, (0..1024).collect::<Vec<_>>());
+    }
+
+    struct Fixture {
+        pool: WorkerConnectionPool,
+        ctx: Arc<TaskContext>,
+        stage: RemoteStage,
+        _worker: TcpWorkerHandle,
+    }
+
+    impl Fixture {
+        async fn new() -> Result<Self> {
+            let batch = RecordBatch::try_from_iter([(
+                "id",
+                Arc::new(Int32Array::from_iter_values(0..1024)) as _,
+            )])?;
+            let worker = TcpWorkerHandle::spawn(
+                0,
+                batch.schema(),
+                vec![vec![batch.clone()], vec![batch]],
+                None,
+            )
+            .await?;
+            let query_id = Uuid::new_v4();
+            worker.register_plan(query_id).await?;
+            let ctx = SessionContext::new()
+                .with_distributed_option_extension(DistributedConfig::default())
+                .with_distributed_channel_resolver(DefaultChannelResolver::default())
+                .with_distributed_worker_connection_buffer_budget_bytes(128)?
+                .task_ctx();
+            let stage = RemoteStage {
+                query_id,
+                num: 0,
+                workers: vec![worker.url.clone()],
+                runtime_stats: None,
+                dynamic_filter_anchors: vec![],
+            };
+            Ok(Self {
+                pool: WorkerConnectionPool::new(1),
+                ctx,
+                stage,
+                _worker: worker,
+            })
+        }
+
+        fn stream(&self, partition: usize) -> Result<BoxStream<'static, Result<RecordBatch>>> {
+            self.pool.execute(
+                &self.stage,
+                0..2,
+                0,
+                partition,
+                ProducerHead::None,
+                &self.ctx,
+            )
+        }
+
+        async fn wait_for_setup(&self) -> Result<()> {
+            let ready = self.pool.lazy_stream_groups[0]
+                .get(&(0..2))
+                .unwrap()
+                .ready
+                .clone();
+            ready.await.map_err(DataFusionError::Shared)
+        }
     }
 }

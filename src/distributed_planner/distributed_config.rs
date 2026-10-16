@@ -72,11 +72,12 @@ extensions_options! {
         /// Disabled by default because its effectiveness is workload-dependent: it helps when
         /// aggregation significantly reduces cardinality, but adds overhead when it does not.
         pub partial_reduce: bool, default = false
-        /// Soft byte budget for queued Flight messages on each worker connection. Messages
-        /// beyond the budget spill through the runtime's disk manager so an unpolled partition
-        /// cannot block its siblings. A single message may exceed the budget; zero spills all
-        /// messages. Spill failures (including disabled spilling) fail the stream rather than
-        /// waiting for other partitions to release memory.
+        /// Soft byte budget that each per-worker connection will buffer in memory before pausing
+        /// the gRPC pull from that worker. Per-partition channels are unbounded (to avoid
+        /// head-of-line blocking between sibling partitions), so backpressure is enforced
+        /// globally per [WorkerConnection] using this budget. A single message larger than this
+        /// budget will still be admitted (otherwise we would livelock), so the actual peak per
+        /// connection is `worker_connection_buffer_budget_bytes + max_message_size`.
         pub worker_connection_buffer_budget_bytes: usize, default = 64 * 1024 * 1024
         /// Calculates the task count of the different stages at execution time, based on runtime
         /// information collected by sampling at the head of the stages.
