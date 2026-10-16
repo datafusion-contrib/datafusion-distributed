@@ -538,10 +538,9 @@ pub trait DistributedExt: Sized {
     /// Same as [DistributedExt::with_distributed_partial_reduce] but with an in-place mutation.
     fn set_distributed_partial_reduce(&mut self, enabled: bool) -> Result<(), DataFusionError>;
 
-    /// Sets the soft byte budget that each per-worker connection will buffer in memory before
-    /// pausing the gRPC pull from that worker. Per-partition channels are unbounded (to avoid
-    /// head-of-line blocking between sibling partitions), so backpressure is enforced globally
-    /// per worker connection using this budget.
+    /// Sets the soft byte budget for queued Flight messages on each worker connection.
+    /// Overflow spills through the runtime's disk manager so idle partitions cannot block
+    /// their siblings. Zero spills all messages; spill failures are returned as stream errors.
     fn with_distributed_worker_connection_buffer_budget_bytes(
         self,
         budget_bytes: usize,
