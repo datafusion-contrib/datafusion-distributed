@@ -7,11 +7,14 @@ use crate::dynamic_filtering::{
 };
 use crate::execution_plans::DistributedLeafExec;
 use crate::stage::{LocalStage, Stage, find_all_stages};
-use crate::{DistributedTaskContext, TaskCompletedDynamicFilters, TaskKey};
+use crate::{
+    DistributedTaskContext, MaybeEncoded, TaskCompletedDynamicFilters, TaskDynamicFilter, TaskKey,
+};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{HashMap, Result, internal_err};
 use datafusion::execution::TaskContext;
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::{
@@ -19,8 +22,8 @@ use datafusion::physical_plan::{
 };
 use std::sync::Arc;
 
-/// Rewrites an executed distributed plan with the dynamic filters reported by its completed
-/// worker tasks.
+/// Rewrites an executed distributed plan with dynamic filters from the coordinator and its
+/// completed worker tasks.
 ///
 /// When composing this with [`crate::rewrite_distributed_plan_with_metrics`], dynamic filters must
 /// be rewritten first.
@@ -62,6 +65,29 @@ pub async fn rewrite_distributed_plan_with_dynamic_filters(
     // Avoids mutating the `plan_for_viz` of the incoming DistributedExec.
     let plan_for_viz =
         sever_dynamic_filter_relationships_in_plan_for_display(plan_for_viz, task_ctx)?;
+
+    // The head stage executes on the coordinator, so its filters have no worker report.
+    // Copy their live values into the isolated display variants before restoring worker stages.
+    let head_filters: Vec<_> = discover_dynamic_filter_consumers(&distributed_exec.head_stage()?)?
+        .consumers
+        .into_iter()
+        .filter(|consumer| consumer.expression.snapshot_generation() > 1)
+        .map(|consumer| TaskDynamicFilter {
+            expression_id: consumer.id,
+            expression: MaybeEncoded::Decoded(consumer.expression),
+        })
+        .collect();
+    apply_filters_to_distributed_leaves(
+        &plan_for_viz,
+        DistributedTaskContext {
+            task_index: 0,
+            task_count: 1,
+        },
+        &head_filters,
+        &producer_schemas,
+        task_ctx,
+    )?;
+
     for stage in find_all_stages(&plan_for_viz) {
         let Stage::Local(stage) = stage else {
             return internal_err!("expected local stages in the visualization plan");
@@ -186,49 +212,58 @@ fn apply_reports_to_distributed_leaves(
         let Some(report) = reports.get(&task_key) else {
             continue;
         };
-        let updates: HashMap<_, _> = report
-            .filters
-            .iter()
-            .map(|filter| (filter.expression_id, &filter.expression))
-            .collect();
         let d_ctx = DistributedTaskContext {
             task_index: task_number,
             task_count: stage.tasks,
         };
-        // Union children can use different task indices from their enclosing stage.
-        stage.plan.apply_with_dt_ctx(d_ctx, |node, d_ctx| {
-            let Some(leaf) = node.downcast_ref::<DistributedLeafExec>() else {
-                return Ok(TreeNodeRecursion::Continue);
-            };
-            let Some(variant) = leaf.variants().get(d_ctx.task_index) else {
-                return internal_err!(
-                    "missing leaf variant {} for task {} in stage {}",
-                    d_ctx.task_index,
-                    task_number,
-                    stage.num
-                );
-            };
-            let discovered = discover_dynamic_filter_consumers(variant)?;
-            for consumer in discovered.consumers {
-                let Some(expression) = updates.get(&consumer.id).copied() else {
-                    continue;
-                };
-                let Some(producer_schema) = producer_schemas.get(&consumer.id) else {
-                    return internal_err!(
-                        "missing producer schema for dynamic filter {}",
-                        consumer.id
-                    );
-                };
-                apply_dynamic_filter_update(
-                    &consumer.expression,
-                    expression,
-                    producer_schema.as_ref(),
-                    task_ctx,
-                )?;
-            }
-            Ok(TreeNodeRecursion::Continue)
-        })?;
+        apply_filters_to_distributed_leaves(
+            &stage.plan,
+            d_ctx,
+            &report.filters,
+            producer_schemas,
+            task_ctx,
+        )?;
     }
+    Ok(())
+}
+
+/// Applies one task's filters without crossing network boundaries into other stages.
+fn apply_filters_to_distributed_leaves(
+    plan: &Arc<dyn ExecutionPlan>,
+    d_ctx: DistributedTaskContext,
+    filters: &[TaskDynamicFilter],
+    producer_schemas: &HashMap<u64, SchemaRef>,
+    task_ctx: &Arc<TaskContext>,
+) -> Result<()> {
+    let updates: HashMap<_, _> = filters
+        .iter()
+        .map(|filter| (filter.expression_id, &filter.expression))
+        .collect();
+    // Union children can use different task indices from their enclosing stage.
+    plan.apply_with_dt_ctx(d_ctx, |node, d_ctx| {
+        let Some(leaf) = node.downcast_ref::<DistributedLeafExec>() else {
+            return Ok(TreeNodeRecursion::Continue);
+        };
+        let Some(variant) = leaf.variants().get(d_ctx.task_index) else {
+            return internal_err!("missing leaf variant {} for {d_ctx:?}", d_ctx.task_index);
+        };
+        let discovered = discover_dynamic_filter_consumers(variant)?;
+        for consumer in discovered.consumers {
+            let Some(expression) = updates.get(&consumer.id).copied() else {
+                continue;
+            };
+            let Some(producer_schema) = producer_schemas.get(&consumer.id) else {
+                return internal_err!("missing producer schema for dynamic filter {}", consumer.id);
+            };
+            apply_dynamic_filter_update(
+                &consumer.expression,
+                expression,
+                producer_schema.as_ref(),
+                task_ctx,
+            )?;
+        }
+        Ok(TreeNodeRecursion::Continue)
+    })?;
     Ok(())
 }
 
