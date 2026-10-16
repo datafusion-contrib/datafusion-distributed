@@ -6,6 +6,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::arrow::util::pretty::pretty_format_batches;
+#[cfg(feature = "integration")]
+use datafusion::common::runtime::JoinSet;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_plan::{ExecutionPlan, collect};
@@ -15,8 +17,9 @@ use datafusion_distributed::{
 };
 #[cfg(feature = "integration")]
 use datafusion_distributed::{
-    SessionStateBuilderExt, WorkerQueryContext,
+    SessionStateBuilderExt, WorkerQueryContext, get_distributed_worker_resolver,
     test_utils::in_memory_channel_resolver::{InMemoryChannelResolver, InMemoryWorkerResolver},
+    test_utils::localhost::start_localhost_context,
 };
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use futures::StreamExt;
@@ -38,9 +41,16 @@ const FIXTURE_METADATA_URI: &str = "s3://iceberg-test/warehouse/taxi/metadata/v1
 
 pub struct IcebergTestHarness {
     ctx: SessionContext,
+    #[cfg(feature = "integration")]
+    _workers: Option<JoinSet<()>>,
 }
 
 impl IcebergTestHarness {
+    /// Accesses the coordinator context to register additional tables or execute plans.
+    pub fn context(&self) -> &SessionContext {
+        &self.ctx
+    }
+
     pub fn builder() -> IcebergTestHarnessBuilder {
         IcebergTestHarnessBuilder::default()
     }
@@ -96,6 +106,8 @@ pub struct IcebergTestHarnessBuilder {
     files: HashMap<String, Vec<u8>>,
     #[cfg(feature = "integration")]
     workers: Option<usize>,
+    #[cfg(feature = "integration")]
+    localhost_workers: Option<usize>,
 }
 
 impl Default for IcebergTestHarnessBuilder {
@@ -110,6 +122,8 @@ impl Default for IcebergTestHarnessBuilder {
             files: HashMap::new(),
             #[cfg(feature = "integration")]
             workers: None,
+            #[cfg(feature = "integration")]
+            localhost_workers: None,
         }
     }
 }
@@ -148,6 +162,15 @@ impl IcebergTestHarnessBuilder {
     #[cfg(feature = "integration")]
     pub fn with_workers(mut self, workers: usize) -> Self {
         self.workers = Some(workers);
+        self.localhost_workers = None;
+        self
+    }
+
+    /// Starts separate worker services on localhost TCP sockets.
+    #[cfg(feature = "integration")]
+    pub fn with_localhost_workers(mut self, workers: usize) -> Self {
+        self.localhost_workers = Some(workers);
+        self.workers = None;
         self
     }
 
@@ -170,6 +193,7 @@ impl IcebergTestHarnessBuilder {
             .with_iceberg_integration(options.clone());
         #[cfg(feature = "integration")]
         let state = if let Some(workers) = self.workers {
+            let options = options.clone();
             let resolver =
                 InMemoryChannelResolver::from_session_builder(move |ctx: WorkerQueryContext| {
                     let state = ctx
@@ -184,6 +208,27 @@ impl IcebergTestHarnessBuilder {
                 .with_distributed_channel_resolver(resolver)
         } else {
             state
+        };
+        #[cfg(feature = "integration")]
+        let (state, guard) = if let Some(workers) = self.localhost_workers {
+            let (worker_ctx, guard, _) =
+                start_localhost_context(workers, move |ctx: WorkerQueryContext| {
+                    let state = ctx
+                        .builder
+                        .with_iceberg_integration(options.clone())
+                        .build();
+                    async move { Ok(state) }
+                })
+                .await;
+            let resolver = get_distributed_worker_resolver(worker_ctx.state().config())?;
+            (
+                state
+                    .with_distributed_planner()
+                    .with_distributed_worker_resolver(resolver),
+                Some(guard),
+            )
+        } else {
+            (state, None)
         };
         let ctx = SessionContext::new_with_state(state.build());
         let mut statement = format!(
@@ -206,7 +251,11 @@ impl IcebergTestHarnessBuilder {
             statement.push_str(&format!(" OPTIONS ({options})"));
         }
         ctx.sql(&statement).await?.collect().await?;
-        Ok(IcebergTestHarness { ctx })
+        Ok(IcebergTestHarness {
+            ctx,
+            #[cfg(feature = "integration")]
+            _workers: guard,
+        })
     }
 }
 
