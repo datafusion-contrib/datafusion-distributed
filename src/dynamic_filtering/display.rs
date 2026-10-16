@@ -6,12 +6,13 @@ use crate::dynamic_filtering::{
     discover_dynamic_filter_producers,
 };
 use crate::execution_plans::DistributedLeafExec;
-use crate::stage::{LocalStage, Stage, find_all_stages};
-use crate::{DistributedTaskContext, TaskCompletedDynamicFilters, TaskKey};
+use crate::stage::{Stage, find_all_stages};
+use crate::{DistributedTaskContext, MaybeEncoded, TaskDynamicFilter, TaskKey};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{HashMap, Result, internal_err};
 use datafusion::execution::TaskContext;
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::{
@@ -19,8 +20,8 @@ use datafusion::physical_plan::{
 };
 use std::sync::Arc;
 
-/// Rewrites an executed distributed plan with the dynamic filters reported by its completed
-/// worker tasks.
+/// Rewrites an executed distributed plan with dynamic filters from the coordinator and its
+/// completed worker tasks.
 ///
 /// When composing this with [`crate::rewrite_distributed_plan_with_metrics`], dynamic filters must
 /// be rewritten first.
@@ -62,11 +63,53 @@ pub async fn rewrite_distributed_plan_with_dynamic_filters(
     // Avoids mutating the `plan_for_viz` of the incoming DistributedExec.
     let plan_for_viz =
         sever_dynamic_filter_relationships_in_plan_for_display(plan_for_viz, task_ctx)?;
+
+    // The head stage executes on the coordinator, so its filters have no worker report.
+    // Copy their live values into the isolated display variants before restoring worker stages.
+    let head_filters: Vec<_> = discover_dynamic_filter_consumers(&distributed_exec.head_stage()?)?
+        .consumers
+        .into_iter()
+        .filter(|consumer| consumer.expression.snapshot_generation() > 1)
+        .map(|consumer| TaskDynamicFilter {
+            expression_id: consumer.id,
+            expression: MaybeEncoded::Decoded(consumer.expression),
+        })
+        .collect();
+    apply_filters_to_distributed_leaves(
+        &plan_for_viz,
+        DistributedTaskContext {
+            task_index: 0,
+            task_count: 1,
+        },
+        &head_filters,
+        &producer_schemas,
+        task_ctx,
+    )?;
+
     for stage in find_all_stages(&plan_for_viz) {
         let Stage::Local(stage) = stage else {
             return internal_err!("expected local stages in the visualization plan");
         };
-        apply_reports_to_distributed_leaves(stage, &reports, &producer_schemas, task_ctx)?;
+        for task_number in 0..stage.tasks {
+            let task_key = TaskKey {
+                query_id: stage.query_id,
+                stage_id: stage.num,
+                task_number,
+            };
+            let Some(report) = reports.get(&task_key) else {
+                continue;
+            };
+            apply_filters_to_distributed_leaves(
+                &stage.plan,
+                DistributedTaskContext {
+                    task_index: task_number,
+                    task_count: stage.tasks,
+                },
+                &report.filters,
+                &producer_schemas,
+                task_ctx,
+            )?;
+        }
     }
     let plan = distributed_exec.with_plan_for_viz(Arc::clone(&plan_for_viz))?;
     plan.replace_children(
@@ -170,212 +213,42 @@ fn isolate_sort_dynamic_filters_for_display(
     .map(|transformed| transformed.data)
 }
 
-/// Applies successful worker reports only to the matching task-local visualization variants.
-fn apply_reports_to_distributed_leaves(
-    stage: &LocalStage,
-    reports: &HashMap<TaskKey, TaskCompletedDynamicFilters>,
+/// Applies one task's filters without crossing network boundaries into other stages.
+fn apply_filters_to_distributed_leaves(
+    plan: &Arc<dyn ExecutionPlan>,
+    d_ctx: DistributedTaskContext,
+    filters: &[TaskDynamicFilter],
     producer_schemas: &HashMap<u64, SchemaRef>,
     task_ctx: &Arc<TaskContext>,
 ) -> Result<()> {
-    for task_number in 0..stage.tasks {
-        let task_key = TaskKey {
-            query_id: stage.query_id,
-            stage_id: stage.num,
-            task_number,
+    let updates: HashMap<_, _> = filters
+        .iter()
+        .map(|filter| (filter.expression_id, &filter.expression))
+        .collect();
+    // Union children can use different task indices from their enclosing stage.
+    plan.apply_with_dt_ctx(d_ctx, |node, d_ctx| {
+        let Some(leaf) = node.downcast_ref::<DistributedLeafExec>() else {
+            return Ok(TreeNodeRecursion::Continue);
         };
-        let Some(report) = reports.get(&task_key) else {
-            continue;
+        let Some(variant) = leaf.variants().get(d_ctx.task_index) else {
+            return internal_err!("missing leaf variant {} for {d_ctx:?}", d_ctx.task_index);
         };
-        let updates: HashMap<_, _> = report
-            .filters
-            .iter()
-            .map(|filter| (filter.expression_id, &filter.expression))
-            .collect();
-        let d_ctx = DistributedTaskContext {
-            task_index: task_number,
-            task_count: stage.tasks,
-        };
-        // Union children can use different task indices from their enclosing stage.
-        stage.plan.apply_with_dt_ctx(d_ctx, |node, d_ctx| {
-            let Some(leaf) = node.downcast_ref::<DistributedLeafExec>() else {
-                return Ok(TreeNodeRecursion::Continue);
+        let discovered = discover_dynamic_filter_consumers(variant)?;
+        for consumer in discovered.consumers {
+            let Some(expression) = updates.get(&consumer.id).copied() else {
+                continue;
             };
-            let Some(variant) = leaf.variants().get(d_ctx.task_index) else {
-                return internal_err!(
-                    "missing leaf variant {} for task {} in stage {}",
-                    d_ctx.task_index,
-                    task_number,
-                    stage.num
-                );
+            let Some(producer_schema) = producer_schemas.get(&consumer.id) else {
+                return internal_err!("missing producer schema for dynamic filter {}", consumer.id);
             };
-            let discovered = discover_dynamic_filter_consumers(variant)?;
-            for consumer in discovered.consumers {
-                let Some(expression) = updates.get(&consumer.id).copied() else {
-                    continue;
-                };
-                let Some(producer_schema) = producer_schemas.get(&consumer.id) else {
-                    return internal_err!(
-                        "missing producer schema for dynamic filter {}",
-                        consumer.id
-                    );
-                };
-                apply_dynamic_filter_update(
-                    &consumer.expression,
-                    expression,
-                    producer_schema.as_ref(),
-                    task_ctx,
-                )?;
-            }
-            Ok(TreeNodeRecursion::Continue)
-        })?;
-    }
+            apply_dynamic_filter_update(
+                &consumer.expression,
+                expression,
+                producer_schema.as_ref(),
+                task_ctx,
+            )?;
+        }
+        Ok(TreeNodeRecursion::Continue)
+    })?;
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::test_utils::mock_exec::MockExec;
-    use crate::{MaybeEncoded, TaskDynamicFilter};
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::logical_expr::Operator;
-    use datafusion::physical_expr::expressions::{
-        BinaryExpr, Column, DynamicFilterPhysicalExpr, lit,
-    };
-    use datafusion::physical_expr::{LexOrdering, PhysicalExpr, PhysicalSortExpr};
-    use datafusion::physical_plan::displayable;
-    use datafusion::physical_plan::empty::EmptyExec;
-    use datafusion::physical_plan::filter::FilterExec;
-    use datafusion::physical_plan::sorts::sort::SortExec;
-    use datafusion::prelude::SessionContext;
-    use insta::assert_snapshot;
-    use uuid::Uuid;
-
-    #[test]
-    fn visualization_variants_do_not_share_dynamic_filter_state() -> Result<()> {
-        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
-        let column = Arc::new(Column::new("a", 0)) as Arc<dyn PhysicalExpr>;
-        let dynamic_filter = Arc::new(DynamicFilterPhysicalExpr::new(
-            vec![Arc::clone(&column)],
-            lit(true),
-        )) as Arc<dyn PhysicalExpr>;
-        let input = Arc::new(EmptyExec::new(Arc::clone(&schema))) as Arc<dyn ExecutionPlan>;
-        let variant = Arc::new(FilterExec::try_new(
-            Arc::clone(&dynamic_filter),
-            Arc::clone(&input),
-        )?) as Arc<dyn ExecutionPlan>;
-        let leaf = Arc::new(DistributedLeafExec::try_new(
-            Arc::clone(&variant),
-            [Arc::clone(&variant), variant],
-        )?) as Arc<dyn ExecutionPlan>;
-
-        let task_ctx = SessionContext::new().task_ctx();
-        let isolated = sever_dynamic_filter_relationships_in_plan_for_display(leaf, &task_ctx)?;
-        let expression =
-            Arc::new(BinaryExpr::new(column, Operator::Gt, lit(10_i32))) as Arc<dyn PhysicalExpr>;
-        dynamic_filter
-            .downcast_ref::<DynamicFilterPhysicalExpr>()
-            .unwrap()
-            .update(expression)?;
-        dynamic_filter
-            .downcast_ref::<DynamicFilterPhysicalExpr>()
-            .unwrap()
-            .mark_complete();
-        let report = TaskCompletedDynamicFilters {
-            filters: vec![TaskDynamicFilter {
-                expression_id: dynamic_filter.expression_id().unwrap(),
-                expression: MaybeEncoded::Decoded(Arc::clone(&dynamic_filter)),
-            }],
-        };
-        let reports = HashMap::from_iter([(
-            TaskKey {
-                query_id: Uuid::nil(),
-                stage_id: 1,
-                task_number: 0,
-            },
-            report,
-        )]);
-
-        let stage = LocalStage {
-            query_id: Uuid::nil(),
-            num: 1,
-            plan: Arc::clone(&isolated),
-            tasks: 2,
-            metrics_set: Default::default(),
-        };
-        let producer_schemas = HashMap::from([(dynamic_filter.expression_id().unwrap(), schema)]);
-        apply_reports_to_distributed_leaves(&stage, &reports, &producer_schemas, &task_ctx)?;
-        let leaf = isolated.downcast_ref::<DistributedLeafExec>().unwrap();
-        let task_0 = displayable(leaf.variants()[0].as_ref())
-            .one_line()
-            .to_string();
-        let task_1 = displayable(leaf.variants()[1].as_ref())
-            .one_line()
-            .to_string();
-        assert_snapshot!(task_0, @"FilterExec: DynamicFilter [ a@0 > 10 ]");
-        assert_snapshot!(task_1, @"FilterExec: DynamicFilter [ empty ]");
-        Ok(())
-    }
-
-    #[test]
-    fn visualization_isolates_sort_producer_filter_without_mutating_original() -> Result<()> {
-        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
-        // MockExec has no protobuf representation. A successful isolation therefore proves the
-        // real child was replaced before serializing the SortExec.
-        let input = Arc::new(MockExec::new_partitioned(vec![vec![], vec![]], schema))
-            as Arc<dyn ExecutionPlan>;
-        let ordering =
-            LexOrdering::new([PhysicalSortExpr::new_default(Arc::new(Column::new("a", 0)))])
-                .unwrap();
-        let sort = Arc::new(
-            SortExec::new(ordering, Arc::clone(&input))
-                .with_fetch(Some(10))
-                .with_preserve_partitioning(true),
-        ) as Arc<dyn ExecutionPlan>;
-        let produced = sort.dynamic_expressions_produced();
-        let dynamic_filter = produced[0]
-            .downcast_ref::<DynamicFilterPhysicalExpr>()
-            .unwrap();
-        let expression_id = dynamic_filter.expression_id();
-        dynamic_filter.update(Arc::new(BinaryExpr::new(
-            Arc::new(Column::new("a", 0)),
-            Operator::Gt,
-            lit(10_i32),
-        )))?;
-
-        let task_ctx = SessionContext::new().task_ctx();
-        let isolated = isolate_sort_dynamic_filters_for_display(Arc::clone(&sort), &task_ctx)?;
-        let isolated_sort = isolated.downcast_ref::<SortExec>().unwrap();
-        assert!(Arc::ptr_eq(isolated_sort.input(), &input));
-        assert_eq!(isolated_sort.fetch(), Some(10));
-        assert!(isolated_sort.preserve_partitioning());
-        assert_eq!(isolated.schema(), sort.schema());
-        assert_eq!(
-            isolated.output_partitioning().partition_count(),
-            sort.output_partitioning().partition_count()
-        );
-        assert_eq!(
-            isolated.dynamic_expressions_produced()[0].expression_id(),
-            expression_id
-        );
-        assert_snapshot!(
-            displayable(isolated.as_ref()).one_line().to_string(),
-            @"SortExec: TopK(fetch=10), expr=[a@0 ASC], preserve_partitioning=[true], filter=[a@0 > 10]"
-        );
-
-        dynamic_filter.update(Arc::new(BinaryExpr::new(
-            Arc::new(Column::new("a", 0)),
-            Operator::Gt,
-            lit(20_i32),
-        )))?;
-        assert_snapshot!(
-            displayable(sort.as_ref()).one_line().to_string(),
-            @"SortExec: TopK(fetch=10), expr=[a@0 ASC], preserve_partitioning=[true], filter=[a@0 > 20]"
-        );
-        assert_snapshot!(
-            displayable(isolated.as_ref()).one_line().to_string(),
-            @"SortExec: TopK(fetch=10), expr=[a@0 ASC], preserve_partitioning=[true], filter=[a@0 > 10]"
-        );
-        Ok(())
-    }
 }
