@@ -816,7 +816,10 @@ impl<O, F: Future<Output = O>> Future for ElapsedComputeFuture<F> {
 mod tests {
     use super::super::worker_service::decode_producer_head;
     use super::*;
-    use datafusion::arrow::array::Int64Array;
+    use crate::grpc::DefaultChannelResolver;
+    use crate::worker::test_utils::worker_handles::{TcpWorkerHandle, test_task_key_with_query};
+    use crate::{ChannelResolver, DistributedExt};
+    use datafusion::arrow::array::{Int32Array, Int64Array};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::catalog::memory::{DataSourceExec, MemorySourceConfig};
     use datafusion::physical_expr::expressions::col;
@@ -826,6 +829,7 @@ mod tests {
     use datafusion_proto::protobuf::PhysicalExprNode;
     use futures::StreamExt;
     use futures::stream::unfold;
+    use uuid::Uuid;
 
     /// The message must determine ordering even when the supplied plan has no
     /// existing RepartitionExec from which to infer that setting.
@@ -867,6 +871,92 @@ mod tests {
             assert_eq!(plan.output_ordering().is_some(), preserve_order);
         }
         Ok(())
+    }
+
+    /// An empty-build inner join can keep a probe partition open without polling it.
+    /// The shared Flight reader must not let that partition starve its sibling.
+    #[tokio::test]
+    #[ignore = "reproducer: an unpolled partition exhausts the shared connection budget"]
+    async fn unpolled_partition_does_not_block_sibling() -> Result<()> {
+        let (_worker, idle, active) = two_partition_worker_streams().await?;
+        let batches = tokio::time::timeout(Duration::from_secs(2), active.try_collect::<Vec<_>>())
+            .await
+            .expect("active partition stalled while its sibling remained open but unpolled")?;
+        assert_eq!(
+            batches.iter().map(RecordBatch::num_rows).sum::<usize>(),
+            1024
+        );
+        drop(idle);
+        Ok(())
+    }
+
+    /// Diagnostic control: the same pending read finishes once both queues are drained.
+    /// This characterizes the current stall; remove the timeout assertion when fixing it.
+    #[tokio::test]
+    async fn polling_stalled_partition_releases_sibling() -> Result<()> {
+        let (_worker, idle, active) = two_partition_worker_streams().await?;
+        let mut active = Box::pin(active.try_collect::<Vec<_>>());
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), &mut active)
+                .await
+                .is_err()
+        );
+        let (idle_batches, active_batches) = tokio::time::timeout(Duration::from_secs(5), async {
+            futures::try_join!(idle.try_collect::<Vec<_>>(), active)
+        })
+        .await
+        .expect("polling both partitions should release the shared buffer budget")?;
+        for batches in [idle_batches, active_batches] {
+            assert_eq!(
+                batches.iter().map(RecordBatch::num_rows).sum::<usize>(),
+                1024
+            );
+        }
+        Ok(())
+    }
+
+    async fn two_partition_worker_streams() -> Result<(
+        TcpWorkerHandle,
+        BoxStream<'static, Result<RecordBatch>>,
+        BoxStream<'static, Result<RecordBatch>>,
+    )> {
+        let batch = RecordBatch::try_from_iter([(
+            "id",
+            Arc::new(Int32Array::from_iter_values(0..1024)) as _,
+        )])?;
+        let worker = TcpWorkerHandle::spawn(
+            0,
+            batch.schema(),
+            vec![vec![batch.clone()], vec![batch]],
+            None,
+        )
+        .await?;
+        let query_id = Uuid::new_v4();
+        worker.register_plan(query_id).await?;
+        // Force backpressure with a small fixture; this is not the production default.
+        let ctx = SessionContext::new()
+            .with_distributed_option_extension(DistributedConfig::default())
+            .with_distributed_worker_connection_buffer_budget_bytes(128)?;
+        let mut client = DefaultChannelResolver::default()
+            .get_worker_client_for_url(&worker.url)
+            .await?;
+        let mut streams = client
+            .execute_task(
+                HeaderMap::new(),
+                ExecuteTaskRequest {
+                    task_key: test_task_key_with_query(query_id, 0),
+                    target_partition_start: 0,
+                    target_partition_end: 2,
+                    producer_head: ProducerHead::None,
+                },
+                ExecutionPlanMetricsSet::new(),
+                &ctx.task_ctx(),
+            )
+            .await?;
+        assert_eq!(streams.len(), 2);
+        let active = streams.pop().unwrap();
+        let idle = streams.pop().unwrap();
+        Ok((worker, idle, active))
     }
 
     #[tokio::test]
