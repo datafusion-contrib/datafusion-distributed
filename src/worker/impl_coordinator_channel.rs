@@ -265,7 +265,20 @@ impl Worker {
                     let _ = dynamic_filters_tx.send(dynamic_filters);
                 }
             }
-            task_data_entries.invalidate(&key).await
+            // Release task resources even while cache maintenance retains the slot.
+            // A replacement setup may already have published a newer task in it.
+            if entry.finish_if(
+                |current| {
+                    current.as_ref().is_ok_and(|current| {
+                        Arc::ptr_eq(&current.final_plan, &task_data.final_plan)
+                    })
+                },
+                Err(Arc::new(exec_datafusion_err!(
+                    "Coordinator channel closed for task {key:?}"
+                ))),
+            ) {
+                task_data_entries.invalidate(&key).await;
+            }
         });
 
         let load_info_stream = FuturesUnordered::from_iter(load_info_rxs)

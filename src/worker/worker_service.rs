@@ -19,9 +19,9 @@ pub(crate) type TaskDataEntries = Cache<TaskKey, Arc<SingleWriteMultiRead<Result
 #[derive(Clone)]
 pub struct Worker {
     pub(super) runtime: Arc<RuntimeEnv>,
-    /// TTL-based cache for task execution data. Entries are automatically evicted after
-    /// TASK_CACHE_TTI seconds. This prevents memory leaks from abandoned or incomplete queries
-    /// while allowing concurrent access to task results across multiple partition requests.
+    /// Shares task state across partition requests. Coordinator-channel termination releases
+    /// the stored task resources; time-to-idle eviction provides fallback cleanup for entries
+    /// left by abandoned setup requests.
     pub(crate) task_data_entries: Arc<TaskDataEntries>,
     pub(super) session_builder: Arc<dyn WorkerSessionBuilder + Send + Sync>,
     pub(crate) max_message_size: Option<usize>,

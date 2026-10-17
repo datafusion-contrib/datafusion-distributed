@@ -4,7 +4,7 @@ use std::time::Duration;
 use tokio::sync::watch;
 
 /// Synchronization primitive that allows multiple readers to wait for a cloneable piece of data.
-/// Writers may replace the value until a reader starts consuming it.
+/// Writers may replace the value until a reader starts consuming it or the slot is finished.
 ///
 /// - If the writer writes before anyone is reading, all subsequent readers will immediately
 ///   resolve to the written piece of data.
@@ -67,6 +67,24 @@ impl<T: Clone> SingleWriteMultiRead<T> {
             return Err(SingleWriteMultiReadError::AlreadyWritten);
         }
         Ok(())
+    }
+
+    /// Publishes a final value if the current value matches, preventing further writes.
+    /// The displaced value is dropped after releasing the slot's locks.
+    pub(crate) fn finish_if(&self, predicate: impl FnOnce(&T) -> bool, item: T) -> bool {
+        let mut read_started = self.read_started.lock().unwrap();
+        let mut previous = None;
+        let finished = self.tx.send_if_modified(|value| {
+            if !value.as_ref().is_some_and(predicate) {
+                return false;
+            }
+            *read_started = true;
+            previous = value.replace(item);
+            true
+        });
+        drop(read_started);
+        drop(previous);
+        finished
     }
 
     /// Reads the current value, if any, not waiting for it to be set by a writer.
