@@ -265,7 +265,21 @@ impl Worker {
                     let _ = dynamic_filters_tx.send(dynamic_filters);
                 }
             }
-            task_data_entries.invalidate(&key).await
+            // A terminal error releases cached resources even if the slot remains cached.
+            // Empty means setup is pending: readers would wait and writers could refill it.
+            // Match this setup so an older channel cannot finalize its replacement.
+            if entry.finish_if(
+                |current| {
+                    current.as_ref().is_ok_and(|current| {
+                        Arc::ptr_eq(&current.final_plan, &task_data.final_plan)
+                    })
+                },
+                Err(Arc::new(exec_datafusion_err!(
+                    "Coordinator channel closed for task {key:?}"
+                ))),
+            ) {
+                task_data_entries.invalidate(&key).await;
+            }
         });
 
         let load_info_stream = FuturesUnordered::from_iter(load_info_rxs)

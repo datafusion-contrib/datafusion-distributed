@@ -4,7 +4,7 @@ use std::time::Duration;
 use tokio::sync::watch;
 
 /// Synchronization primitive that allows multiple readers to wait for a cloneable piece of data.
-/// Writers may replace the value until a reader starts consuming it.
+/// Writers may replace the value until a reader starts consuming it or the slot is finished.
 ///
 /// - If the writer writes before anyone is reading, all subsequent readers will immediately
 ///   resolve to the written piece of data.
@@ -69,6 +69,24 @@ impl<T: Clone> SingleWriteMultiRead<T> {
         Ok(())
     }
 
+    /// Publishes a final value if the current value matches, preventing further writes.
+    /// The displaced value is dropped after releasing the slot's locks.
+    pub(crate) fn finish_if(&self, predicate: impl FnOnce(&T) -> bool, item: T) -> bool {
+        let mut read_started = self.read_started.lock().unwrap();
+        let mut previous = None;
+        let finished = self.tx.send_if_modified(|value| {
+            if !value.as_ref().is_some_and(predicate) {
+                return false;
+            }
+            *read_started = true;
+            previous = value.replace(item);
+            true
+        });
+        drop(read_started);
+        drop(previous);
+        finished
+    }
+
     /// Reads the current value, if any, not waiting for it to be set by a writer.
     #[cfg(feature = "grpc")]
     pub(crate) fn read_now(&self) -> Option<T> {
@@ -106,6 +124,20 @@ mod tests {
 
     const TIMEOUT: Duration = Duration::from_secs(1);
     const SHORT_TIMEOUT: Duration = Duration::from_millis(50);
+
+    #[test]
+    fn finish_only_releases_the_matching_value() {
+        let slot = SingleWriteMultiRead::new();
+        let old = Arc::new(1);
+        let current = Arc::new(2);
+        slot.write(current.clone()).unwrap();
+
+        assert!(!slot.finish_if(|value| Arc::ptr_eq(value, &old), old.clone()));
+        assert_eq!(Arc::strong_count(&current), 2);
+        assert!(slot.finish_if(|value| Arc::ptr_eq(value, &current), old));
+        assert_eq!(Arc::strong_count(&current), 1);
+        assert!(slot.write(current).is_err());
+    }
 
     #[tokio::test]
     async fn write_before_read() {
