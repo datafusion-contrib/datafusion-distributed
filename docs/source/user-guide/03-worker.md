@@ -80,6 +80,13 @@ covered in
 [Distribute a custom ExecutionPlan](04-distribute-custom-plan.md).
 ```
 
+## Task lifetime
+
+The coordinator keeps a control channel open for each task. When that channel
+ends, the worker sends any final reports and releases its cached plan and session
+context. Partition streams and task contexts already returned to consumers keep
+their own references until their owners release them.
+
 ## Spawning strategies
 
 Because a worker is just a Tonic service, you have some freedom in where it runs.

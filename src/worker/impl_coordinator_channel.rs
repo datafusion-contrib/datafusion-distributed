@@ -265,7 +265,22 @@ impl Worker {
                     let _ = dynamic_filters_tx.send(dynamic_filters);
                 }
             }
-            task_data_entries.invalidate(&key).await
+            // A terminal error releases cached resources even if the slot remains cached.
+            // Empty means setup is pending: readers would wait and writers could refill it.
+            // Match this setup so an older channel cannot finalize its replacement.
+            if entry.seal_with_value_if(
+                |current| {
+                    current.as_ref().is_ok_and(|current| {
+                        // Each setup creates a fresh final_plan Arc; its TaskData clones share it.
+                        Arc::ptr_eq(&current.final_plan, &task_data.final_plan)
+                    })
+                },
+                Err(Arc::new(exec_datafusion_err!(
+                    "Coordinator channel closed for task {key:?}"
+                ))),
+            ) {
+                task_data_entries.invalidate(&key).await;
+            }
         });
 
         let load_info_stream = FuturesUnordered::from_iter(load_info_rxs)
@@ -416,4 +431,57 @@ fn send_metrics_via_channel(
         pre_order_plan_metrics,
         task_metrics: task_data_metrics.to_metrics_set(),
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::TaskKey;
+    use datafusion::arrow::datatypes::Schema;
+    use datafusion::physical_plan::placeholder_row::PlaceholderRowExec;
+    use std::time::Duration;
+    use url::Url;
+    use uuid::Uuid;
+
+    #[tokio::test]
+    async fn coordinator_eos_releases_unexecuted_task() -> Result<()> {
+        let worker = Worker::default();
+        let request = SetPlanRequest {
+            task_key: TaskKey {
+                query_id: Uuid::nil(),
+                stage_id: 0,
+                task_number: 0,
+            },
+            task_count: 1,
+            plan: MaybeEncoded::Decoded(Arc::new(PlaceholderRowExec::new(Arc::new(
+                Schema::empty(),
+            )))),
+            dynamic_filter_remote_producer_ids: vec![],
+            work_unit_feed_declarations: vec![],
+            target_worker_url: Url::parse("http://worker.test").unwrap(),
+            query_start_time_ns: 0,
+        };
+        let (control, incoming) = channel(1);
+        let response = worker
+            .coordinator_channel(
+                HeaderMap::new(),
+                request,
+                ReceiverStream::new(incoming).boxed(),
+            )
+            .await?;
+        let context = Arc::downgrade(&response.task_ctx);
+        drop(response.task_ctx);
+        drop(control);
+
+        // Bounds failures without delaying successful cleanup.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            response.stream.try_for_each(|_| async { Ok(()) }).await?;
+            while context.strong_count() != 0 {
+                tokio::task::yield_now().await;
+            }
+            Ok(())
+        })
+        .await
+        .expect("completed task retained its context without cache maintenance")
+    }
 }
