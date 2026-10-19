@@ -102,6 +102,9 @@ impl NetworkCoalesceExec {
             //
             // The task-local metadata no longer contains split point 40, so we cannot
             // reconstruct Range(8) from it. For now, declare UnknownPartitioning.
+            //
+            // TODO: We may be able to improve this is all spit points are present
+            // https://github.com/apache/datafusion/issues/26509
             return Ok(Arc::new(input_props.as_ref().clone().with_partitioning(
                 Partitioning::UnknownPartitioning(f(range.partition_count())),
             )));

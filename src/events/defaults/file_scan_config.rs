@@ -92,6 +92,9 @@ pub(crate) fn file_scan_config_scale_up_leaf_node(
                         // Task 3: [ - |100| K |110| L |120| M ]  splits: [100, 110, 120]
                         //
                         // The split point 100 is re-used.
+                        //
+                        // TODO: Consider improving this upstream so split points do not need
+                        // to be re-used. https://github.com/apache/datafusion/issues/26509
                         let count = partition_count.div_ceil(ev.task_count);
                         let offset = start.min(partition_count - count);
                         scan.output_partitioning = Some(Partitioning::Range(ok_or_some_err!(
