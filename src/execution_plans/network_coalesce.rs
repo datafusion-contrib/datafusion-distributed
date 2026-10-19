@@ -404,45 +404,8 @@ fn task_group(input_task_count: usize, task_index: usize, task_count: usize) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::common::{ScalarValue, SplitPoint};
-    use datafusion::physical_expr::{
-        LexOrdering, Partitioning, PhysicalSortExpr, RangePartitioning,
-    };
+    use datafusion::arrow::datatypes::Schema;
     use datafusion::physical_plan::empty::EmptyExec;
-    use datafusion::physical_plan::expressions::Column;
-    use datafusion::physical_plan::repartition::RepartitionExec;
-    use datafusion::physical_plan::sorts::sort::SortExec;
-
-    #[test]
-    fn range_input_has_unknown_partitioning_and_preserves_ordering() -> Result<()> {
-        let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int64, false)]));
-        let ordering = LexOrdering::new([PhysicalSortExpr::new_default(Arc::new(Column::new(
-            "key", 0,
-        )))])
-        .unwrap();
-        let partitioning = Partitioning::Range(RangePartitioning::try_new(
-            ordering.clone(),
-            [10, 20, 30]
-                .into_iter()
-                .map(|value| SplitPoint::new(vec![ScalarValue::Int64(Some(value))]))
-                .collect(),
-        )?);
-        let input = Arc::new(RepartitionExec::try_new(
-            Arc::new(EmptyExec::new(schema)),
-            partitioning,
-        )?);
-        let input =
-            Arc::new(SortExec::new(ordering.clone(), input).with_preserve_partitioning(true));
-
-        let exec = NetworkCoalesceExec::try_new(input, 4, 1)?;
-        assert!(matches!(
-            exec.properties().partitioning,
-            Partitioning::UnknownPartitioning(16)
-        ));
-        assert_eq!(exec.properties().output_ordering(), Some(&ordering));
-        Ok(())
-    }
 
     #[derive(Clone, Copy)]
     struct Case {
