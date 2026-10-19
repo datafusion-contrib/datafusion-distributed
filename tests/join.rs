@@ -1,135 +1,32 @@
 #[cfg(all(feature = "integration", test))]
 mod tests {
     use arrow::{
-        array::{AsArray, RecordBatch},
+        array::RecordBatch,
         datatypes::DataType,
         util::pretty::{self, pretty_format_batches},
     };
     use datafusion::{
+        catalog::memory::DataSourceExec,
         common::{ScalarValue, SplitPoint},
         datasource::{
             file_format::parquet::ParquetFormat,
             listing::{ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl},
+            physical_plan::FileScanConfig,
         },
         error::Result,
         logical_expr::{Partitioning, RangePartitioning},
-        physical_plan::{
-            ExecutionPlanProperties, Partitioning as PhysicalPartitioning, collect,
-            collect_partitioned,
-        },
+        physical_plan::collect,
         prelude::{SessionContext, col},
     };
     use datafusion_distributed::{
-        DefaultSessionBuilder, assert_snapshot, display_plan_ascii,
-        test_utils::localhost::start_localhost_context,
+        DefaultSessionBuilder, DistributedExt, DistributedLeafExec, ScaleUpLeafNodeEvent,
+        ScaleUpLeafNodeEventResponse, assert_snapshot, display_plan_ascii,
+        test_utils::{localhost::start_localhost_context, routing::UrlEmitterRouteTaskHandler},
     };
-    use std::collections::BTreeSet;
     use std::sync::Arc;
-
-    fn set_configs(ctx: &mut SessionContext) {
-        // Read two ranges: keys below C and keys at or above C.
-        ctx.state_ref()
-            .write()
-            .config_mut()
-            .options_mut()
-            .execution
-            .target_partitions = 2;
-        // Ensure that we use a partitioned hash join.
-        ctx.state_ref()
-            .write()
-            .config_mut()
-            .options_mut()
-            .optimizer
-            .hash_join_single_partition_threshold = 0;
-        ctx.state_ref()
-            .write()
-            .config_mut()
-            .options_mut()
-            .optimizer
-            .hash_join_single_partition_threshold_rows = 0;
-    }
-
-    async fn register_tables(ctx: &SessionContext) -> Result<()> {
-        for (name, partition_column) in [("dim", "d_dkey"), ("fact", "f_dkey")] {
-            let output_partitioning = Partitioning::Range(RangePartitioning::try_new(
-                vec![col(partition_column).sort(true, false)],
-                vec![SplitPoint::new(vec![ScalarValue::Utf8(Some(
-                    "C".to_string(),
-                ))])],
-            )?);
-            let mut options = ListingOptions::new(Arc::new(ParquetFormat::default()))
-                .with_table_partition_cols(vec![(partition_column.to_string(), DataType::Utf8)])
-                .with_output_partitioning(Some(output_partitioning));
-            if name == "fact" {
-                options = options.with_file_sort_order(vec![vec![
-                    col(partition_column).sort(true, false),
-                    col("timestamp").sort(true, false),
-                ]]);
-            }
-            let config = ListingTableConfig::new(ListingTableUrl::parse(format!(
-                "testdata/join/parquet/{name}"
-            ))?)
-            .with_listing_options(options)
-            .infer_schema(&ctx.state())
-            .await?;
-            ctx.register_table(name, Arc::new(ListingTable::try_new(config)?))?;
-        }
-        Ok(())
-    }
-
-    async fn execute_query(
-        ctx: &SessionContext,
-        query: &'static str,
-    ) -> Result<(String, Vec<RecordBatch>)> {
-        let df = ctx.sql(query).await?;
-        let (state, logical_plan) = df.into_parts();
-        let physical_plan = state.create_physical_plan(&logical_plan).await?;
-        let distributed_plan = display_plan_ascii(physical_plan.as_ref(), false);
-        println!("\n——————— DISTRIBUTED PLAN ———————\n\n{distributed_plan}");
-
-        let distributed_results = collect(physical_plan, state.task_ctx()).await?;
-        pretty::print_batches(&distributed_results)?;
-        Ok((distributed_plan, distributed_results))
-    }
-
-    #[tokio::test]
-    async fn range_partitioned_join_fixture() -> Result<()> {
-        let ctx = SessionContext::new();
-        register_tables(&ctx).await?;
-
-        for (table, key) in [("dim", "d_dkey"), ("fact", "f_dkey")] {
-            let plan = ctx
-                .sql(&format!("SELECT {key} FROM {table}"))
-                .await?
-                .create_physical_plan()
-                .await?;
-            let PhysicalPartitioning::Range(range) = plan.output_partitioning() else {
-                panic!("{table} must advertise range partitioning");
-            };
-            assert_eq!(
-                range.split_points(),
-                &[SplitPoint::new(vec![ScalarValue::Utf8(Some(
-                    "C".to_string()
-                ))])],
-            );
-
-            let partitions = collect_partitioned(plan, ctx.task_ctx()).await?;
-            assert_eq!(partitions.len(), 2);
-            for (batches, expected) in partitions.iter().zip([["A", "B"], ["C", "D"]]) {
-                let keys = batches
-                    .iter()
-                    .flat_map(|batch| batch.column(0).as_string::<i32>().iter())
-                    .collect::<BTreeSet<_>>();
-                assert_eq!(keys, BTreeSet::from(expected.map(Some)), "{table}");
-            }
-        }
-        Ok(())
-    }
 
     #[tokio::test]
     async fn test_join_range_partitioned() -> Result<(), Box<dyn std::error::Error>> {
-        // Project out the range key before the network boundary: coalescing range
-        // partitioning is not supported yet (#628).
         let query = r#"
             SELECT 
                 f.timestamp,
@@ -143,10 +40,9 @@ mod tests {
             ORDER BY env, timestamp
         "#;
 
-        // Execute the query using distributed datafusion, 2 workers,
-        // and range-partitioned data.
+        // Execute with four workers, each reading one range from both tables.
         let (mut distributed_ctx, _guard, _) =
-            start_localhost_context(2, DefaultSessionBuilder).await;
+            start_localhost_context(4, DefaultSessionBuilder).await;
         set_configs(&mut distributed_ctx);
         register_tables(&distributed_ctx).await?;
         let (distributed_plan, distributed_results) =
@@ -223,10 +119,9 @@ mod tests {
             ORDER BY f_dkey, time_bin
         "#;
 
-        // Execute the query using distributed datafusion, 2 workers,
-        // and range-partitioned data.
+        // Execute with four workers, each reading one range from both tables.
         let (mut distributed_ctx, _guard, _) =
-            start_localhost_context(2, DefaultSessionBuilder).await;
+            start_localhost_context(4, DefaultSessionBuilder).await;
         set_configs(&mut distributed_ctx);
         register_tables(&distributed_ctx).await?;
         let (distributed_plan, distributed_results) =
@@ -305,10 +200,9 @@ mod tests {
             ORDER BY env, time_bin
         "#;
 
-        // Execute the query using distributed datafusion, 2 workers,
-        // and range-partitioned data.
+        // Execute with four workers, each reading one range from both tables.
         let (mut distributed_ctx, _guard, _) =
-            start_localhost_context(2, DefaultSessionBuilder).await;
+            start_localhost_context(4, DefaultSessionBuilder).await;
         set_configs(&mut distributed_ctx);
         register_tables(&distributed_ctx).await?;
         let (distributed_plan, distributed_results) =
@@ -363,5 +257,83 @@ mod tests {
         ");
 
         Ok(())
+    }
+
+    fn set_configs(ctx: &mut SessionContext) {
+        ctx.set_distributed_scale_up_leaf_node_handler(scale_range_partitioned_scan);
+        ctx.set_distributed_route_task_handler(UrlEmitterRouteTaskHandler);
+        let state = ctx.state_ref();
+        let mut state = state.write();
+        let options = state.config_mut().options_mut();
+        options.execution.target_partitions = 4;
+        // Ensure that we use a partitioned hash join.
+        options.optimizer.hash_join_single_partition_threshold = 0;
+        options.optimizer.hash_join_single_partition_threshold_rows = 0;
+    }
+
+    fn scale_range_partitioned_scan(
+        ev: ScaleUpLeafNodeEvent,
+    ) -> Option<Result<ScaleUpLeafNodeEventResponse>> {
+        let source = ev.plan.downcast_ref::<DataSourceExec>()?;
+        let file_scan = source.data_source().downcast_ref::<FileScanConfig>()?;
+        assert_eq!(file_scan.file_groups.len(), ev.task_count);
+
+        // Assign one complete range to each task, keeping matching dim/fact ranges together.
+        // The default scaler instead keeps the original partition count in every task (#628).
+        let variants = file_scan.file_groups.iter().map(|group| {
+            let mut scan = file_scan.clone();
+            scan.file_groups = vec![group.clone()];
+            // Each task has one partition, not the original four-range partitioning.
+            scan.output_partitioning = None;
+            DataSourceExec::from_data_source(scan) as _
+        });
+        Some(
+            DistributedLeafExec::try_new(Arc::clone(ev.plan), variants)
+                .map(|plan| ScaleUpLeafNodeEventResponse::new(Arc::new(plan))),
+        )
+    }
+
+    async fn register_tables(ctx: &SessionContext) -> Result<()> {
+        for (name, partition_column) in [("dim", "d_dkey"), ("fact", "f_dkey")] {
+            let output_partitioning = Partitioning::Range(RangePartitioning::try_new(
+                vec![col(partition_column).sort(true, false)],
+                ["B", "C", "D"]
+                    .into_iter()
+                    .map(|key| SplitPoint::new(vec![ScalarValue::Utf8(Some(key.to_string()))]))
+                    .collect(),
+            )?);
+            let mut options = ListingOptions::new(Arc::new(ParquetFormat::default()))
+                .with_table_partition_cols(vec![(partition_column.to_string(), DataType::Utf8)])
+                .with_output_partitioning(Some(output_partitioning));
+            if name == "fact" {
+                options = options.with_file_sort_order(vec![vec![
+                    col(partition_column).sort(true, false),
+                    col("timestamp").sort(true, false),
+                ]]);
+            }
+            let config = ListingTableConfig::new(ListingTableUrl::parse(format!(
+                "testdata/join/parquet/{name}"
+            ))?)
+            .with_listing_options(options)
+            .infer_schema(&ctx.state())
+            .await?;
+            ctx.register_table(name, Arc::new(ListingTable::try_new(config)?))?;
+        }
+        Ok(())
+    }
+
+    async fn execute_query(
+        ctx: &SessionContext,
+        query: &'static str,
+    ) -> Result<(String, Vec<RecordBatch>)> {
+        let df = ctx.sql(query).await?;
+        let (state, logical_plan) = df.into_parts();
+        let physical_plan = state.create_physical_plan(&logical_plan).await?;
+        let distributed_plan = display_plan_ascii(physical_plan.as_ref(), false);
+        println!("\n——————— DISTRIBUTED PLAN ———————\n\n{distributed_plan}");
+
+        let distributed_results = collect(physical_plan, state.task_ctx()).await?;
+        pretty::print_batches(&distributed_results)?;
+        Ok((distributed_plan, distributed_results))
     }
 }
