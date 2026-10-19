@@ -70,14 +70,18 @@ pub(crate) fn file_scan_config_scale_up_leaf_node(
 
     match (is_sorted, supports_repartitioning) {
         (_, false) if is_pre_partitioned => {
-            // Keep each group intact at its original partition index. Empty slots preserve
-            // range boundaries and the hash modulus, including for copartitioned joins.
-            for scan in &mut file_scans {
+            // Assign contiguous ranges of whole groups to tasks, keeping their original
+            // partition indices. Empty slots preserve range boundaries and the hash
+            // modulus, including for copartitioned joins.
+            let partitions_per_task = partition_count / ev.task_count;
+            let extra_partitions = partition_count % ev.task_count;
+            let mut start = 0;
+            for (task, scan) in file_scans.iter_mut().enumerate() {
+                let end = start + partitions_per_task + usize::from(task < extra_partitions);
                 scan.file_groups
                     .resize(partition_count, FileGroup::default());
-            }
-            for (partition, group) in file_scan.file_groups.iter().enumerate() {
-                file_scans[partition % ev.task_count].file_groups[partition] = group.clone();
+                scan.file_groups[start..end].clone_from_slice(&file_scan.file_groups[start..end]);
+                start = end;
             }
         }
         // does not support repartitioning
