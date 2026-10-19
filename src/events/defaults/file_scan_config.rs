@@ -20,6 +20,12 @@ pub(crate) fn file_scan_config_desired_task_count(
     let dse: &DataSourceExec = ev.plan.downcast_ref()?;
     let file_scan: &FileScanConfig = dse.data_source().downcast_ref()?;
 
+    let target_partitions = cfg.target_partitions().max(1) as f64;
+    if is_pre_partitioned(file_scan) {
+        let task_count = ev.plan.output_partitioning().partition_count() as f64 / target_partitions;
+        return Some(Ok(DesiredTaskCountEventResponse::desired(task_count)));
+    }
+
     let d_cfg = DistributedConfig::from_session_config(cfg).ok()?;
 
     let mut total_bytes = 0;
@@ -30,7 +36,6 @@ pub(crate) fn file_scan_config_desired_task_count(
     }
 
     let bytes_per_partition = d_cfg.file_scan_config_bytes_per_partition.max(1) as f64;
-    let target_partitions = cfg.target_partitions().max(1) as f64;
     let task_count = total_bytes as f64 / bytes_per_partition / target_partitions;
 
     Some(Ok(DesiredTaskCountEventResponse::desired(task_count)))
@@ -45,10 +50,7 @@ pub(crate) fn file_scan_config_scale_up_leaf_node(
     let partition_count = ev.plan.output_partitioning().partition_count();
 
     let is_sorted = file_scan.eq_properties().output_ordering().is_some();
-    let is_pre_partitioned = !matches!(
-        file_scan.output_partitioning(),
-        Partitioning::UnknownPartitioning(_) | Partitioning::RoundRobinBatch(_)
-    );
+    let is_pre_partitioned = is_pre_partitioned(file_scan);
     let supports_byte_range_partitioning = !file_scan.file_compression_type.is_compressed()
         && file_scan.file_source.supports_repartitioning();
     let supports_repartitioning = supports_byte_range_partitioning && !is_pre_partitioned;
@@ -67,6 +69,17 @@ pub(crate) fn file_scan_config_scale_up_leaf_node(
     let mut file_scans = vec![file_scan_template; ev.task_count];
 
     match (is_sorted, supports_repartitioning) {
+        (_, false) if is_pre_partitioned => {
+            // Keep each group intact at its original partition index. Empty slots preserve
+            // range boundaries and the hash modulus, including for copartitioned joins.
+            for scan in &mut file_scans {
+                scan.file_groups
+                    .resize(partition_count, FileGroup::default());
+            }
+            for (partition, group) in file_scan.file_groups.iter().enumerate() {
+                file_scans[partition % ev.task_count].file_groups[partition] = group.clone();
+            }
+        }
         // does not support repartitioning
         (_, false) => {
             let all_partitioned_files = file_scan
@@ -141,6 +154,13 @@ pub(crate) fn file_scan_config_scale_up_leaf_node(
     Some(Ok(ScaleUpLeafNodeEventResponse::new(Arc::new(
         distributed_leaf,
     ))))
+}
+
+fn is_pre_partitioned(file_scan: &FileScanConfig) -> bool {
+    matches!(
+        file_scan.output_partitioning(),
+        Partitioning::Hash(_, _) | Partitioning::Range(_)
+    )
 }
 
 fn rebalance_round_robin<T>(items: Vec<T>, target_groups: usize) -> Vec<Vec<T>> {

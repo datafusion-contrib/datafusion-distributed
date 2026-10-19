@@ -8,7 +8,7 @@ use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{exec_err, not_impl_err, plan_err};
 use datafusion::error::Result;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
-use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_expr::{Partitioning, PhysicalExpr};
 use datafusion::physical_expr_common::metrics::MetricsSet;
 use datafusion::physical_plan::limit::LocalLimitExec;
 use datafusion::physical_plan::projection::ProjectionExec;
@@ -22,8 +22,9 @@ use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// [ExecutionPlan] that coalesces partitions from multiple tasks into a one or more task without
-/// performing any repartition, and maintaining the same partitioning scheme.
+/// [ExecutionPlan] that coalesces partitions from multiple tasks into one or more tasks without
+/// repartitioning their data. Range inputs advertise unknown partitioning because concatenating
+/// task partitions does not preserve their range boundaries.
 ///
 /// This is the equivalent of a [CoalescePartitionsExec] but coalescing tasks across the network
 /// between distributed stages.
@@ -93,7 +94,15 @@ impl NetworkCoalesceExec {
         // per output task based on the maximum group size, returning empty streams for tasks with
         // smaller groups.
         let max_input_task_count = input_stage.task_count().div_ceil(consumer_tasks).max(1);
-        let props = scale_partitioning_props(&input_properties, |p| p * max_input_task_count)?;
+        let props = if matches!(&input_properties.partitioning, Partitioning::Range(_)) {
+            Arc::new(input_properties.as_ref().clone().with_partitioning(
+                Partitioning::UnknownPartitioning(
+                    input_properties.partitioning.partition_count() * max_input_task_count,
+                ),
+            ))
+        } else {
+            scale_partitioning_props(&input_properties, |p| p * max_input_task_count)?
+        };
 
         Ok(Self {
             properties: props,
@@ -403,8 +412,43 @@ fn task_group(input_task_count: usize, task_index: usize, task_count: usize) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use datafusion::arrow::datatypes::Schema;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::common::{ScalarValue, SplitPoint};
+    use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr, RangePartitioning};
     use datafusion::physical_plan::empty::EmptyExec;
+    use datafusion::physical_plan::expressions::Column;
+    use datafusion::physical_plan::repartition::RepartitionExec;
+    use datafusion::physical_plan::sorts::sort::SortExec;
+
+    #[test]
+    fn range_input_has_unknown_partitioning_and_preserves_ordering() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int64, false)]));
+        let ordering = LexOrdering::new([PhysicalSortExpr::new_default(Arc::new(Column::new(
+            "key", 0,
+        )))])
+        .unwrap();
+        let partitioning = Partitioning::Range(RangePartitioning::try_new(
+            ordering.clone(),
+            [10, 20, 30]
+                .into_iter()
+                .map(|value| SplitPoint::new(vec![ScalarValue::Int64(Some(value))]))
+                .collect(),
+        )?);
+        let input = Arc::new(RepartitionExec::try_new(
+            Arc::new(EmptyExec::new(schema)),
+            partitioning,
+        )?);
+        let input =
+            Arc::new(SortExec::new(ordering.clone(), input).with_preserve_partitioning(true));
+
+        let exec = NetworkCoalesceExec::try_new(input, 4, 1)?;
+        assert!(matches!(
+            exec.properties().partitioning,
+            Partitioning::UnknownPartitioning(16)
+        ));
+        assert_eq!(exec.properties().output_ordering(), Some(&ordering));
+        Ok(())
+    }
 
     #[derive(Clone, Copy)]
     struct Case {

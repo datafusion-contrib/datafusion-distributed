@@ -6,12 +6,10 @@ mod tests {
         util::pretty::{self, pretty_format_batches},
     };
     use datafusion::{
-        catalog::memory::DataSourceExec,
         common::{ScalarValue, SplitPoint},
         datasource::{
             file_format::parquet::ParquetFormat,
             listing::{ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl},
-            physical_plan::FileScanConfig,
         },
         error::Result,
         logical_expr::{Partitioning, RangePartitioning},
@@ -19,11 +17,13 @@ mod tests {
         prelude::{SessionContext, col},
     };
     use datafusion_distributed::{
-        DefaultSessionBuilder, DistributedExt, DistributedLeafExec, ScaleUpLeafNodeEvent,
-        ScaleUpLeafNodeEventResponse, assert_snapshot, display_plan_ascii,
+        DefaultSessionBuilder, DistributedExt, assert_snapshot, display_plan_ascii,
         test_utils::{localhost::start_localhost_context, routing::UrlEmitterRouteTaskHandler},
     };
+    use std::fs;
+    use std::path::{Path, PathBuf};
     use std::sync::Arc;
+    use uuid::Uuid;
 
     #[tokio::test]
     async fn test_join_range_partitioned() -> Result<(), Box<dyn std::error::Error>> {
@@ -40,11 +40,11 @@ mod tests {
             ORDER BY env, timestamp
         "#;
 
-        // Execute with four workers, each reading one range from both tables.
+        // Use a four-worker context with range-partitioned tables.
         let (mut distributed_ctx, _guard, _) =
             start_localhost_context(4, DefaultSessionBuilder).await;
         set_configs(&mut distributed_ctx);
-        register_tables(&distributed_ctx).await?;
+        register_tables(&distributed_ctx, Path::new("testdata/join/parquet")).await?;
         let (distributed_plan, distributed_results) =
             execute_query(&distributed_ctx, query).await?;
 
@@ -53,22 +53,18 @@ mod tests {
         @"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [env@2 ASC NULLS LAST, timestamp@0 ASC NULLS LAST]
-        │   [Stage 1] => NetworkCoalesceExec: output_partitions=4, input_tasks=4
+        │   [Stage 1] => NetworkCoalesceExec: output_partitions=8, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── tasks=4, partitions=4
+          ┌───── Stage 1 ── tasks=2, partitions=8
           │ SortExec: expr=[env@2 ASC NULLS LAST, timestamp@0 ASC NULLS LAST], preserve_partitioning=[true]
           │   HashJoinExec: mode=Partitioned, join_type=Inner, on=[(d_dkey@3, f_dkey@2)], projection=[timestamp@4, value@5, env@0, service@1, host@2]
           │     FilterExec: service@1 = log
           │       DistributedLeafExec:
-          │         t0: DataSourceExec: file_groups={1 group: [[/testdata/join/parquet/dim/d_dkey=A/data0.parquet]]}, projection=[env, service, host, d_dkey], file_type=parquet, predicate=service@1 = log, pruning_predicate=service_null_count@2 != row_count@3 AND service_min@0 <= log AND log <= service_max@1, required_guarantees=[service in (log)]
-          │         t1: DataSourceExec: file_groups={1 group: [[/testdata/join/parquet/dim/d_dkey=B/data0.parquet]]}, projection=[env, service, host, d_dkey], file_type=parquet, predicate=service@1 = log, pruning_predicate=service_null_count@2 != row_count@3 AND service_min@0 <= log AND log <= service_max@1, required_guarantees=[service in (log)]
-          │         t2: DataSourceExec: file_groups={1 group: [[/testdata/join/parquet/dim/d_dkey=C/data0.parquet]]}, projection=[env, service, host, d_dkey], file_type=parquet, predicate=service@1 = log, pruning_predicate=service_null_count@2 != row_count@3 AND service_min@0 <= log AND log <= service_max@1, required_guarantees=[service in (log)]
-          │         t3: DataSourceExec: file_groups={1 group: [[/testdata/join/parquet/dim/d_dkey=D/data0.parquet]]}, projection=[env, service, host, d_dkey], file_type=parquet, predicate=service@1 = log, pruning_predicate=service_null_count@2 != row_count@3 AND service_min@0 <= log AND log <= service_max@1, required_guarantees=[service in (log)]
+          │         t0: DataSourceExec: file_groups={4 groups: [[/testdata/join/parquet/dim/d_dkey=A/data0.parquet], [], [/testdata/join/parquet/dim/d_dkey=C/data0.parquet], []]}, projection=[env, service, host, d_dkey], output_partitioning=Range([d_dkey@3 ASC NULLS LAST], [(B), (C), (D)], 4), file_type=parquet, predicate=service@1 = log, pruning_predicate=service_null_count@2 != row_count@3 AND service_min@0 <= log AND log <= service_max@1, required_guarantees=[service in (log)]
+          │         t1: DataSourceExec: file_groups={4 groups: [[], [/testdata/join/parquet/dim/d_dkey=B/data0.parquet], [], [/testdata/join/parquet/dim/d_dkey=D/data0.parquet]]}, projection=[env, service, host, d_dkey], output_partitioning=Range([d_dkey@3 ASC NULLS LAST], [(B), (C), (D)], 4), file_type=parquet, predicate=service@1 = log, pruning_predicate=service_null_count@2 != row_count@3 AND service_min@0 <= log AND log <= service_max@1, required_guarantees=[service in (log)]
           │     DistributedLeafExec:
-          │       t0: DataSourceExec: file_groups={1 group: [[/testdata/join/parquet/fact/f_dkey=A/data0.parquet]]}, projection=[timestamp, value, f_dkey], output_ordering=[f_dkey@2 ASC NULLS LAST, timestamp@0 ASC NULLS LAST], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
-          │       t1: DataSourceExec: file_groups={1 group: [[/testdata/join/parquet/fact/f_dkey=B/data0.parquet]]}, projection=[timestamp, value, f_dkey], output_ordering=[f_dkey@2 ASC NULLS LAST, timestamp@0 ASC NULLS LAST], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
-          │       t2: DataSourceExec: file_groups={1 group: [[/testdata/join/parquet/fact/f_dkey=C/data0.parquet]]}, projection=[timestamp, value, f_dkey], output_ordering=[f_dkey@2 ASC NULLS LAST, timestamp@0 ASC NULLS LAST], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
-          │       t3: DataSourceExec: file_groups={1 group: [[/testdata/join/parquet/fact/f_dkey=D/data0.parquet]]}, projection=[timestamp, value, f_dkey], output_ordering=[f_dkey@2 ASC NULLS LAST, timestamp@0 ASC NULLS LAST], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
+          │       t0: DataSourceExec: file_groups={4 groups: [[/testdata/join/parquet/fact/f_dkey=A/data0.parquet], [], [/testdata/join/parquet/fact/f_dkey=C/data0.parquet], []]}, projection=[timestamp, value, f_dkey], output_ordering=[f_dkey@2 ASC NULLS LAST, timestamp@0 ASC NULLS LAST], output_partitioning=Range([f_dkey@2 ASC NULLS LAST], [(B), (C), (D)], 4), file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
+          │       t1: DataSourceExec: file_groups={4 groups: [[], [/testdata/join/parquet/fact/f_dkey=B/data0.parquet], [], [/testdata/join/parquet/fact/f_dkey=D/data0.parquet]]}, projection=[timestamp, value, f_dkey], output_ordering=[f_dkey@2 ASC NULLS LAST, timestamp@0 ASC NULLS LAST], output_partitioning=Range([f_dkey@2 ASC NULLS LAST], [(B), (C), (D)], 4), file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
           └──────────────────────────────────────────────────
         ");
 
@@ -123,11 +119,11 @@ mod tests {
             ORDER BY f_dkey, time_bin
         "#;
 
-        // Execute with four workers, each reading one range from both tables.
+        // Use a four-worker context with range-partitioned tables.
         let (mut distributed_ctx, _guard, _) =
             start_localhost_context(4, DefaultSessionBuilder).await;
         set_configs(&mut distributed_ctx);
-        register_tables(&distributed_ctx).await?;
+        register_tables(&distributed_ctx, Path::new("testdata/join/parquet")).await?;
         let (distributed_plan, distributed_results) =
             execute_query(&distributed_ctx, query).await?;
 
@@ -135,23 +131,19 @@ mod tests {
         assert_snapshot!(&distributed_plan, @r#"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [f_dkey@0 ASC NULLS LAST, time_bin@1 ASC NULLS LAST]
-        │   [Stage 1] => NetworkCoalesceExec: output_partitions=4, input_tasks=4
+        │   [Stage 1] => NetworkCoalesceExec: output_partitions=8, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── tasks=4, partitions=4
+          ┌───── Stage 1 ── tasks=2, partitions=8
           │ ProjectionExec: expr=[f_dkey@0 as f_dkey, date_bin(IntervalMonthDayNano("IntervalMonthDayNano { months: 0, days: 0, nanoseconds: 30000000000 }"),j.timestamp)@1 as time_bin, env@2 as env, max(j.value)@3 as max_bin_value]
           │   AggregateExec: mode=SinglePartitioned, gby=[f_dkey@0 as f_dkey, date_bin(IntervalMonthDayNano { months: 0, days: 0, nanoseconds: 30000000000 }, timestamp@2) as date_bin(IntervalMonthDayNano("IntervalMonthDayNano { months: 0, days: 0, nanoseconds: 30000000000 }"),j.timestamp), env@1 as env], aggr=[max(j.value)], ordering_mode=PartiallySorted([0, 1])
           │     HashJoinExec: mode=Partitioned, join_type=Inner, on=[(d_dkey@1, f_dkey@2)], projection=[f_dkey@4, env@0, timestamp@2, value@3]
           │       FilterExec: service@1 = log, projection=[env@0, d_dkey@2]
           │         DistributedLeafExec:
-          │           t0: DataSourceExec: file_groups={1 group: [[/testdata/join/parquet/dim/d_dkey=A/data0.parquet]]}, projection=[env, service, d_dkey], file_type=parquet, predicate=service@1 = log, pruning_predicate=service_null_count@2 != row_count@3 AND service_min@0 <= log AND log <= service_max@1, required_guarantees=[service in (log)]
-          │           t1: DataSourceExec: file_groups={1 group: [[/testdata/join/parquet/dim/d_dkey=B/data0.parquet]]}, projection=[env, service, d_dkey], file_type=parquet, predicate=service@1 = log, pruning_predicate=service_null_count@2 != row_count@3 AND service_min@0 <= log AND log <= service_max@1, required_guarantees=[service in (log)]
-          │           t2: DataSourceExec: file_groups={1 group: [[/testdata/join/parquet/dim/d_dkey=C/data0.parquet]]}, projection=[env, service, d_dkey], file_type=parquet, predicate=service@1 = log, pruning_predicate=service_null_count@2 != row_count@3 AND service_min@0 <= log AND log <= service_max@1, required_guarantees=[service in (log)]
-          │           t3: DataSourceExec: file_groups={1 group: [[/testdata/join/parquet/dim/d_dkey=D/data0.parquet]]}, projection=[env, service, d_dkey], file_type=parquet, predicate=service@1 = log, pruning_predicate=service_null_count@2 != row_count@3 AND service_min@0 <= log AND log <= service_max@1, required_guarantees=[service in (log)]
+          │           t0: DataSourceExec: file_groups={4 groups: [[/testdata/join/parquet/dim/d_dkey=A/data0.parquet], [], [/testdata/join/parquet/dim/d_dkey=C/data0.parquet], []]}, projection=[env, service, d_dkey], output_partitioning=Range([d_dkey@2 ASC NULLS LAST], [(B), (C), (D)], 4), file_type=parquet, predicate=service@1 = log, pruning_predicate=service_null_count@2 != row_count@3 AND service_min@0 <= log AND log <= service_max@1, required_guarantees=[service in (log)]
+          │           t1: DataSourceExec: file_groups={4 groups: [[], [/testdata/join/parquet/dim/d_dkey=B/data0.parquet], [], [/testdata/join/parquet/dim/d_dkey=D/data0.parquet]]}, projection=[env, service, d_dkey], output_partitioning=Range([d_dkey@2 ASC NULLS LAST], [(B), (C), (D)], 4), file_type=parquet, predicate=service@1 = log, pruning_predicate=service_null_count@2 != row_count@3 AND service_min@0 <= log AND log <= service_max@1, required_guarantees=[service in (log)]
           │       DistributedLeafExec:
-          │         t0: DataSourceExec: file_groups={1 group: [[/testdata/join/parquet/fact/f_dkey=A/data0.parquet]]}, projection=[timestamp, value, f_dkey], output_ordering=[f_dkey@2 ASC NULLS LAST, timestamp@0 ASC NULLS LAST], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
-          │         t1: DataSourceExec: file_groups={1 group: [[/testdata/join/parquet/fact/f_dkey=B/data0.parquet]]}, projection=[timestamp, value, f_dkey], output_ordering=[f_dkey@2 ASC NULLS LAST, timestamp@0 ASC NULLS LAST], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
-          │         t2: DataSourceExec: file_groups={1 group: [[/testdata/join/parquet/fact/f_dkey=C/data0.parquet]]}, projection=[timestamp, value, f_dkey], output_ordering=[f_dkey@2 ASC NULLS LAST, timestamp@0 ASC NULLS LAST], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
-          │         t3: DataSourceExec: file_groups={1 group: [[/testdata/join/parquet/fact/f_dkey=D/data0.parquet]]}, projection=[timestamp, value, f_dkey], output_ordering=[f_dkey@2 ASC NULLS LAST, timestamp@0 ASC NULLS LAST], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
+          │         t0: DataSourceExec: file_groups={4 groups: [[/testdata/join/parquet/fact/f_dkey=A/data0.parquet], [], [/testdata/join/parquet/fact/f_dkey=C/data0.parquet], []]}, projection=[timestamp, value, f_dkey], output_ordering=[f_dkey@2 ASC NULLS LAST, timestamp@0 ASC NULLS LAST], output_partitioning=Range([f_dkey@2 ASC NULLS LAST], [(B), (C), (D)], 4), file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
+          │         t1: DataSourceExec: file_groups={4 groups: [[], [/testdata/join/parquet/fact/f_dkey=B/data0.parquet], [], [/testdata/join/parquet/fact/f_dkey=D/data0.parquet]]}, projection=[timestamp, value, f_dkey], output_ordering=[f_dkey@2 ASC NULLS LAST, timestamp@0 ASC NULLS LAST], output_partitioning=Range([f_dkey@2 ASC NULLS LAST], [(B), (C), (D)], 4), file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
           └──────────────────────────────────────────────────
         "#);
 
@@ -203,11 +195,11 @@ mod tests {
             ORDER BY env, time_bin
         "#;
 
-        // Execute with four workers, each reading one range from both tables.
+        // Use a four-worker context with range-partitioned tables.
         let (mut distributed_ctx, _guard, _) =
             start_localhost_context(4, DefaultSessionBuilder).await;
         set_configs(&mut distributed_ctx);
-        register_tables(&distributed_ctx).await?;
+        register_tables(&distributed_ctx, Path::new("testdata/join/parquet")).await?;
         let (distributed_plan, distributed_results) =
             execute_query(&distributed_ctx, query).await?;
 
@@ -216,31 +208,27 @@ mod tests {
         assert_snapshot!(&distributed_plan, @r#"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [env@0 ASC NULLS LAST, time_bin@1 ASC NULLS LAST]
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=16, input_tasks=4
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── tasks=4, partitions=4
+          ┌───── Stage 2 ── tasks=2, partitions=2
           │ ProjectionExec: expr=[env@0 as env, time_bin@1 as time_bin, avg(a.max_bin_value)@2 as avg_max_value]
           │   SortExec: expr=[env@0 ASC NULLS LAST, time_bin@1 ASC NULLS LAST], preserve_partitioning=[true]
           │     AggregateExec: mode=FinalPartitioned, gby=[env@0 as env, time_bin@1 as time_bin], aggr=[avg(a.max_bin_value)]
-          │       [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=4
+          │       [Stage 1] => NetworkShuffleExec: output_partitions=2, input_tasks=2
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── tasks=4, partitions=16
-            │ RepartitionExec: partitioning=Hash([env@0, time_bin@1], 16), input_partitions=1
+            ┌───── Stage 1 ── tasks=2, partitions=4
+            │ RepartitionExec: partitioning=Hash([env@0, time_bin@1], 4), input_partitions=4
             │   AggregateExec: mode=Partial, gby=[env@1 as env, time_bin@0 as time_bin], aggr=[avg(a.max_bin_value)]
             │     ProjectionExec: expr=[date_bin(IntervalMonthDayNano("IntervalMonthDayNano { months: 0, days: 0, nanoseconds: 30000000000 }"),j.timestamp)@1 as time_bin, env@2 as env, max(j.value)@3 as max_bin_value]
             │       AggregateExec: mode=SinglePartitioned, gby=[f_dkey@0 as f_dkey, date_bin(IntervalMonthDayNano { months: 0, days: 0, nanoseconds: 30000000000 }, timestamp@2) as date_bin(IntervalMonthDayNano("IntervalMonthDayNano { months: 0, days: 0, nanoseconds: 30000000000 }"),j.timestamp), env@1 as env], aggr=[max(j.value)], ordering_mode=PartiallySorted([0, 1])
             │         HashJoinExec: mode=Partitioned, join_type=Inner, on=[(d_dkey@1, f_dkey@2)], projection=[f_dkey@4, env@0, timestamp@2, value@3]
             │           FilterExec: service@1 = log, projection=[env@0, d_dkey@2]
             │             DistributedLeafExec:
-            │               t0: DataSourceExec: file_groups={1 group: [[/testdata/join/parquet/dim/d_dkey=A/data0.parquet]]}, projection=[env, service, d_dkey], file_type=parquet, predicate=service@1 = log, pruning_predicate=service_null_count@2 != row_count@3 AND service_min@0 <= log AND log <= service_max@1, required_guarantees=[service in (log)]
-            │               t1: DataSourceExec: file_groups={1 group: [[/testdata/join/parquet/dim/d_dkey=B/data0.parquet]]}, projection=[env, service, d_dkey], file_type=parquet, predicate=service@1 = log, pruning_predicate=service_null_count@2 != row_count@3 AND service_min@0 <= log AND log <= service_max@1, required_guarantees=[service in (log)]
-            │               t2: DataSourceExec: file_groups={1 group: [[/testdata/join/parquet/dim/d_dkey=C/data0.parquet]]}, projection=[env, service, d_dkey], file_type=parquet, predicate=service@1 = log, pruning_predicate=service_null_count@2 != row_count@3 AND service_min@0 <= log AND log <= service_max@1, required_guarantees=[service in (log)]
-            │               t3: DataSourceExec: file_groups={1 group: [[/testdata/join/parquet/dim/d_dkey=D/data0.parquet]]}, projection=[env, service, d_dkey], file_type=parquet, predicate=service@1 = log, pruning_predicate=service_null_count@2 != row_count@3 AND service_min@0 <= log AND log <= service_max@1, required_guarantees=[service in (log)]
+            │               t0: DataSourceExec: file_groups={4 groups: [[/testdata/join/parquet/dim/d_dkey=A/data0.parquet], [], [/testdata/join/parquet/dim/d_dkey=C/data0.parquet], []]}, projection=[env, service, d_dkey], output_partitioning=Range([d_dkey@2 ASC NULLS LAST], [(B), (C), (D)], 4), file_type=parquet, predicate=service@1 = log, pruning_predicate=service_null_count@2 != row_count@3 AND service_min@0 <= log AND log <= service_max@1, required_guarantees=[service in (log)]
+            │               t1: DataSourceExec: file_groups={4 groups: [[], [/testdata/join/parquet/dim/d_dkey=B/data0.parquet], [], [/testdata/join/parquet/dim/d_dkey=D/data0.parquet]]}, projection=[env, service, d_dkey], output_partitioning=Range([d_dkey@2 ASC NULLS LAST], [(B), (C), (D)], 4), file_type=parquet, predicate=service@1 = log, pruning_predicate=service_null_count@2 != row_count@3 AND service_min@0 <= log AND log <= service_max@1, required_guarantees=[service in (log)]
             │           DistributedLeafExec:
-            │             t0: DataSourceExec: file_groups={1 group: [[/testdata/join/parquet/fact/f_dkey=A/data0.parquet]]}, projection=[timestamp, value, f_dkey], output_ordering=[f_dkey@2 ASC NULLS LAST, timestamp@0 ASC NULLS LAST], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
-            │             t1: DataSourceExec: file_groups={1 group: [[/testdata/join/parquet/fact/f_dkey=B/data0.parquet]]}, projection=[timestamp, value, f_dkey], output_ordering=[f_dkey@2 ASC NULLS LAST, timestamp@0 ASC NULLS LAST], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
-            │             t2: DataSourceExec: file_groups={1 group: [[/testdata/join/parquet/fact/f_dkey=C/data0.parquet]]}, projection=[timestamp, value, f_dkey], output_ordering=[f_dkey@2 ASC NULLS LAST, timestamp@0 ASC NULLS LAST], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
-            │             t3: DataSourceExec: file_groups={1 group: [[/testdata/join/parquet/fact/f_dkey=D/data0.parquet]]}, projection=[timestamp, value, f_dkey], output_ordering=[f_dkey@2 ASC NULLS LAST, timestamp@0 ASC NULLS LAST], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
+            │             t0: DataSourceExec: file_groups={4 groups: [[/testdata/join/parquet/fact/f_dkey=A/data0.parquet], [], [/testdata/join/parquet/fact/f_dkey=C/data0.parquet], []]}, projection=[timestamp, value, f_dkey], output_ordering=[f_dkey@2 ASC NULLS LAST, timestamp@0 ASC NULLS LAST], output_partitioning=Range([f_dkey@2 ASC NULLS LAST], [(B), (C), (D)], 4), file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
+            │             t1: DataSourceExec: file_groups={4 groups: [[], [/testdata/join/parquet/fact/f_dkey=B/data0.parquet], [], [/testdata/join/parquet/fact/f_dkey=D/data0.parquet]]}, projection=[timestamp, value, f_dkey], output_ordering=[f_dkey@2 ASC NULLS LAST, timestamp@0 ASC NULLS LAST], output_partitioning=Range([f_dkey@2 ASC NULLS LAST], [(B), (C), (D)], 4), file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
             └──────────────────────────────────────────────────
         "#);
 
@@ -262,41 +250,73 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn test_join_range_partitioned_multiple_files() -> Result<()> {
+        let data_dir = multiple_files_per_partition()?;
+        let single_node_ctx = SessionContext::new();
+        let (mut distributed_ctx, _guard, _) =
+            start_localhost_context(4, DefaultSessionBuilder).await;
+        set_configs(&mut distributed_ctx);
+        for ctx in [&single_node_ctx, &distributed_ctx] {
+            // Isolate partition assignment from dynamic-filter behavior.
+            ctx.sql("SET datafusion.optimizer.enable_dynamic_filter_pushdown = false")
+                .await?;
+            register_tables(ctx, &data_dir).await?;
+        }
+
+        let query = r#"
+            SELECT d.env, COUNT(*) AS n
+            FROM dim d
+            JOIN fact f ON d.d_dkey = f.f_dkey
+            WHERE d.service = 'log'
+            GROUP BY d.env
+            ORDER BY d.env
+        "#;
+        let expected = single_node_ctx.sql(query).await?.collect().await?;
+        let (plan, actual) = execute_query(&distributed_ctx, query).await?;
+        fs::remove_dir_all(data_dir)?;
+
+        assert!(plan.contains("HashJoinExec: mode=Partitioned"), "{plan}");
+        assert_eq!(
+            pretty_format_batches(&actual)?.to_string(),
+            pretty_format_batches(&expected)?.to_string(),
+            "{plan}",
+        );
+        Ok(())
+    }
+
     fn set_configs(ctx: &mut SessionContext) {
-        ctx.set_distributed_scale_up_leaf_node_handler(scale_range_partitioned_scan);
         ctx.set_distributed_route_task_handler(UrlEmitterRouteTaskHandler);
         let state = ctx.state_ref();
         let mut state = state.write();
         let options = state.config_mut().options_mut();
-        options.execution.target_partitions = 4;
-        // Ensure that we use a partitioned hash join.
+        options.execution.target_partitions = 2;
         options.optimizer.hash_join_single_partition_threshold = 0;
         options.optimizer.hash_join_single_partition_threshold_rows = 0;
     }
 
-    fn scale_range_partitioned_scan(
-        ev: ScaleUpLeafNodeEvent,
-    ) -> Option<Result<ScaleUpLeafNodeEventResponse>> {
-        let source = ev.plan.downcast_ref::<DataSourceExec>()?;
-        let file_scan = source.data_source().downcast_ref::<FileScanConfig>()?;
-        assert_eq!(file_scan.file_groups.len(), ev.task_count);
-
-        // Assign one complete range to each task, keeping matching dim/fact ranges together.
-        // The default scaler instead keeps the original partition count in every task (#628).
-        let variants = file_scan.file_groups.iter().map(|group| {
-            let mut scan = file_scan.clone();
-            scan.file_groups = vec![group.clone()];
-            // Each task has one partition, not the original four-range partitioning.
-            scan.output_partitioning = None;
-            DataSourceExec::from_data_source(scan) as _
-        });
-        Some(
-            DistributedLeafExec::try_new(Arc::clone(ev.plan), variants)
-                .map(|plan| ScaleUpLeafNodeEventResponse::new(Arc::new(plan))),
-        )
+    fn multiple_files_per_partition() -> Result<PathBuf> {
+        let dir = std::env::temp_dir().join(format!("copartitioned_join_{}", Uuid::new_v4()));
+        // Matching keys must join across all files, not just files with matching indices.
+        for (table, column, files) in [("dim", "d_dkey", 2), ("fact", "f_dkey", 3)] {
+            for key in ["A", "B", "C", "D"] {
+                let partition = Path::new(table).join(format!("{column}={key}"));
+                let target = dir.join(&partition);
+                fs::create_dir_all(&target)?;
+                for file in 0..files {
+                    fs::copy(
+                        Path::new("testdata/join/parquet")
+                            .join(&partition)
+                            .join("data0.parquet"),
+                        target.join(format!("data{file}.parquet")),
+                    )?;
+                }
+            }
+        }
+        Ok(dir)
     }
 
-    async fn register_tables(ctx: &SessionContext) -> Result<()> {
+    async fn register_tables(ctx: &SessionContext, data_dir: &Path) -> Result<()> {
         for (name, partition_column) in [("dim", "d_dkey"), ("fact", "f_dkey")] {
             let output_partitioning = Partitioning::Range(RangePartitioning::try_new(
                 vec![col(partition_column).sort(true, false)],
@@ -314,9 +334,9 @@ mod tests {
                     col("timestamp").sort(true, false),
                 ]]);
             }
-            let config = ListingTableConfig::new(ListingTableUrl::parse(format!(
-                "testdata/join/parquet/{name}"
-            ))?)
+            let config = ListingTableConfig::new(ListingTableUrl::parse(
+                data_dir.join(name).to_str().unwrap(),
+            )?)
             .with_listing_options(options)
             .infer_schema(&ctx.state())
             .await?;
