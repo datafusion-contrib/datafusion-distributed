@@ -9,7 +9,7 @@ use datafusion::common::plan_err;
 use datafusion::datasource::physical_plan::{FileGroup, FileGroupPartitioner, FileScanConfig};
 use datafusion::datasource::source::DataSource;
 use datafusion::error::Result;
-use datafusion::physical_expr::Partitioning;
+use datafusion::physical_expr::{Partitioning, RangePartitioning};
 use datafusion::physical_plan::ExecutionPlanProperties;
 use std::sync::Arc;
 
@@ -70,17 +70,32 @@ pub(crate) fn file_scan_config_scale_up_leaf_node(
 
     match (is_sorted, supports_repartitioning) {
         (_, false) if is_pre_partitioned => {
-            // Assign contiguous ranges of whole groups to tasks, keeping their original
-            // partition indices. Empty slots preserve range boundaries and the hash
-            // modulus, including for copartitioned joins.
+            // Assign contiguous ranges of whole groups to tasks without splitting partitions.
             let partitions_per_task = partition_count / ev.task_count;
             let extra_partitions = partition_count % ev.task_count;
             let mut start = 0;
             for (task, scan) in file_scans.iter_mut().enumerate() {
                 let end = start + partitions_per_task + usize::from(task < extra_partitions);
-                scan.file_groups
-                    .resize(partition_count, FileGroup::default());
-                scan.file_groups[start..end].clone_from_slice(&file_scan.file_groups[start..end]);
+                let (offset, count) =
+                    if let Some(Partitioning::Range(range)) = &file_scan.output_partitioning {
+                        let count = partition_count.div_ceil(ev.task_count);
+                        // Reuse an original range window for empty padding slots, shifting
+                        // it left at the end instead of inventing or repeating split points.
+                        let offset = start.min(partition_count - count);
+                        scan.output_partitioning = Some(Partitioning::Range(ok_or_some_err!(
+                            RangePartitioning::try_new(
+                                range.ordering().clone(),
+                                range.split_points()[offset..offset + count - 1].to_vec(),
+                            )
+                        )));
+                        (offset, count)
+                    } else {
+                        // Hash partition IDs must retain the original modulus.
+                        (0, partition_count)
+                    };
+                scan.file_groups.resize(count, FileGroup::default());
+                scan.file_groups[start - offset..end - offset]
+                    .clone_from_slice(&file_scan.file_groups[start..end]);
                 start = end;
             }
         }
