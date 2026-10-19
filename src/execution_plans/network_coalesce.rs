@@ -8,7 +8,7 @@ use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{exec_err, not_impl_err, plan_err};
 use datafusion::error::Result;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
-use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_expr::{Partitioning, PhysicalExpr};
 use datafusion::physical_expr_common::metrics::MetricsSet;
 use datafusion::physical_plan::limit::LocalLimitExec;
 use datafusion::physical_plan::projection::ProjectionExec;
@@ -88,7 +88,7 @@ impl NetworkCoalesceExec {
         input_props: &Arc<PlanProperties>,
         f: impl FnOnce(usize) -> usize,
     ) -> Result<Arc<PlanProperties>> {
-        if let Partitioning::Range(range) = &props.partitioning {
+        if let Partitioning::Range(range) = &input_props.partitioning {
             // Declare UnknownPartitioning when coalescing range-partitioned data.
             //
             // Consider the partitions A-H with split points 10, 20, 30, 40 etc.
@@ -102,11 +102,11 @@ impl NetworkCoalesceExec {
             //
             // The task-local metadata no longer contains split point 40, so we cannot
             // reconstruct Range(8) from it. For now, declare UnknownPartitioning.
-            return Ok(Arc::new(props.as_ref().clone().with_partitioning(
+            return Ok(Arc::new(input_props.as_ref().clone().with_partitioning(
                 Partitioning::UnknownPartitioning(f(range.partition_count())),
             )));
         }
-        scale_partitioning_props(&input_properties, |p| p * max_input_task_count)
+        scale_partitioning_props(input_props, f)
     }
 
     pub(crate) fn try_from_stage(
@@ -118,7 +118,8 @@ impl NetworkCoalesceExec {
         // per output task based on the maximum group size, returning empty streams for tasks with
         // smaller groups.
         let max_input_task_count = input_stage.task_count().div_ceil(consumer_tasks).max(1);
-        let props = Self::scale_partitioning_props(&input_properties, |p| p * max_input_task_count)?;
+        let props =
+            Self::scale_partitioning_props(&input_properties, |p| p * max_input_task_count)?;
 
         Ok(Self {
             properties: props,
