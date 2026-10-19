@@ -23,8 +23,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 /// [ExecutionPlan] that coalesces partitions from multiple tasks into one or more tasks without
-/// repartitioning their data. Range inputs advertise unknown partitioning because concatenating
-/// task partitions does not preserve their range boundaries.
+/// repartitioning their data.
 ///
 /// This is the equivalent of a [CoalescePartitionsExec] but coalescing tasks across the network
 /// between distributed stages.
