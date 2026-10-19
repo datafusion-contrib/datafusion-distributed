@@ -1,6 +1,5 @@
 -- datafusion-cli -f testdata/join/generate_multiple_files_from_csv.sql
--- Keep this fixture separate from the single-file tables used by other tests.
--- Each key has two dim files and three fact files to exercise cross-file joins.
+-- Each key has two dim files and three fact files.
 -- Filenames include the key so tests can select four or five partitions.
 -- E reuses A's CSV rows; the partition key is supplied by the directory.
 

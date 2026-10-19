@@ -80,9 +80,19 @@ pub(crate) fn file_scan_config_scale_up_leaf_node(
                 let end = start + partitions_per_task + usize::from(task < extra_partitions);
                 let (offset, count) =
                     if let Some(Partitioning::Range(range)) = &file_scan.output_partitioning {
+                        // Sometimes a split point must be re-used.
+                        //
+                        // For example, imagine we have 13 partitions distributed across
+                        // 4 tasks with 4 partitiosn each. The partitions are A–M,
+                        // with boundaries 10, 20, …, 120.
+                        //
+                        // Task 0: [ A |10| B |20| C |30| D ]     splits: [10, 20, 30]
+                        // Task 1: [ E |50| F |60| G |70| - ]     splits: [50, 60, 70]
+                        // Task 2: [ H |80| I |90| J |100| - ]    splits: [80, 90, 100]
+                        // Task 3: [ - |100| K |110| L |120| M ]  splits: [100, 110, 120]
+                        //
+                        // The split point 100 is re-used.
                         let count = partition_count.div_ceil(ev.task_count);
-                        // Reuse an original range window for empty padding slots, shifting
-                        // it left at the end instead of inventing or repeating split points.
                         let offset = start.min(partition_count - count);
                         scan.output_partitioning = Some(Partitioning::Range(ok_or_some_err!(
                             RangePartitioning::try_new(
