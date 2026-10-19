@@ -8,7 +8,7 @@ use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{exec_err, not_impl_err, plan_err};
 use datafusion::error::Result;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
-use datafusion::physical_expr::{Partitioning, PhysicalExpr};
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr_common::metrics::MetricsSet;
 use datafusion::physical_plan::limit::LocalLimitExec;
 use datafusion::physical_plan::projection::ProjectionExec;
@@ -94,15 +94,7 @@ impl NetworkCoalesceExec {
         // per output task based on the maximum group size, returning empty streams for tasks with
         // smaller groups.
         let max_input_task_count = input_stage.task_count().div_ceil(consumer_tasks).max(1);
-        let props = if matches!(&input_properties.partitioning, Partitioning::Range(_)) {
-            Arc::new(input_properties.as_ref().clone().with_partitioning(
-                Partitioning::UnknownPartitioning(
-                    input_properties.partitioning.partition_count() * max_input_task_count,
-                ),
-            ))
-        } else {
-            scale_partitioning_props(&input_properties, |p| p * max_input_task_count)?
-        };
+        let props = scale_partitioning_props(&input_properties, |p| p * max_input_task_count)?;
 
         Ok(Self {
             properties: props,
@@ -414,7 +406,9 @@ mod tests {
     use super::*;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::common::{ScalarValue, SplitPoint};
-    use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr, RangePartitioning};
+    use datafusion::physical_expr::{
+        LexOrdering, Partitioning, PhysicalSortExpr, RangePartitioning,
+    };
     use datafusion::physical_plan::empty::EmptyExec;
     use datafusion::physical_plan::expressions::Column;
     use datafusion::physical_plan::repartition::RepartitionExec;

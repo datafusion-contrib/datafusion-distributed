@@ -8,6 +8,25 @@ pub(super) fn scale_partitioning_props(
     props: &Arc<PlanProperties>,
     f: impl FnOnce(usize) -> usize,
 ) -> Result<Arc<PlanProperties>> {
+    if let Partitioning::Range(range) = &props.partitioning {
+        // Declare UnknownPartitioning when coalescing range-partitioned data.
+        //
+        // Consider the partitions A-H with split points 10, 20, 30, 40 etc.
+        //
+        //   A |10| B |20| C |30| D |40| E |50| F |60| G |70| H
+        //
+        // After splitting into two tasks, we may have the following:
+        //
+        //    Task 0 Range(4): [A |10| B |20| C |30| D]
+        //    Task 1 Range(4): [E |50| F |60| G |70| H]
+        //
+        // The task-local metadata no longer contains split point 40, so we cannot
+        // reconstruct Range(8) from it. For now, declare UnknownPartitioning.
+        return Ok(Arc::new(props.as_ref().clone().with_partitioning(
+            Partitioning::UnknownPartitioning(f(range.partition_count())),
+        )));
+    }
+
     Ok(Arc::new(PlanProperties::new(
         props.eq_properties.clone(),
         scale_partitioning(&props.partitioning, f)?,

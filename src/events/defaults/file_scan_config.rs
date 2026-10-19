@@ -70,7 +70,9 @@ pub(crate) fn file_scan_config_scale_up_leaf_node(
 
     match (is_sorted, supports_repartitioning) {
         (_, false) if is_pre_partitioned => {
-            // Assign contiguous ranges of whole groups to tasks without splitting partitions.
+            // Assign contiguous partition ranges to tasks. Do not split, merge, or re-arrange
+            // partitions. If a user configured their data source to be partitioned, then respect
+            // that configuration.
             let partitions_per_task = partition_count / ev.task_count;
             let extra_partitions = partition_count % ev.task_count;
             let mut start = 0;
