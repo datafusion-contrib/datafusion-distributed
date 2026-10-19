@@ -271,6 +271,7 @@ impl Worker {
             if entry.seal_with_value_if(
                 |current| {
                     current.as_ref().is_ok_and(|current| {
+                        // Each setup creates a fresh final_plan Arc; its TaskData clones share it.
                         Arc::ptr_eq(&current.final_plan, &task_data.final_plan)
                     })
                 },
