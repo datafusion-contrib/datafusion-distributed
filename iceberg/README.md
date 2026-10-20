@@ -34,8 +34,9 @@ By default, Iceberg discovers files progressively during execution. Set
 while building each physical scan, then deliver those same tasks to the reader at
 execution. `iceberg.planning_max_files` (default 100,000) bounds retained work;
 exceeding it fails planning rather than returning incomplete results. Eager file
-planning uses query memory and metadata I/O up front; it does not change reader
-settings, statistics, or task assignment. For example, configure the session
+planning uses query memory and metadata I/O up front. When enabled, scan statistics
+and desired distributed task counts use selected file work instead of snapshot totals;
+reader settings and file assignment are unchanged. For example, configure the session
 before creating the `SessionState`:
 
 ```rust
