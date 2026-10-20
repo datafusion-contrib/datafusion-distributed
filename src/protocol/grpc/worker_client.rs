@@ -627,10 +627,10 @@ fn decode_task_metrics(task_metrics: pb::TaskMetrics) -> Result<TaskMetrics> {
         pre_order_plan_metrics: task_metrics
             .pre_order_plan_metrics
             .into_iter()
-            .map(|metrics_set| metrics_set_proto_to_df(&metrics_set))
+            .map(metrics_set_proto_to_df)
             .collect::<Result<_>>()?,
         task_metrics: metrics_set_proto_to_df(
-            &task_metrics
+            task_metrics
                 .task_metrics
                 .ok_or_else(|| missing("task_metrics"))?,
         )?,
