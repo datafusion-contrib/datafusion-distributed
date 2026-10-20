@@ -73,6 +73,40 @@ It requires `iceberg.eager_file_planning=true` and assigns the largest candidate
 to the least-loaded *distributed task*; it does not choose a worker or split a
 file. These bytes are scheduling estimates, not decoded memory or filtered rows.
 
+## Column sizes and join costing
+
+With `iceberg.column_stats_enabled=true`, filtered preplanned scans may retain
+compressed column-byte estimates from the **selected files**. Missing metrics remain
+unknown, and filtered scans do not publish whole-snapshot bounds, null counts or
+distinct counts. Another manifest pass is needed to recover column sizes with the
+pinned Iceberg API. Scan task counts continue to use whole-file bytes.
+
+To retain these estimates through grouping keys and inner hash joins, register
+`ColumnByteStatisticsProvider` on the planning session:
+
+```rust
+use std::sync::Arc;
+use datafusion::execution::SessionStateBuilder;
+use datafusion::physical_plan::operator_statistics::StatisticsRegistry;
+use datafusion_distributed::ColumnByteStatisticsProvider;
+use datafusion_distributed_iceberg::IcebergExt;
+
+fn enable_column_size_costing(mut builder: SessionStateBuilder) -> SessionStateBuilder {
+    builder.config().get_or_insert_default()
+        .options_mut().optimizer.use_statistics_registry = true;
+    builder
+        .with_iceberg_column_stats_enabled(true)
+        .with_statistics_registry(StatisticsRegistry::with_providers(vec![
+            Arc::new(ColumnByteStatisticsProvider),
+        ]))
+}
+```
+
+This replaces the statistics registry. When keeping other custom providers, place
+this provider last: it forwards enriched child statistics through every operator.
+Compressed bytes are not measured Arrow or hash-table memory. A different build-side choice is not proof of lower latency;
+validate representative queries before enabling this in production.
+
 ```bash
 cargo test -p datafusion-distributed-iceberg --features integration
 ```

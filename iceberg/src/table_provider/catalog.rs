@@ -71,7 +71,7 @@ impl TableProvider for IcebergCatalogTableProvider {
             .load_table(&self.table_ident)
             .await
             .map_err(df_err)?;
-        let mut data_source = IcebergDataSource::new(
+        let data_source = IcebergDataSource::new(
             table.clone(),
             self.schema.clone(),
             Partitioning::UnknownPartitioning(state.config().target_partitions()),
@@ -83,11 +83,11 @@ impl TableProvider for IcebergCatalogTableProvider {
                 iceberg_runtime: Some(self.iceberg_runtime.clone()),
             },
         );
-        data_source = data_source.with_planned_files(state.task_ctx()).await?;
+        let mut data_source = data_source.with_planned_files(state.task_ctx()).await?;
         let iceberg_config = IcebergConfig::from_task_context(&state.task_ctx());
         if iceberg_config.column_stats_enabled {
             data_source = data_source
-                .with_column_statistics(table, projection)
+                .with_column_statistics(table, projection.map(Vec::as_slice))
                 .await?;
         }
 

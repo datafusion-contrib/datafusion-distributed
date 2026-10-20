@@ -147,6 +147,10 @@ mod tests {
             .configure_session(|mut state| {
                 let config = state.config().get_or_insert_default();
                 config.options_mut().execution.target_partitions = 2;
+                let mut iceberg = IcebergConfig::default();
+                // Column costing must not change snapshot-based task sizing in lazy mode.
+                iceberg.column_stats_enabled = true;
+                config.options_mut().extensions.insert(iceberg);
                 state.with_distributed_file_scan_config_bytes_per_partition(1_000_000)
             })?;
         if let Some(id) = snapshot_id {
