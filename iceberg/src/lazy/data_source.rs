@@ -1,3 +1,4 @@
+use crate::common::scan_config::apply_column_statistics;
 use crate::common::scan_config::{ScanConfig, stats_from_snapshot};
 use std::sync::Arc;
 
@@ -180,7 +181,7 @@ impl DataSource for LazyIcebergDataSource {
         let mut stats = stats_from_snapshot(self.table_snapshot.clone(), &self.scan.schema)?;
 
         if let Some(col_stats) = &self.column_stats {
-            stats.column_statistics = col_stats.clone();
+            apply_column_statistics(&mut stats, col_stats.clone());
         }
 
         Ok(Arc::new(stats))

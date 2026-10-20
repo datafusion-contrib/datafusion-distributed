@@ -100,3 +100,13 @@ pub(crate) fn stats_from_snapshot(
         column_statistics: vec![ColumnStatistics::new_unknown(); schema.fields().len()],
     })
 }
+
+/// Use projected compressed bytes when all column sizes are known, otherwise retain file bytes.
+pub(crate) fn apply_column_statistics(stats: &mut Statistics, columns: Vec<ColumnStatistics>) {
+    if let Some(bytes) = columns.iter().try_fold(0_usize, |total, column| {
+        total.checked_add(*column.byte_size.get_value()?)
+    }) {
+        stats.total_byte_size = Precision::Inexact(bytes);
+    }
+    stats.column_statistics = columns;
+}

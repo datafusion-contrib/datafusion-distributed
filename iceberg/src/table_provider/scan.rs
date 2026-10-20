@@ -1,8 +1,8 @@
 use crate::common::assign_files;
 use crate::common::df_err;
-use crate::common::scan_config::ScanConfig;
+use crate::common::scan_config::{ScanConfig, apply_column_statistics};
 use crate::eager::planned_files::PlannedFiles;
-use crate::table_provider::column_statistics::compute_column_stats;
+use crate::table_provider::column_statistics::{compute_column_stats, selected_column_statistics};
 use crate::{EagerIcebergDataSource, IcebergConfig, IcebergWorkUnitFeed, LazyIcebergDataSource};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::{Result, config_err, exec_err};
@@ -93,27 +93,48 @@ pub(crate) async fn plan_scan(
         || planned
             .as_ref()
             .is_some_and(|files| files.tasks().iter().any(|task| !task.deletes().is_empty()));
-    let column_stats = if IcebergConfig::from_task_context(&context).column_stats_enabled
-        && !(planned.is_some() && may_filter_rows)
-    {
+    let column_stats = if IcebergConfig::from_task_context(&context).column_stats_enabled {
         let schema = match &table_snapshot {
             Some(snap) => snap.schema(table.metadata()).map_err(df_err)?,
             // empty table
             None => table.metadata().current_schema().clone(),
         };
-        let fields = schema.as_struct().fields().to_vec();
-        let field_ids: Vec<i32> = match opts.projection {
-            Some(projection) => projection.iter().map(|&idx| fields[idx].id).collect(),
-            None => fields.iter().map(|f| f.id).collect(),
+        let fields = schema.as_struct().fields();
+        let fields: Vec<_> = match opts.projection {
+            Some(projection) => projection
+                .iter()
+                .map(|&idx| Arc::clone(&fields[idx]))
+                .collect(),
+            None => fields.to_vec(),
         };
-        Some(compute_column_stats(table.clone(), field_ids, table_snapshot.clone()).await?)
+        let stats_table = table.clone();
+        let stats_snapshot = table_snapshot.clone();
+        let stats_files = planned.clone();
+        let (_cancel_on_drop, canceled) = oneshot::channel::<()>();
+        let task = scan.iceberg_runtime.io().spawn(async move {
+            tokio::select! {
+                _ = canceled => exec_err!("Iceberg column statistics canceled"),
+                stats = async {
+                    if let Some(files) = stats_files
+                        && let Some(snapshot) = &stats_snapshot
+                    {
+                        return selected_column_statistics(
+                            &stats_table, snapshot, &fields, files.tasks(), may_filter_rows,
+                        ).await;
+                    }
+                    let field_ids = fields.iter().map(|field| field.id).collect();
+                    compute_column_stats(stats_table, field_ids, stats_snapshot).await
+                } => stats,
+            }
+        });
+        Some(task.await.map_err(df_err)??)
     } else {
         None
     };
     if let Some(planned) = planned {
         let mut statistics = planned.statistics(&scan.schema, may_filter_rows);
         if let Some(column_stats) = column_stats {
-            statistics.column_statistics = column_stats;
+            apply_column_statistics(&mut statistics, column_stats);
         }
         let partitions = assign_files(planned.tasks().iter(), 1, partitioning.partition_count())?
             .pop()

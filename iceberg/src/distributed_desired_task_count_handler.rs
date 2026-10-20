@@ -1,3 +1,4 @@
+use crate::common::scan_config::stats_from_snapshot;
 use std::num::NonZeroUsize;
 
 use datafusion::common::{Result, config_datafusion_err};
@@ -17,11 +18,21 @@ pub fn iceberg_desired_task_count(
     if !node.is::<LazyIcebergDataSource>() && !node.is::<EagerIcebergDataSource>() {
         return None;
     }
-    let statistics = match node.partition_statistics(None) {
-        Ok(statistics) => statistics,
-        Err(error) => return Some(Err(error)),
+    // Relation statistics may describe projected columns; parallelism uses whole-file work.
+    let total_bytes = if let Some(source) = node.downcast_ref::<EagerIcebergDataSource>() {
+        source.planned_files().try_fold(0_usize, |bytes, task| {
+            bytes.checked_add(usize::try_from(task.length()).ok()?)
+        })?
+    } else {
+        let source = node.downcast_ref::<LazyIcebergDataSource>()?;
+        source.feed.inner()?;
+        let statistics =
+            match stats_from_snapshot(source.table_snapshot.clone(), &source.scan.schema) {
+                Ok(statistics) => statistics,
+                Err(error) => return Some(Err(error)),
+            };
+        *statistics.total_byte_size.get_value()?
     };
-    let total_bytes = *statistics.total_byte_size.get_value()?;
     let config = DistributedConfig::from_session_config(ev.session_config).ok()?;
 
     Some(
