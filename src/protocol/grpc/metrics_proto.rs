@@ -44,14 +44,13 @@ pub fn df_metrics_set_to_proto(
 
 /// metrics_set_proto_to_df converts a [pb::MetricsSet] to a [MetricsSet].
 pub fn metrics_set_proto_to_df(
-    metrics_set_proto: &pb::MetricsSet,
+    metrics_set_proto: pb::MetricsSet,
 ) -> Result<MetricsSet, DataFusionError> {
     let mut metrics_set = MetricsSet::new();
-    metrics_set_proto.metrics.iter().try_for_each(|metric| {
-        let proto = metric_proto_to_df(metric.clone())?;
+    for metric in metrics_set_proto.metrics {
+        let proto = metric_proto_to_df(metric)?;
         metrics_set.push(proto);
-        Ok::<(), DataFusionError>(())
-    })?;
+    }
     Ok(metrics_set)
 }
 
@@ -610,7 +609,7 @@ mod tests {
     fn test_roundtrip_helper(metrics_set: MetricsSet, test_name: &str) {
         // Serialize and deserialize the metrics set.
         let metrics_set_proto = df_metrics_set_to_proto(&metrics_set).unwrap();
-        let roundtrip_metrics_set = metrics_set_proto_to_df(&metrics_set_proto).unwrap();
+        let roundtrip_metrics_set = metrics_set_proto_to_df(metrics_set_proto).unwrap();
 
         // Check that we have the same number of metrics.
         let original_count = metrics_set.iter().count();
@@ -1261,7 +1260,7 @@ mod tests {
         let proto = df_metrics_set_to_proto(&metrics_set).unwrap();
         assert_eq!(proto.metrics.len(), 8);
 
-        let rt = metrics_set_proto_to_df(&proto).unwrap();
+        let rt = metrics_set_proto_to_df(proto).unwrap();
         assert_eq!(rt.iter().count(), 8);
 
         for (orig, rt) in metrics_set.iter().zip(rt.iter()) {
@@ -1329,7 +1328,7 @@ mod tests {
         let proto = df_metrics_set_to_proto(&metrics_set).unwrap();
         assert_eq!(proto.metrics.len(), 1);
 
-        let rt = metrics_set_proto_to_df(&proto).unwrap();
+        let rt = metrics_set_proto_to_df(proto).unwrap();
         assert_eq!(rt.iter().count(), 1);
 
         let orig = metrics_set.iter().next().unwrap();
