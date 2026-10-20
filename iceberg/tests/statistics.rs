@@ -9,10 +9,10 @@ mod tests {
     use datafusion::physical_plan::displayable;
     use datafusion::physical_plan::statistics::{StatisticsArgs, StatisticsContext};
     use datafusion::scalar::ScalarValue;
-    use datafusion_distributed_iceberg::IcebergExt;
     use datafusion_distributed_iceberg::test_utils::{
         FIXTURE_URI, IcebergTestHarness, empty_taxi_metadata_builder, taxi_metadata,
     };
+    use datafusion_distributed_iceberg::{IcebergConfig, IcebergExt};
     use iceberg::io::{MemoryStorage, Storage};
     use iceberg::spec::{
         DataContentType, DataFileBuilder, DataFileFormat, Datum, Literal, ManifestListWriter,
@@ -34,6 +34,38 @@ mod tests {
 
         assert_eq!(stats.num_rows, Precision::Absent);
         assert_eq!(stats.total_byte_size, Precision::Absent);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn planned_file_statistics_use_manifest_totals_when_snapshot_summary_is_missing()
+    -> Result<()> {
+        let harness = IcebergTestHarness::builder()
+            .with_table_metadata(metadata_without_summary_statistics())
+            .configure_session(|mut state| {
+                let mut config = IcebergConfig::default();
+                config.eager_file_planning = true;
+                state
+                    .config()
+                    .get_or_insert_default()
+                    .options_mut()
+                    .extensions
+                    .insert(config);
+                Ok(state)
+            })?
+            .build()
+            .await?;
+        let stats = query_statistics(&harness, "SELECT * FROM taxi").await?;
+        assert_eq!(stats.num_rows, Precision::Exact(TAXI_ROWS));
+        assert_eq!(stats.total_byte_size, Precision::Exact(TAXI_BYTES));
+
+        let filtered = query_statistics(
+            &harness,
+            "SELECT pickup_date FROM taxi WHERE pickup_date = DATE '2024-01-10'",
+        )
+        .await?;
+        assert!(matches!(filtered.num_rows, Precision::Inexact(_)));
+        assert!(matches!(filtered.total_byte_size, Precision::Inexact(_)));
         Ok(())
     }
 
