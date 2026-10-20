@@ -21,6 +21,8 @@ extensions_options! {
         pub plan_files: bool, default = false
         /// Assign whole files largest-first to the least-loaded distributed task. Requires plan_files.
         pub greedy_file_assignment: bool, default = false
+        /// Expose assigned immutable file paths and byte weights as routing hints. Requires plan_files.
+        pub file_task_affinity: bool, default = false
         /// Fail planning if the number of retained file tasks exceeds this limit.
         pub planning_max_files: usize, default = 100_000
     }

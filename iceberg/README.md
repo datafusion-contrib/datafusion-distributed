@@ -93,6 +93,37 @@ providers rather than discarding them. Compressed bytes are not measured Arrow o
 hash-table memory. A different build-side choice is not proof of lower latency;
 validate representative queries before enabling this in production.
 
+## File-affinity routing
+
+`iceberg.file_task_affinity=true` publishes assigned immutable data-file paths
+and candidate-byte weights for each distributed task; it requires
+`iceberg.plan_files=true` but not greedy assignment. Register
+`AffinityRouteTaskHandler` on the coordinator's session to place whole tasks
+near their file homes:
+
+```rust
+use datafusion::execution::SessionStateBuilder;
+use datafusion_distributed::{AffinityRouteTaskHandler, DistributedExt};
+use datafusion_distributed_iceberg::IcebergConfig;
+
+fn enable_file_routing(builder: SessionStateBuilder) -> SessionStateBuilder {
+    let mut iceberg = IcebergConfig::default();
+    iceberg.plan_files = true;
+    iceberg.greedy_file_assignment = true;
+    iceberg.file_task_affinity = true;
+    builder
+        .with_distributed_option_extension(iceberg)
+        .with_distributed_route_task_handler(AffinityRouteTaskHandler)
+}
+```
+
+Compose this with other Iceberg session options rather than replacing them.
+Use stable URLs identifying individual cache owners, not a load-balanced URL.
+The policy does not inspect a cache or enforce memory/concurrency admission;
+failover and mixed-file tasks can move work. Routing metrics describe placement,
+**not** cache hits or backend reads. See [The life of an Iceberg file](docs/the-life-of-an-iceberg-file.md)
+and the [worker-routing guide](../docs/source/advanced/06-worker-routing.md).
+
 ```bash
 cargo test -p datafusion-distributed-iceberg --features integration
 ```

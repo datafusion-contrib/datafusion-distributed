@@ -173,6 +173,15 @@ work units largest-first to the least-loaded task. Supply candidate costs in
 consistent units and a stable input order for deterministic ties. It neither
 splits work units nor chooses workers.
 
+Providers can also implement `task_affinity(task, ctx)` to return
+`Vec<WorkUnitAffinity>` before worker selection. Each hint supplies an opaque
+immutable-object key and candidate-byte weight. Task indexes are scan-local,
+including isolated UNION children. Return an empty list for work not yet known;
+do not consume a feed to discover hints. Hints are captured on the coordinator
+before native feeds become remote handles and are exposed through
+`RouteTaskEvent::work_unit_affinity()` without changing the worker protocol.
+See [worker routing](06-worker-routing.md) for the opt-in policy.
+
 ### `WorkUnitFeed<P>`
 
 A `WorkUnitFeed<P>` is the handle your custom `ExecutionPlan` stores. On the coordinator it wraps your

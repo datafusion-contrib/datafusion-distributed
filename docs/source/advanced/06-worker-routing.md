@@ -56,6 +56,51 @@ SessionStateBuilder::new()
     .with_distributed_route_task_handler(RetryRouteTaskHandler);
 ```
 
+## Affinity for feed-backed scans
+
+Register `AffinityRouteTaskHandler` to prefer stable data homes for providers that
+implement `WorkUnitFeedProvider::task_affinity()`:
+
+```rust
+use datafusion::execution::SessionStateBuilder;
+use datafusion_distributed::{AffinityRouteTaskHandler, DistributedExt};
+
+let builder = SessionStateBuilder::new()
+    .with_distributed_route_task_handler(AffinityRouteTaskHandler);
+```
+
+The coordinator collects task-specific hints before converting native feeds to
+remote handles. Each distinct key elects a worker by rendezvous hashing; the
+whole task prefers the worker owning the greatest total hinted weight. Duplicate
+keys use their maximum weight. Worker URL order and query/task IDs do not change
+homes; worker membership or an upgrade of the hash implementation can.
+
+Use URLs identifying individual stable workers, not a load balancer. There is no
+cache lookup or cache-specific dependency. This is best-effort whole-task placement,
+not per-file routing or memory admission. No hints defer to other routing handlers;
+classified connection failures retain normal retry and fallback behavior. A custom
+load-aware handler can inspect `event.work_unit_affinity()` and reuse
+`AffinityRouteTaskHandler::rank_workers()`.
+
+### Affinity metrics
+
+The coordinator exposes these metrics on `DistributedExec`:
+
+| Metric | Meaning |
+| --- | --- |
+| `work_unit_affinity_routed_tasks` | Non-deferred routing attempts, not connection attempts. |
+| `work_unit_affinity_preferred_placements` | Successful connections to the preferred URL, including same-worker retries. |
+| `work_unit_affinity_fallback_placements` | Successful connections to a different URL. |
+| `work_unit_affinity_routing_failures` | Resolver, configuration, terminal or exhausted-retry errors. |
+| `work_unit_affinity_routing_duration` | Summed selection/connection time including retries; not query wall time. |
+| `work_unit_affinity_hinted_objects` | Distinct positive-weight keys per routing attempt. |
+| `work_unit_affinity_hinted_bytes` | Candidate bytes per attempt, deduplicated by key at maximum weight. |
+
+No hints, zero-weight hints or no workers defer without recording these metrics.
+Cancellation after an attempt starts records elapsed time but no placement or
+failure. Bytes are not actual backend reads or cache hits; monitor those and
+per-worker memory separately.
+
 Routing pairs naturally with `ScaleUpLeafNodeHandler`: that decides *what* data
 task `i` reads, and `RouteTaskHandler` decides *where* that specialized task
 runs. The task index can be used to keep a stable slot-to-worker mapping for

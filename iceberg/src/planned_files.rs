@@ -19,7 +19,7 @@ pub(crate) struct PlannedFiles {
     pub(crate) rows: Option<usize>,
     pub(crate) filtered: bool,
     _reservation: MemoryReservation,
-    assignments: Mutex<HashMap<usize, Arc<FileAssignment>>>,
+    assignments: Mutex<HashMap<(usize, bool), Arc<FileAssignment>>>,
 }
 
 /// Immutable file indexes assigned to distributed tasks, without choosing workers.
@@ -33,6 +33,7 @@ impl PlannedFiles {
     pub(crate) fn assignment(
         &self,
         task_count: usize,
+        greedy: bool,
         context: &TaskContext,
     ) -> Result<Arc<FileAssignment>> {
         if task_count == 0 {
@@ -42,7 +43,7 @@ impl PlannedFiles {
             .assignments
             .lock()
             .map_err(|_| internal_datafusion_err!("Iceberg file assignment lock poisoned"))?;
-        if let Some(assignment) = assignments.get(&task_count) {
+        if let Some(assignment) = assignments.get(&(task_count, greedy)) {
             return Ok(Arc::clone(assignment));
         }
         let reservation =
@@ -54,35 +55,44 @@ impl PlannedFiles {
             .saturating_add(task_count.saturating_mul(size_of::<Vec<usize>>()));
         // Charge retained indexes and vector capacity before constructing the groups.
         reservation.try_grow(bytes.saturating_mul(2))?;
-        // Construction holds an extra order array, candidate costs, the allocator's
-        // order array/load heap, and spare space for output-vector growth.
-        // Declare scratch before the vectors so it outlives them on success or failure.
-        let scratch =
-            MemoryConsumer::new("Iceberg file assignment scratch").register(context.memory_pool());
-        let scratch_bytes = self
-            .tasks
-            .len()
-            .saturating_mul(3 * size_of::<usize>() + size_of::<u64>())
-            .saturating_add(task_count.saturating_mul(size_of::<(u128, usize, usize)>()));
-        scratch.try_grow(scratch_bytes)?;
-        // Manifest discovery order is not stable; use object identity/range for ties.
-        let mut order: Vec<_> = (0..self.tasks.len()).collect();
-        order.sort_unstable_by_key(|&i| {
-            let task = &self.tasks[i];
-            (task.data_file_path(), task.start(), task.length(), i)
-        });
-        let costs: Vec<_> = order.iter().map(|&i| self.tasks[i].length()).collect();
-        let mut task_files = greedy_work_unit_assignment(&costs, task_count)?;
-        for group in &mut task_files {
-            for index in group {
-                *index = order[*index];
+        let task_files = if greedy {
+            // Construction holds an extra order array, candidate costs, the allocator's
+            // order array/load heap, and spare space for output-vector growth.
+            // Declare scratch before the vectors so it outlives them on success or failure.
+            let scratch = MemoryConsumer::new("Iceberg file assignment scratch")
+                .register(context.memory_pool());
+            let scratch_bytes = self
+                .tasks
+                .len()
+                .saturating_mul(3 * size_of::<usize>() + size_of::<u64>())
+                .saturating_add(task_count.saturating_mul(size_of::<(u128, usize, usize)>()));
+            scratch.try_grow(scratch_bytes)?;
+            // Manifest discovery order is not stable; use object identity/range for ties.
+            let mut order: Vec<_> = (0..self.tasks.len()).collect();
+            order.sort_unstable_by_key(|&i| {
+                let task = &self.tasks[i];
+                (task.data_file_path(), task.start(), task.length(), i)
+            });
+            let costs: Vec<_> = order.iter().map(|&i| self.tasks[i].length()).collect();
+            let mut groups = greedy_work_unit_assignment(&costs, task_count)?;
+            for group in &mut groups {
+                for index in group {
+                    *index = order[*index];
+                }
             }
-        }
+            groups
+        } else {
+            let mut groups = vec![Vec::new(); task_count];
+            for index in 0..self.tasks.len() {
+                groups[index % task_count].push(index);
+            }
+            groups
+        };
         let assignment = Arc::new(FileAssignment {
             task_files,
             _reservation: reservation,
         });
-        assignments.insert(task_count, Arc::clone(&assignment));
+        assignments.insert((task_count, greedy), Arc::clone(&assignment));
         Ok(assignment)
     }
 

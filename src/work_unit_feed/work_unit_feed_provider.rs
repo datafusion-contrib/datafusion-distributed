@@ -1,4 +1,4 @@
-use crate::WorkUnit;
+use crate::{DistributedTaskContext, WorkUnit};
 use datafusion::common::Result;
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
@@ -83,9 +83,46 @@ pub trait WorkUnitFeedProvider: Send + Sync + Debug {
         ctx: Arc<TaskContext>,
     ) -> Result<BoxStream<'static, Result<Self::WorkUnit>>>;
 
+    /// Optional locality hints for the work assigned to one distributed task.
+    ///
+    /// Called on the coordinator before worker placement. The task index/count are
+    /// relative to this scan, including isolated UNION children. Return an empty list
+    /// for work not yet known; hints do not consume a feed or alter results. They must
+    /// describe the same file assignment that [`Self::feed`] will deliver.
+    fn task_affinity(
+        &self,
+        _task: DistributedTaskContext,
+        _ctx: Arc<TaskContext>,
+    ) -> Result<Vec<WorkUnitAffinity>> {
+        Ok(Vec::new())
+    }
+
     /// DataFusion metrics collected at runtime while streaming [WorkUnit]s through [Self::feed].
     fn metrics(&self) -> ExecutionPlanMetricsSet {
         ExecutionPlanMetricsSet::new()
+    }
+}
+
+/// A connector-independent locality hint for immutable input data.
+///
+/// `key` identifies a reusable object in its storage namespace, never a query or
+/// task ID. `weight` estimates reusable bytes, not decoded memory or CPU cost.
+/// Repeated keys contribute their maximum weight to the built-in router.
+/// Hints are not cache contents, authorization grants or worker guarantees.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct WorkUnitAffinity {
+    pub key: String,
+    pub weight: u64,
+}
+
+impl WorkUnitAffinity {
+    /// Creates a locality hint in a caller-defined namespace.
+    pub fn new(key: impl Into<String>, weight: u64) -> Self {
+        Self {
+            key: key.into(),
+            weight,
+        }
     }
 }
 
