@@ -54,6 +54,11 @@ let state = SessionStateBuilder::new()
     .build();
 ```
 
+For opt-in whole-file balancing, also set `iceberg.greedy_file_assignment=true`.
+It requires `iceberg.plan_files=true` and assigns the largest candidate-byte files
+to the least-loaded *distributed task*; it does not choose a worker or split a
+file. These bytes are scheduling estimates, not decoded memory or filtered rows.
+
 ```bash
 cargo test -p datafusion-distributed-iceberg --features integration
 ```
