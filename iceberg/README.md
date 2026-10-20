@@ -33,8 +33,9 @@ By default, Iceberg discovers files progressively during execution. Set
 `iceberg.eager_file_planning=true` in the session to discover and retain the pruned file tasks
 while building each physical scan, then deliver those same tasks to the reader at
 execution. Retained metadata is charged to the query memory pool, without a
-file-count limit. Eager planning uses metadata I/O up front; it does not change
-reader settings, statistics, or task assignment. Both modes use the same dispatcher
+file-count limit. Eager planning uses metadata I/O up front. Scan statistics and
+desired distributed task counts use selected file work instead of snapshot totals;
+reader settings and file assignment are unchanged. Both modes use the same dispatcher
 and partition channels. Eager execution explicitly copies retained file descriptors
 into owned work units; lazy execution moves newly discovered descriptors into them.
 
