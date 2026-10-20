@@ -1,3 +1,4 @@
+use crate::common::on_drop_stream;
 use crate::distributed_planner::ProducerHead;
 use crate::passthrough_headers::get_passthrough_headers;
 use crate::stage::RemoteStage;
@@ -40,20 +41,6 @@ struct StreamSlot {
     stream: Option<BoxStream<'static, Result<RecordBatch>>>,
     claimed: bool,
     closed: bool,
-}
-
-/// Owned by the returned lazy stream, even before its first poll.
-struct StreamLease(Arc<Mutex<StreamSlot>>);
-
-impl Drop for StreamLease {
-    fn drop(&mut self) {
-        let stream = {
-            let mut slot = self.0.lock().unwrap();
-            slot.closed = true;
-            slot.stream.take()
-        };
-        drop(stream);
-    }
 }
 
 /// Just some boilerplate for a shared future.
@@ -184,22 +171,30 @@ impl WorkerConnectionPool {
             }
             slot.claimed = true;
         }
-        let lease = StreamLease(Arc::clone(slot));
+        let slot = Arc::clone(slot);
+        let drop_slot = Arc::clone(&slot);
         let ready = group.ready.clone();
-        Ok(async move {
+        let stream = async move {
             ready.await.map_err(DataFusionError::Shared)?;
-            let stream = lease.0.lock().unwrap().stream.take().ok_or_else(|| {
+            slot.lock().unwrap().stream.take().ok_or_else(|| {
                 internal_datafusion_err!(
                     "WorkerConnections has no stream for partition {target_partition}"
                 )
-            });
-            drop(lease);
-            stream
+            })
         }
         .try_flatten_stream()
         .inspect_ok(move |batch| {
             output_bytes.add(logical_record_batch_size(batch));
             output_rows.add(batch.num_rows());
+        });
+        // Install cleanup eagerly, so it also runs if the stream is never polled.
+        Ok(on_drop_stream(stream, move || {
+            let stream = {
+                let mut slot = drop_slot.lock().unwrap();
+                slot.closed = true;
+                slot.stream.take()
+            };
+            drop(stream);
         })
         .boxed())
     }
