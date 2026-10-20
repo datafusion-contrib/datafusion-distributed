@@ -4,11 +4,15 @@ mod tests {
     use std::sync::Arc;
 
     use datafusion::common::stats::Precision;
-    use datafusion::common::{ColumnStatistics, Statistics};
+    use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
+    use datafusion::common::{ColumnStatistics, Statistics, internal_datafusion_err};
+    use datafusion::datasource::source::DataSourceExec;
     use datafusion::error::Result;
+    use datafusion::physical_plan::ExecutionPlan;
     use datafusion::physical_plan::displayable;
     use datafusion::physical_plan::statistics::{StatisticsArgs, StatisticsContext};
     use datafusion::scalar::ScalarValue;
+    use datafusion_distributed::DistributedExt;
     use datafusion_distributed_iceberg::test_utils::{
         FIXTURE_URI, IcebergTestHarness, empty_taxi_metadata_builder, taxi_metadata,
     };
@@ -219,6 +223,75 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn filtered_column_sizes_use_selected_files_not_a_row_fraction()
+    -> Result<(), Box<dyn Error>> {
+        let harness = harness_with_manifest_metrics(true).await?;
+        let source = scan_node(
+            &harness
+                .physical_plan("SELECT vendor_id FROM taxi WHERE passenger_count < 25")
+                .await?,
+        )?;
+        let stats = StatisticsContext::new().compute(source.as_ref(), &StatisticsArgs::new())?;
+        let column = source.schema().index_of("vendor_id")?;
+        assert_eq!(stats.num_rows, Precision::Inexact(87_500));
+        // First file: 100 bytes. A retained-row fraction would incorrectly yield 200.
+        assert_eq!(
+            stats.column_statistics[column].byte_size,
+            Precision::Inexact(100)
+        );
+        assert_eq!(stats.column_statistics[column].min_value, Precision::Absent);
+        assert_eq!(
+            stats.column_statistics[column].null_count,
+            Precision::Absent
+        );
+        assert_eq!(stats.total_byte_size, Precision::Inexact(300));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn incomplete_filtered_metrics_keep_unknown_columns_and_file_byte_fallback()
+    -> Result<(), Box<dyn Error>> {
+        let harness = harness_with_manifest_metrics(true).await?;
+        let source = scan_node(
+            &harness
+                .physical_plan("SELECT trip_distance FROM taxi WHERE passenger_count < 25")
+                .await?,
+        )?;
+        let stats = StatisticsContext::new().compute(source.as_ref(), &StatisticsArgs::new())?;
+        let column = source.schema().index_of("trip_distance")?;
+        assert_eq!(stats.column_statistics[column].byte_size, Precision::Absent);
+        assert_eq!(stats.total_byte_size, Precision::Inexact(2_240_191));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn projected_bytes_do_not_reduce_scan_task_count() -> Result<(), Box<dyn Error>> {
+        let harness = harness_with_manifest_metrics(true).await?;
+        let source = scan_node(
+            &harness
+                .physical_plan("SELECT vendor_id FROM taxi WHERE passenger_count < 100")
+                .await?,
+        )?;
+        let stats = StatisticsContext::new().compute(source.as_ref(), &StatisticsArgs::new())?;
+        assert_eq!(stats.total_byte_size, Precision::Inexact(1000));
+        // 4.48 MB of file work / 1 MB / 1 partition, capped at the two files.
+        assert_eq!(harness.estimate_task_count(&source)?, Some(2));
+        Ok(())
+    }
+
+    fn scan_node(plan: &Arc<dyn ExecutionPlan>) -> Result<Arc<dyn ExecutionPlan>> {
+        let mut source = None;
+        plan.apply(|node| {
+            if node.is::<DataSourceExec>() {
+                source = Some(Arc::clone(node));
+                return Ok(TreeNodeRecursion::Stop);
+            }
+            Ok(TreeNodeRecursion::Continue)
+        })?;
+        source.ok_or_else(|| internal_datafusion_err!("expected an Iceberg scan"))
+    }
+
     // Observe the query's output statistics, including projection and propagation.
     async fn query_statistics(harness: &IcebergTestHarness, sql: &str) -> Result<Arc<Statistics>> {
         let plan = harness.physical_plan(sql).await?;
@@ -342,7 +415,16 @@ mod tests {
             )
             .with_table_option("iceberg.snapshot_id", snapshot.snapshot_id().to_string())
             .with_table_metadata(metadata)
-            .configure_session(|state| Ok(state.with_iceberg_column_stats_enabled(enabled)))?
+            .configure_session(|mut state| {
+                let mut config = IcebergConfig::default();
+                config.plan_files = true;
+                let session = state.config().get_or_insert_default();
+                session.options_mut().execution.target_partitions = 1;
+                session.options_mut().extensions.insert(config);
+                state
+                    .with_iceberg_column_stats_enabled(enabled)
+                    .with_distributed_file_scan_config_bytes_per_partition(1_000_000)
+            })?
             .build()
             .await?)
     }
