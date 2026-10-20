@@ -1,6 +1,8 @@
+use crate::NetworkMaterializedScanExec;
 use crate::common::TreeNodeExt;
 use crate::stage::LocalStage;
 use crate::{NetworkBoundaryExt, Stage};
+use datafusion::common::HashMap;
 use datafusion::common::Result;
 use datafusion::common::tree_node::Transformed;
 use datafusion::physical_plan::ExecutionPlan;
@@ -16,6 +18,7 @@ pub(crate) fn prepare_network_boundaries(
 ) -> Result<Arc<dyn ExecutionPlan>> {
     let mut stage_id = 1;
     let query_id = Uuid::new_v4();
+    let mut materializations = HashMap::new();
 
     let transformed = plan.transform_up_with_task_count(1, |plan, task_count| {
         let Some(nb) = plan.as_network_boundary() else {
@@ -26,6 +29,22 @@ pub(crate) fn prepare_network_boundaries(
         let Stage::Local(input_stage) = nb.input_stage() else {
             return Ok(Transformed::no(plan));
         };
+
+        if let Some(scan) = plan.downcast_ref::<NetworkMaterializedScanExec>() {
+            let stage = materializations.entry(scan.cte_id).or_insert_with(|| {
+                let stage = Stage::Local(LocalStage {
+                    query_id,
+                    num: stage_id,
+                    plan: Arc::clone(&input_stage.plan),
+                    tasks: 1,
+                    metrics_set: Default::default(),
+                });
+                stage_id += 1;
+                stage
+            });
+            // Even a single-task reference must retain the reader indirection.
+            return Ok(Transformed::yes(nb.with_input_stage(stage.clone())?));
+        }
 
         // 1) If there are both 1 producer and consumer tasks, optimize the network boundary out.
         if task_count == 1 && input_stage.tasks == 1 {

@@ -34,7 +34,7 @@ pub use events::{
 };
 pub use execution_plans::{
     BroadcastExec, DistributedLeafExec, NetworkBroadcastExec, NetworkCoalesceExec,
-    NetworkShuffleExec,
+    NetworkMaterializedScanExec, NetworkShuffleExec,
 };
 pub use metrics::{
     AvgLatencyMetric, BytesCounterMetric, BytesMetricExt, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL,

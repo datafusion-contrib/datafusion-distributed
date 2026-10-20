@@ -1,10 +1,9 @@
 use super::get_distributed_user_codecs;
 use crate::common::{deserialize_uuid, require_one_child, serialize_uuid};
 use crate::execution_plans::{
-    BroadcastExec, ChildWeight, ChildrenIsolatorUnionExec, NetworkBroadcastExec,
-    NetworkCoalesceExec, SamplerExec,
+    BroadcastExec, ChildWeight, ChildrenIsolatorUnionExec, MaterializeExec, NetworkBroadcastExec,
+    NetworkCoalesceExec, NetworkMaterializedScanExec, NetworkShuffleExec, SamplerExec, ShuffleMode,
 };
-use crate::execution_plans::{NetworkShuffleExec, ShuffleMode};
 use crate::stage::{LocalStage, RemoteStage, Stage};
 use crate::worker::WorkerConnectionPool;
 use crate::{DistributedTaskContext, NetworkBoundary};
@@ -110,6 +109,41 @@ impl PhysicalExtensionCodec for DistributedCodec {
         }
 
         match distributed_exec_node {
+            DistributedExecNode::Materialize(proto) => {
+                let input = require_one_child(inputs)?;
+                if proto.reader_partitions.is_empty() || proto.reader_partitions.contains(&0) {
+                    return Err(proto_error(
+                        "Materialization requires nonempty reader partitions",
+                    ));
+                }
+                Ok(Arc::new(MaterializeExec::new(
+                    input,
+                    proto.cte_id,
+                    proto
+                        .reader_partitions
+                        .into_iter()
+                        .map(|n| n as usize)
+                        .collect(),
+                )))
+            }
+            DistributedExecNode::MaterializedScan(proto) => {
+                let schema: Schema = proto
+                    .schema
+                    .as_ref()
+                    .ok_or_else(|| proto_error("Materialized scan requires schema"))?
+                    .try_into()?;
+                if proto.partitions == 0 {
+                    return Err(proto_error("Materialized scan requires partitions"));
+                }
+                Ok(Arc::new(NetworkMaterializedScanExec::new(
+                    proto.cte_id,
+                    proto.reader_id as usize,
+                    proto.partition_offset as usize,
+                    proto.partitions as usize,
+                    Arc::new(schema),
+                    parse_stage_proto(proto.input_stage, inputs, vec![])?,
+                )))
+            }
             DistributedExecNode::NetworkHashShuffle(NetworkShuffleExecProto {
                 schema,
                 partitioning,
@@ -360,7 +394,35 @@ impl PhysicalExtensionCodec for DistributedCodec {
             })
         }
 
-        if let Some(node) = node.downcast_ref::<NetworkShuffleExec>() {
+        if let Some(node) = node.downcast_ref::<MaterializeExec>() {
+            DistributedExecProto {
+                node: Some(DistributedExecNode::Materialize(MaterializeExecProto {
+                    cte_id: node.id,
+                    reader_partitions: node.reader_partitions.iter().map(|&n| n as u64).collect(),
+                })),
+            }
+            .encode(buf)
+            .map_err(|e| proto_error(format!("{e}")))
+        } else if let Some(node) = node.downcast_ref::<NetworkMaterializedScanExec>() {
+            DistributedExecProto {
+                node: Some(DistributedExecNode::MaterializedScan(
+                    MaterializedScanExecProto {
+                        cte_id: node.cte_id,
+                        reader_id: node.reader_id as u64,
+                        partition_offset: node.partition_offset as u64,
+                        partitions: node.properties().partitioning.partition_count() as u64,
+                        schema: Some(node.schema().try_into()?),
+                        input_stage: Some(encode_stage_proto(
+                            node.input_stage(),
+                            self,
+                            proto_converter,
+                        )?),
+                    },
+                )),
+            }
+            .encode(buf)
+            .map_err(|e| proto_error(format!("{e}")))
+        } else if let Some(node) = node.downcast_ref::<NetworkShuffleExec>() {
             let (two_phase, salt) = match &node.mode {
                 ShuffleMode::Direct => (false, 0u64),
                 ShuffleMode::TwoPhase { salt } => (true, *salt),
@@ -576,7 +638,7 @@ pub struct ExecutionTaskProto {
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DistributedExecProto {
-    #[prost(oneof = "DistributedExecNode", tags = "1, 2, 3, 4, 5, 6, 7")]
+    #[prost(oneof = "DistributedExecNode", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9")]
     pub node: Option<DistributedExecNode>,
 }
 
@@ -595,6 +657,10 @@ pub enum DistributedExecNode {
     Broadcast(BroadcastExecProto),
     #[prost(message, tag = "7")]
     Sampler(SamplerExecProto),
+    #[prost(message, tag = "8")]
+    Materialize(MaterializeExecProto),
+    #[prost(message, tag = "9")]
+    MaterializedScan(MaterializedScanExecProto),
 }
 
 /// Protobuf representation of the [NetworkShuffleExec] physical node. It serves as
@@ -755,6 +821,30 @@ fn new_network_broadcast_exec(
         worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
         input_stage,
     }
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct MaterializeExecProto {
+    #[prost(uint64, tag = "1")]
+    cte_id: u64,
+    #[prost(uint64, repeated, tag = "2")]
+    reader_partitions: Vec<u64>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct MaterializedScanExecProto {
+    #[prost(uint64, tag = "1")]
+    cte_id: u64,
+    #[prost(uint64, tag = "2")]
+    reader_id: u64,
+    #[prost(uint64, tag = "3")]
+    partition_offset: u64,
+    #[prost(uint64, tag = "4")]
+    partitions: u64,
+    #[prost(message, optional, tag = "5")]
+    schema: Option<protobuf::Schema>,
+    #[prost(message, optional, tag = "6")]
+    input_stage: Option<StageProto>,
 }
 
 #[cfg(test)]

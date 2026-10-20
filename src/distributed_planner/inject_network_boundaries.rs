@@ -6,6 +6,7 @@ use crate::events::{
 };
 use crate::execution_plans::ShuffleMode;
 use crate::execution_plans::{ChildWeight, ChildrenIsolatorUnionExec};
+use crate::execution_plans::{MaterializeExec, NetworkMaterializedScanExec};
 use crate::stage::LocalStage;
 use crate::worker_resolver::WorkerResolverExtension;
 use crate::{
@@ -255,7 +256,13 @@ async fn _inject_network_boundaries(
         .transpose()?
         .map(|v| v.task_count);
 
-    let task_count = if plan.children().is_empty() {
+    let task_count = if plan.is::<MaterializeExec>() {
+        Maximum(1)
+    } else if plan.is::<NetworkMaterializedScanExec>() {
+        desired_task_count.unwrap_or(Desired(
+            plan.properties().partitioning.partition_count() as f64
+        ))
+    } else if plan.children().is_empty() {
         // This is a leaf node, maybe a DataSourceExec, or maybe something else custom from the user.
         // If we could not determine how many tasks this leaf node should run on, we need to assume
         // it cannot be distributed and use just 1 task.
@@ -320,6 +327,10 @@ async fn _inject_network_boundaries(
     )?;
     // Cap the reconciled task count by the configured max-per-stage budget.
     let task_count = task_count.limit(nb_ctx.max_tasks()?);
+
+    if plan.is::<NetworkMaterializedScanExec>() {
+        return Ok(nb_ctx.plan_with_task_count(plan, task_count));
+    }
 
     // Upon reaching a hash repartition, we need to introduce a network shuffle right above it.
     if let Some(r_exec) = plan.downcast_ref::<RepartitionExec>()

@@ -1,3 +1,5 @@
+use super::materialized_ctes::lower_materialized_ctes;
+use crate::NetworkMaterializedScanExec;
 use crate::common::TreeNodeExt;
 use crate::distributed_planner::inject_network_boundaries::{
     CardinalityBasedNetworkBoundaryBuilder, inject_network_boundaries,
@@ -134,7 +136,9 @@ fn create_distributed_plan(
             return Ok(create_distributed_exec(Arc::clone(&plan), d_cfg));
         }
 
-        let mut plan = Arc::clone(&original_plan);
+        let mut plan = lower_materialized_ctes(Arc::clone(&original_plan))?;
+        let has_materializations =
+            plan.exists(|node| Ok(node.is::<NetworkMaterializedScanExec>()))?;
 
         let cfg = session.config_options();
         plan = normalize_collect_joins(plan, cfg)?;
@@ -146,7 +150,7 @@ fn create_distributed_plan(
         plan = insert_broadcast_execs(plan, cfg)?;
         plan = insert_children_isolator_unions(plan, cfg)?;
 
-        if d_cfg.dynamic_task_count {
+        if d_cfg.dynamic_task_count && !has_materializations {
             // The task count will be decided dynamically at execution time.
             return Ok(create_distributed_exec(Arc::clone(&plan), d_cfg));
         }

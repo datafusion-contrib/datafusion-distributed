@@ -3,6 +3,7 @@ mod distributed_query_planner;
 mod inject_network_boundaries;
 mod insert_broadcast;
 mod insert_children_isolator_union;
+mod materialized_ctes;
 mod network_boundary;
 mod normalize_collect_joins;
 mod partial_reduce_below_network_shuffles;
