@@ -227,13 +227,14 @@ impl IcebergWorkUnitFeed {
         max_files: usize,
     ) -> Result<()> {
         let scan = self.table_scan()?;
+        let filtered = self.predicates.is_some();
         // Keep manifest I/O off an embedder's IO-disabled query runtime. Cancel the
         // spawned planner if the query abandons physical planning.
         let (_cancel_on_drop, canceled) = oneshot::channel::<()>();
         let task = runtime.io().spawn(async move {
             tokio::select! {
                 _ = canceled => exec_err!("Iceberg file planning canceled"),
-                result = PlannedFiles::collect(scan, &context, max_files) => result,
+                result = PlannedFiles::collect(scan, &context, max_files, filtered) => result,
             }
         });
         self.planned = Some(Arc::new(task.await.map_err(df_err)??));
