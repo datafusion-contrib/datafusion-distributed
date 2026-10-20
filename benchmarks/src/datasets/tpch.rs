@@ -1,5 +1,6 @@
 use super::{common, output::DatasetOutput};
 use arrow::datatypes::Schema;
+use arrow::error::ArrowError;
 use arrow::record_batch::RecordBatch;
 use datafusion::common::{DataFusionError, exec_datafusion_err};
 use parquet::arrow::AsyncArrowWriter;
@@ -73,9 +74,9 @@ async fn generate_table<A>(
     sort_cols: Option<&[&str]>,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
-    A: Iterator<Item = RecordBatch>,
+    A: Iterator<Item = Result<RecordBatch, ArrowError>>,
 {
-    if let Some(first_batch) = data_source.next() {
+    if let Some(first_batch) = data_source.next().transpose()? {
         let file = output.writer(&format!("{table_name}.parquet"));
         let props = writer_props(first_batch.schema().as_ref(), sort_cols)?;
         let mut writer = AsyncArrowWriter::try_new(file, first_batch.schema(), Some(props))?;
@@ -83,6 +84,7 @@ where
         writer.write(&first_batch).await?;
 
         for batch in data_source {
+            let batch = batch?;
             writer.write(&batch).await?;
         }
 

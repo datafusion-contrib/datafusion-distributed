@@ -44,9 +44,11 @@ addressing. Such an implementation must:
 - Specify when pruning becomes safe. A late filter may reduce replay work, but
   cannot retroactively remove data another reader still needs.
 
-This draft requires DataFusion's native materialized CTE execution plans. DFD's
-current upstream dependency version does not yet provide them; the draft must
-wait for upstream DFD to adopt that API. This change leaves dependencies unchanged.
+A temporary top commit pins DataFusion to the materialized CTE merge commit
+`cdc2fc041b6a812a24933abc40da6475dbbf5729` for core compilation and integration
+validation. Remove that commit once upstream DFD adopts the required APIs.
+Workspace validation still needs the Iceberg adapter to adopt the same dependency
+versions.
 
 Run the two-worker example in `examples/materialized_cte.rs` with
 `cargo run --features integration --example materialized_cte`.
