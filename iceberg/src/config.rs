@@ -18,6 +18,8 @@ extensions_options! {
         pub column_stats_enabled: bool, default = false
         /// Discover and retain file tasks during physical planning instead of execution.
         pub eager_file_planning: bool, default = false
+        /// Assign whole files largest-first to the least-loaded task. Requires eager_file_planning.
+        pub greedy_file_assignment: bool, default = false
     }
 }
 

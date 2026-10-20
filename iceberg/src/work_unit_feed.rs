@@ -18,7 +18,9 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::oneshot;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
+use crate::IcebergConfig;
 use crate::common::df_err;
+use crate::file_assignment::FileAssignment;
 use crate::planned_files::PlannedFiles;
 
 #[derive(Clone, PartialEq, prost::Message)]
@@ -271,6 +273,7 @@ impl WorkUnitFeedProvider for IcebergWorkUnitFeed {
         // Both discovery modes share one dispatcher, initialized by the first feed call.
         let sync_manager_or_err = self.sync_manager.get_or_init(|| {
             let planned = self.planned.clone();
+            let greedy = IcebergConfig::from_task_context(&ctx).greedy_file_assignment;
             let table_scan = self.table_scan()?;
 
             // Fanout the FileScanTask stream across P * T output channels where:
@@ -288,6 +291,30 @@ impl WorkUnitFeedProvider for IcebergWorkUnitFeed {
             // be canceled. The lifetime of this `task` variable needs to last as long as any of
             // the return streams of the `feed()` method.
             let task = SpawnedTask::spawn(async move {
+                let assignment = if greedy {
+                    let Some(planned) = &planned else {
+                        let _ = txs[0].send(exec_err!(
+                            "Greedy Iceberg assignment requires eager file planning"
+                        ));
+                        return;
+                    };
+                    match FileAssignment::build(
+                        planned.tasks(),
+                        task_count,
+                        partitions_per_task,
+                        &ctx,
+                    )
+                    .await
+                    {
+                        Ok(assignment) => Some(assignment),
+                        Err(error) => {
+                            let _ = txs[0].send(Err(error));
+                            return;
+                        }
+                    }
+                } else {
+                    None
+                };
                 let mut stream: BoxStream<'_, Result<FileScanTask>> =
                     if let Some(planned) = &planned {
                         // The plan retains reusable descriptors; execution owns its copies.
@@ -309,10 +336,18 @@ impl WorkUnitFeedProvider for IcebergWorkUnitFeed {
                 // This routing assumes UnknownPartitioning, not hash or range partitioning.
                 let mut i = 0;
                 while let Some(task) = stream.next().await {
-                    let partition = (i % task_count) * partitions_per_task
-                        + (i / task_count) % partitions_per_task;
+                    let partition = match &assignment {
+                        Some(assignment) => assignment.partition(i),
+                        None => {
+                            (i % task_count) * partitions_per_task
+                                + (i / task_count) % partitions_per_task
+                        }
+                    };
                     let _ = txs[partition].send(task.map(FileScanTaskWorkUnit::new));
                     i += 1;
+                    if i % 256 == 0 {
+                        tokio::task::yield_now().await;
+                    }
                 }
             });
 
@@ -342,5 +377,232 @@ impl WorkUnitFeedProvider for IcebergWorkUnitFeed {
                 let _ = &task_ref; // Keep the task alive as long as one feed is alive.
             })
             .boxed())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error;
+    use std::mem::size_of;
+    use std::sync::Arc;
+
+    use datafusion::common::Result as DataFusionResult;
+    use datafusion::datasource::source::DataSourceExec;
+    use datafusion::execution::TaskContext;
+    use datafusion::execution::memory_pool::{GreedyMemoryPool, MemoryPool};
+    use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+    use datafusion::prelude::SessionConfig;
+    use datafusion_distributed::{DistributedWorkUnitFeedContext, WorkUnitFeedProvider};
+    use futures::TryStreamExt;
+    use iceberg::io::{MemoryStorage, Storage};
+    use iceberg::spec::{
+        DataContentType, DataFileBuilder, DataFileFormat, Literal, ManifestListWriter,
+        ManifestWriterBuilder, Struct,
+    };
+
+    use crate::file_assignment::FileAssignment;
+    use crate::test_utils::{FIXTURE_URI, IcebergTestHarness, taxi_metadata};
+    use crate::{IcebergConfig, IcebergDataSource, IcebergWorkUnitFeed};
+
+    #[tokio::test]
+    async fn greedy_routing_balances_bytes_across_tasks_and_local_partitions()
+    -> Result<(), Box<dyn Error>> {
+        let expected = vec![vec![100], vec![5], vec![4, 90], vec![3, 10]];
+        for reverse in [false, true] {
+            let provider = file_feed(&[100, 90, 10, 5, 4, 3], reverse).await?;
+            let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(4096));
+            let context = assignment_context(Arc::clone(&pool))?;
+            let mut groups = Vec::new();
+            for partition in 0..4 {
+                let files: Vec<_> = provider
+                    .feed(partition, Arc::clone(&context))?
+                    .try_collect()
+                    .await?;
+                let mut lengths = files
+                    .into_iter()
+                    .map(|unit| unit.into_task().map(|file| file.length()))
+                    .collect::<DataFusionResult<Vec<_>>>()?;
+                lengths.sort_unstable();
+                groups.push(lengths);
+            }
+            assert_eq!(groups, expected);
+            assert!(provider.feed(0, context).is_err());
+            assert_eq!(
+                pool.reserved(),
+                0,
+                "execution releases assignment and scratch while plan survives"
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn assignment_memory_failure_reaches_the_stream_and_releases_reservations()
+    -> Result<(), Box<dyn Error>> {
+        let provider = file_feed(&[100, 90, 10, 5, 4, 3], false).await?;
+        // Six destinations fit; the priority heaps do not.
+        let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(6 * size_of::<usize>()));
+        let context = assignment_context(Arc::clone(&pool))?;
+        let error = provider
+            .feed(0, context)?
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Iceberg file assignment scratch"),
+            "{error}"
+        );
+        assert_eq!(pool.reserved(), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn canceling_assignment_releases_retained_and_scratch_memory()
+    -> Result<(), Box<dyn Error>> {
+        let provider = file_feed(&[100, 90, 10, 5, 4, 3], false).await?;
+        let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(4096));
+        let context = assignment_context(Arc::clone(&pool))?;
+        let mut assignment = Box::pin(FileAssignment::build(
+            provider.planned.as_ref().unwrap().tasks(),
+            2,
+            2,
+            &context,
+        ));
+        assert!(futures::poll!(&mut assignment).is_pending());
+        assert!(pool.reserved() > 0);
+        drop(assignment);
+        assert_eq!(pool.reserved(), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn equal_size_files_have_stable_destinations_and_empty_scans_stay_empty()
+    -> Result<(), Box<dyn Error>> {
+        for sizes in [vec![10; 4], vec![]] {
+            for reverse in [false, true] {
+                let provider = file_feed(&sizes, reverse).await?;
+                let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(4096));
+                let context = assignment_context(pool)?;
+                for (partition, file) in [0, 2, 1, 3].into_iter().enumerate() {
+                    let units: Vec<_> = provider
+                        .feed(partition, Arc::clone(&context))?
+                        .try_collect()
+                        .await?;
+                    let paths = units
+                        .into_iter()
+                        .map(|unit| {
+                            unit.into_task()
+                                .map(|file| file.data_file_path().to_owned())
+                        })
+                        .collect::<DataFusionResult<Vec<_>>>()?;
+                    let expected = if sizes.is_empty() {
+                        vec![]
+                    } else {
+                        vec![format!("{FIXTURE_URI}/data/file-{file}.parquet")]
+                    };
+                    assert_eq!(paths, expected);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn assignment_context(pool: Arc<dyn MemoryPool>) -> DataFusionResult<Arc<TaskContext>> {
+        let mut config = SessionConfig::new();
+        let iceberg = IcebergConfig {
+            greedy_file_assignment: true,
+            ..Default::default()
+        };
+        config.options_mut().extensions.insert(iceberg);
+        config.set_extension(Arc::new(DistributedWorkUnitFeedContext {
+            fan_out_tasks: 2,
+        }));
+        let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_pool(pool).build()?);
+        Ok(Arc::new(
+            TaskContext::default()
+                .with_session_config(config)
+                .with_runtime(runtime),
+        ))
+    }
+
+    async fn file_feed(
+        sizes: &[u64],
+        reverse: bool,
+    ) -> Result<IcebergWorkUnitFeed, Box<dyn Error>> {
+        let metadata = taxi_metadata();
+        let snapshot = metadata.current_snapshot().unwrap();
+        let storage = MemoryStorage::new();
+        let uri = format!("{FIXTURE_URI}/metadata/skewed-files.avro");
+        let mut writer = ManifestWriterBuilder::new(
+            storage.new_output(&uri)?,
+            Some(snapshot.snapshot_id()),
+            metadata.current_schema().clone(),
+            metadata.default_partition_spec().as_ref().clone(),
+        )
+        .build_v2_data();
+        let mut files: Vec<_> = sizes.iter().copied().enumerate().collect();
+        if reverse {
+            files.reverse();
+        }
+        for (index, bytes) in files {
+            writer.add_file(
+                DataFileBuilder::default()
+                    .content(DataContentType::Data)
+                    .file_format(DataFileFormat::Parquet)
+                    .record_count(1)
+                    .file_size_in_bytes(bytes)
+                    .partition(Struct::from_iter([Some(Literal::date_from_str(
+                        "2024-01-10",
+                    )?)]))
+                    .file_path(format!("{FIXTURE_URI}/data/file-{index}.parquet"))
+                    .build()?,
+                snapshot.sequence_number(),
+            )?;
+        }
+        let manifest = writer.write_manifest_file().await?;
+        let mut list = ManifestListWriter::v2(
+            storage
+                .new_output(snapshot.manifest_list())?
+                .writer()
+                .await?,
+            snapshot.snapshot_id(),
+            snapshot.parent_snapshot_id(),
+            snapshot.sequence_number(),
+        );
+        list.add_manifests([manifest].into_iter())?;
+        list.close().await?;
+        let harness = IcebergTestHarness::builder()
+            .with_file(&uri, storage.read(&uri).await?.to_vec())
+            .with_file(
+                snapshot.manifest_list(),
+                storage.read(snapshot.manifest_list()).await?.to_vec(),
+            )
+            .with_table_metadata(metadata)
+            .configure_session(|mut state| {
+                let config = IcebergConfig {
+                    eager_file_planning: true,
+                    greedy_file_assignment: true,
+                    ..Default::default()
+                };
+                let session = state.config().get_or_insert_default();
+                session.options_mut().execution.target_partitions = 2;
+                session.options_mut().extensions.insert(config);
+                Ok(state)
+            })?
+            .build()
+            .await?;
+        let scan = harness.scan().await?;
+        Ok(scan
+            .downcast_ref::<DataSourceExec>()
+            .unwrap()
+            .data_source()
+            .downcast_ref::<IcebergDataSource>()
+            .unwrap()
+            .feed()
+            .inner()
+            .unwrap()
+            .clone())
     }
 }
