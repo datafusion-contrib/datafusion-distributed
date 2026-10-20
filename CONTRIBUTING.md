@@ -28,7 +28,7 @@ If you believe you found a bug, please indicate a way to reproduce it, what you 
 
 ## Contributing guide
 
-[Please reffer to our guide for building, testing and code reviews](https://datafusion-contrib.github.io/datafusion-distributed/contributor-guide/01-index.html)
+[Please refer to our guide for building, testing and code reviews](https://datafusion-contrib.github.io/datafusion-distributed/contributor-guide/01-index.html)
 
 ## Before you contribute
 
