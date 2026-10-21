@@ -30,7 +30,7 @@ pub fn iceberg_desired_task_count(
             config.file_scan_config_bytes_per_partition,
             ev.session_config.target_partitions(),
         )
-        .map(DesiredTaskCountEventResponse::desired),
+        .map(DesiredTaskCountEventResponse::soft),
     )
 }
 
