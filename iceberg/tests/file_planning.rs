@@ -1,5 +1,6 @@
 #[cfg(all(feature = "integration", test))]
 mod tests {
+    use std::error::Error;
     use std::sync::Arc;
 
     use datafusion::common::{Result, Statistics};
@@ -10,10 +11,59 @@ mod tests {
     use datafusion::physical_plan::statistics::{StatisticsArgs, StatisticsContext};
     use datafusion::prelude::SessionConfig;
     use datafusion_distributed::{DistributedExt, WorkUnitFeedProvider};
-    use datafusion_distributed_iceberg::test_utils::IcebergTestHarness;
+    use datafusion_distributed_iceberg::test_utils::{
+        FIXTURE_URI, IcebergTestHarness, taxi_metadata,
+    };
     use datafusion_distributed_iceberg::{IcebergConfig, IcebergDataSource, IcebergWorkUnitFeed};
     use futures::TryStreamExt;
+    use iceberg::io::{MemoryStorage, Storage};
+    use iceberg::spec::{
+        DataContentType, DataFileBuilder, DataFileFormat, Literal, ManifestListWriter,
+        ManifestWriterBuilder, Struct,
+    };
     use prost::Message;
+
+    #[tokio::test]
+    async fn greedy_routing_balances_bytes_across_tasks_and_local_partitions()
+    -> Result<(), Box<dyn Error>> {
+        let expected = vec![vec![100], vec![5], vec![4, 90], vec![3, 10]];
+        for reverse in [false, true] {
+            let harness = file_harness(&[100, 90, 10, 5, 4, 3], reverse).await?;
+            let mut groups = Vec::new();
+            for files in harness.scan_file_tasks(2).await? {
+                let mut lengths: Vec<_> = files.iter().map(|file| file.length()).collect();
+                lengths.sort_unstable();
+                groups.push(lengths);
+            }
+            assert_eq!(groups, expected);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn equal_size_files_have_stable_destinations_and_empty_scans_stay_empty()
+    -> Result<(), Box<dyn Error>> {
+        for sizes in [vec![10; 4], vec![]] {
+            for reverse in [false, true] {
+                let harness = file_harness(&sizes, reverse).await?;
+                let groups = harness.scan_file_tasks(2).await?;
+                assert_eq!(groups.len(), 4);
+                for (files, index) in groups.iter().zip([0, 2, 1, 3]) {
+                    let paths: Vec<_> = files
+                        .iter()
+                        .map(|file| file.data_file_path().to_owned())
+                        .collect();
+                    let expected = if sizes.is_empty() {
+                        vec![]
+                    } else {
+                        vec![format!("{FIXTURE_URI}/data/file-{index}.parquet")]
+                    };
+                    assert_eq!(paths, expected);
+                }
+            }
+        }
+        Ok(())
+    }
 
     #[tokio::test]
     async fn byte_balanced_assignment_preserves_distributed_results() -> Result<()> {
@@ -226,5 +276,71 @@ mod tests {
             })?
             .build()
             .await
+    }
+    async fn file_harness(
+        sizes: &[u64],
+        reverse: bool,
+    ) -> Result<IcebergTestHarness, Box<dyn Error>> {
+        let metadata = taxi_metadata();
+        let snapshot = metadata.current_snapshot().unwrap();
+        let storage = MemoryStorage::new();
+        let uri = format!("{FIXTURE_URI}/metadata/skewed-files.avro");
+        let mut writer = ManifestWriterBuilder::new(
+            storage.new_output(&uri)?,
+            Some(snapshot.snapshot_id()),
+            metadata.current_schema().clone(),
+            metadata.default_partition_spec().as_ref().clone(),
+        )
+        .build_v2_data();
+        let mut files: Vec<_> = sizes.iter().copied().enumerate().collect();
+        if reverse {
+            files.reverse();
+        }
+        for (index, bytes) in files {
+            writer.add_file(
+                DataFileBuilder::default()
+                    .content(DataContentType::Data)
+                    .file_format(DataFileFormat::Parquet)
+                    .record_count(1)
+                    .file_size_in_bytes(bytes)
+                    .partition(Struct::from_iter([Some(Literal::date_from_str(
+                        "2024-01-10",
+                    )?)]))
+                    .file_path(format!("{FIXTURE_URI}/data/file-{index}.parquet"))
+                    .build()?,
+                snapshot.sequence_number(),
+            )?;
+        }
+        let manifest = writer.write_manifest_file().await?;
+        let mut list = ManifestListWriter::v2(
+            storage
+                .new_output(snapshot.manifest_list())?
+                .writer()
+                .await?,
+            snapshot.snapshot_id(),
+            snapshot.parent_snapshot_id(),
+            snapshot.sequence_number(),
+        );
+        list.add_manifests([manifest].into_iter())?;
+        list.close().await?;
+        let harness = IcebergTestHarness::builder()
+            .with_file(&uri, storage.read(&uri).await?.to_vec())
+            .with_file(
+                snapshot.manifest_list(),
+                storage.read(snapshot.manifest_list()).await?.to_vec(),
+            )
+            .with_table_metadata(metadata)
+            .configure_session(|mut state| {
+                let mut config = IcebergConfig::default();
+                config.eager_file_planning = true;
+                config.greedy_file_assignment = true;
+                let session = state.config().get_or_insert_default();
+                session.options_mut().execution.target_partitions = 2;
+                session.options_mut().extensions.insert(config);
+                Ok(state)
+            })?
+            .build()
+            .await?;
+        Ok(harness)
     }
 }
