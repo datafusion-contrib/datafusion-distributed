@@ -18,9 +18,10 @@ mod tests {
         taxi_metadata,
     };
     use datafusion_distributed_iceberg::{IcebergConfig, IcebergExt};
+    use iceberg::puffin::APACHE_DATASKETCHES_THETA_V1;
     use iceberg::spec::{
-        DataContentType, DataFileBuilder, DataFileFormat, Datum, Literal, Operation, Snapshot,
-        Struct, Summary, TableMetadata,
+        BlobMetadata, DataContentType, DataFileBuilder, DataFileFormat, Datum, Literal, Operation,
+        Snapshot, StatisticsFile, Struct, Summary, TableMetadata,
     };
 
     // Values from the checked-in taxi snapshot summary.
@@ -103,6 +104,10 @@ mod tests {
         )
         .await?;
         assert_eq!(stats.num_rows, Precision::Exact(0));
+        for column in &stats.column_statistics {
+            assert_eq!(column.null_count, Precision::Exact(0));
+            assert_eq!(column.distinct_count, Precision::Exact(0));
+        }
         Ok(())
     }
 
@@ -207,6 +212,7 @@ mod tests {
         if enabled {
             columns[0] = ColumnStatistics {
                 null_count: Precision::Exact(5),
+                distinct_count: Precision::Inexact(100_000),
                 min_value: Precision::Inexact(ScalarValue::Int32(Some(1))),
                 max_value: Precision::Inexact(ScalarValue::Int32(Some(9))),
                 byte_size: Precision::Inexact(400),
@@ -266,7 +272,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn filtered_column_sizes_use_selected_files_not_a_row_fraction()
+    async fn filtered_statistics_use_selected_files_and_cap_snapshot_ndv()
     -> Result<(), Box<dyn Error>> {
         let harness = harness_with_manifest_metrics(true).await?;
         let source = scan_node(
@@ -282,10 +288,21 @@ mod tests {
             stats.column_statistics[column].byte_size,
             Precision::Inexact(100)
         );
-        assert_eq!(stats.column_statistics[column].min_value, Precision::Absent);
+        assert_eq!(
+            stats.column_statistics[column].min_value,
+            Precision::Inexact(ScalarValue::Int32(Some(2)))
+        );
+        assert_eq!(
+            stats.column_statistics[column].max_value,
+            Precision::Inexact(ScalarValue::Int32(Some(9)))
+        );
+        assert_eq!(
+            stats.column_statistics[column].distinct_count,
+            Precision::Inexact(87_500)
+        );
         assert_eq!(
             stats.column_statistics[column].null_count,
-            Precision::Absent
+            Precision::Inexact(2)
         );
         assert_eq!(stats.total_byte_size, Precision::Inexact(300));
         Ok(())
@@ -304,6 +321,35 @@ mod tests {
         let column = source.schema().index_of("trip_distance")?;
         assert_eq!(stats.column_statistics[column].byte_size, Precision::Absent);
         assert_eq!(stats.total_byte_size, Precision::Inexact(2_240_191));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn filtered_scan_merges_bounds_and_preserves_missing_null_counts()
+    -> Result<(), Box<dyn Error>> {
+        let harness = harness_with_manifest_metrics(true).await?;
+        let source = scan_node(
+            &harness
+                .physical_plan(
+                    "SELECT passenger_count, vendor_id FROM taxi WHERE passenger_count < 100",
+                )
+                .await?,
+        )?;
+        let stats = StatisticsContext::new().compute(source.as_ref(), &StatisticsArgs::new())?;
+        let passenger = &stats.column_statistics[source.schema().index_of("passenger_count")?];
+        assert_eq!(
+            passenger.min_value,
+            Precision::Inexact(ScalarValue::Int64(Some(10)))
+        );
+        assert_eq!(
+            passenger.max_value,
+            Precision::Inexact(ScalarValue::Int64(Some(40)))
+        );
+        assert_eq!(passenger.null_count, Precision::Absent);
+        assert_eq!(passenger.distinct_count, Precision::Absent);
+        let vendor = &stats.column_statistics[source.schema().index_of("vendor_id")?];
+        assert_eq!(vendor.null_count, Precision::Inexact(5));
+        assert_eq!(vendor.distinct_count, Precision::Inexact(100_000));
         Ok(())
     }
 
@@ -439,7 +485,29 @@ mod tests {
             .lower_bounds([(1, Datum::int(1)), (4, Datum::long(30))].into())
             .upper_bounds([(1, Datum::int(5)), (4, Datum::long(40))].into())
             .build()?;
+        let metadata = taxi_metadata();
+        let snapshot = metadata.current_snapshot().unwrap();
+        let statistics = StatisticsFile {
+            snapshot_id: snapshot.snapshot_id(),
+            statistics_path: format!("{FIXTURE_URI}/metadata/unopened-statistics.puffin"),
+            file_size_in_bytes: 0,
+            file_footer_size_in_bytes: 0,
+            key_metadata: None,
+            blob_metadata: vec![BlobMetadata {
+                r#type: APACHE_DATASKETCHES_THETA_V1.to_owned(),
+                snapshot_id: snapshot.snapshot_id(),
+                sequence_number: snapshot.sequence_number(),
+                fields: vec![1],
+                properties: [("ndv".to_owned(), "100000".to_owned())].into(),
+            }],
+        };
+        let metadata = metadata
+            .into_builder(None)
+            .set_statistics(statistics)
+            .build()?
+            .metadata;
         Ok(IcebergTestHarness::builder()
+            .with_table_metadata(metadata)
             .with_data_files(
                 &format!("{FIXTURE_URI}/metadata/column-metrics.avro"),
                 [first, second],

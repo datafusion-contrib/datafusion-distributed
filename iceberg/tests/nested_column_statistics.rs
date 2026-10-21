@@ -30,6 +30,12 @@ mod tests {
                         StatisticsContext::new().compute(node.as_ref(), &StatisticsArgs::new())?;
                     let column = node.schema().index_of("details")?;
                     assert_eq!(stats.column_statistics[column].byte_size, expected);
+                    assert_eq!(
+                        stats.column_statistics[column].null_count,
+                        Precision::Absent
+                    );
+                    assert_eq!(stats.column_statistics[column].min_value, Precision::Absent);
+                    assert_eq!(stats.column_statistics[column].max_value, Precision::Absent);
                     assert_eq!(stats.num_rows, Precision::Inexact(10));
                     checked = true;
                 }
