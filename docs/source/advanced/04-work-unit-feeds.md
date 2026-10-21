@@ -168,6 +168,11 @@ The associated `WorkUnit` type is the descriptor that travels over the network. 
 [`prost`](https://docs.rs/prost) message automatically satisfies the `WorkUnit` trait — you don't need
 to implement anything extra, just `#[derive(::prost::Message)]`.
 
+`greedy_work_unit_assignment(costs, task_count)` optionally distributes indivisible
+work units largest-first to the least-loaded task. Supply candidate costs in
+consistent units and a stable input order for deterministic ties. It neither
+splits work units nor chooses workers.
+
 ### `WorkUnitFeed<P>`
 
 A `WorkUnitFeed<P>` is the handle your custom `ExecutionPlan` stores. On the coordinator it wraps your

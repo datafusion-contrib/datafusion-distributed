@@ -18,6 +18,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::oneshot;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
+use crate::IcebergConfig;
 use crate::common::df_err;
 use crate::planned_files::PlannedFiles;
 
@@ -267,6 +268,21 @@ impl WorkUnitFeedProvider for IcebergWorkUnitFeed {
                 .ok_or_else(|| exec_datafusion_err!("Invalid Iceberg feed partition count"))?;
             if partition >= total {
                 return internal_err!("Invalid feed index {partition}");
+            }
+            if IcebergConfig::from_task_context(&ctx).greedy_file_assignment {
+                let assignment = planned.assignment(wuf_ctx.fan_out_tasks, &ctx)?;
+                let task = partition / partitions_per_task;
+                let indexes = (partition % partitions_per_task..assignment.task_files[task].len())
+                    .step_by(partitions_per_task);
+                let planned = Arc::clone(planned);
+                return Ok(futures::stream::iter(indexes)
+                    .map(move |offset| {
+                        let index = assignment.task_files[task][offset];
+                        Ok(FileScanTaskWorkUnit {
+                            payload: FileScanTaskPayload::Native(Arc::clone(&planned.tasks[index])),
+                        })
+                    })
+                    .boxed());
             }
             // Partition indices are task-major; distribute files to tasks first,
             // then round-robin among each task's local partitions.
