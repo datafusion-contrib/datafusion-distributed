@@ -1,3 +1,4 @@
+use crate::Cost;
 use crate::distributed_planner::statistics::complexity_cpu::complexity_cpu;
 use crate::distributed_planner::statistics::complexity_memory::complexity_memory;
 use crate::distributed_planner::statistics::complexity_network::complexity_network;
@@ -7,13 +8,6 @@ use datafusion::common::stats::Precision;
 use datafusion::physical_plan::{ExecutionPlan, Statistics};
 use std::ops::AddAssign;
 use std::sync::Arc;
-
-#[derive(Default, Debug)]
-pub(crate) struct Cost {
-    pub(crate) cpu: Precision<usize>,
-    pub(crate) memory: Precision<usize>,
-    pub(crate) network: Precision<usize>,
-}
 
 impl AddAssign for Cost {
     fn add_assign(&mut self, rhs: Self) {
