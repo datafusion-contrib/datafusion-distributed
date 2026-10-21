@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
@@ -12,7 +13,7 @@ use datafusion_proto::physical_plan::{
     PhysicalExtensionCodec, PhysicalPlanDecodeContext, PhysicalProtoConverterExtension,
 };
 use datafusion_proto::protobuf::proto_error;
-use iceberg::io::{FileIOBuilder, StorageFactory};
+use iceberg::io::{FileIO, FileIOBuilder, StorageFactory};
 use iceberg_storage_opendal::OpenDalResolvingStorageFactory;
 use prost::Message;
 
@@ -36,6 +37,12 @@ impl IcebergCodec {
             storage_factory,
             iceberg_runtime,
         }
+    }
+
+    fn file_io(&self, storage_properties: HashMap<String, String>) -> FileIO {
+        FileIOBuilder::new(Arc::clone(&self.storage_factory))
+            .with_props(storage_properties)
+            .build()
     }
 }
 
@@ -87,9 +94,7 @@ impl PhysicalExtensionCodec for IcebergCodec {
             .map(usize::try_from)
             .transpose()
             .map_err(|_| proto_error("Iceberg fetch limit does not fit in usize"))?;
-        let iceberg_file_io = FileIOBuilder::new(Arc::clone(&self.storage_factory))
-            .with_props(proto.storage_properties)
-            .build();
+        let iceberg_file_io = self.file_io(proto.storage_properties);
 
         Ok(DataSourceExec::from_data_source(IcebergDataSource {
             schema,
@@ -147,6 +152,46 @@ mod tests {
 
     use super::*;
     use crate::test_utils::IcebergTestHarness;
+
+    #[test]
+    #[ignore = "reproduces worker FileIO polling on an IO-disabled query runtime"]
+    fn decoded_file_io_uses_configured_io_runtime() {
+        let query_runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .thread_name("query-cpu")
+            .enable_time()
+            .build()
+            .expect("query runtime");
+        let io_runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .thread_name("storage-io")
+            .enable_all()
+            .build()
+            .expect("storage runtime");
+        let iceberg_runtime = iceberg::Runtime::new_with_split(&io_runtime, &query_runtime);
+        let codec = IcebergCodec::new(
+            Arc::new(OpenDalResolvingStorageFactory::new()),
+            iceberg_runtime,
+        );
+        let file_io = codec.file_io(HashMap::from([
+            ("s3.endpoint".to_string(), "http://127.0.0.1:1".to_string()),
+            ("s3.region".to_string(), "us-east-1".to_string()),
+            ("s3.access-key-id".to_string(), "test".to_string()),
+            ("s3.secret-access-key".to_string(), "test".to_string()),
+            ("s3.path-style-access".to_string(), "true".to_string()),
+            ("s3.disable-ec2-metadata".to_string(), "true".to_string()),
+            ("s3.disable-config-load".to_string(), "true".to_string()),
+        ]));
+
+        let result = query_runtime.block_on(async move {
+            file_io
+                .new_input("s3://runtime-reproducer/object")?
+                .read()
+                .await
+        });
+
+        assert!(result.is_err(), "the endpoint should refuse the connection");
+    }
 
     #[tokio::test]
     async fn roundtrips_data_source_plan() -> Result<()> {
