@@ -6,13 +6,16 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::arrow::util::pretty::pretty_format_batches;
+use datafusion::common::{exec_datafusion_err, internal_datafusion_err};
+use datafusion::datasource::source::DataSourceExec;
 use datafusion::error::{DataFusionError, Result};
-use datafusion::execution::SessionStateBuilder;
+use datafusion::execution::{SessionStateBuilder, TaskContext};
 use datafusion::physical_plan::{ExecutionPlan, collect};
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_distributed::{
     DesiredTaskCountEvent, DistributedCodec, DistributedConfig, DistributedExt,
-    DistributedMetricsFormat, display_plan_ascii, rewrite_distributed_plan_with_metrics,
+    DistributedMetricsFormat, DistributedWorkUnitFeedContext, WorkUnitFeedProvider,
+    display_plan_ascii, rewrite_distributed_plan_with_metrics,
 };
 #[cfg(feature = "integration")]
 use datafusion_distributed::{
@@ -20,18 +23,19 @@ use datafusion_distributed::{
     test_utils::in_memory_channel_resolver::{InMemoryChannelResolver, InMemoryWorkerResolver},
 };
 use datafusion_proto::physical_plan::AsExecutionPlan;
-use futures::StreamExt;
 use futures::stream::BoxStream;
+use futures::{StreamExt, TryStreamExt};
 use iceberg::io::{
     FileMetadata, FileRead, FileWrite, InputFile, LocalFsStorage, OutputFile, Storage,
     StorageConfig, StorageFactory,
 };
+use iceberg::scan::FileScanTask;
 use iceberg::spec::TableMetadata;
 use iceberg::{Error, ErrorKind, Result as IcebergResult};
 use serde::{Deserialize, Serialize};
 
 use super::taxi_metadata;
-use crate::{IcebergExt, IcebergIntegrationOptions, iceberg_desired_task_count};
+use crate::{IcebergDataSource, IcebergExt, IcebergIntegrationOptions, iceberg_desired_task_count};
 
 pub const FIXTURE_URI: &str = "s3://iceberg-test/warehouse/taxi";
 const WAREHOUSE_URI: &str = "s3://iceberg-test/warehouse/";
@@ -81,6 +85,47 @@ impl IcebergTestHarness {
             .await?
             .scan(&self.ctx.state(), None, &[], None)
             .await
+    }
+
+    /// Collects scan work by feed partition without opening data files.
+    /// Uses the harness session and runtime, with the requested distributed fan-out.
+    pub async fn scan_file_tasks(&self, task_count: usize) -> Result<Vec<Vec<FileScanTask>>> {
+        let scan = self.scan().await?;
+        let source = scan
+            .downcast_ref::<DataSourceExec>()
+            .ok_or_else(|| internal_datafusion_err!("Expected an Iceberg data source scan"))?;
+        let source = source
+            .data_source()
+            .downcast_ref::<IcebergDataSource>()
+            .ok_or_else(|| internal_datafusion_err!("Expected an Iceberg data source"))?;
+        let feed = source
+            .feed()
+            .inner()
+            .ok_or_else(|| internal_datafusion_err!("Expected a local Iceberg feed"))?;
+        let partitions = scan
+            .properties()
+            .partitioning
+            .partition_count()
+            .checked_mul(task_count)
+            .filter(|count| *count > 0)
+            .ok_or_else(|| exec_datafusion_err!("Invalid Iceberg feed partition count"))?;
+        let context = TaskContext::from(&self.ctx);
+        let config = context.session_config().clone().with_extension(Arc::new(
+            DistributedWorkUnitFeedContext {
+                fan_out_tasks: task_count,
+            },
+        ));
+        let context = Arc::new(context.with_session_config(config));
+        let mut groups = Vec::with_capacity(partitions);
+        for partition in 0..partitions {
+            let tasks = feed
+                .feed(partition, Arc::clone(&context))?
+                .and_then(|unit| async move { unit.into_task() })
+                .try_collect()
+                .await?;
+            groups.push(tasks);
+        }
+        Ok(groups)
     }
 
     /// Estimates Iceberg scan tasks using this harness's session configuration.

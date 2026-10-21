@@ -3,7 +3,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use bytes::{Buf, BufMut};
 use datafusion::common::runtime::SpawnedTask;
-use datafusion::common::{Result, exec_datafusion_err, exec_err, internal_err};
+use datafusion::common::{
+    Result, exec_datafusion_err, exec_err, internal_datafusion_err, internal_err,
+};
 use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::Partitioning;
@@ -18,7 +20,9 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::oneshot;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
+use crate::IcebergConfig;
 use crate::common::df_err;
+use crate::file_partitions::FilePartitions;
 use crate::planned_files::PlannedFiles;
 
 #[derive(Clone, PartialEq, prost::Message)]
@@ -271,6 +275,7 @@ impl WorkUnitFeedProvider for IcebergWorkUnitFeed {
         // Both discovery modes share one dispatcher, initialized by the first feed call.
         let sync_manager_or_err = self.sync_manager.get_or_init(|| {
             let planned = self.planned.clone();
+            let greedy = IcebergConfig::from_task_context(&ctx).greedy_file_assignment;
             let table_scan = self.table_scan()?;
 
             // Fanout the FileScanTask stream across P * T output channels where:
@@ -288,31 +293,53 @@ impl WorkUnitFeedProvider for IcebergWorkUnitFeed {
             // be canceled. The lifetime of this `task` variable needs to last as long as any of
             // the return streams of the `feed()` method.
             let task = SpawnedTask::spawn(async move {
-                let mut stream: BoxStream<'_, Result<FileScanTask>> =
-                    if let Some(planned) = &planned {
-                        // The plan retains reusable descriptors; execution owns its copies.
-                        stream::iter(planned.tasks().iter().cloned())
-                            .map(Ok)
-                            .boxed()
+                let result: Result<()> = async {
+                    let mut destinations = if greedy {
+                        let files = planned.as_ref().ok_or_else(|| {
+                            exec_datafusion_err!(
+                                "Greedy Iceberg assignment requires eager file planning"
+                            )
+                        })?;
+                        FilePartitions::greedy(files.tasks(), task_count, partitions_per_task).await
                     } else {
-                        match table_scan.plan_files().await {
-                            Ok(stream) => stream.map(|task| task.map_err(df_err)).boxed(),
-                            Err(err) => {
-                                let _ = txs[0].send(Err(df_err(err)));
-                                return;
-                            }
+                        FilePartitions::RoundRobin {
+                            next_file: 0,
+                            task_count,
+                            partitions_per_task,
                         }
                     };
+                    let mut files: BoxStream<'_, Result<FileScanTask>> =
+                        if let Some(planned) = &planned {
+                            // The plan retains reusable descriptors; execution owns its copies.
+                            stream::iter(planned.tasks().iter().cloned())
+                                .map(Ok)
+                                .boxed()
+                        } else {
+                            table_scan
+                                .plan_files()
+                                .await
+                                .map_err(df_err)?
+                                .map(|task| task.map_err(df_err))
+                                .boxed()
+                        };
 
-                // Workers own contiguous ranges of feed partitions. Visit workers first so
-                // a pruned scan with few files does not fill only the first worker's range.
-                // This routing assumes UnknownPartitioning, not hash or range partitioning.
-                let mut i = 0;
-                while let Some(task) = stream.next().await {
-                    let partition = (i % task_count) * partitions_per_task
-                        + (i / task_count) % partitions_per_task;
-                    let _ = txs[partition].send(task.map(FileScanTaskWorkUnit::new));
-                    i += 1;
+                    let mut dispatched = 0;
+                    while let Some(task) = files.next().await {
+                        let partition = destinations.next().ok_or_else(|| {
+                            internal_datafusion_err!("Missing Iceberg file destination")
+                        })?;
+                        let _ = txs[partition].send(task.map(FileScanTaskWorkUnit::new));
+                        dispatched += 1;
+                        if dispatched == 256 {
+                            dispatched = 0;
+                            tokio::task::yield_now().await;
+                        }
+                    }
+                    Ok(())
+                }
+                .await;
+                if let Err(error) = result {
+                    let _ = txs[0].send(Err(error));
                 }
             });
 
