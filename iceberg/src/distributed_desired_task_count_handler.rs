@@ -1,7 +1,7 @@
 use std::num::NonZeroUsize;
 
 use datafusion::common::{Result, config_datafusion_err};
-use datafusion::datasource::source::{DataSource, DataSourceExec};
+use datafusion::datasource::source::DataSourceExec;
 use datafusion_distributed::{
     DesiredTaskCountEvent, DesiredTaskCountEventResponse, DistributedConfig,
 };
@@ -18,11 +18,12 @@ pub fn iceberg_desired_task_count(
         .downcast_ref::<DataSourceExec>()?
         .data_source()
         .downcast_ref::<IcebergDataSource>()?;
-    let statistics = match node.partition_statistics(None) {
-        Ok(statistics) => statistics,
+    // Relation statistics can describe only the projection. Scan parallelism
+    // still uses planned file bytes (or snapshot bytes when preplanning is off).
+    let total_bytes = match node.file_scan_bytes() {
+        Ok(bytes) => bytes?,
         Err(error) => return Some(Err(error)),
     };
-    let total_bytes = *statistics.total_byte_size.get_value()?;
     let config = DistributedConfig::from_session_config(ev.session_config).ok()?;
 
     Some(
