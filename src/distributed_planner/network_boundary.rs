@@ -1,7 +1,7 @@
 use crate::execution_plans::SamplerExec;
 use crate::{
-    BroadcastExec, MaybeEncoded, NetworkBroadcastExec, NetworkCoalesceExec, NetworkShuffleExec,
-    Stage,
+    BroadcastExec, MaybeEncoded, NetworkBroadcastExec, NetworkCoalesceExec,
+    NetworkMaterializedScanExec, NetworkShuffleExec, Stage,
 };
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::Result;
@@ -66,6 +66,8 @@ impl NetworkBoundaryExt for dyn ExecutionPlan {
         } else if let Some(node) = self.downcast_ref::<NetworkCoalesceExec>() {
             Some(node)
         } else if let Some(node) = self.downcast_ref::<NetworkBroadcastExec>() {
+            Some(node)
+        } else if let Some(node) = self.downcast_ref::<NetworkMaterializedScanExec>() {
             Some(node)
         } else {
             None

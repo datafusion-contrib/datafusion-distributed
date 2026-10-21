@@ -12,21 +12,21 @@ datafusion-distributed = { path = "..", features = [
   "system-metrics",
 ] }
 tokio = { version = "1.48", features = ["full"] }
-parquet = { version = "59" }
+parquet = { version = "60" }
 structopt = { version = "0.3.26" }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.141"
 env_logger = "0.11.8"
 futures = "0.3.31"
-arrow = { version = "59", features = ["test_utils"] }
+arrow = { version = "60", features = ["test_utils"] }
 tonic = { version = "0.14.1", features = ["transport"] }
-tpchgen = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "f42708c32e7fd816b8ad8d2a880c1802a71b669f" }
-tpchgen-arrow = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "f42708c32e7fd816b8ad8d2a880c1802a71b669f" }
-tpcdsgen = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "f42708c32e7fd816b8ad8d2a880c1802a71b669f" }
-tpcdsgen-arrow = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "f42708c32e7fd816b8ad8d2a880c1802a71b669f" }
+tpchgen = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "1326576e5070b705f9d0f9e364435b9697b9cef9" }
+tpchgen-arrow = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "1326576e5070b705f9d0f9e364435b9697b9cef9" }
+tpcdsgen = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "1326576e5070b705f9d0f9e364435b9697b9cef9" }
+tpcdsgen-arrow = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "1326576e5070b705f9d0f9e364435b9697b9cef9" }
 reqwest = "0.12"
 sketches-ddsketch = "0.3"
-object_store = { version = "0.13", features = ["aws"] }
+object_store = { version = "0.14", features = ["aws"] }
 aws-config = "1"
 aws-credential-types = "1"
 url = "2"

@@ -1,13 +1,14 @@
 use super::{common, output::DatasetOutput};
 use arrow::compute::cast;
 use arrow::datatypes::{DataType, Field, Schema};
+use arrow::error::ArrowError;
 use arrow::record_batch::RecordBatch;
 use datafusion::common::exec_datafusion_err;
 use datafusion::error::DataFusionError;
 use parquet::arrow::AsyncArrowWriter;
 use parquet::file::properties::WriterProperties;
 use std::sync::Arc;
-use tpcdsgen::config::Options;
+use tpcdsgen::config::SessionBuilder;
 use tpcdsgen_arrow::{
     CallCenterArrow, CatalogPageArrow, CatalogReturnsArrow, CatalogSalesArrow,
     CustomerAddressArrow, CustomerArrow, CustomerDemographicsArrow, DateDimArrow,
@@ -31,9 +32,9 @@ async fn generate_table<A>(
     partitions: usize,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
-    A: Iterator<Item = RecordBatch>,
+    A: Iterator<Item = Result<RecordBatch, ArrowError>>,
 {
-    let Some(first_batch) = data_source.next() else {
+    let Some(first_batch) = data_source.next().transpose()? else {
         return Ok(());
     };
 
@@ -53,6 +54,7 @@ where
 
     write_batch(&mut writers, &first_batch).await?;
     for batch in data_source {
+        let batch = batch?;
         let batch = dictionary_encode(batch, table_name)?;
         write_batch(&mut writers, &batch).await?;
     }
@@ -148,9 +150,7 @@ async fn generate_tables(
     sf: f64,
     partitions: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut options = Options::new();
-    options.scale = sf;
-    let session = options.to_session()?;
+    let session = SessionBuilder::new().with_scale_factor(sf).build()?;
 
     macro_rules! generate_tpcds_table {
         ($generator:ident, $name:literal) => {

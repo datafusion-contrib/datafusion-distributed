@@ -1,3 +1,4 @@
+use crate::NetworkMaterializedScanExec;
 use crate::common::require_one_child;
 use crate::coordinator::prepare_dynamic_plan::prepare_dynamic_plan;
 use crate::coordinator::prepare_static_plan::prepare_static_plan;
@@ -8,7 +9,7 @@ use crate::dynamic_filtering::{
 };
 use crate::{DistributedConfig, TaskCompletedDynamicFilters, TaskKey, TaskMetrics};
 use datafusion::common::internal_datafusion_err;
-use datafusion::common::tree_node::TreeNodeRecursion;
+use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::common::{HashMap, Result, exec_err};
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::PhysicalExpr;
@@ -247,7 +248,11 @@ impl ExecutionPlan for DistributedExec {
             let _guard = guard;
 
             let d_cfg = DistributedConfig::from_config_options(context.session_config().options())?;
-            let mut prepared = match d_cfg.dynamic_task_count {
+            // Shared materializations currently use static placement, including when
+            // adaptive task counts are enabled for ordinary queries.
+            let adaptive = d_cfg.dynamic_task_count
+                && !base_plan.exists(|node| Ok(node.is::<NetworkMaterializedScanExec>()))?;
+            let mut prepared = match adaptive {
                 true => prepare_dynamic_plan(&query_coordinator, &base_plan).await?,
                 false => prepare_static_plan(&query_coordinator, &base_plan).await?,
             };
