@@ -226,6 +226,16 @@ impl IcebergDataSource {
         table: Table,
         projection: Option<&Vec<usize>>,
     ) -> Result<Self> {
+        // Filtered planned scans do not publish whole-snapshot column statistics.
+        // Avoid reading and aggregating manifests for statistics we will discard.
+        if self
+            .feed
+            .inner()
+            .and_then(|feed| feed.planned.as_ref())
+            .is_some_and(|planned| planned.filtered)
+        {
+            return Ok(self);
+        }
         let schema = match &self.table_snapshot {
             Some(snap) => snap.schema(table.metadata()).map_err(df_err)?,
             // empty table

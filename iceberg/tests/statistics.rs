@@ -10,7 +10,8 @@ mod tests {
     use datafusion::physical_plan::statistics::{StatisticsArgs, StatisticsContext};
     use datafusion::scalar::ScalarValue;
     use datafusion_distributed_iceberg::test_utils::{
-        FIXTURE_URI, IcebergTestHarness, empty_taxi_metadata_builder, taxi_metadata,
+        FIXTURE_URI, IcebergTestHarness, IcebergTestHarnessBuilder, empty_taxi_metadata_builder,
+        taxi_metadata,
     };
     use datafusion_distributed_iceberg::{IcebergConfig, IcebergExt};
     use iceberg::io::{MemoryStorage, Storage};
@@ -66,6 +67,39 @@ mod tests {
         .await?;
         assert!(matches!(filtered.num_rows, Precision::Inexact(_)));
         assert!(matches!(filtered.total_byte_size, Precision::Inexact(_)));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn eager_filtered_scan_skips_unused_column_statistics() -> Result<(), Box<dyn Error>> {
+        // The manifest's partition summary excludes this query. Poison its contents
+        // so a redundant whole-snapshot column-statistics read fails the test.
+        let harness = manifest_metrics_builder()
+            .await?
+            .with_file(
+                format!("{FIXTURE_URI}/metadata/column-metrics.avro"),
+                vec![],
+            )
+            .configure_session(|mut state| {
+                let mut config = IcebergConfig::default();
+                config.plan_files = true;
+                config.column_stats_enabled = true;
+                state
+                    .config()
+                    .get_or_insert_default()
+                    .options_mut()
+                    .extensions
+                    .insert(config);
+                Ok(state)
+            })?
+            .build()
+            .await?;
+        let stats = query_statistics(
+            &harness,
+            "SELECT * FROM taxi WHERE pickup_date = DATE '1900-01-01'",
+        )
+        .await?;
+        assert_eq!(stats.num_rows, Precision::Exact(0));
         Ok(())
     }
 
@@ -285,6 +319,14 @@ mod tests {
     async fn harness_with_manifest_metrics(
         enabled: bool,
     ) -> Result<IcebergTestHarness, Box<dyn Error>> {
+        Ok(manifest_metrics_builder()
+            .await?
+            .configure_session(|state| Ok(state.with_iceberg_column_stats_enabled(enabled)))?
+            .build()
+            .await?)
+    }
+
+    async fn manifest_metrics_builder() -> Result<IcebergTestHarnessBuilder, Box<dyn Error>> {
         let metadata = taxi_metadata();
         let snapshot = metadata.current_snapshot().expect("taxi has a snapshot");
         let storage = MemoryStorage::new();
@@ -341,9 +383,6 @@ mod tests {
                 storage.read(snapshot.manifest_list()).await?.to_vec(),
             )
             .with_table_option("iceberg.snapshot_id", snapshot.snapshot_id().to_string())
-            .with_table_metadata(metadata)
-            .configure_session(|state| Ok(state.with_iceberg_column_stats_enabled(enabled)))?
-            .build()
-            .await?)
+            .with_table_metadata(metadata))
     }
 }
