@@ -29,6 +29,44 @@ The default storage factory resolves `file://`, S3 (`s3://`, `s3a://`,
 `s3n://`), and GCS (`gs://`, `gcs://`) URIs. Use
 `IcebergIntegrationOptions` to supply custom storage or an Iceberg runtime.
 
+By default, Iceberg discovers files progressively during execution. Set
+`iceberg.eager_file_planning=true` in the session to discover and retain the pruned file tasks
+while building each physical scan, then deliver those same tasks to the reader at
+execution. Retained metadata is charged to the query memory pool, without a
+file-count limit. Eager planning uses metadata I/O up front; it does not change
+reader settings, statistics, or task assignment. Both modes use the same dispatcher
+and partition channels. Eager execution explicitly copies retained file descriptors
+into owned work units; lazy execution moves newly discovered descriptors into them.
+
+```text
+Planning                          Execution
+Eager: discover → retain files ──→ copy descriptors ─┐
+Lazy:  retain scan definition ───→ discover files ──┤
+                                                  ▼
+                                   shared task-first dispatcher
+                                                  ↓
+                                         partition channels
+                                                  ↓
+                                      local or remote readers
+```
+
+Configure the session before creating the `SessionState`:
+
+```rust
+use datafusion::execution::SessionStateBuilder;
+use datafusion::prelude::SessionConfig;
+use datafusion_distributed_iceberg::{IcebergConfig, IcebergExt, IcebergIntegrationOptions};
+
+let config = SessionConfig::new()
+    .with_option_extension(IcebergConfig::default())
+    .set_bool("iceberg.eager_file_planning", true);
+let state = SessionStateBuilder::new()
+    .with_default_features()
+    .with_config(config)
+    .with_iceberg_integration(IcebergIntegrationOptions::default())
+    .build();
+```
+
 ```bash
 cargo test -p datafusion-distributed-iceberg --features integration
 ```
