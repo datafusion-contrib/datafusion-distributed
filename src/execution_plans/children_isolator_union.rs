@@ -391,8 +391,8 @@ impl Stream for ObservedStream {
 }
 
 /// Given per-child [`TaskCountAnnotation`]s and a `task_count_budget`, distribute task slots
-/// proportional to loads, then impose each child's exact count or minimum. When a light
-/// exact child shares a slot, a flexible child can still use the full task budget.
+/// proportional to soft task-count estimates, then impose each child's exact count or minimum.
+/// When a light exact child shares a slot, a flexible child can still use the full task budget.
 ///
 /// The tables at each step follow one example through to its final task map. Columns always
 /// identify children (`cN`). In the placement tables, rows identify outer union tasks (`tN`),
@@ -421,12 +421,12 @@ fn split_children(
     // +------------------+---------+---------+---------+---------+
     // |                  | c0      | c1      | c2      | c3      |
     // +------------------+---------+---------+---------+---------+
-    // | load             | 4       | 2       | 0       | 0       |
+    // | soft estimate    | 4       | 2       | 0       | 0       |
     // | exact count      | 1       | -       | 1       | -       |
     // | minimum count    | -       | 1       | -       | -       |
     // +------------------+---------+---------+---------+---------+
     //
-    // Budget > 0; loads are finite and >= 0; each exact count is in 1..=budget.
+    // Budget > 0; soft estimates are finite and >= 0; each exact count is in 1..=budget.
     // Each minimum must fit the budget; a child has either an exact count or a minimum.
     // Counts need not SUM to <= budget: different children can share an outer slot.
     if task_count_budget == 0 {
@@ -455,32 +455,32 @@ fn split_children(
         }
         if annotation.soft < 0.0 {
             return plan_err!(
-                "ChildrenIsolatorUnionExec child {i} has a negative load of {}, which is invalid.",
+                "ChildrenIsolatorUnionExec child {i} has a negative soft task-count estimate of {}, which is invalid.",
                 annotation.soft
             );
         }
         if !annotation.soft.is_finite() {
             return plan_err!(
-                "ChildrenIsolatorUnionExec child {i} has a non-finite load of {}, which is invalid.",
+                "ChildrenIsolatorUnionExec child {i} has a non-finite soft task-count estimate of {}, which is invalid.",
                 annotation.soft
             );
         }
     }
 
-    // Step 2: turn loads into fractional shares of the full budget.
+    // Step 2: turn soft task-count estimates into fractional shares of the full budget.
     //
     // +------------------+---------+---------+---------+---------+
     // |                  | c0      | c1      | c2      | c3      |
     // +------------------+---------+---------+---------+---------+
-    // | load             | 4       | 2       | 0       | 0       |
+    // | soft estimate    | 4       | 2       | 0       | 0       |
     // | fractional share | 2.667   | 1.333   | 0       | 0       |
     // +------------------+---------+---------+---------+---------+
     //
-    // Total load = 6. Multiply each load by budget / total = 4/6.
+    // Total soft estimate = 6. Multiply each estimate by budget / total = 4/6.
     // Fractional values in these tables are shown to three decimal places.
     //
     // Exact counts do not reserve slots yet, so trivial exact children do not take a flexible
-    // sibling's share. If ALL loads are zero, split max(budget - sum(exact), 0) evenly
+    // sibling's share. If ALL soft estimates are zero, split max(budget - sum(exact), 0) evenly
     // among flexible children instead; exact children receive their exact counts in step 4.
     let exact_total = children
         .iter()
@@ -530,8 +530,8 @@ fn split_children(
     //
     // Floors sum to 3, leaving one slot. c0 has the largest remainder and receives it.
     //
-    // Finish rounding BEFORE imposing exact counts: a nearly zero-load exact child must not
-    // consume a slot that should round up to a flexible child. With all-zero loads,
+    // Finish rounding BEFORE imposing exact counts: an exact child with a near-zero soft estimate
+    // must not consume a slot that should round up to a flexible child. With all-zero soft estimates,
     // defer leftover slots until step 5, after imposing exact counts.
     let mut child_task_counts = unrounded_child_task_counts
         .iter()
@@ -635,7 +635,7 @@ fn split_children(
     // +------------------+---------+---------+
     // |                  | c0      | c1      |
     // +------------------+---------+---------+
-    // | load             | 2       | 0       |
+    // | soft estimate    | 2       | 0       |
     // | exact count      | -       | 1       |
     // | final count      | 2       | 1       |
     // +------------------+---------+---------+
@@ -702,7 +702,7 @@ mod tests {
     #[test]
     fn children_split_all_1_task() -> Result<(), Box<dyn std::error::Error>> {
         assert_eq!(
-            split_children(&[load(1.0), load(1.0), load(1.0)], 3)?,
+            split_children(&[soft(1.0), soft(1.0), soft(1.0)], 3)?,
             vec![
                 vec![(0, ctx(0, 1))],
                 vec![(1, ctx(0, 1))],
@@ -710,13 +710,13 @@ mod tests {
             ]
         );
         assert_eq!(
-            split_children(&[load(1.0), load(1.0), load(1.0)], 2)?,
+            split_children(&[soft(1.0), soft(1.0), soft(1.0)], 2)?,
             // Floor = [0,0,0]. The remainder pass gives one slot each to c0 and c1 (tiebreak
             // by lower index); c2 rounds to zero and is distributed round-robin: slot 0 % 2 = 0.
             vec![vec![(0, ctx(0, 1)), (2, ctx(0, 1))], vec![(1, ctx(0, 1))]]
         );
         assert_eq!(
-            split_children(&[load(1.0), load(1.0), load(1.0)], 1)?,
+            split_children(&[soft(1.0), soft(1.0), soft(1.0)], 1)?,
             vec![vec![(0, ctx(0, 1)), (1, ctx(0, 1)), (2, ctx(0, 1))]]
         );
         Ok(())
@@ -725,7 +725,7 @@ mod tests {
     #[test]
     fn split_children_different_tasks() -> Result<(), Box<dyn std::error::Error>> {
         assert_eq!(
-            split_children(&[load(1.0), load(2.0), load(3.0)], 6)?,
+            split_children(&[soft(1.0), soft(2.0), soft(3.0)], 6)?,
             vec![
                 vec![(0, ctx(0, 1))],
                 vec![(1, ctx(0, 2))],
@@ -736,7 +736,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            split_children(&[load(1.0), load(2.0), load(3.0)], 5)?,
+            split_children(&[soft(1.0), soft(2.0), soft(3.0)], 5)?,
             vec![
                 vec![(0, ctx(0, 1))],
                 vec![(1, ctx(0, 2))],
@@ -746,7 +746,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            split_children(&[load(1.0), load(2.0), load(3.0)], 4)?,
+            split_children(&[soft(1.0), soft(2.0), soft(3.0)], 4)?,
             vec![
                 vec![(0, ctx(0, 1))],
                 vec![(1, ctx(0, 1))],
@@ -755,7 +755,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            split_children(&[load(1.0), load(2.0), load(3.0)], 3)?,
+            split_children(&[soft(1.0), soft(2.0), soft(3.0)], 3)?,
             vec![
                 vec![(0, ctx(0, 1))],
                 vec![(1, ctx(0, 1))],
@@ -763,13 +763,13 @@ mod tests {
             ]
         );
         assert_eq!(
-            split_children(&[load(1.0), load(2.0), load(3.0)], 2)?,
+            split_children(&[soft(1.0), soft(2.0), soft(3.0)], 2)?,
             // Floor = [0, 0, 1] (only c2's share is ≥ 1). Remainder of 1 goes to c1 (highest
             // fractional remainder). c0 rounds to zero and is distributed round-robin: slot 0 % 2 = 0.
             vec![vec![(1, ctx(0, 1)), (0, ctx(0, 1))], vec![(2, ctx(0, 1))]]
         );
         assert_eq!(
-            split_children(&[load(1.0), load(2.0), load(3.0)], 1)?,
+            split_children(&[soft(1.0), soft(2.0), soft(3.0)], 1)?,
             // Only c2 (the highest weight) wins the single slot via the remainder pass; c0
             // and c1 pack onto it.
             vec![vec![(2, ctx(0, 1)), (0, ctx(0, 1)), (1, ctx(0, 1))]]
@@ -786,7 +786,7 @@ mod tests {
         // weights=[1,1], budget=3 → fractional shares of 1.5 each; lower-index child wins the
         // tiebreak and absorbs the surplus, getting 2 task slots; the other gets 1.
         assert_eq!(
-            split_children(&[load(1.0), load(1.0)], 3)?,
+            split_children(&[soft(1.0), soft(1.0)], 3)?,
             vec![
                 vec![(0, ctx(0, 2))],
                 vec![(0, ctx(1, 2))],
@@ -796,7 +796,7 @@ mod tests {
         // weights=[1,1], budget=5 → fractional shares of 2.5 each; tiebreak gives the extra to
         // the lower-index child.
         assert_eq!(
-            split_children(&[load(1.0), load(1.0)], 5)?,
+            split_children(&[soft(1.0), soft(1.0)], 5)?,
             vec![
                 vec![(0, ctx(0, 3))],
                 vec![(0, ctx(1, 3))],
@@ -808,7 +808,7 @@ mod tests {
         // weights=[1,2], budget=4 → shares of 4/3≈1.33 and 8/3≈2.67; floors are [1,2] with one
         // leftover, awarded to the larger-remainder child (idx 1).
         assert_eq!(
-            split_children(&[load(1.0), load(2.0)], 4)?,
+            split_children(&[soft(1.0), soft(2.0)], 4)?,
             vec![
                 vec![(0, ctx(0, 1))],
                 vec![(1, ctx(0, 3))],
@@ -828,7 +828,7 @@ mod tests {
         // weights=[10, 1, 1], budget=3 → child 0 wins the budget (2.5 → 3 via largest-remainder);
         // children 1 and 2 round down to 0 and are distributed round-robin: c1 → slot 0, c2 → slot 1.
         assert_eq!(
-            split_children(&[load(10.0), load(1.0), load(1.0)], 3)?,
+            split_children(&[soft(10.0), soft(1.0), soft(1.0)], 3)?,
             vec![
                 vec![(0, ctx(0, 3)), (1, ctx(0, 1))],
                 vec![(0, ctx(1, 3)), (2, ctx(0, 1))],
@@ -848,7 +848,7 @@ mod tests {
             vec![vec![(0, ctx(0, 1))], vec![(1, ctx(0, 1))], vec![]]
         );
 
-        // Tiny loads do not force exact-one children into separate union tasks.
+        // Tiny soft estimates do not force exact-one children into separate union tasks.
         assert_eq!(
             split_children(
                 &[TaskCountAnnotation::exact(NonZeroUsize::MIN, 0.0001); 3],
@@ -860,7 +860,7 @@ mod tests {
         // One exact at 1, one unconstrained with weight 1. Budget 3 → c1 absorbs
         // the surplus and ends up running in 2 tasks.
         assert_eq!(
-            split_children(&[exact(1), load(1.0)], 3)?,
+            split_children(&[exact(1), soft(1.0)], 3)?,
             vec![
                 vec![(0, ctx(0, 1))],
                 vec![(1, ctx(0, 2))],
@@ -870,7 +870,7 @@ mod tests {
 
         // c0 requires 2; unconstrained siblings divide the remaining four slots.
         assert_eq!(
-            split_children(&[exact(2), load(1.0), load(1.0)], 6)?,
+            split_children(&[exact(2), soft(1.0), soft(1.0)], 6)?,
             vec![
                 vec![(0, ctx(0, 2))],
                 vec![(0, ctx(1, 2))],
@@ -896,7 +896,7 @@ mod tests {
         assert_eq!(
             split_children(
                 &[
-                    load(2.0),
+                    soft(2.0),
                     TaskCountAnnotation::exact(NonZeroUsize::MIN, 0.0)
                 ],
                 2
@@ -904,9 +904,9 @@ mod tests {
             vec![vec![(0, ctx(0, 2)), (1, ctx(0, 1))], vec![(0, ctx(1, 2))],]
         );
 
-        // A large load lets the sibling share a slot without reducing c0's exact count.
+        // A large soft estimate lets the sibling share a slot without reducing c0's exact count.
         assert_eq!(
-            split_children(&[exact(2), load(10.0)], 3)?,
+            split_children(&[exact(2), soft(10.0)], 3)?,
             vec![
                 vec![(0, ctx(0, 2)), (1, ctx(1, 2))],
                 vec![(0, ctx(1, 2))],
@@ -930,7 +930,7 @@ mod tests {
     #[test]
     fn split_children_all_zero_weights_splits_evenly() -> Result<(), Box<dyn std::error::Error>> {
         assert_eq!(
-            split_children(&[load(0.0), load(0.0), load(0.0)], 3)?,
+            split_children(&[soft(0.0), soft(0.0), soft(0.0)], 3)?,
             vec![
                 vec![(0, ctx(0, 1))],
                 vec![(1, ctx(0, 1))],
@@ -944,7 +944,7 @@ mod tests {
     fn split_children_minimums_allow_sharing_and_growth() -> Result<(), DataFusionError> {
         let minimum = TaskCountAnnotation::min(NonZeroUsize::new(2).unwrap(), 0.0);
         assert_eq!(
-            split_children(&[minimum, load(4.0)], 4)?,
+            split_children(&[minimum, soft(4.0)], 4)?,
             vec![
                 vec![(0, ctx(0, 2)), (1, ctx(2, 4))],
                 vec![(0, ctx(1, 2)), (1, ctx(3, 4))],
@@ -957,7 +957,7 @@ mod tests {
             split_children(
                 &[
                     TaskCountAnnotation::min(NonZeroUsize::new(2).unwrap(), 4.0),
-                    load(2.0)
+                    soft(2.0)
                 ],
                 6,
             )?,
@@ -986,7 +986,7 @@ mod tests {
     /// Negative and non-finite weights are rejected upfront.
     #[test]
     fn split_children_rejects_negative_weight() {
-        let err = split_children(&[load(1.0), load(-1.0), load(1.0)], 3).unwrap_err();
+        let err = split_children(&[soft(1.0), soft(-1.0), soft(1.0)], 3).unwrap_err();
         assert!(
             err.to_string().contains("negative"),
             "unexpected error: {err}"
@@ -995,7 +995,7 @@ mod tests {
 
     #[test]
     fn split_children_rejects_nan_weight() {
-        let err = split_children(&[load(f64::NAN), load(1.0)], 2).unwrap_err();
+        let err = split_children(&[soft(f64::NAN), soft(1.0)], 2).unwrap_err();
         assert!(
             err.to_string().contains("non-finite"),
             "unexpected error: {err}"
@@ -1004,7 +1004,7 @@ mod tests {
 
     #[test]
     fn split_children_rejects_infinite_weight() {
-        let err = split_children(&[load(1.0), load(f64::INFINITY)], 2).unwrap_err();
+        let err = split_children(&[soft(1.0), soft(f64::INFINITY)], 2).unwrap_err();
         assert!(
             err.to_string().contains("non-finite"),
             "unexpected error: {err}"
@@ -1013,7 +1013,7 @@ mod tests {
 
     #[test]
     fn split_children_rejects_exact_count_above_budget() {
-        let err = split_children(&[exact(3), load(1.0)], 2).unwrap_err();
+        let err = split_children(&[exact(3), soft(1.0)], 2).unwrap_err();
         assert!(
             err.to_string().contains("requires 3 tasks"),
             "unexpected error: {err}"
@@ -1027,8 +1027,8 @@ mod tests {
         }
     }
 
-    /// Shorthand for a load estimate — keeps the unit tests readable.
-    fn load(w: f64) -> TaskCountAnnotation {
+    /// Shorthand for a soft task-count estimate — keeps the unit tests readable.
+    fn soft(w: f64) -> TaskCountAnnotation {
         TaskCountAnnotation::soft(w)
     }
 

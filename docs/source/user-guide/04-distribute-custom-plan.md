@@ -108,7 +108,6 @@ For a sharded scan, one task per shard is a natural choice:
 
 ```rust
 use datafusion::common::Result;
-use std::num::NonZeroUsize;
 
 fn sharded_scan_desired_task_count(
     event: DesiredTaskCountEvent,
@@ -122,13 +121,14 @@ fn sharded_scan_desired_task_count(
 
 What the return value means:
 
-- `DesiredTaskCountEventResponse::soft(n)` — a **soft** `f64` hint. Fractional hints from
+- `DesiredTaskCountEventResponse::soft(n)` — a **soft task-count estimate**. Fractional estimates from
   isolated union children are added before the final value is rounded up. The planner may land on
-  a different number: within a stage the largest load wins, and the count is capped at the
+  a different number: within a stage the largest estimate wins, and the count is capped at the
   number of available workers.
-- `DesiredTaskCountEventResponse::exact(n, load)` — requires **exactly** `n` tasks while retaining
-  `load` as its soft estimate. For example, use `exact(NonZeroUsize::new(1).unwrap(), 0.0)` for a
-  node that must run in one task. Incompatible exact requirements cause planning to fail.
+- `DesiredTaskCountEventResponse::exact(n, soft)` — requires **exactly** `n` tasks while retaining
+  `soft` as its soft task-count estimate. Use `DesiredTaskCountEventResponse::exactly_one()` for a
+  node that must run in one task without contributing a soft estimate upstream. Incompatible exact
+  requirements cause planning to fail.
 - `None` — defer to the other registered handlers (and finally the built-in
   file-scan handler).
 - `Some(Err(...))` — stop planning and return the error to the caller.

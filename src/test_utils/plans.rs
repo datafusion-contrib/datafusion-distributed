@@ -25,8 +25,6 @@ use datafusion::{
     common::{HashMap, HashSet},
     physical_plan::ExecutionPlan,
 };
-#[cfg(test)]
-use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 /// count_plan_nodes counts the number of execution plan nodes in a plan using BFS traversal.
@@ -377,10 +375,7 @@ pub(crate) fn build_side_one_desired_task_count_handler(
     let has_min_temp = schema.fields().iter().any(|f| f.name() == "MinTemp");
     let has_max_temp = schema.fields().iter().any(|f| f.name() == "MaxTemp");
     if has_min_temp && !has_max_temp {
-        Some(Ok(DesiredTaskCountEventResponse::exact(
-            NonZeroUsize::MIN,
-            0.0,
-        )))
+        Some(Ok(DesiredTaskCountEventResponse::exactly_one()))
     } else {
         None
     }
