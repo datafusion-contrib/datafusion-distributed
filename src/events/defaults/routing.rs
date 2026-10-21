@@ -28,7 +28,7 @@ impl RouteTaskHandler for RandomRouteTaskHandler {
     }
 }
 
-async fn dial_with_failover(
+pub(in crate::events) async fn dial_with_failover(
     dialer: &dyn CoordinatorToWorkerDialer,
     url: Url,
     mut retry_urls: Vec<Url>,

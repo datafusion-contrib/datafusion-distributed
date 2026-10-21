@@ -208,6 +208,9 @@ impl IcebergDataSource {
         if config.greedy_file_assignment && !config.plan_files {
             return config_err!("Iceberg greedy_file_assignment requires iceberg.plan_files=true");
         }
+        if config.file_task_affinity && !config.plan_files {
+            return config_err!("Iceberg file_task_affinity requires iceberg.plan_files=true");
+        }
         if config.plan_files
             && let Some(feed) = self.feed.inner_mut()
         {

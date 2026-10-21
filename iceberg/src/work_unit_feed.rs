@@ -7,7 +7,9 @@ use datafusion::common::{Result, exec_datafusion_err, exec_err, internal_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::Partitioning;
-use datafusion_distributed::{DistributedWorkUnitFeedContext, WorkUnitFeedProvider};
+use datafusion_distributed::{
+    DistributedTaskContext, DistributedWorkUnitFeedContext, WorkUnitAffinity, WorkUnitFeedProvider,
+};
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use iceberg::expr::Predicate;
@@ -254,6 +256,32 @@ pub(crate) struct SyncManager {
 impl WorkUnitFeedProvider for IcebergWorkUnitFeed {
     type WorkUnit = FileScanTaskWorkUnit;
 
+    fn task_affinity(
+        &self,
+        task: DistributedTaskContext,
+        ctx: Arc<TaskContext>,
+    ) -> Result<Vec<WorkUnitAffinity>> {
+        let config = IcebergConfig::from_task_context(&ctx);
+        if !config.file_task_affinity {
+            return Ok(Vec::new());
+        }
+        let Some(planned) = &self.planned else {
+            return Ok(Vec::new());
+        };
+        let assignment =
+            planned.assignment(task.task_count, config.greedy_file_assignment, &ctx)?;
+        let Some(indexes) = assignment.task_files.get(task.task_index) else {
+            return internal_err!("Invalid Iceberg affinity task index {}", task.task_index);
+        };
+        Ok(indexes
+            .iter()
+            .map(|&index| {
+                let file = &planned.tasks[index];
+                WorkUnitAffinity::new(file.data_file_path(), file.length())
+            })
+            .collect())
+    }
+
     fn feed(
         &self,
         partition: usize,
@@ -270,7 +298,7 @@ impl WorkUnitFeedProvider for IcebergWorkUnitFeed {
                 return internal_err!("Invalid feed index {partition}");
             }
             if IcebergConfig::from_task_context(&ctx).greedy_file_assignment {
-                let assignment = planned.assignment(wuf_ctx.fan_out_tasks, &ctx)?;
+                let assignment = planned.assignment(wuf_ctx.fan_out_tasks, true, &ctx)?;
                 let task = partition / partitions_per_task;
                 let indexes = (partition % partitions_per_task..assignment.task_files[task].len())
                     .step_by(partitions_per_task);

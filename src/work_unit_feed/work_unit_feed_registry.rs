@@ -1,4 +1,6 @@
-use crate::{WorkUnit, WorkUnitFeed, WorkUnitFeedProvider};
+use crate::{
+    DistributedTaskContext, WorkUnit, WorkUnitAffinity, WorkUnitFeed, WorkUnitFeedProvider,
+};
 use datafusion::common::Result;
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
@@ -19,6 +21,12 @@ pub(crate) trait ErasedWorkUnitFeed: Send + Sync {
     /// Unique identifier of the feed (same UUID as the concrete `WorkUnitFeed`).
     fn id(&self) -> Uuid;
 
+    fn task_affinity(
+        &self,
+        task: DistributedTaskContext,
+        ctx: Arc<TaskContext>,
+    ) -> Result<Vec<WorkUnitAffinity>>;
+
     /// Produces a stream of boxed [`WorkUnit`]s for the given partition.
     ///
     /// Each item is boxed to erase the concrete `T::WorkUnit` type. Callers
@@ -37,6 +45,17 @@ where
 {
     fn id(&self) -> Uuid {
         self.id
+    }
+
+    fn task_affinity(
+        &self,
+        task: DistributedTaskContext,
+        ctx: Arc<TaskContext>,
+    ) -> Result<Vec<WorkUnitAffinity>> {
+        match self.inner() {
+            Some(provider) => provider.task_affinity(task, ctx),
+            None => Ok(Vec::new()),
+        }
     }
 
     fn feed(
