@@ -4,6 +4,58 @@ mod tests {
     use datafusion::common::Result;
     use datafusion_distributed::assert_snapshot;
 
+    /// Collecting filters for display must preserve filters executed in the head stage.
+    #[tokio::test]
+    async fn head_stage_dynamic_filters() -> Result<()> {
+        // The union keeps a remote build stage, while the join and its probe scan
+        // execute in the coordinator's head stage.
+        let display = TestQuery::new(
+            r#"
+                SELECT COUNT(*)
+                FROM (
+                    SELECT AVG("MinTemp") AS key
+                    FROM (
+                        SELECT "MinTemp" FROM weather
+                        UNION ALL
+                        SELECT "MinTemp" FROM weather
+                    )
+                ) build
+                JOIN weather probe ON build.key = probe."MinTemp"
+            "#,
+        )
+        .with_broadcast_joins()
+        .with_one_task_per_leaf()
+        .execute()
+        .await?;
+        assert_snapshot!(display, @"
+        ┌───── DistributedExec
+        │ ProjectionExec: expr=[count(Int64(1))@0 as count(*)]
+        │   AggregateExec: mode=Final, gby=[], aggr=[count(Int64(1))]
+        │     CoalescePartitionsExec
+        │       AggregateExec: mode=Partial, gby=[], aggr=[count(Int64(1))]
+        │         HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(key@0, MinTemp@0)], projection=[]
+        │           CoalescePartitionsExec
+        │             BroadcastExec: input_partitions=1, consumer_tasks=1, output_partitions=1
+        │               ProjectionExec: expr=[avg(MinTemp)@0 as key]
+        │                 AggregateExec: mode=Final, gby=[], aggr=[avg(MinTemp)]
+        │                   CoalescePartitionsExec
+        │                     [Stage 1] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
+        │           DistributedLeafExec:
+        │             t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp], file_type=parquet, predicate=DynamicFilter [ expression_id_0_hash_0 ], dynamic_rg_pruning=eligible
+        └──────────────────────────────────────────────────
+          ┌───── Stage 1 ── tasks=2, partitions=6
+          │ AggregateExec: mode=Partial, gby=[], aggr=[avg(MinTemp)]
+          │   DistributedUnionExec: t0:[c0] t1:[c1]
+          │     DistributedLeafExec:
+          │       t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp], file_type=parquet
+          │     DistributedLeafExec:
+          │       t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp], file_type=parquet
+          └──────────────────────────────────────────────────
+        ");
+
+        Ok(())
+    }
+
     /// A CollectLeft HashJoinExec producer propagates identical updates to local consumers.
     #[tokio::test]
     async fn local_dynamic_filters() -> Result<()> {
