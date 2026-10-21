@@ -1,6 +1,7 @@
 mod children_helpers;
 mod macros;
 mod maybe_encoded;
+mod on_drop_stream;
 mod once_lock;
 mod recursion;
 mod retry_outcome;
@@ -11,6 +12,7 @@ mod vec;
 
 pub(crate) use children_helpers::require_one_child;
 pub use maybe_encoded::MaybeEncoded;
+pub(crate) use on_drop_stream::on_drop_stream;
 pub(crate) use once_lock::OnceLockResult;
 pub(crate) use recursion::TreeNodeExt;
 pub(crate) use retry_outcome::RetryOutcome;

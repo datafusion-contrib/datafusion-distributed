@@ -3,14 +3,12 @@ mod errors;
 mod generated;
 mod metrics_proto;
 mod observability;
-mod on_drop_stream;
 mod spawn_select_all;
 mod worker_client;
 mod worker_service;
 
 // TODO: this should not be exposed.
 pub(crate) use channel_resolver::DEFAULT_CHANNEL_RESOLVER_PER_RUNTIME;
-pub(crate) use on_drop_stream::on_drop_stream;
 
 pub use channel_resolver::{BoxCloneSyncChannel, DefaultChannelResolver};
 pub use observability::{

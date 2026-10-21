@@ -1,4 +1,6 @@
 use crate::common::TreeNodeExt;
+#[cfg(feature = "integration")]
+use crate::common::on_drop_stream;
 use crate::dynamic_filtering::{
     apply_dynamic_filter_update, discover_dynamic_filter_consumers,
     discover_dynamic_filter_producers,
@@ -6,8 +8,6 @@ use crate::dynamic_filtering::{
 use crate::events::{WorkerPlanRewriteEvent, WorkerPlanRewriteHandlers};
 use crate::execution_plans::SamplerExec;
 use crate::protocol::LocalWorkerContext;
-#[cfg(feature = "integration")]
-use crate::protocol::grpc::on_drop_stream;
 use crate::work_unit_feed::{RemoteWorkUnitFeedRegistry, set_work_unit_received_time};
 use crate::worker::task_data::TaskDataMetrics;
 use crate::{
