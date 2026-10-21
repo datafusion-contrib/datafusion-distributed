@@ -49,13 +49,13 @@ mod tests {
         partitions: usize,
         last_date: &str,
         expected_rows: &str,
-        plan_files: bool,
+        eager_file_planning: bool,
     ) -> Result<()> {
         let harness = IcebergTestHarness::builder()
             .with_workers(workers)
             .configure_session(|mut state| {
                 let mut config = IcebergConfig::default();
-                config.plan_files = plan_files;
+                config.eager_file_planning = eager_file_planning;
                 let session = state.config().get_or_insert_default();
                 session.options_mut().execution.target_partitions = partitions;
                 session.options_mut().extensions.insert(config);

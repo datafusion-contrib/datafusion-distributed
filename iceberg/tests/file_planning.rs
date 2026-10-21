@@ -60,7 +60,7 @@ mod tests {
         let eager = IcebergTestHarness::builder()
             .configure_session(|mut state| {
                 let mut config = IcebergConfig::default();
-                config.plan_files = true;
+                config.eager_file_planning = true;
                 state
                     .config()
                     .get_or_insert_default()
@@ -134,7 +134,7 @@ mod tests {
         builder
             .configure_session(|mut state| {
                 let mut config = IcebergConfig::default();
-                config.plan_files = eager;
+                config.eager_file_planning = eager;
                 state
                     .config()
                     .get_or_insert_default()

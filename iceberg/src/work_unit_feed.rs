@@ -220,7 +220,7 @@ impl IcebergWorkUnitFeed {
         builder.build().map_err(df_err)
     }
 
-    pub(crate) async fn plan_files(
+    pub(crate) async fn prepare_files(
         &mut self,
         runtime: &iceberg::Runtime,
         context: Arc<TaskContext>,

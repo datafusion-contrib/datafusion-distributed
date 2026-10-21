@@ -203,10 +203,10 @@ impl IcebergDataSource {
     /// Optionally resolve file work before execution without changing reported statistics.
     pub(crate) async fn with_planned_files(mut self, context: Arc<TaskContext>) -> Result<Self> {
         let config = IcebergConfig::from_task_context(&context);
-        if config.plan_files
+        if config.eager_file_planning
             && let Some(feed) = self.feed.inner_mut()
         {
-            feed.plan_files(&self.iceberg_runtime, context).await?;
+            feed.prepare_files(&self.iceberg_runtime, context).await?;
         }
         Ok(self)
     }

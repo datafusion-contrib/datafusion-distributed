@@ -30,7 +30,7 @@ The default storage factory resolves `file://`, S3 (`s3://`, `s3a://`,
 `IcebergIntegrationOptions` to supply custom storage or an Iceberg runtime.
 
 By default, Iceberg discovers files progressively during execution. Set
-`iceberg.plan_files=true` in the session to discover and retain the pruned file tasks
+`iceberg.eager_file_planning=true` in the session to discover and retain the pruned file tasks
 while building each physical scan, then deliver those same tasks to the reader at
 execution. Retained metadata is charged to the query memory pool, without a
 file-count limit. Eager planning uses metadata I/O up front; it does not change
@@ -59,7 +59,7 @@ use datafusion_distributed_iceberg::{IcebergConfig, IcebergExt, IcebergIntegrati
 
 let config = SessionConfig::new()
     .with_option_extension(IcebergConfig::default())
-    .set_bool("iceberg.plan_files", true);
+    .set_bool("iceberg.eager_file_planning", true);
 let state = SessionStateBuilder::new()
     .with_default_features()
     .with_config(config)
