@@ -81,7 +81,7 @@ impl TableProvider for IcebergStaticTableProvider {
                 "Snapshot {id} not found in table's metadata"
             ));
         }
-        let mut data_source = IcebergDataSource::new(
+        let data_source = IcebergDataSource::new(
             self.table.clone(),
             self.schema.clone(),
             Partitioning::UnknownPartitioning(state.config().target_partitions()),
@@ -93,11 +93,11 @@ impl TableProvider for IcebergStaticTableProvider {
                 iceberg_runtime: Some(self.iceberg_runtime.clone()),
             },
         );
-        data_source = data_source.with_planned_files(state.task_ctx()).await?;
+        let mut data_source = data_source.with_planned_files(state.task_ctx()).await?;
         let iceberg_config = IcebergConfig::from_task_context(&state.task_ctx());
         if iceberg_config.column_stats_enabled {
             data_source = data_source
-                .with_column_statistics(self.table.clone(), projection)
+                .with_column_statistics(self.table.clone(), projection.map(Vec::as_slice))
                 .await?;
         }
         Ok(DataSourceExec::from_data_source(data_source))

@@ -11,16 +11,10 @@ mod tests {
     use datafusion::physical_plan::statistics::{StatisticsArgs, StatisticsContext};
     use datafusion::prelude::SessionConfig;
     use datafusion_distributed::{DistributedExt, WorkUnitFeedProvider};
-    use datafusion_distributed_iceberg::test_utils::{
-        FIXTURE_URI, IcebergTestHarness, taxi_metadata,
-    };
+    use datafusion_distributed_iceberg::test_utils::{FIXTURE_URI, IcebergTestHarness};
     use datafusion_distributed_iceberg::{IcebergConfig, IcebergDataSource, IcebergWorkUnitFeed};
     use futures::TryStreamExt;
-    use iceberg::io::{MemoryStorage, Storage};
-    use iceberg::spec::{
-        DataContentType, DataFileBuilder, DataFileFormat, Literal, ManifestListWriter,
-        ManifestWriterBuilder, Struct,
-    };
+    use iceberg::spec::{DataContentType, DataFileBuilder, DataFileFormat, Literal, Struct};
     use prost::Message;
 
     #[tokio::test]
@@ -281,23 +275,13 @@ mod tests {
         sizes: &[u64],
         reverse: bool,
     ) -> Result<IcebergTestHarness, Box<dyn Error>> {
-        let metadata = taxi_metadata();
-        let snapshot = metadata.current_snapshot().unwrap();
-        let storage = MemoryStorage::new();
-        let uri = format!("{FIXTURE_URI}/metadata/skewed-files.avro");
-        let mut writer = ManifestWriterBuilder::new(
-            storage.new_output(&uri)?,
-            Some(snapshot.snapshot_id()),
-            metadata.current_schema().clone(),
-            metadata.default_partition_spec().as_ref().clone(),
-        )
-        .build_v2_data();
         let mut files: Vec<_> = sizes.iter().copied().enumerate().collect();
         if reverse {
             files.reverse();
         }
+        let mut entries = Vec::new();
         for (index, bytes) in files {
-            writer.add_file(
+            entries.push(
                 DataFileBuilder::default()
                     .content(DataContentType::Data)
                     .file_format(DataFileFormat::Parquet)
@@ -308,28 +292,14 @@ mod tests {
                     )?)]))
                     .file_path(format!("{FIXTURE_URI}/data/file-{index}.parquet"))
                     .build()?,
-                snapshot.sequence_number(),
-            )?;
+            );
         }
-        let manifest = writer.write_manifest_file().await?;
-        let mut list = ManifestListWriter::v2(
-            storage
-                .new_output(snapshot.manifest_list())?
-                .writer()
-                .await?,
-            snapshot.snapshot_id(),
-            snapshot.parent_snapshot_id(),
-            snapshot.sequence_number(),
-        );
-        list.add_manifests([manifest].into_iter())?;
-        list.close().await?;
         let harness = IcebergTestHarness::builder()
-            .with_file(&uri, storage.read(&uri).await?.to_vec())
-            .with_file(
-                snapshot.manifest_list(),
-                storage.read(snapshot.manifest_list()).await?.to_vec(),
+            .with_data_files(
+                &format!("{FIXTURE_URI}/metadata/skewed-files.avro"),
+                entries,
             )
-            .with_table_metadata(metadata)
+            .await?
             .configure_session(|mut state| {
                 let mut config = IcebergConfig::default();
                 config.eager_file_planning = true;

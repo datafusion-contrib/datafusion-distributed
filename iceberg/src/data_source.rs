@@ -4,7 +4,7 @@ use std::sync::Arc;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::stats::Precision;
 use datafusion::common::tree_node::TreeNodeRecursion;
-use datafusion::common::{ColumnStatistics, Statistics, config_err};
+use datafusion::common::{ColumnStatistics, Statistics, config_err, exec_err};
 use datafusion::config::ConfigOptions;
 use datafusion::datasource::source::DataSource;
 use datafusion::error::{DataFusionError, Result};
@@ -30,7 +30,9 @@ use iceberg::spec::{
 };
 use iceberg::table::Table;
 use iceberg_datafusion::read::convert_filters_to_predicate;
+use tokio::sync::oneshot;
 
+use crate::column_sizes::selected_column_sizes;
 use crate::common::{df_err, iceberg_err};
 use crate::planned_files::PlannedFiles;
 use crate::{IcebergConfig, IcebergWorkUnitFeed};
@@ -201,7 +203,7 @@ impl IcebergDataSource {
         }
     }
 
-    /// Optionally resolve file work before execution without changing reported statistics.
+    /// Optionally retain selected file work for planning and execution.
     pub(crate) async fn with_planned_files(mut self, context: Arc<TaskContext>) -> Result<Self> {
         let config = IcebergConfig::from_task_context(&context);
         if config.greedy_file_assignment && !config.eager_file_planning {
@@ -226,33 +228,65 @@ impl IcebergDataSource {
         self.planned_files().map(|planned| planned.tasks().len())
     }
 
-    /// Creating an instance with per column statistics calculation, including:
-    /// - null_count, min_value, max_value, byte_size
+    /// Whole-file I/O used for scan parallelism, independent of projected column sizes.
+    pub(crate) fn file_scan_bytes(&self) -> Option<usize> {
+        self.feed.inner()?;
+        if let Some(planned) = self.planned_files() {
+            return Some(planned.bytes());
+        }
+        match &self.table_snapshot {
+            Some(snapshot) => snapshot
+                .summary()
+                .additional_properties
+                .get(TOTAL_FILE_SIZE)?
+                .parse()
+                .ok(),
+            None => Some(0),
+        }
+    }
+
+    /// For filtered planned scans, only publish selected-file byte estimates.
+    /// Whole-snapshot value statistics do not describe the filtered relation.
     pub(crate) async fn with_column_statistics(
         mut self,
         table: Table,
-        projection: Option<&Vec<usize>>,
+        projection: Option<&[usize]>,
     ) -> Result<Self> {
-        // Filtered planned scans do not publish whole-snapshot column statistics.
-        // Avoid reading and aggregating manifests for statistics we will discard.
-        if self
-            .planned_files()
-            .is_some_and(|planned| planned.may_filter_rows())
-        {
-            return Ok(self);
-        }
         let schema = match &self.table_snapshot {
             Some(snap) => snap.schema(table.metadata()).map_err(df_err)?,
             // empty table
             None => table.metadata().current_schema().clone(),
         };
-        let fields = schema.as_struct().fields().to_vec();
-        let field_ids: Vec<i32> = match projection {
-            Some(projection) => projection.iter().map(|&idx| fields[idx].id).collect(),
-            None => fields.iter().map(|f| f.id).collect(),
+        let fields = schema.as_struct().fields();
+        let fields: Vec<_> = match projection {
+            Some(projection) => projection
+                .iter()
+                .map(|&idx| Arc::clone(&fields[idx]))
+                .collect(),
+            None => fields.to_vec(),
         };
-        self.column_stats =
-            Some(compute_column_stats(table, field_ids, self.table_snapshot.clone()).await?);
+        let planned = self.feed.inner().and_then(|feed| feed.planned.clone());
+        let snapshot = self.table_snapshot.clone();
+        let (_cancel_on_drop, canceled) = oneshot::channel::<()>();
+        let task = self.iceberg_runtime.io().spawn(async move {
+            tokio::select! {
+                _ = canceled => exec_err!("Iceberg column statistics canceled"),
+                stats = async {
+                    if let Some(planned) = planned.filter(|planned| planned.may_filter_rows())
+                        && let Some(snapshot) = &snapshot
+                    {
+                        return Ok(selected_column_sizes(&table, snapshot, &fields, planned.tasks())
+                            .await?.into_iter().map(|byte_size| ColumnStatistics {
+                                byte_size,
+                                ..ColumnStatistics::new_unknown()
+                            }).collect());
+                    }
+                    let field_ids = fields.iter().map(|field| field.id).collect();
+                    compute_column_stats(table, field_ids, snapshot).await
+                } => stats,
+            }
+        });
+        self.column_stats = Some(task.await.map_err(df_err)??);
         Ok(self)
     }
 }
@@ -370,10 +404,15 @@ impl DataSource for IcebergDataSource {
             stats_from_snapshot(self.table_snapshot.clone(), &self.schema)?
         };
 
-        if !planned.is_some_and(|planned| planned.may_filter_rows())
-            && let Some(col_stats) = &self.column_stats
-        {
+        if let Some(col_stats) = &self.column_stats {
             stats.column_statistics = col_stats.clone();
+            // Only replace the file-byte fallback if every projected column has
+            // a size. These remain compressed-byte estimates, not Arrow memory.
+            if let Some(bytes) = col_stats.iter().try_fold(0_usize, |total, column| {
+                total.checked_add(*column.byte_size.get_value()?)
+            }) {
+                stats.total_byte_size = Precision::Inexact(bytes);
+            }
         }
 
         Ok(Arc::new(stats))

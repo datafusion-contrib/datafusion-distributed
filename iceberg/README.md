@@ -73,6 +73,14 @@ It requires `iceberg.eager_file_planning=true` and assigns the largest candidate
 to the least-loaded *distributed task*; it does not choose a worker or split a
 file. These bytes are scheduling estimates, not decoded memory or filtered rows.
 
+## Selected column sizes
+
+With `iceberg.column_stats_enabled=true`, filtered preplanned scans may retain
+compressed column-byte estimates from the **selected files**. Missing metrics remain
+unknown, and filtered scans do not publish whole-snapshot bounds, null counts or
+distinct counts. Another manifest pass is needed to recover column sizes with the
+pinned Iceberg API. Scan task counts continue to use whole-file bytes.
+
 ```bash
 cargo test -p datafusion-distributed-iceberg --features integration
 ```
