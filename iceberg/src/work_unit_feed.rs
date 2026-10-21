@@ -3,7 +3,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use bytes::{Buf, BufMut};
 use datafusion::common::runtime::SpawnedTask;
-use datafusion::common::{Result, exec_datafusion_err, exec_err, internal_err};
+use datafusion::common::{
+    Result, exec_datafusion_err, exec_err, internal_datafusion_err, internal_err,
+};
 use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::Partitioning;
@@ -20,7 +22,7 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::IcebergConfig;
 use crate::common::df_err;
-use crate::file_assignment::FileAssignment;
+use crate::file_partitions::FilePartitions;
 use crate::planned_files::PlannedFiles;
 
 #[derive(Clone, PartialEq, prost::Message)]
@@ -291,63 +293,53 @@ impl WorkUnitFeedProvider for IcebergWorkUnitFeed {
             // be canceled. The lifetime of this `task` variable needs to last as long as any of
             // the return streams of the `feed()` method.
             let task = SpawnedTask::spawn(async move {
-                let assignment = if greedy {
-                    let Some(planned) = &planned else {
-                        let _ = txs[0].send(exec_err!(
-                            "Greedy Iceberg assignment requires eager file planning"
-                        ));
-                        return;
-                    };
-                    match FileAssignment::build(
-                        planned.tasks(),
-                        task_count,
-                        partitions_per_task,
-                        &ctx,
-                    )
-                    .await
-                    {
-                        Ok(assignment) => Some(assignment),
-                        Err(error) => {
-                            let _ = txs[0].send(Err(error));
-                            return;
-                        }
-                    }
-                } else {
-                    None
-                };
-                let mut stream: BoxStream<'_, Result<FileScanTask>> =
-                    if let Some(planned) = &planned {
-                        // The plan retains reusable descriptors; execution owns its copies.
-                        stream::iter(planned.tasks().iter().cloned())
-                            .map(Ok)
-                            .boxed()
+                let result: Result<()> = async {
+                    let mut destinations = if greedy {
+                        let files = planned.as_ref().ok_or_else(|| {
+                            exec_datafusion_err!(
+                                "Greedy Iceberg assignment requires eager file planning"
+                            )
+                        })?;
+                        FilePartitions::greedy(files.tasks(), task_count, partitions_per_task).await
                     } else {
-                        match table_scan.plan_files().await {
-                            Ok(stream) => stream.map(|task| task.map_err(df_err)).boxed(),
-                            Err(err) => {
-                                let _ = txs[0].send(Err(df_err(err)));
-                                return;
-                            }
+                        FilePartitions::RoundRobin {
+                            next_file: 0,
+                            task_count,
+                            partitions_per_task,
                         }
                     };
+                    let mut files: BoxStream<'_, Result<FileScanTask>> =
+                        if let Some(planned) = &planned {
+                            // The plan retains reusable descriptors; execution owns its copies.
+                            stream::iter(planned.tasks().iter().cloned())
+                                .map(Ok)
+                                .boxed()
+                        } else {
+                            table_scan
+                                .plan_files()
+                                .await
+                                .map_err(df_err)?
+                                .map(|task| task.map_err(df_err))
+                                .boxed()
+                        };
 
-                // Workers own contiguous ranges of feed partitions. Visit workers first so
-                // a pruned scan with few files does not fill only the first worker's range.
-                // This routing assumes UnknownPartitioning, not hash or range partitioning.
-                let mut i = 0;
-                while let Some(task) = stream.next().await {
-                    let partition = match &assignment {
-                        Some(assignment) => assignment.partition(i),
-                        None => {
-                            (i % task_count) * partitions_per_task
-                                + (i / task_count) % partitions_per_task
+                    let mut dispatched = 0;
+                    while let Some(task) = files.next().await {
+                        let partition = destinations.next().ok_or_else(|| {
+                            internal_datafusion_err!("Missing Iceberg file destination")
+                        })?;
+                        let _ = txs[partition].send(task.map(FileScanTaskWorkUnit::new));
+                        dispatched += 1;
+                        if dispatched == 256 {
+                            dispatched = 0;
+                            tokio::task::yield_now().await;
                         }
-                    };
-                    let _ = txs[partition].send(task.map(FileScanTaskWorkUnit::new));
-                    i += 1;
-                    if i % 256 == 0 {
-                        tokio::task::yield_now().await;
                     }
+                    Ok(())
+                }
+                .await;
+                if let Err(error) = result {
+                    let _ = txs[0].send(Err(error));
                 }
             });
 
@@ -383,14 +375,11 @@ impl WorkUnitFeedProvider for IcebergWorkUnitFeed {
 #[cfg(test)]
 mod tests {
     use std::error::Error;
-    use std::mem::size_of;
     use std::sync::Arc;
 
     use datafusion::common::Result as DataFusionResult;
     use datafusion::datasource::source::DataSourceExec;
     use datafusion::execution::TaskContext;
-    use datafusion::execution::memory_pool::{GreedyMemoryPool, MemoryPool};
-    use datafusion::execution::runtime_env::RuntimeEnvBuilder;
     use datafusion::prelude::SessionConfig;
     use datafusion_distributed::{DistributedWorkUnitFeedContext, WorkUnitFeedProvider};
     use futures::TryStreamExt;
@@ -400,7 +389,6 @@ mod tests {
         ManifestWriterBuilder, Struct,
     };
 
-    use crate::file_assignment::FileAssignment;
     use crate::test_utils::{FIXTURE_URI, IcebergTestHarness, taxi_metadata};
     use crate::{IcebergConfig, IcebergDataSource, IcebergWorkUnitFeed};
 
@@ -410,8 +398,7 @@ mod tests {
         let expected = vec![vec![100], vec![5], vec![4, 90], vec![3, 10]];
         for reverse in [false, true] {
             let provider = file_feed(&[100, 90, 10, 5, 4, 3], reverse).await?;
-            let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(4096));
-            let context = assignment_context(Arc::clone(&pool))?;
+            let context = assignment_context();
             let mut groups = Vec::new();
             for partition in 0..4 {
                 let files: Vec<_> = provider
@@ -427,53 +414,7 @@ mod tests {
             }
             assert_eq!(groups, expected);
             assert!(provider.feed(0, context).is_err());
-            assert_eq!(
-                pool.reserved(),
-                0,
-                "execution releases assignment and scratch while plan survives"
-            );
         }
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn assignment_memory_failure_reaches_the_stream_and_releases_reservations()
-    -> Result<(), Box<dyn Error>> {
-        let provider = file_feed(&[100, 90, 10, 5, 4, 3], false).await?;
-        // Six destinations fit; the priority heaps do not.
-        let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(6 * size_of::<usize>()));
-        let context = assignment_context(Arc::clone(&pool))?;
-        let error = provider
-            .feed(0, context)?
-            .try_collect::<Vec<_>>()
-            .await
-            .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("Iceberg file assignment scratch"),
-            "{error}"
-        );
-        assert_eq!(pool.reserved(), 0);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn canceling_assignment_releases_retained_and_scratch_memory()
-    -> Result<(), Box<dyn Error>> {
-        let provider = file_feed(&[100, 90, 10, 5, 4, 3], false).await?;
-        let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(4096));
-        let context = assignment_context(Arc::clone(&pool))?;
-        let mut assignment = Box::pin(FileAssignment::build(
-            provider.planned.as_ref().unwrap().tasks(),
-            2,
-            2,
-            &context,
-        ));
-        assert!(futures::poll!(&mut assignment).is_pending());
-        assert!(pool.reserved() > 0);
-        drop(assignment);
-        assert_eq!(pool.reserved(), 0);
         Ok(())
     }
 
@@ -483,8 +424,7 @@ mod tests {
         for sizes in [vec![10; 4], vec![]] {
             for reverse in [false, true] {
                 let provider = file_feed(&sizes, reverse).await?;
-                let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(4096));
-                let context = assignment_context(pool)?;
+                let context = assignment_context();
                 for (partition, file) in [0, 2, 1, 3].into_iter().enumerate() {
                     let units: Vec<_> = provider
                         .feed(partition, Arc::clone(&context))?
@@ -509,7 +449,7 @@ mod tests {
         Ok(())
     }
 
-    fn assignment_context(pool: Arc<dyn MemoryPool>) -> DataFusionResult<Arc<TaskContext>> {
+    fn assignment_context() -> Arc<TaskContext> {
         let mut config = SessionConfig::new();
         let iceberg = IcebergConfig {
             greedy_file_assignment: true,
@@ -519,12 +459,7 @@ mod tests {
         config.set_extension(Arc::new(DistributedWorkUnitFeedContext {
             fan_out_tasks: 2,
         }));
-        let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_pool(pool).build()?);
-        Ok(Arc::new(
-            TaskContext::default()
-                .with_session_config(config)
-                .with_runtime(runtime),
-        ))
+        Arc::new(TaskContext::default().with_session_config(config))
     }
 
     async fn file_feed(

@@ -10,7 +10,7 @@ mod common;
 mod config;
 mod data_source;
 mod distributed_desired_task_count_handler;
-mod file_assignment;
+mod file_partitions;
 mod iceberg_ext;
 mod planned_files;
 mod proto;
