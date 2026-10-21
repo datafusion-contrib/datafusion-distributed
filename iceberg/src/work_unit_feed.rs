@@ -226,13 +226,14 @@ impl IcebergWorkUnitFeed {
         context: Arc<TaskContext>,
     ) -> Result<()> {
         let scan = self.table_scan()?;
+        let may_filter_rows = self.predicates.is_some();
         // Keep manifest I/O off an embedder's IO-disabled query runtime. Cancel the
         // spawned planner if the query abandons physical planning.
         let (_cancel_on_drop, canceled) = oneshot::channel::<()>();
         let task = runtime.io().spawn(async move {
             tokio::select! {
                 _ = canceled => exec_err!("Iceberg file planning canceled"),
-                result = PlannedFiles::collect(scan, &context) => result,
+                result = PlannedFiles::collect(scan, &context, may_filter_rows) => result,
             }
         });
         self.planned = Some(Arc::new(task.await.map_err(df_err)??));
@@ -290,7 +291,9 @@ impl WorkUnitFeedProvider for IcebergWorkUnitFeed {
                 let mut stream: BoxStream<'_, Result<FileScanTask>> =
                     if let Some(planned) = &planned {
                         // The plan retains reusable descriptors; execution owns its copies.
-                        stream::iter(planned.tasks.iter().cloned()).map(Ok).boxed()
+                        stream::iter(planned.tasks().iter().cloned())
+                            .map(Ok)
+                            .boxed()
                     } else {
                         match table_scan.plan_files().await {
                             Ok(stream) => stream.map(|task| task.map_err(df_err)).boxed(),

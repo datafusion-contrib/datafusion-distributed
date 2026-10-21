@@ -9,18 +9,46 @@ use iceberg::scan::{FileScanTask, TableScan};
 use crate::common::df_err;
 
 /// File work retained by a query after manifest planning and before execution.
+/// The task list and its summaries are built together and cannot be mutated after collection.
 #[derive(Debug)]
 pub(crate) struct PlannedFiles {
-    pub(crate) tasks: Vec<FileScanTask>,
+    tasks: Vec<FileScanTask>,
+    bytes: usize,
+    rows: Option<usize>,
+    may_filter_rows: bool,
     _reservation: MemoryReservation,
 }
 
 impl PlannedFiles {
-    pub(crate) async fn collect(scan: TableScan, context: &TaskContext) -> Result<Self> {
+    pub(crate) fn tasks(&self) -> &[FileScanTask] {
+        &self.tasks
+    }
+
+    pub(crate) fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    pub(crate) fn rows(&self) -> Option<usize> {
+        self.rows
+    }
+
+    /// Predicates or delete files may remove rows counted in file metadata.
+    pub(crate) fn may_filter_rows(&self) -> bool {
+        self.may_filter_rows
+    }
+
+    pub(crate) async fn collect(
+        scan: TableScan,
+        context: &TaskContext,
+        may_filter_rows: bool,
+    ) -> Result<Self> {
         let reservation =
             MemoryConsumer::new("Iceberg file planning").register(context.memory_pool());
         let mut planned = Self {
             tasks: Vec::new(),
+            bytes: 0,
+            rows: Some(0),
+            may_filter_rows,
             _reservation: reservation,
         };
         let mut stream = scan.plan_files().await.map_err(df_err)?;
@@ -29,6 +57,12 @@ impl PlannedFiles {
             planned
                 ._reservation
                 .try_grow(retained_size(&task).saturating_mul(2))?;
+            planned.bytes = planned.bytes.saturating_add(task.length() as usize);
+            planned.rows = planned.rows.and_then(|rows| {
+                task.record_count()
+                    .and_then(|count| rows.checked_add(count as usize))
+            });
+            planned.may_filter_rows |= !task.deletes().is_empty();
             planned.tasks.push(task);
         }
         Ok(planned)
