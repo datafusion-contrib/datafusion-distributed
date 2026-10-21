@@ -1,7 +1,9 @@
 #[cfg(all(feature = "integration", test))]
 mod tests {
     use datafusion::common::Result;
+    use datafusion::physical_plan::displayable;
     use datafusion_distributed::DistributedExt;
+    use datafusion_distributed_iceberg::IcebergConfig;
     use datafusion_distributed_iceberg::test_utils::{
         IcebergTestHarness, empty_taxi_metadata_builder, taxi_metadata,
     };
@@ -54,6 +56,31 @@ mod tests {
         | 2024-01-14  | 25000 |
         +-------------+-------+
         ");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn planned_scan_tasks_are_bounded_by_selected_file_work() -> Result<()> {
+        let harness = IcebergTestHarness::builder()
+            .configure_session(|mut state| {
+                let mut config = IcebergConfig::default();
+                config.plan_files = true;
+                let session = state.config().get_or_insert_default();
+                session.options_mut().execution.target_partitions = 2;
+                session.options_mut().extensions.insert(config);
+                state.with_distributed_file_scan_config_bytes_per_partition(1)
+            })?
+            .build()
+            .await?;
+        assert_eq!(
+            harness.estimate_task_count(&harness.scan().await?)?,
+            Some(7)
+        );
+        let plan = harness
+            .physical_plan("SELECT pickup_date FROM taxi WHERE pickup_date = DATE '2024-01-10'")
+            .await?;
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+        assert!(display.contains("planned_files=1"), "{display}");
         Ok(())
     }
 
