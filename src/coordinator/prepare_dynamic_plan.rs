@@ -8,12 +8,11 @@ use crate::distributed_planner::{
 use crate::dynamic_filtering::{
     is_remote_dynamic_filtering_enabled, orphan_dynamic_filter_consumers,
 };
-use crate::events::TaskCountAnnotation::{Desired, Maximum};
 use crate::execution_plans::SamplerExec;
 use crate::stage::{LocalStage, RemoteStage};
 use crate::{
     BytesCounterMetric, CoordinatorToWorkerMsg, LoadInfo, MaxGaugeMetric, NetworkBoundaryExt,
-    NetworkCoalesceExec, Stage,
+    NetworkCoalesceExec, Stage, TaskCountAnnotation,
 };
 use dashmap::DashMap;
 use datafusion::common::stats::Precision;
@@ -73,7 +72,7 @@ pub(super) async fn prepare_dynamic_plan(
             let compute_based_task_count = compute_based_task_count.min(nb_ctx.max_tasks()? as f64);
             let task_count = nb_ctx
                 .task_count(&input_stage.plan)?
-                .merge(Desired(compute_based_task_count));
+                .merge(TaskCountAnnotation::soft(compute_based_task_count))?;
 
             // Propagate the final task_count inferred based on runtime statistics and compute cost.
             // Here is where leaf nodes are scaled up by ScaleUpLeafNodeHandler, and the
@@ -120,7 +119,7 @@ pub(super) async fn prepare_dynamic_plan(
                 stage_coordinator.seal_dynamic_filter_stage()?;
 
                 let (stats, consumer_tc) = if nb_type == TypeId::of::<NetworkCoalesceExec>() {
-                    (None, Maximum(1))
+                    (None, task_count.hard(1))
                 } else {
                     let (stats, new_metrics) =
                         gather_runtime_statistics(load_info_rxs, &input_stage.plan).await?;
@@ -131,7 +130,7 @@ pub(super) async fn prepare_dynamic_plan(
                     // not mask smaller fractional values via max-merge, and does not inflate
                     // UNION sums when this boundary sits under a child of a
                     // ChildrenIsolatorUnionExec.
-                    (Some(Arc::new(stats)), Desired(0.0))
+                    (Some(Arc::new(stats)), TaskCountAnnotation::soft(0.0))
                 };
 
                 // Capture the output partitioning of the (rescaled, sampler-wrapped) input plan

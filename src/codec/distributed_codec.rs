@@ -1,13 +1,13 @@
 use super::get_distributed_user_codecs;
 use crate::common::{deserialize_uuid, require_one_child, serialize_uuid};
 use crate::execution_plans::{
-    BroadcastExec, ChildWeight, ChildrenIsolatorUnionExec, NetworkBroadcastExec,
-    NetworkCoalesceExec, SamplerExec,
+    BroadcastExec, ChildrenIsolatorUnionExec, NetworkBroadcastExec, NetworkCoalesceExec,
+    SamplerExec,
 };
 use crate::execution_plans::{NetworkShuffleExec, ShuffleMode};
 use crate::stage::{LocalStage, RemoteStage, Stage};
 use crate::worker::WorkerConnectionPool;
-use crate::{DistributedTaskContext, NetworkBoundary};
+use crate::{DistributedTaskContext, NetworkBoundary, TaskCountAnnotation};
 use bytes::Bytes;
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::datatypes::SchemaRef;
@@ -270,7 +270,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
             DistributedExecNode::ChildrenIsolatorUnion(ChildrenIsolatorUnionExecProto {
                 partition_count,
                 task_idx_map,
-                child_weights,
+                child_annotations,
             }) => {
                 // Building a UnionExec just to get the properties out of it is not the most
                 // efficient thing to do. However, it's the easiest way of getting the properties
@@ -287,11 +287,11 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     properties: Arc::new(properties),
                     metrics: Default::default(),
                     children: inputs.to_vec(),
-                    child_weights: child_weights
+                    child_annotations: child_annotations
                         .iter()
-                        .map(|cw| ChildWeight {
-                            weight: cw.weight,
-                            max: cw.max.map(|m| m as usize),
+                        .map(|annotation| TaskCountAnnotation {
+                            soft: annotation.soft,
+                            hard: annotation.hard.map(|n| n as usize),
                         })
                         .collect(),
                     task_idx_map: task_idx_map
@@ -477,12 +477,12 @@ impl PhysicalExtensionCodec for DistributedCodec {
                             .collect_vec(),
                     })
                     .collect_vec(),
-                child_weights: node
-                    .child_weights
+                child_annotations: node
+                    .child_annotations
                     .iter()
-                    .map(|cw| ChildWeightProto {
-                        weight: cw.weight,
-                        max: cw.max.map(|m| m as u64),
+                    .map(|annotation| TaskCountAnnotationProto {
+                        soft: annotation.soft,
+                        hard: annotation.hard.map(|n| n as u64),
                     })
                     .collect_vec(),
             };
@@ -634,15 +634,15 @@ pub struct ChildrenIsolatorUnionExecProto {
     #[prost(message, repeated, tag = "2")]
     task_idx_map: Vec<TaskIdxMapEntryProto>,
     #[prost(message, repeated, tag = "3")]
-    child_weights: Vec<ChildWeightProto>,
+    child_annotations: Vec<TaskCountAnnotationProto>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ChildWeightProto {
+pub struct TaskCountAnnotationProto {
     #[prost(double, tag = "1")]
-    weight: f64,
+    soft: f64,
     #[prost(uint64, optional, tag = "2")]
-    max: Option<u64>,
+    hard: Option<u64>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1107,9 +1107,12 @@ mod tests {
         )) as Arc<dyn ExecutionPlan>;
 
         let plan: Arc<dyn ExecutionPlan> =
-            Arc::new(ChildrenIsolatorUnionExec::from_children_and_weights(
+            Arc::new(ChildrenIsolatorUnionExec::from_children_and_annotations(
                 vec![left.clone(), right.clone()],
-                vec![ChildWeight::desired(3.0), ChildWeight::maximum(1)],
+                vec![
+                    TaskCountAnnotation::soft(3.0),
+                    TaskCountAnnotation::soft(1.0).hard(1),
+                ],
                 4,
             )?);
 
@@ -1118,6 +1121,13 @@ mod tests {
 
         let decoded = codec.try_decode(&buf, &[left, right], &ctx, &default_proto_converter())?;
         assert_eq!(repr(&plan), repr(&decoded));
+        let decoded_union = decoded
+            .downcast_ref::<ChildrenIsolatorUnionExec>()
+            .expect("decoded union");
+        assert_eq!(decoded_union.child_annotations[0].soft, 3.0);
+        assert_eq!(decoded_union.child_annotations[0].hard, None);
+        assert_eq!(decoded_union.child_annotations[1].soft, 1.0);
+        assert_eq!(decoded_union.child_annotations[1].hard, Some(1));
 
         Ok(())
     }
