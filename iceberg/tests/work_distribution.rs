@@ -31,14 +31,17 @@ mod tests {
 
     #[tokio::test]
     async fn files_wrap_across_workers_and_local_partitions() -> Result<()> {
-        assert_distribution(
-            3,
-            2,
-            "2024-01-14",
-            "output_rows={0:75.00 K, 1:50.00 K, 2:50.00 K}",
-            false,
-        )
-        .await
+        for eager in [false, true] {
+            assert_distribution(
+                3,
+                2,
+                "2024-01-14",
+                "output_rows={0:75.00 K, 1:50.00 K, 2:50.00 K}",
+                eager,
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     async fn assert_distribution(

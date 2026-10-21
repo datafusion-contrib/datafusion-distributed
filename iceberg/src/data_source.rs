@@ -206,8 +206,7 @@ impl IcebergDataSource {
         if config.plan_files
             && let Some(feed) = self.feed.inner_mut()
         {
-            feed.plan_files(&self.iceberg_runtime, context, config.planning_max_files)
-                .await?;
+            feed.plan_files(&self.iceberg_runtime, context).await?;
         }
         Ok(self)
     }

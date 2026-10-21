@@ -9,7 +9,7 @@ use datafusion::execution::TaskContext;
 use datafusion::physical_expr::Partitioning;
 use datafusion_distributed::{DistributedWorkUnitFeedContext, WorkUnitFeedProvider};
 use futures::StreamExt;
-use futures::stream::BoxStream;
+use futures::stream::{self, BoxStream};
 use iceberg::expr::Predicate;
 use iceberg::scan::{FileScanTask, TableScan};
 use prost::encoding::{DecodeContext, WireType};
@@ -29,7 +29,7 @@ struct SerializedFileScanTask {
 
 #[derive(Clone, Debug)]
 enum FileScanTaskPayload {
-    Native(Arc<FileScanTask>),
+    Native(Box<FileScanTask>),
     Serialized(SerializedFileScanTask),
 }
 
@@ -50,7 +50,7 @@ impl Default for FileScanTaskWorkUnit {
 impl FileScanTaskWorkUnit {
     fn new(task: FileScanTask) -> Self {
         Self {
-            payload: FileScanTaskPayload::Native(Arc::new(task)),
+            payload: FileScanTaskPayload::Native(Box::new(task)),
         }
     }
 
@@ -68,7 +68,7 @@ impl FileScanTaskWorkUnit {
 
     pub(crate) fn into_task(self) -> Result<FileScanTask> {
         match self.payload {
-            FileScanTaskPayload::Native(task) => Ok(Arc::unwrap_or_clone(task)),
+            FileScanTaskPayload::Native(task) => Ok(*task),
             FileScanTaskPayload::Serialized(task) => {
                 rmp_serde::from_slice(&task.task).map_err(|error| {
                     exec_datafusion_err!("failed to deserialize Iceberg file scan task: {error}")
@@ -110,8 +110,8 @@ impl Message for FileScanTaskWorkUnit {
 
 /// Work unit feed implementation that yields [FileScanTask] messages at execution time.
 ///
-/// It lazily spawns a task that scans an Iceberg table, and places each resolved [FileScanTask]
-/// in P * T output channels, where:
+/// At execution time, one dispatcher reads either retained planned files or a live
+/// Iceberg scan, and places each [FileScanTask] in P * T output channels, where:
 ///  - P is the number of partition in each distributed task.
 ///  - T is the number of distributed tasks
 ///
@@ -119,7 +119,7 @@ impl Message for FileScanTaskWorkUnit {
 ///                    ┌───────────────────────────┐
 ///                    │    Lazily spawned task    │
 ///                    │ ┌───────────────────────┐ │
-///                    │ │  Iceberg Table Scan   │ │
+///                    │ │   File task source    │ │
 ///                    │ └───.─────────────.─────┘ │
 ///                    │    ( FileScanTask  )      │
 ///                    │     .─────────────.       │
@@ -185,7 +185,7 @@ pub struct IcebergWorkUnitFeed {
     pub(crate) partitioning: Partitioning,
     /// Query-local tasks discovered before execution, when enabled.
     pub(crate) planned: Option<Arc<PlannedFiles>>,
-    /// Container for the lazily initialized task that scans the Iceberg table.
+    /// Container for the lazily initialized dispatcher shared by both discovery modes.
     /// It will start as soon as the first [IcebergWorkUnitFeed::feed] is called.
     pub(crate) sync_manager: OnceLock<Result<SyncManager, Arc<DataFusionError>>>,
 }
@@ -224,7 +224,6 @@ impl IcebergWorkUnitFeed {
         &mut self,
         runtime: &iceberg::Runtime,
         context: Arc<TaskContext>,
-        max_files: usize,
     ) -> Result<()> {
         let scan = self.table_scan()?;
         // Keep manifest I/O off an embedder's IO-disabled query runtime. Cancel the
@@ -233,7 +232,7 @@ impl IcebergWorkUnitFeed {
         let task = runtime.io().spawn(async move {
             tokio::select! {
                 _ = canceled => exec_err!("Iceberg file planning canceled"),
-                result = PlannedFiles::collect(scan, &context, max_files) => result,
+                result = PlannedFiles::collect(scan, &context) => result,
             }
         });
         self.planned = Some(Arc::new(task.await.map_err(df_err)??));
@@ -258,45 +257,24 @@ impl WorkUnitFeedProvider for IcebergWorkUnitFeed {
         ctx: Arc<TaskContext>,
     ) -> Result<BoxStream<'static, Result<Self::WorkUnit>>> {
         let wuf_ctx = DistributedWorkUnitFeedContext::from_ctx(&ctx);
-        if let Some(planned) = &self.planned {
-            let partitions_per_task = self.partitioning.partition_count();
-            let total = partitions_per_task
-                .checked_mul(wuf_ctx.fan_out_tasks)
-                .filter(|total| *total > 0)
-                .ok_or_else(|| exec_datafusion_err!("Invalid Iceberg feed partition count"))?;
-            if partition >= total {
-                return internal_err!("Invalid feed index {partition}");
-            }
-            // Partition indices are task-major; distribute files to tasks first,
-            // then round-robin among each task's local partitions.
-            let task = partition / partitions_per_task;
-            let local_partition = partition % partitions_per_task;
-            let first = task + local_partition * wuf_ctx.fan_out_tasks;
-            let planned = Arc::clone(planned);
-            return Ok(
-                futures::stream::iter((first..planned.tasks.len()).step_by(total))
-                    .map(move |index| {
-                        Ok(FileScanTaskWorkUnit {
-                            payload: FileScanTaskPayload::Native(Arc::clone(&planned.tasks[index])),
-                        })
-                    })
-                    .boxed(),
-            );
+        let task_count = wuf_ctx.fan_out_tasks;
+        let partitions_per_task = self.partitioning.partition_count();
+        let out_partitions = task_count
+            .checked_mul(partitions_per_task)
+            .filter(|total| *total > 0)
+            .ok_or_else(|| exec_datafusion_err!("Invalid Iceberg feed partition count"))?;
+        if partition >= out_partitions {
+            return internal_err!("Invalid feed index {partition}");
         }
 
-        // This lazily spawns the tokio task that scans the Iceberg table.
-        // Only the first IcebergWorkUnitFeed::feed call will get to execute it, and the
-        // rest will just observe the already initialized result.
+        // Both discovery modes share one dispatcher, initialized by the first feed call.
         let sync_manager_or_err = self.sync_manager.get_or_init(|| {
-            // Start the table scan only once for all the .feed() calls.
+            let planned = self.planned.clone();
             let table_scan = self.table_scan()?;
 
             // Fanout the FileScanTask stream across P * T output channels where:
             // - P is the number of output partitions per distributed task (`partition_count`)
             // - T is the number of distributed tasks (`fan_out_tasks`)
-            let task_count = wuf_ctx.fan_out_tasks;
-            let partitions_per_task = self.partitioning.partition_count();
-            let out_partitions = task_count * partitions_per_task;
             let mut rxs = Vec::with_capacity(out_partitions);
             let mut txs = Vec::with_capacity(out_partitions);
             for _ in 0..out_partitions {
@@ -306,28 +284,31 @@ impl WorkUnitFeedProvider for IcebergWorkUnitFeed {
             }
 
             // A reference to this spawned task needs to be held, otherwise it will automatically
-            // be canceled. The lifetime of this `task` variable needs to leave as long as any of
+            // be canceled. The lifetime of this `task` variable needs to last as long as any of
             // the return streams of the `feed()` method.
             let task = SpawnedTask::spawn(async move {
-                let mut stream = match table_scan.plan_files().await {
-                    Ok(stream) => stream,
-                    Err(err) => {
-                        let _ = txs[0].send(Err(df_err(err)));
-                        return;
-                    }
-                };
+                let mut stream: BoxStream<'_, Result<FileScanTask>> =
+                    if let Some(planned) = &planned {
+                        // The plan retains reusable descriptors; execution owns its copies.
+                        stream::iter(planned.tasks.iter().cloned()).map(Ok).boxed()
+                    } else {
+                        match table_scan.plan_files().await {
+                            Ok(stream) => stream.map(|task| task.map_err(df_err)).boxed(),
+                            Err(err) => {
+                                let _ = txs[0].send(Err(df_err(err)));
+                                return;
+                            }
+                        }
+                    };
 
                 // Workers own contiguous ranges of feed partitions. Visit workers first so
                 // a pruned scan with few files does not fill only the first worker's range.
                 // This routing assumes UnknownPartitioning, not hash or range partitioning.
                 let mut i = 0;
-                while let Some(scan_task_or_err) = stream.next().await {
+                while let Some(task) = stream.next().await {
                     let partition = (i % task_count) * partitions_per_task
                         + (i / task_count) % partitions_per_task;
-                    let work_unit = scan_task_or_err
-                        .map(FileScanTaskWorkUnit::new)
-                        .map_err(df_err);
-                    let _ = txs[partition].send(work_unit);
+                    let _ = txs[partition].send(task.map(FileScanTaskWorkUnit::new));
                     i += 1;
                 }
             });

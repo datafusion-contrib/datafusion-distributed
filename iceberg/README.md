@@ -32,11 +32,25 @@ The default storage factory resolves `file://`, S3 (`s3://`, `s3a://`,
 By default, Iceberg discovers files progressively during execution. Set
 `iceberg.plan_files=true` in the session to discover and retain the pruned file tasks
 while building each physical scan, then deliver those same tasks to the reader at
-execution. `iceberg.planning_max_files` (default 100,000) bounds retained work;
-exceeding it fails planning rather than returning incomplete results. Eager file
-planning uses query memory and metadata I/O up front; it does not change reader
-settings, statistics, or task assignment. For example, configure the session
-before creating the `SessionState`:
+execution. Retained metadata is charged to the query memory pool, without a
+file-count limit. Eager planning uses metadata I/O up front; it does not change
+reader settings, statistics, or task assignment. Both modes use the same dispatcher
+and partition channels. Eager execution explicitly copies retained file descriptors
+into owned work units; lazy execution moves newly discovered descriptors into them.
+
+```text
+Planning                          Execution
+Eager: discover → retain files ──→ copy descriptors ─┐
+Lazy:  retain scan definition ───→ discover files ──┤
+                                                  ▼
+                                   shared task-first dispatcher
+                                                  ↓
+                                         partition channels
+                                                  ↓
+                                      local or remote readers
+```
+
+Configure the session before creating the `SessionState`:
 
 ```rust
 use datafusion::execution::SessionStateBuilder;
