@@ -82,7 +82,7 @@ mod tests {
             )
             .configure_session(|mut state| {
                 let mut config = IcebergConfig::default();
-                config.plan_files = true;
+                config.eager_file_planning = true;
                 config.column_stats_enabled = true;
                 state
                     .config()

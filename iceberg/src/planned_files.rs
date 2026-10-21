@@ -9,20 +9,38 @@ use iceberg::scan::{FileScanTask, TableScan};
 use crate::common::df_err;
 
 /// File work retained by a query after manifest planning and before execution.
+/// The task list and its summaries are built together and cannot be mutated after collection.
 #[derive(Debug)]
 pub(crate) struct PlannedFiles {
-    pub(crate) tasks: Vec<FileScanTask>,
-    pub(crate) bytes: usize,
-    pub(crate) rows: Option<usize>,
-    pub(crate) filtered: bool,
+    tasks: Vec<FileScanTask>,
+    bytes: usize,
+    rows: Option<usize>,
+    may_filter_rows: bool,
     _reservation: MemoryReservation,
 }
 
 impl PlannedFiles {
+    pub(crate) fn tasks(&self) -> &[FileScanTask] {
+        &self.tasks
+    }
+
+    pub(crate) fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    pub(crate) fn rows(&self) -> Option<usize> {
+        self.rows
+    }
+
+    /// Predicates or delete files may remove rows counted in file metadata.
+    pub(crate) fn may_filter_rows(&self) -> bool {
+        self.may_filter_rows
+    }
+
     pub(crate) async fn collect(
         scan: TableScan,
         context: &TaskContext,
-        filtered: bool,
+        may_filter_rows: bool,
     ) -> Result<Self> {
         let reservation =
             MemoryConsumer::new("Iceberg file planning").register(context.memory_pool());
@@ -30,7 +48,7 @@ impl PlannedFiles {
             tasks: Vec::new(),
             bytes: 0,
             rows: Some(0),
-            filtered,
+            may_filter_rows,
             _reservation: reservation,
         };
         let mut stream = scan.plan_files().await.map_err(df_err)?;
@@ -44,7 +62,7 @@ impl PlannedFiles {
                 task.record_count()
                     .and_then(|count| rows.checked_add(count as usize))
             });
-            planned.filtered |= !task.deletes().is_empty();
+            planned.may_filter_rows |= !task.deletes().is_empty();
             planned.tasks.push(task);
         }
         Ok(planned)
