@@ -11,7 +11,8 @@ use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_plan::{ExecutionPlan, collect};
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_distributed::{
-    DesiredTaskCountEvent, DistributedCodec, DistributedConfig, DistributedExt, display_plan_ascii,
+    DesiredTaskCountEvent, DistributedCodec, DistributedConfig, DistributedExt,
+    DistributedMetricsFormat, display_plan_ascii, rewrite_distributed_plan_with_metrics,
 };
 #[cfg(feature = "integration")]
 use datafusion_distributed::{
@@ -55,6 +56,18 @@ impl IcebergTestHarness {
         let batches = collect(plan, self.ctx.task_ctx()).await?;
 
         Ok((display, pretty_format_batches(&batches)?.to_string()))
+    }
+
+    /// Executes a query and returns its plan with collected per-task metrics.
+    pub async fn query_with_metrics(&self, sql: &str) -> Result<(String, String)> {
+        let plan = self.physical_plan(sql).await?;
+        let batches = collect(Arc::clone(&plan), self.ctx.task_ctx()).await?;
+        let plan =
+            rewrite_distributed_plan_with_metrics(plan, DistributedMetricsFormat::PerTask).await?;
+        Ok((
+            display_plan_ascii(plan.as_ref(), true),
+            pretty_format_batches(&batches)?.to_string(),
+        ))
     }
 
     pub async fn physical_plan(&self, sql: &str) -> Result<Arc<dyn ExecutionPlan>> {

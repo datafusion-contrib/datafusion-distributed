@@ -239,7 +239,9 @@ impl WorkUnitFeedProvider for IcebergWorkUnitFeed {
             // Fanout the FileScanTask stream across P * T output channels where:
             // - P is the number of output partitions per distributed task (`partition_count`)
             // - T is the number of distributed tasks (`fan_out_tasks`)
-            let out_partitions = wuf_ctx.fan_out_tasks * self.partitioning.partition_count();
+            let task_count = wuf_ctx.fan_out_tasks;
+            let partitions_per_task = self.partitioning.partition_count();
+            let out_partitions = task_count * partitions_per_task;
             let mut rxs = Vec::with_capacity(out_partitions);
             let mut txs = Vec::with_capacity(out_partitions);
             for _ in 0..out_partitions {
@@ -260,12 +262,13 @@ impl WorkUnitFeedProvider for IcebergWorkUnitFeed {
                     }
                 };
 
-                // Round robing across output partitions.
-                // TODO: this is fine for Partitioning::UnknownPartitioning, but any other
-                //  partitioning will require smarter routing across output channels.
+                // Workers own contiguous ranges of feed partitions. Visit workers first so
+                // a pruned scan with few files does not fill only the first worker's range.
+                // This routing assumes UnknownPartitioning, not hash or range partitioning.
                 let mut i = 0;
                 while let Some(scan_task_or_err) = stream.next().await {
-                    let partition = i % txs.len();
+                    let partition = (i % task_count) * partitions_per_task
+                        + (i / task_count) % partitions_per_task;
                     let work_unit = scan_task_or_err
                         .map(FileScanTaskWorkUnit::new)
                         .map_err(df_err);
