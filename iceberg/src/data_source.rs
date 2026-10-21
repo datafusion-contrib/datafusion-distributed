@@ -45,9 +45,9 @@ const TOTAL_FILE_SIZE: &str = "total-files-size";
 /// Consumes a stream of [iceberg::scan::FileScanTask]s per partition and reads the underlying
 /// files into an Arrow stream.
 ///
-/// [iceberg::scan::FileScanTask] are discovered progressively during execution by the
-/// [IcebergWorkUnitFeed], and this [DataSource] executes those tasks as they come, also in
-/// a streaming fashion. This works seamlessly in both single-node and distributed execution:
+/// By default [IcebergWorkUnitFeed] discovers file tasks progressively during execution.
+/// Opt-in planning retains those tasks during physical planning and feeds the same tasks to
+/// this reader at execution. This works in both single-node and distributed execution:
 ///
 /// ## Single Node
 ///
@@ -192,11 +192,24 @@ impl IcebergDataSource {
                 projection,
                 predicates,
                 partitioning,
+                planned: None,
                 sync_manager: Default::default(),
             }),
             table_snapshot,
             column_stats: None,
         }
+    }
+
+    /// Optionally resolve file work before execution without changing reported statistics.
+    pub(crate) async fn with_planned_files(mut self, context: Arc<TaskContext>) -> Result<Self> {
+        let config = IcebergConfig::from_task_context(&context);
+        if config.plan_files
+            && let Some(feed) = self.feed.inner_mut()
+        {
+            feed.plan_files(&self.iceberg_runtime, context, config.planning_max_files)
+                .await?;
+        }
+        Ok(self)
     }
 
     /// Creating an instance with per column statistics calculation, including:
