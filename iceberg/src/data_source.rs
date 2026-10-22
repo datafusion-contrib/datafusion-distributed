@@ -17,10 +17,11 @@ use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSe
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{DisplayFormatType, SortOrderPushdownResult};
 use datafusion::prelude::Expr;
-use datafusion_distributed::WorkUnitFeed;
+use datafusion_distributed::{DistributedTaskContext, WorkUnitFeed};
 use futures::{StreamExt, TryStreamExt};
 use iceberg::arrow::ArrowReaderBuilder;
 use iceberg::io::FileIO;
+use iceberg::scan::FileScanTask;
 use iceberg::spec::SnapshotRef;
 use iceberg::table::Table;
 use iceberg_datafusion::read::convert_filters_to_predicate;
@@ -29,6 +30,7 @@ use tokio::sync::oneshot;
 pub use crate::column_statistics::compute_column_stats;
 use crate::column_statistics::selected_column_statistics;
 use crate::common::{df_err, iceberg_err};
+use crate::file_partitions::FilePartitions;
 use crate::planned_files::PlannedFiles;
 use crate::{IcebergConfig, IcebergWorkUnitFeed};
 
@@ -282,6 +284,42 @@ impl IcebergDataSource {
 }
 
 impl IcebergDataSource {
+    /// Borrows the eagerly planned files assigned to one scan-local task.
+    ///
+    /// Returns `None` for lazy scans and remote feeds, and an empty iterator for
+    /// an eager task with no files. Uses the same assignment policy as delivery,
+    /// without reading metadata or consuming the feed. Greedy assignment allocates
+    /// temporary destination indices; file descriptors are borrowed, not cloned.
+    ///
+    /// Pass the context supplied by `RouteTaskEvent::visit_local_task_plan` and
+    /// the query's task context so isolated UNION branches and configuration agree
+    /// with execution. Invalid task/partition counts return an error.
+    pub async fn assigned_files(
+        &self,
+        task: DistributedTaskContext,
+        context: &TaskContext,
+    ) -> Result<Option<impl Iterator<Item = &FileScanTask>>> {
+        if task.task_count == 0 || task.task_index >= task.task_count {
+            return exec_err!("Invalid Iceberg task index/count");
+        }
+        let Some(planned) = self.planned_files() else {
+            return Ok(None);
+        };
+        let partitions_per_task = self.partitioning.partition_count();
+        let destinations = FilePartitions::new(
+            Some(planned.tasks()),
+            IcebergConfig::from_session_config(context.session_config()).greedy_file_assignment,
+            task.task_count,
+            partitions_per_task,
+        )
+        .await?;
+        Ok(Some(planned.tasks().iter().zip(destinations).filter_map(
+            move |(file, partition)| {
+                (partition / partitions_per_task == task.task_index).then_some(file)
+            },
+        )))
+    }
+
     /// Returns the [WorkUnitFeed] implementation that feeds this
     /// DataSource with [iceberg::scan::FileScanTask] messages.
     pub fn feed(&self) -> &WorkUnitFeed<IcebergWorkUnitFeed> {

@@ -10,12 +10,67 @@ mod tests {
     use datafusion::execution::runtime_env::RuntimeEnvBuilder;
     use datafusion::physical_plan::statistics::{StatisticsArgs, StatisticsContext};
     use datafusion::prelude::SessionConfig;
-    use datafusion_distributed::{DistributedExt, WorkUnitFeedProvider};
+    use datafusion_distributed::{DistributedExt, DistributedTaskContext, WorkUnitFeedProvider};
     use datafusion_distributed_iceberg::test_utils::{FIXTURE_URI, IcebergTestHarness};
     use datafusion_distributed_iceberg::{IcebergConfig, IcebergDataSource, IcebergWorkUnitFeed};
     use futures::TryStreamExt;
     use iceberg::spec::{DataContentType, DataFileBuilder, DataFileFormat, Literal, Struct};
     use prost::Message;
+
+    #[tokio::test]
+    async fn inspected_assignment_matches_delivered_files() -> Result<(), Box<dyn Error>> {
+        for sizes in [vec![100, 90, 10, 5, 4, 3], vec![10], vec![]] {
+            let harness = file_harness(&sizes, false).await?;
+            let scan = harness.scan().await?;
+            let source = scan
+                .downcast_ref::<DataSourceExec>()
+                .unwrap()
+                .data_source()
+                .downcast_ref::<IcebergDataSource>()
+                .unwrap();
+            let mut config = SessionConfig::new();
+            let mut iceberg = IcebergConfig::default();
+            iceberg.greedy_file_assignment = true;
+            config.options_mut().extensions.insert(iceberg);
+            let context = TaskContext::default().with_session_config(config);
+            let delivered = harness.scan_file_tasks(2).await?;
+            for task_index in 0..2 {
+                let mut expected: Vec<_> = delivered[task_index * 2..task_index * 2 + 2]
+                    .iter()
+                    .flatten()
+                    .map(|file| file.data_file_path())
+                    .collect();
+                let mut inspected: Vec<_> = source
+                    .assigned_files(
+                        DistributedTaskContext {
+                            task_index,
+                            task_count: 2,
+                        },
+                        &context,
+                    )
+                    .await?
+                    .expect("eager scan")
+                    .map(|file| file.data_file_path())
+                    .collect();
+                expected.sort();
+                inspected.sort();
+                assert_eq!(inspected, expected);
+            }
+            assert!(
+                source
+                    .assigned_files(
+                        DistributedTaskContext {
+                            task_index: 2,
+                            task_count: 2
+                        },
+                        &context,
+                    )
+                    .await
+                    .is_err()
+            );
+        }
+        Ok(())
+    }
 
     #[tokio::test]
     async fn greedy_routing_balances_bytes_across_tasks_and_local_partitions()

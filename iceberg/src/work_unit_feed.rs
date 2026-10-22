@@ -294,20 +294,13 @@ impl WorkUnitFeedProvider for IcebergWorkUnitFeed {
             // the return streams of the `feed()` method.
             let task = SpawnedTask::spawn(async move {
                 let result: Result<()> = async {
-                    let mut destinations = if greedy {
-                        let files = planned.as_ref().ok_or_else(|| {
-                            exec_datafusion_err!(
-                                "Greedy Iceberg assignment requires eager file planning"
-                            )
-                        })?;
-                        FilePartitions::greedy(files.tasks(), task_count, partitions_per_task).await
-                    } else {
-                        FilePartitions::RoundRobin {
-                            next_file: 0,
-                            task_count,
-                            partitions_per_task,
-                        }
-                    };
+                    let mut destinations = FilePartitions::new(
+                        planned.as_ref().map(|files| files.tasks()),
+                        greedy,
+                        task_count,
+                        partitions_per_task,
+                    )
+                    .await?;
                     let mut files: BoxStream<'_, Result<FileScanTask>> =
                         if let Some(planned) = &planned {
                             // The plan retains reusable descriptors; execution owns its copies.
