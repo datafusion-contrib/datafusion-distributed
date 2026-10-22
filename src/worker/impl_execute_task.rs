@@ -1,4 +1,5 @@
 use crate::ExecuteTaskRequest;
+use crate::events::WorkerStreamExecutedHandlers;
 use crate::worker::worker_service::Worker;
 use datafusion::common::exec_datafusion_err;
 use datafusion::common::{Result, exec_err};
@@ -52,8 +53,19 @@ impl Worker {
 
             let stream = plan.execute(partition, Arc::clone(&task_ctx))?;
             let stream_schema = plan.schema();
+            let stream: SendableRecordBatchStream =
+                Box::pin(RecordBatchStreamAdapter::new(stream_schema, stream));
+            // Lets a registered WorkerStreamExecutedHandler wrap this partition's stream before
+            // it starts being polled — see that handler's docs.
+            let stream = WorkerStreamExecutedHandlers::handle(
+                stream,
+                request.task_key,
+                partition,
+                &task_ctx,
+                task_ctx.session_config(),
+            )?;
 
-            streams.push(Box::pin(RecordBatchStreamAdapter::new(stream_schema, stream)) as _);
+            streams.push(stream);
         }
         Ok((streams, task_ctx))
     }

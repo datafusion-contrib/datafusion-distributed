@@ -4,8 +4,9 @@ use crate::config_extension_ext::{
 };
 use crate::events::{
     DesiredTaskCountHandler, DesiredTaskCountHandlers, RouteTaskHandler, RouteTaskHandlers,
-    ScaleUpLeafNodeHandler, ScaleUpLeafNodeHandlers, WorkerPlanRewriteHandler,
-    WorkerPlanRewriteHandlers,
+    ScaleUpLeafNodeHandler, ScaleUpLeafNodeHandlers, TaskFinishedHandler, TaskFinishedHandlers,
+    WorkerPlanRewriteHandler, WorkerPlanRewriteHandlers, WorkerStreamExecutedHandler,
+    WorkerStreamExecutedHandlers,
 };
 use crate::passthrough_headers::set_passthrough_headers;
 use crate::protocol::set_distributed_channel_resolver;
@@ -782,6 +783,69 @@ pub trait DistributedExt: Sized {
         &mut self,
         handler: T,
     );
+
+    /// Registers a handler that reports task-scoped metrics (not tied to any specific plan
+    /// node) when a task finishes executing on a worker.
+    ///
+    /// Every registered handler runs, and the metrics each one returns are appended to the
+    /// task's own metrics; there is no threading of a value between handlers. A handler
+    /// returning an error contributes no metrics for that invocation; the error is not
+    /// propagated.
+    ///
+    /// The handler is synchronous: this runs inline at the point a task's metrics are sent back
+    /// to the coordinator, and observability must never make a worker wait on I/O. See
+    /// [`crate::TaskFinishedHandler`]'s own docs for the full rationale.
+    ///
+    /// Register this handler on the [`SessionStateBuilder`] used by each
+    /// [`crate::WorkerSessionBuilder`]. Registering it on the coordinating session has no
+    /// effect: the coordinator session context is not used by workers.
+    ///
+    /// ```rust
+    /// # use datafusion::common::Result;
+    /// # use datafusion::physical_plan::metrics::{Metric, MetricValue, MetricsSet};
+    /// # use datafusion_distributed::{DistributedExt, TaskFinishedEvent, TaskFinishedEventResponse, TaskFinishedHandler};
+    /// # use std::sync::Arc;
+    ///
+    /// struct ReportNothing;
+    ///
+    /// impl TaskFinishedHandler for ReportNothing {
+    ///     fn handle(&self, _event: TaskFinishedEvent<'_>) -> Result<TaskFinishedEventResponse> {
+    ///         Ok(TaskFinishedEventResponse::new(MetricsSet::new()))
+    ///     }
+    /// }
+    /// ```
+    fn with_distributed_task_finished_handler<T: TaskFinishedHandler>(self, handler: T) -> Self;
+
+    /// Same as [DistributedExt::with_distributed_task_finished_handler] but with an in-place
+    /// mutation.
+    fn set_distributed_task_finished_handler<T: TaskFinishedHandler>(&mut self, handler: T);
+
+    /// Registers a handler that wraps a worker's per-partition stream right before it starts
+    /// being polled, for consumers that need to run code around a task's actual execution (e.g.
+    /// attributing its allocations to an external accounting context).
+    ///
+    /// Handlers run in registration order, each receiving the stream returned by the preceding
+    /// handler, the same threading used by
+    /// [`DistributedExt::with_distributed_worker_plan_rewrite_handler`]. Unlike
+    /// [`DistributedExt::with_distributed_task_finished_handler`], an error from a handler here
+    /// is not swallowed: it is returned as this partition's stream, like any other execution
+    /// failure. See [`crate::WorkerStreamExecutedHandler`]'s own docs for the full contract,
+    /// including why a task's partitions are not guaranteed to all arrive in one event.
+    ///
+    /// Register this handler on the [`SessionStateBuilder`] used by each
+    /// [`crate::WorkerSessionBuilder`]. Registering it on the coordinating session has no
+    /// effect: the coordinator session context is not used by workers.
+    fn with_distributed_worker_stream_executed_handler<T: WorkerStreamExecutedHandler>(
+        self,
+        handler: T,
+    ) -> Self;
+
+    /// Same as [DistributedExt::with_distributed_worker_stream_executed_handler] but with an
+    /// in-place mutation.
+    fn set_distributed_worker_stream_executed_handler<T: WorkerStreamExecutedHandler>(
+        &mut self,
+        handler: T,
+    );
 }
 
 /// Trait to have a unified interface for getting structs & properties from SessionConfig that are used in distributed context.
@@ -989,6 +1053,17 @@ impl DistributedExt for SessionConfig {
         WorkerPlanRewriteHandlers::push_custom(self, Arc::new(h));
     }
 
+    fn set_distributed_task_finished_handler<H: TaskFinishedHandler>(&mut self, h: H) {
+        TaskFinishedHandlers::push_custom(self, Arc::new(h));
+    }
+
+    fn set_distributed_worker_stream_executed_handler<H: WorkerStreamExecutedHandler>(
+        &mut self,
+        h: H,
+    ) {
+        WorkerStreamExecutedHandlers::push_custom(self, Arc::new(h));
+    }
+
     delegate! {
         to self {
             #[call(set_distributed_option_extension)]
@@ -1108,6 +1183,14 @@ impl DistributedExt for SessionConfig {
             #[call(set_distributed_worker_plan_rewrite_handler)]
             #[expr($;self)]
             fn with_distributed_worker_plan_rewrite_handler<H: WorkerPlanRewriteHandler>(mut self, h: H) -> Self;
+
+            #[call(set_distributed_task_finished_handler)]
+            #[expr($;self)]
+            fn with_distributed_task_finished_handler<H: TaskFinishedHandler>(mut self, h: H) -> Self;
+
+            #[call(set_distributed_worker_stream_executed_handler)]
+            #[expr($;self)]
+            fn with_distributed_worker_stream_executed_handler<H: WorkerStreamExecutedHandler>(mut self, h: H) -> Self;
         }
     }
 }
@@ -1271,6 +1354,16 @@ impl DistributedExt for SessionStateBuilder {
             #[call(set_distributed_worker_plan_rewrite_handler)]
             #[expr($;self)]
             fn with_distributed_worker_plan_rewrite_handler<H: WorkerPlanRewriteHandler>(mut self, h: H) -> Self;
+
+            fn set_distributed_task_finished_handler<H: TaskFinishedHandler>(&mut self, h: H);
+            #[call(set_distributed_task_finished_handler)]
+            #[expr($;self)]
+            fn with_distributed_task_finished_handler<H: TaskFinishedHandler>(mut self, h: H) -> Self;
+
+            fn set_distributed_worker_stream_executed_handler<H: WorkerStreamExecutedHandler>(&mut self, h: H);
+            #[call(set_distributed_worker_stream_executed_handler)]
+            #[expr($;self)]
+            fn with_distributed_worker_stream_executed_handler<H: WorkerStreamExecutedHandler>(mut self, h: H) -> Self;
         }
     }
 }
@@ -1436,6 +1529,16 @@ impl DistributedExt for SessionState {
             #[call(set_distributed_worker_plan_rewrite_handler)]
             #[expr($;self)]
             fn with_distributed_worker_plan_rewrite_handler<H: WorkerPlanRewriteHandler>(mut self, h: H) -> Self;
+
+            fn set_distributed_task_finished_handler<H: TaskFinishedHandler>(&mut self, h: H);
+            #[call(set_distributed_task_finished_handler)]
+            #[expr($;self)]
+            fn with_distributed_task_finished_handler<H: TaskFinishedHandler>(mut self, h: H) -> Self;
+
+            fn set_distributed_worker_stream_executed_handler<H: WorkerStreamExecutedHandler>(&mut self, h: H);
+            #[call(set_distributed_worker_stream_executed_handler)]
+            #[expr($;self)]
+            fn with_distributed_worker_stream_executed_handler<H: WorkerStreamExecutedHandler>(mut self, h: H) -> Self;
         }
     }
 }
@@ -1594,6 +1697,16 @@ impl DistributedExt for SessionContext {
             #[call(set_distributed_worker_plan_rewrite_handler)]
             #[expr($;self)]
             fn with_distributed_worker_plan_rewrite_handler<H: WorkerPlanRewriteHandler>(self, h: H) -> Self;
+
+            fn set_distributed_task_finished_handler<H: TaskFinishedHandler>(&mut self, h: H);
+            #[call(set_distributed_task_finished_handler)]
+            #[expr($;self)]
+            fn with_distributed_task_finished_handler<H: TaskFinishedHandler>(self, h: H) -> Self;
+
+            fn set_distributed_worker_stream_executed_handler<H: WorkerStreamExecutedHandler>(&mut self, h: H);
+            #[call(set_distributed_worker_stream_executed_handler)]
+            #[expr($;self)]
+            fn with_distributed_worker_stream_executed_handler<H: WorkerStreamExecutedHandler>(self, h: H) -> Self;
         }
     }
 }

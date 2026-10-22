@@ -17,5 +17,9 @@ pub use distributed_leaf::DistributedLeafExec;
 pub(crate) use metrics::MetricsWrapperExec;
 pub use network_broadcast::NetworkBroadcastExec;
 pub use network_coalesce::NetworkCoalesceExec;
-pub use network_shuffle::{NetworkShuffleExec, PRODUCER_SALT_DEFAULT, ShuffleMode};
+pub use network_shuffle::{NetworkShuffleExec, ShuffleMode};
+// Only consumed by the test/integration-gated benchmarks module above; under a plain build
+// (no features) this re-export has no consumer and would otherwise warn as unused.
+#[cfg(any(test, feature = "integration"))]
+pub use network_shuffle::PRODUCER_SALT_DEFAULT;
 pub use sampler::SamplerExec;
