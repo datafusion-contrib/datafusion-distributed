@@ -2437,7 +2437,6 @@ dependencies = [
  "serde_json",
  "sketches-ddsketch",
  "structopt",
- "sysinfo",
  "tempfile",
  "tokio",
  "tonic",
