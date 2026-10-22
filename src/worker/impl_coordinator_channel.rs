@@ -5,7 +5,7 @@ use crate::dynamic_filtering::{
     apply_dynamic_filter_update, discover_dynamic_filter_consumers,
     discover_dynamic_filter_producers,
 };
-use crate::events::{WorkerPlanRewriteEvent, WorkerPlanRewriteHandlers};
+use crate::events::{TaskFinishedHandlers, WorkerPlanRewriteEvent, WorkerPlanRewriteHandlers};
 use crate::execution_plans::SamplerExec;
 use crate::protocol::LocalWorkerContext;
 use crate::work_unit_feed::{RemoteWorkUnitFeedRegistry, set_work_unit_received_time};
@@ -23,6 +23,7 @@ use datafusion::execution::{SessionStateBuilder, TaskContext};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr::expressions::DynamicFilterPhysicalExpr;
 use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::prelude::SessionConfig;
 use futures::stream::{BoxStream, FuturesUnordered, select_all};
 use futures::{FutureExt, StreamExt, TryStreamExt};
@@ -159,6 +160,7 @@ impl Worker {
         let mut work_unit_senders = Some(remote_work_unit_feed_registry.senders);
         let task_data_entries = Arc::clone(&self.task_data_entries);
         let dynamic_filter_task_ctx = Arc::clone(&task_data.task_ctx);
+        let task_finished_task_ctx = Arc::clone(&task_data.task_ctx);
 
         // This tokio task takes ownership of the final-report senders that keep the
         // worker->coordinator stream alive. As soon as this task ends, the runtime metrics and
@@ -255,8 +257,27 @@ impl Worker {
                 };
                 let task_data_metrics = &task_data.task_data_metrics;
                 task_data_metrics.mark_execution_finished();
+                // Task-scoped metrics (not tied to any plan node) contributed by every
+                // registered TaskFinishedHandler, e.g. a task's peak memory usage. Computed here,
+                // synchronously, right as the task finishes — unconditionally, per
+                // TaskFinishedHandler's documented contract: it runs whenever a task finishes,
+                // not only when metrics collection happens to be enabled. A handler may rely on
+                // this for teardown (e.g. unregistering external per-task state) that must
+                // happen exactly once per task regardless of whether metrics are collected.
+                let task_finished_metrics = TaskFinishedHandlers::handle(
+                    plan,
+                    key,
+                    d_ctx,
+                    task_finished_task_ctx.session_config(),
+                );
                 if let Some(metrics_tx) = metrics_tx {
-                    send_metrics_via_channel(metrics_tx, plan, d_ctx, task_data_metrics);
+                    send_metrics_via_channel(
+                        metrics_tx,
+                        plan,
+                        d_ctx,
+                        task_data_metrics,
+                        task_finished_metrics,
+                    );
                 }
                 if let Some(dynamic_filters_tx) = dynamic_filters_tx {
                     // TODO(#686): handle error
@@ -414,11 +435,17 @@ fn build_task_completed_dynamic_filters(
 
 /// Collects metrics from the plan in pre-order traversal order and sends them via the
 /// coordinator channel oneshot.
+///
+/// `task_finished_metrics` are the task-scoped metrics (not tied to any plan node) contributed
+/// by every registered [`crate::TaskFinishedHandler`]; they are appended to
+/// `task_data_metrics`'s own built-in metrics here, not inside `TaskDataMetrics` itself —
+/// `TaskDataMetrics` keeps its original, narrow shape and does not need to know about handlers.
 fn send_metrics_via_channel(
     metrics_tx: Sender<TaskMetrics>,
     plan: &Arc<dyn ExecutionPlan>,
     dt_ctx: DistributedTaskContext,
     task_data_metrics: &Arc<TaskDataMetrics>,
+    task_finished_metrics: MetricsSet,
 ) {
     let mut pre_order_plan_metrics = vec![];
     let _ = plan.apply_with_dt_ctx(dt_ctx, |node, _| {
@@ -426,10 +453,15 @@ fn send_metrics_via_channel(
         Ok(TreeNodeRecursion::Continue)
     });
 
+    let mut task_metrics = task_data_metrics.to_metrics_set();
+    for metric in task_finished_metrics.iter() {
+        task_metrics.push(Arc::clone(metric));
+    }
+
     // Ignore send errors — the coordinator channel may have been dropped (e.g. query cancelled).
     let _ = metrics_tx.send(TaskMetrics {
         pre_order_plan_metrics,
-        task_metrics: task_data_metrics.to_metrics_set(),
+        task_metrics,
     });
 }
 
