@@ -1,7 +1,10 @@
+use crate::DistributedTaskContext;
+use crate::common::TreeNodeExt;
 use crate::events::common::EventHandlerChain;
 use crate::{TaskKey, WorkerResolver, WorkerToCoordinatorMsg};
 use async_trait::async_trait;
 use datafusion::common::Result;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr_common::metrics::ExecutionPlanMetricsSet;
 use datafusion::physical_plan::ExecutionPlan;
@@ -24,6 +27,11 @@ pub struct RouteTaskEvent<'a> {
     pub task_count: usize,
     /// The exact plan variant that will be sent for this task.
     pub task_specialized_plan: &'a Arc<dyn ExecutionPlan>,
+    /// Task-specialized coordinator view, before native feeds become remote handles.
+    /// Use this view for inspecting connector metadata, not for execution. Native
+    /// providers may be shared with other tasks; do not consume their work streams.
+    /// Use [`Self::visit_local_task_plan`] to account for isolated UNION branches.
+    pub local_task_plan: &'a Arc<dyn ExecutionPlan>,
     /// Establishes a coordinator-to-worker connection for a candidate URL. Users are expected
     /// to call `dialer.dial()` inside their [RouteTaskHandler] implementations for establishing
     /// a connection with the remote worker.
@@ -31,6 +39,27 @@ pub struct RouteTaskEvent<'a> {
     /// `dialer.dial()` can be called multiple times over different URLs until one successfully
     /// connects.
     pub dialer: &'a dyn CoordinatorToWorkerDialer,
+}
+
+impl RouteTaskEvent<'_> {
+    /// Visits this task's local operators with their scan-local task index/count.
+    /// Skips other tasks' branches and stops at network boundaries. This preserves
+    /// the task context of isolated UNION children when inspecting native feeds.
+    pub fn visit_local_task_plan(
+        &self,
+        visitor: impl FnMut(
+            &Arc<dyn ExecutionPlan>,
+            DistributedTaskContext,
+        ) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        self.local_task_plan.apply_with_dt_ctx(
+            DistributedTaskContext {
+                task_index: self.task_key.task_number,
+                task_count: self.task_count,
+            },
+            visitor,
+        )
+    }
 }
 
 /// A worker connection selected by a [`RouteTaskHandler`].

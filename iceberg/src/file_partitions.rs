@@ -2,14 +2,15 @@ use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::vec::IntoIter;
 
+use datafusion::common::{Result, exec_datafusion_err, exec_err};
 use iceberg::scan::FileScanTask;
 
 // Largest file first; object identity breaks ties independently of manifest order.
 type FilePriority<'a> = (u64, Reverse<&'a str>, Reverse<u64>, Reverse<usize>);
 type TaskLoad = Reverse<(u128, usize, usize)>;
 
-/// Destination partitions in file-stream order. The dispatcher validates nonzero
-/// counts and their product before constructing either routing policy.
+/// Destination partitions in file-stream order. `new` validates nonzero counts
+/// and their product before constructing either assignment policy.
 #[derive(Debug)]
 pub(crate) enum FilePartitions {
     RoundRobin {
@@ -21,12 +22,34 @@ pub(crate) enum FilePartitions {
 }
 
 impl FilePartitions {
-    /// Build destinations in the original retained-file order, without reordering files.
-    pub(crate) async fn greedy(
-        files: &[FileScanTask],
+    pub(crate) async fn new(
+        files: Option<&[FileScanTask]>,
+        greedy: bool,
         task_count: usize,
         partitions_per_task: usize,
-    ) -> Self {
+    ) -> Result<Self> {
+        if task_count
+            .checked_mul(partitions_per_task)
+            .is_none_or(|total| total == 0)
+        {
+            return exec_err!("Invalid Iceberg feed partition count");
+        }
+        if greedy {
+            let files = files.ok_or_else(|| {
+                exec_datafusion_err!("Greedy Iceberg assignment requires eager file planning")
+            })?;
+            Ok(Self::greedy(files, task_count, partitions_per_task).await)
+        } else {
+            Ok(Self::RoundRobin {
+                next_file: 0,
+                task_count,
+                partitions_per_task,
+            })
+        }
+    }
+
+    /// Build destinations in the original retained-file order, without reordering files.
+    async fn greedy(files: &[FileScanTask], task_count: usize, partitions_per_task: usize) -> Self {
         let mut order: BinaryHeap<FilePriority<'_>> = BinaryHeap::with_capacity(files.len());
         let mut partitions = Vec::with_capacity(files.len());
         for (index, file) in files.iter().enumerate() {

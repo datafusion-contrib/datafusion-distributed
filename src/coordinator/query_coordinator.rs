@@ -152,6 +152,7 @@ impl<'a> StageCoordinator<'a> {
         let session_config = self.task_ctx.session_config();
 
         let TaskSpecializedPlan {
+            local_plan,
             plan,
             work_unit_feed_declarations,
             dynamic_filter_remote_producer_ids,
@@ -249,6 +250,7 @@ impl<'a> StageCoordinator<'a> {
             metrics: self.metrics_set,
             worker_resolver: worker_resolver.as_ref(),
             task_specialized_plan: &plan,
+            local_task_plan: &local_plan,
             task_key,
             task_count: self.task_count,
             dialer: &dialer,
@@ -472,22 +474,6 @@ impl<'a> StageCoordinator<'a> {
 
         let plan = Arc::clone(self.plan);
         let transformed = plan.transform_down_with_dt_ctx(d_ctx, |plan, d_ctx| {
-            if let Some(wuf) = wuf_registry.get_work_unit_feed(&plan) {
-                work_unit_feed_declarations.push(WorkUnitFeedDeclaration {
-                    id: wuf.id(),
-                    partitions: plan.properties().partitioning.partition_count(),
-                });
-
-                // WorkUnitFeeds are transitioned to remote mode during proto conversion.
-                // Right now, there's no other way for a WorkUnitFeed to be transitioned to
-                // remote mode so that it can pull WorkUnits over the WorkerChannel.
-                //
-                // Doing this roundtrip here is not super clean, but it transitions the feed with
-                // very little specialized code.
-                let plan = roundtrip_pb(plan, self.task_ctx)?;
-                return Ok(Transformed::yes(plan));
-            };
-
             if let Some(ciu) = plan.downcast_ref::<ChildrenIsolatorUnionExec>() {
                 let ciu = ciu.to_task_specialized(d_ctx.task_index);
                 return Ok(Transformed::yes(Arc::new(ciu)));
@@ -512,6 +498,20 @@ impl<'a> StageCoordinator<'a> {
             // we are explicitly not retransforming the entire plan. if other operators cause shared state errors they will error out.
             Ok(Transformed::no(plan))
         })?;
+        // Keep native providers available to routing. Only the worker-facing view
+        // replaces them with remote feeds; retained file metadata stays shared.
+        let local_plan = transformed.data;
+        let transformed =
+            Arc::clone(&local_plan).transform_down_with_dt_ctx(d_ctx, |plan, _| {
+                if let Some(wuf) = wuf_registry.get_work_unit_feed(&plan) {
+                    work_unit_feed_declarations.push(WorkUnitFeedDeclaration {
+                        id: wuf.id(),
+                        partitions: plan.properties().partitioning.partition_count(),
+                    });
+                    return Ok(Transformed::yes(roundtrip_pb(plan, self.task_ctx)?));
+                }
+                Ok(Transformed::no(plan))
+            })?;
         let plan = if dynamic_filtering_enabled {
             maybe_roundtrip_plan_to_sever_in_memory_dynamic_filter_relationships(
                 Arc::clone(&transformed.data),
@@ -527,6 +527,7 @@ impl<'a> StageCoordinator<'a> {
                 vec![]
             };
         Ok(TaskSpecializedPlan {
+            local_plan,
             plan,
             work_unit_feed_declarations,
             dynamic_filter_remote_producer_ids,
@@ -548,6 +549,7 @@ enum RuntimeUpdate {
 }
 
 struct TaskSpecializedPlan {
+    local_plan: Arc<dyn ExecutionPlan>,
     plan: Arc<dyn ExecutionPlan>,
     work_unit_feed_declarations: Vec<WorkUnitFeedDeclaration>,
     dynamic_filter_remote_producer_ids: Vec<u64>,

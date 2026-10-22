@@ -66,3 +66,21 @@ workers by hashing the file path, so each worker can serve them from an
 in-memory cache on repeat queries, see the
 [custom_worker_url_routing.rs](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/examples/custom_worker_url_routing.rs)
 example.
+
+### Inspecting native scan metadata
+
+`RouteTaskEvent::task_specialized_plan` is the worker-facing plan, whose work-unit
+feeds are remote handles. `local_task_plan` provides the same task's coordinator
+view before that conversion, retaining native providers and their metadata.
+It is for inspection, not execution: do not consume its work-unit streams.
+The supplied dialer continues to send the worker-facing plan.
+
+Use `visit_local_task_plan` to inspect scans with their scan-local
+`DistributedTaskContext`. This skips unrelated branches and accounts for task
+indices/counts inside isolated UNION children. The event's stage-wide task number
+is not necessarily a scan's task index.
+
+For eager Iceberg scans, `IcebergDataSource::assigned_files` borrows the files for
+that context using the same assignment policy as delivery. It returns `None` for
+lazy scans and remote feeds. Applications can use the file descriptors in their
+own routing policy; DFD does not prescribe a cache key or worker-affinity policy.
