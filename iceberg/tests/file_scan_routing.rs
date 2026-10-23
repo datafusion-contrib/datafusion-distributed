@@ -49,6 +49,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pruned_files_choose_the_worker_independently_of_task_number() -> Result<()> {
+        let routes = Routes::default();
+        let harness = distributed(&routes, true, true).await?;
+        let local = IcebergTestHarness::new().await?;
+        let mut placements = Vec::new();
+        for day in ["2024-01-08", "2024-01-09", "2024-01-08"] {
+            // Two isolated branches keep the query distributed even though each
+            // scan is pruned to one file.
+            let sql = format!(
+                "SELECT kind, COUNT(*) FROM (
+                    SELECT 'a' AS kind FROM taxi WHERE pickup_date = DATE '{day}' AND trip_distance > 1
+                    UNION ALL
+                    SELECT 'b' AS kind FROM taxi WHERE pickup_date = DATE '{day}' AND trip_distance > 2
+                ) GROUP BY kind ORDER BY kind"
+            );
+            let (_, expected) = local.query(&sql).await?;
+            let (_, actual) = harness.query(&sql).await?;
+            assert_eq!(actual, expected);
+            let records = routes.take();
+            assert_eq!(records.len(), 2);
+            let mut placement = Vec::new();
+            for record in records {
+                let files = record.files.as_ref().unwrap();
+                assert_eq!(files.len(), 1);
+                assert!(files[0].contains(day));
+                placement.push((record.task_number, record.worker));
+            }
+            placement.sort();
+            assert_eq!(placement[0].1, placement[1].1);
+            placements.push(placement);
+        }
+        assert_eq!(placements[0][0].0, placements[1][0].0);
+        assert_eq!(placements[0][1].0, placements[1][1].0);
+        assert_ne!(placements[0][0].1, placements[1][0].1);
+        assert_eq!(placements[0], placements[2]);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn routing_sees_only_the_assigned_union_branch() -> Result<()> {
         let routes = Routes::default();
         let harness = distributed(&routes, true, true).await?;
@@ -113,6 +152,8 @@ mod tests {
 
     struct Record {
         files: Option<Vec<String>>,
+        task_number: usize,
+        worker: String,
     }
 
     #[derive(Clone, Default)]
@@ -123,8 +164,8 @@ mod tests {
             std::mem::take(&mut *self.0.lock().unwrap())
         }
 
-        fn inspect(&self, ev: RouteTaskEvent<'_>) -> Result<bool> {
-            let mut found = false;
+        fn inspect(&self, ev: RouteTaskEvent<'_>) -> Result<Vec<Record>> {
+            let mut records = Vec::new();
             ev.task_specialized_plan.apply(|plan| {
                 let files = if let Some(scan) = file_scan(plan) {
                     let codec =
@@ -164,33 +205,52 @@ mod tests {
                 } else {
                     return Ok(TreeNodeRecursion::Continue);
                 };
-                self.0.lock().unwrap().push(Record { files });
-                found = true;
+                records.push(Record {
+                    files,
+                    task_number: ev.task_key.task_number,
+                    worker: String::new(),
+                });
                 Ok(TreeNodeRecursion::Continue)
             })?;
-            Ok(found)
+            Ok(records)
         }
     }
 
     #[async_trait]
     impl RouteTaskHandler for Routes {
         async fn handle(&self, ev: RouteTaskEvent<'_>) -> Option<Result<RouteTaskEventResponse>> {
-            match self.inspect(ev) {
+            let mut records = match self.inspect(ev) {
                 Err(error) => return Some(Err(error)),
-                Ok(false) => return None,
-                Ok(true) => {}
-            }
+                Ok(records) if records.is_empty() => return None,
+                Ok(records) => records,
+            };
             let urls = match ev.worker_resolver.get_urls() {
                 Ok(urls) if !urls.is_empty() => urls,
                 Ok(_) => return None,
                 Err(error) => return Some(Err(error)),
             };
-            // Exercise the unchanged dialer with the inspected worker-facing scan.
-            Some(
-                ev.dialer
-                    .dial(urls[ev.task_key.task_number % urls.len()].clone())
-                    .await,
-            )
+            // A deliberately small test policy: the first file's URI determines
+            // placement. Lazy scans fall back to task-number routing.
+            let file = records
+                .iter()
+                .filter_map(|record| record.files.as_ref())
+                .flatten()
+                .min();
+            let index = file.map_or(ev.task_key.task_number, |file| {
+                file.bytes()
+                    .fold(0usize, |sum, byte| sum.wrapping_add(usize::from(byte)))
+            }) % urls.len();
+            let url = urls[index].clone();
+            let response = match ev.dialer.dial(url.clone()).await {
+                Ok(response) => response,
+                Err(error) => return Some(Err(error)),
+            };
+            assert_eq!(response.url, url);
+            for record in &mut records {
+                record.worker = response.url.to_string();
+            }
+            self.0.lock().unwrap().extend(records);
+            Some(Ok(response))
         }
     }
 
