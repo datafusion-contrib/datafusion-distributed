@@ -40,7 +40,7 @@ mod tests {
             ┌───── Stage 1 ── tasks=3, partitions=6
             │ RepartitionExec: partitioning=Hash([pickup_date@0], 6), input_partitions=2
             │   AggregateExec: mode=Partial, gby=[pickup_date@0 as pickup_date], aggr=[count(Int64(1))]
-            │     DataSourceExec: format=iceberg, projection=[pickup_date]
+            │     DataSourceExec: format=iceberg, table=default.taxi, projection=[pickup_date]
             └──────────────────────────────────────────────────
         +-------------+-------+
         | pickup_date | trips |

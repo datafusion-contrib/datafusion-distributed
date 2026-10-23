@@ -16,11 +16,11 @@ mod tests {
             )
             .await?;
 
-        insta::assert_snapshot!(plan, @r"
+        insta::assert_snapshot!(plan, @"
         SortPreservingMergeExec: [pickup_at@1 ASC NULLS LAST], fetch=3
           SortExec: TopK(fetch=3), expr=[pickup_at@1 ASC NULLS LAST], preserve_partitioning=[true]
             FilterExec: pickup_date@4 = 2024-01-10
-              DataSourceExec: format=iceberg, projection=[vendor_id, pickup_at, passenger_count, trip_distance, pickup_date], predicate=pickup_date = 2024-01-10
+              DataSourceExec: format=iceberg, table=default.taxi, projection=[vendor_id, pickup_at, passenger_count, trip_distance, pickup_date], predicate=pickup_date = 2024-01-10
         ");
         insta::assert_snapshot!(batches, @r"
     +-----------+---------------------+-----------------+---------------+-------------+
@@ -42,10 +42,10 @@ mod tests {
             .query("SELECT pickup_date FROM taxi WHERE pickup_date = DATE '2024-01-10' LIMIT 3")
             .await?;
 
-        insta::assert_snapshot!(plan, @r"
+        insta::assert_snapshot!(plan, @"
         CoalescePartitionsExec: fetch=3
           FilterExec: pickup_date@0 = 2024-01-10, fetch=3
-            DataSourceExec: format=iceberg, projection=[pickup_date], predicate=pickup_date = 2024-01-10
+            DataSourceExec: format=iceberg, table=default.taxi, projection=[pickup_date], predicate=pickup_date = 2024-01-10
         ");
         insta::assert_snapshot!(batches, @r"
     +-------------+
@@ -67,10 +67,10 @@ mod tests {
             .query("SELECT pickup_date FROM taxi LIMIT 3")
             .await?;
 
-        insta::assert_snapshot!(plan, @r"
-    CoalescePartitionsExec: fetch=3
-      DataSourceExec: format=iceberg, projection=[pickup_date], fetch=3
-    ");
+        insta::assert_snapshot!(plan, @"
+        CoalescePartitionsExec: fetch=3
+          DataSourceExec: format=iceberg, table=default.taxi, projection=[pickup_date], fetch=3
+        ");
         insta::assert_snapshot!(batches, @r"
     +-------------+
     | pickup_date |
@@ -115,13 +115,13 @@ mod tests {
             )
             .await?;
 
-        insta::assert_snapshot!(plan, @r"
+        insta::assert_snapshot!(plan, @"
         ProjectionExec: expr=[vendor_id@0 as vendor_id, pickup_at@1 as pickup_at]
           GlobalLimitExec: skip=3, fetch=2
             SortPreservingMergeExec: [pickup_at@1 ASC NULLS LAST, vendor_id@0 ASC NULLS LAST, pickup_location_id@2 ASC NULLS LAST], fetch=5
               SortExec: TopK(fetch=5), expr=[pickup_at@1 ASC NULLS LAST, vendor_id@0 ASC NULLS LAST, pickup_location_id@2 ASC NULLS LAST], preserve_partitioning=[true]
                 FilterExec: pickup_date@3 = 2024-01-10, projection=[vendor_id@0, pickup_at@1, pickup_location_id@2]
-                  DataSourceExec: format=iceberg, projection=[vendor_id, pickup_at, pickup_location_id, pickup_date], predicate=pickup_date = 2024-01-10
+                  DataSourceExec: format=iceberg, table=default.taxi, projection=[vendor_id, pickup_at, pickup_location_id, pickup_date], predicate=pickup_date = 2024-01-10
         ");
         insta::assert_snapshot!(batches, @r"
     +-----------+---------------------+
