@@ -7,6 +7,7 @@ message IcebergDataSource {
   DataFusionPartitioning partitioning = 3;
   optional uint64 fetch = 4;
   map<string, string> storage_properties = 5;
+  AssignedFiles assigned_files = 6; // Exactly one of feed or assigned_files must be set.
 }
 
 message WorkUnitFeed {
@@ -16,3 +17,12 @@ message WorkUnitFeed {
 // The generated Rust fields use DataFusion's canonical protobuf types.
 message DataFusionSchema {}
 message DataFusionPartitioning {}
+
+message AssignedFiles {
+  repeated FileGroup partitions = 1;
+  bool may_filter_rows = 2;
+}
+
+message FileGroup {
+  repeated bytes tasks = 1;
+}

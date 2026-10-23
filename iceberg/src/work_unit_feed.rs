@@ -11,19 +11,16 @@ use datafusion::execution::TaskContext;
 use datafusion::physical_expr::Partitioning;
 use datafusion_distributed::{DistributedWorkUnitFeedContext, WorkUnitFeedProvider};
 use futures::StreamExt;
-use futures::stream::{self, BoxStream};
+use futures::stream::BoxStream;
 use iceberg::expr::Predicate;
 use iceberg::scan::{FileScanTask, TableScan};
 use prost::encoding::{DecodeContext, WireType};
 use prost::{DecodeError, Message};
 use tokio::sync::mpsc::UnboundedReceiver;
-use tokio::sync::oneshot;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
-use crate::IcebergConfig;
 use crate::common::df_err;
 use crate::file_partitions::FilePartitions;
-use crate::planned_files::PlannedFiles;
 
 #[derive(Clone, PartialEq, prost::Message)]
 struct SerializedFileScanTask {
@@ -114,7 +111,7 @@ impl Message for FileScanTaskWorkUnit {
 
 /// Work unit feed implementation that yields [FileScanTask] messages at execution time.
 ///
-/// At execution time, one dispatcher reads either retained planned files or a live
+/// At execution time, one dispatcher reads a live
 /// Iceberg scan, and places each [FileScanTask] in P * T output channels, where:
 ///  - P is the number of partition in each distributed task.
 ///  - T is the number of distributed tasks
@@ -188,7 +185,6 @@ pub struct IcebergWorkUnitFeed {
     ///  Ideally, both Range partitioning and hash partitioning should be supported.
     pub(crate) partitioning: Partitioning,
     /// Query-local tasks discovered before execution, when enabled.
-    pub(crate) planned: Option<Arc<PlannedFiles>>,
     /// Container for the lazily initialized dispatcher shared by both discovery modes.
     /// It will start as soon as the first [IcebergWorkUnitFeed::feed] is called.
     pub(crate) sync_manager: OnceLock<Result<SyncManager, Arc<DataFusionError>>>,
@@ -202,14 +198,13 @@ impl Clone for IcebergWorkUnitFeed {
             projection: self.projection.clone(),
             predicates: self.predicates.clone(),
             partitioning: self.partitioning.clone(),
-            planned: self.planned.clone(),
             sync_manager: Default::default(),
         }
     }
 }
 
 impl IcebergWorkUnitFeed {
-    fn table_scan(&self) -> Result<TableScan> {
+    pub(crate) fn table_scan(&self) -> Result<TableScan> {
         let builder = match self.snapshot_id {
             Some(id) => self.iceberg_table.scan().snapshot_id(id),
             None => self.iceberg_table.scan(),
@@ -222,26 +217,6 @@ impl IcebergWorkUnitFeed {
             builder = builder.with_filter(predicate.clone());
         }
         builder.build().map_err(df_err)
-    }
-
-    pub(crate) async fn prepare_files(
-        &mut self,
-        runtime: &iceberg::Runtime,
-        context: Arc<TaskContext>,
-    ) -> Result<()> {
-        let scan = self.table_scan()?;
-        let may_filter_rows = self.predicates.is_some();
-        // Keep manifest I/O off an embedder's IO-disabled query runtime. Cancel the
-        // spawned planner if the query abandons physical planning.
-        let (_cancel_on_drop, canceled) = oneshot::channel::<()>();
-        let task = runtime.io().spawn(async move {
-            tokio::select! {
-                _ = canceled => exec_err!("Iceberg file planning canceled"),
-                result = PlannedFiles::collect(scan, &context, may_filter_rows) => result,
-            }
-        });
-        self.planned = Some(Arc::new(task.await.map_err(df_err)??));
-        Ok(())
     }
 }
 
@@ -274,8 +249,6 @@ impl WorkUnitFeedProvider for IcebergWorkUnitFeed {
 
         // Both discovery modes share one dispatcher, initialized by the first feed call.
         let sync_manager_or_err = self.sync_manager.get_or_init(|| {
-            let planned = self.planned.clone();
-            let greedy = IcebergConfig::from_task_context(&ctx).greedy_file_assignment;
             let table_scan = self.table_scan()?;
 
             // Fanout the FileScanTask stream across P * T output channels where:
@@ -294,34 +267,16 @@ impl WorkUnitFeedProvider for IcebergWorkUnitFeed {
             // the return streams of the `feed()` method.
             let task = SpawnedTask::spawn(async move {
                 let result: Result<()> = async {
-                    let mut destinations = if greedy {
-                        let files = planned.as_ref().ok_or_else(|| {
-                            exec_datafusion_err!(
-                                "Greedy Iceberg assignment requires eager file planning"
-                            )
-                        })?;
-                        FilePartitions::greedy(files.tasks(), task_count, partitions_per_task).await
-                    } else {
-                        FilePartitions::RoundRobin {
-                            next_file: 0,
-                            task_count,
-                            partitions_per_task,
-                        }
+                    let mut destinations = FilePartitions::RoundRobin {
+                        next_file: 0,
+                        task_count,
+                        partitions_per_task,
                     };
-                    let mut files: BoxStream<'_, Result<FileScanTask>> =
-                        if let Some(planned) = &planned {
-                            // The plan retains reusable descriptors; execution owns its copies.
-                            stream::iter(planned.tasks().iter().cloned())
-                                .map(Ok)
-                                .boxed()
-                        } else {
-                            table_scan
-                                .plan_files()
-                                .await
-                                .map_err(df_err)?
-                                .map(|task| task.map_err(df_err))
-                                .boxed()
-                        };
+                    let mut files = table_scan
+                        .plan_files()
+                        .await
+                        .map_err(df_err)?
+                        .map(|task| task.map_err(df_err));
 
                     let mut dispatched = 0;
                     while let Some(task) = files.next().await {

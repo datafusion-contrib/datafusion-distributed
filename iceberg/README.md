@@ -35,21 +35,25 @@ while building each physical scan, then deliver those same tasks to the reader a
 execution. Retained metadata is charged to the query memory pool, without a
 file-count limit. Eager planning uses metadata I/O up front. Scan statistics and
 desired distributed task counts use selected file work instead of snapshot totals;
-reader settings and file assignment are unchanged. Both modes use the same dispatcher
-and partition channels. Eager execution explicitly copies retained file descriptors
-into owned work units; lazy execution moves newly discovered descriptors into them.
+one Iceberg reader handles both inputs.
 
 ```text
-Planning                          Execution
-Eager: discover → retain files ──→ copy descriptors ─┐
-Lazy:  retain scan definition ───→ discover files ──┤
-                                                  ▼
-                                   shared task-first dispatcher
-                                                  ↓
-                                         partition channels
-                                                  ↓
-                                      local or remote readers
+Eager: discover → assign files → task scan with local file groups → reader
+Lazy:  retain scan definition → discover and dispatch via feed   → reader
 ```
+
+Eager scans use `ScanInput::AssignedFiles`; lazy scans use
+`ScanInput::WorkUnitFeed`. Once DFD chooses the distributed task count, the
+scale-up handler creates task-specific eager scans with concrete file groups.
+The existing routing event can inspect `IcebergDataSource::assigned_files()`
+in its `task_specialized_plan`, without accessing a coordinator-side feed.
+
+The codec sends only the assigned groups for that task, preserving local
+partition membership. This increases plan payload size and shifts descriptor
+transport from execution-time feed messages to worker setup. Greedy assignment
+runs synchronously in the existing scale-up hook; this draft does not claim a
+performance improvement. Reader execution clones descriptors as needed, while
+coordinator-side assignments share the retained descriptors and memory reservation.
 
 Configure the session before creating the `SessionState`:
 
