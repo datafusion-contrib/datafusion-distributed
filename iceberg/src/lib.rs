@@ -12,6 +12,8 @@ mod config;
 mod data_source;
 mod distributed_desired_task_count_handler;
 mod file_partitions;
+mod file_source;
+pub use file_source::{IcebergFileSource, IcebergFileTask};
 mod iceberg_ext;
 mod planned_files;
 mod proto;

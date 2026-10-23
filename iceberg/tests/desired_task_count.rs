@@ -80,7 +80,10 @@ mod tests {
             .physical_plan("SELECT pickup_date FROM taxi WHERE pickup_date = DATE '2024-01-10'")
             .await?;
         let display = displayable(plan.as_ref()).indent(true).to_string();
-        assert!(display.contains("planned_files=1"), "{display}");
+        insta::assert_snapshot!(display, @"
+        FilterExec: pickup_date@0 = 2024-01-10
+          DataSourceExec: file_groups={2 groups: [[s3:/iceberg-test/warehouse/taxi/data/pickup_date=2024-01-10/data_0.parquet], []]}, projection=[pickup_date], file_type=iceberg
+        ");
         Ok(())
     }
 

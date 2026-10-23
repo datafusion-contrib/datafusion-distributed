@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::catalog::memory::DataSourceExec;
 use datafusion::catalog::{Session, TableProvider};
 use datafusion::common::{Result, exec_datafusion_err, plan_datafusion_err};
 use datafusion::datasource::TableType;
@@ -100,7 +99,7 @@ impl TableProvider for IcebergStaticTableProvider {
                 .with_column_statistics(self.table.clone(), projection.map(Vec::as_slice))
                 .await?;
         }
-        Ok(DataSourceExec::from_data_source(data_source))
+        data_source.into_scan(iceberg_config)
     }
 
     fn supports_filters_pushdown(

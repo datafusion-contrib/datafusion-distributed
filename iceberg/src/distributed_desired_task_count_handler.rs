@@ -6,21 +6,29 @@ use datafusion_distributed::{
     DesiredTaskCountEvent, DesiredTaskCountEventResponse, DistributedConfig,
 };
 
-use crate::IcebergDataSource;
+use crate::{IcebergDataSource, IcebergFileSource};
+use datafusion::datasource::physical_plan::FileScanConfig;
 
 /// Estimates scan parallelism from pruned file bytes, bounded by available file work.
 /// Falls back to snapshot totals when planning-time file discovery is disabled.
 pub fn iceberg_desired_task_count(
     ev: DesiredTaskCountEvent,
 ) -> Option<Result<DesiredTaskCountEventResponse>> {
-    let node = ev
-        .plan
-        .downcast_ref::<DataSourceExec>()?
-        .data_source()
-        .downcast_ref::<IcebergDataSource>()?;
-    // Relation statistics can describe only the projection. Scan parallelism
-    // still uses planned file bytes (or snapshot bytes when preplanning is off).
-    let total_bytes = node.file_scan_bytes()?;
+    let source = ev.plan.downcast_ref::<DataSourceExec>()?.data_source();
+    let (total_bytes, file_count) = if let Some(scan) = source.downcast_ref::<FileScanConfig>() {
+        scan.file_source.downcast_ref::<IcebergFileSource>()?;
+        let files = scan.file_groups.iter().flat_map(|group| group.iter());
+        let (bytes, count) = files.fold((0usize, 0usize), |(bytes, count), file| {
+            (
+                bytes.saturating_add(file.effective_size() as usize),
+                count + 1,
+            )
+        });
+        (bytes, Some(count))
+    } else {
+        let node = source.downcast_ref::<IcebergDataSource>()?;
+        (node.file_scan_bytes()?, node.planned_file_count())
+    };
     let config = DistributedConfig::from_session_config(ev.session_config).ok()?;
 
     Some(
@@ -30,9 +38,7 @@ pub fn iceberg_desired_task_count(
             ev.session_config.target_partitions(),
         )
         .map(|count| {
-            let count = node
-                .planned_file_count()
-                .map_or(count, |files| count.min(files as f64));
+            let count = file_count.map_or(count, |files| count.min(files as f64));
             DesiredTaskCountEventResponse::desired(count)
         }),
     )

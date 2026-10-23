@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::common::{exec_datafusion_err, internal_datafusion_err};
+use datafusion::datasource::physical_plan::FileScanConfig;
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::{SessionStateBuilder, TaskContext};
@@ -38,7 +39,11 @@ use iceberg::{Error, ErrorKind, Result as IcebergResult};
 use serde::{Deserialize, Serialize};
 
 use super::taxi_metadata;
-use crate::{IcebergDataSource, IcebergExt, IcebergIntegrationOptions, iceberg_desired_task_count};
+use crate::file_source::assign_files;
+use crate::{
+    IcebergConfig, IcebergDataSource, IcebergExt, IcebergFileTask, IcebergIntegrationOptions,
+    iceberg_desired_task_count,
+};
 
 pub const FIXTURE_URI: &str = "s3://iceberg-test/warehouse/taxi";
 const WAREHOUSE_URI: &str = "s3://iceberg-test/warehouse/";
@@ -97,6 +102,36 @@ impl IcebergTestHarness {
         let source = scan
             .downcast_ref::<DataSourceExec>()
             .ok_or_else(|| internal_datafusion_err!("Expected an Iceberg data source scan"))?;
+        if let Some(config) = source.data_source().downcast_ref::<FileScanConfig>() {
+            let files = config
+                .file_groups
+                .iter()
+                .flat_map(|group| group.iter().cloned())
+                .collect();
+            let groups = assign_files(
+                files,
+                task_count,
+                config.file_groups.len(),
+                IcebergConfig::from_session_config(self.ctx.state().config())
+                    .greedy_file_assignment,
+            )?;
+            return groups
+                .into_iter()
+                .flatten()
+                .map(|group| {
+                    group
+                        .iter()
+                        .map(|file| {
+                            file.extension::<IcebergFileTask>()
+                                .map(|task| task.task().clone())
+                                .ok_or_else(|| {
+                                    internal_datafusion_err!("Missing Iceberg file task")
+                                })
+                        })
+                        .collect()
+                })
+                .collect();
+        }
         let source = source
             .data_source()
             .downcast_ref::<IcebergDataSource>()

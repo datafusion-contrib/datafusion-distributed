@@ -3,7 +3,6 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::Session;
-use datafusion::datasource::source::DataSourceExec;
 use datafusion::datasource::{TableProvider, TableType};
 use datafusion::error::Result;
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown};
@@ -91,7 +90,7 @@ impl TableProvider for IcebergCatalogTableProvider {
                 .await?;
         }
 
-        Ok(DataSourceExec::from_data_source(data_source))
+        data_source.into_scan(iceberg_config)
     }
 
     fn supports_filters_pushdown(
