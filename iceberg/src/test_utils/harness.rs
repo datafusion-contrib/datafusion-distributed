@@ -101,9 +101,25 @@ impl IcebergTestHarness {
             .data_source()
             .downcast_ref::<IcebergDataSource>()
             .ok_or_else(|| internal_datafusion_err!("Expected an Iceberg data source"))?;
+        if let Some(files) = source.assigned_files() {
+            let assignments = crate::AssignedFiles::assign(
+                Arc::clone(&files.planned),
+                task_count,
+                files.partition_count(),
+                crate::IcebergConfig::from_session_config(&self.ctx.copied_config())
+                    .greedy_file_assignment,
+            )?;
+            let mut groups = Vec::new();
+            for files in assignments {
+                for partition in 0..files.partition_count() {
+                    groups.push(files.partition(partition)?.cloned().collect());
+                }
+            }
+            return Ok(groups);
+        }
         let feed = source
             .feed()
-            .inner()
+            .and_then(|feed| feed.inner())
             .ok_or_else(|| internal_datafusion_err!("Expected a local Iceberg feed"))?;
         let partitions = scan
             .properties()

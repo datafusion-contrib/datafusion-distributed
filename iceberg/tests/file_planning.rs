@@ -9,7 +9,6 @@ mod tests {
     use datafusion::execution::memory_pool::GreedyMemoryPool;
     use datafusion::execution::runtime_env::RuntimeEnvBuilder;
     use datafusion::physical_plan::statistics::{StatisticsArgs, StatisticsContext};
-    use datafusion::prelude::SessionConfig;
     use datafusion_distributed::{DistributedExt, WorkUnitFeedProvider};
     use datafusion_distributed_iceberg::test_utils::{FIXTURE_URI, IcebergTestHarness};
     use datafusion_distributed_iceberg::{IcebergConfig, IcebergDataSource, IcebergWorkUnitFeed};
@@ -183,55 +182,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn both_modes_claim_feeds_once_and_clones_get_fresh_execution() -> Result<()> {
-        for (eager, greedy) in [(false, false), (true, false), (true, true)] {
-            let harness = IcebergTestHarness::builder()
-                .configure_session(|mut state| {
-                    let mut config = IcebergConfig::default();
-                    config.eager_file_planning = eager;
-                    config.greedy_file_assignment = greedy;
-                    state
-                        .config()
-                        .get_or_insert_default()
-                        .options_mut()
-                        .extensions
-                        .insert(config);
-                    Ok(state)
-                })?
-                .build()
-                .await?;
-            let scan = harness.scan().await?;
-            let partitions = scan.properties().partitioning.partition_count();
-            let provider = scan
-                .downcast_ref::<DataSourceExec>()
-                .unwrap()
-                .data_source()
-                .downcast_ref::<IcebergDataSource>()
-                .unwrap()
-                .feed()
-                .inner()
-                .unwrap();
-            let first = read_feed(provider, partitions, greedy).await?;
-            assert_eq!(first.len(), 7);
-            assert!(provider.feed(0, Arc::new(TaskContext::default())).is_err());
-            assert_eq!(
-                read_feed(&provider.clone(), partitions, greedy).await?,
-                first
-            );
-        }
+    async fn lazy_feeds_are_claimed_once_and_clones_get_fresh_execution() -> Result<()> {
+        let harness = IcebergTestHarness::new().await?;
+        let scan = harness.scan().await?;
+        let partitions = scan.properties().partitioning.partition_count();
+        let provider = scan
+            .downcast_ref::<DataSourceExec>()
+            .unwrap()
+            .data_source()
+            .downcast_ref::<IcebergDataSource>()
+            .unwrap()
+            .feed()
+            .unwrap()
+            .inner()
+            .unwrap();
+        let first = read_feed(provider, partitions).await?;
+        assert_eq!(first.len(), 7);
+        assert!(provider.feed(0, Arc::new(TaskContext::default())).is_err());
+        assert_eq!(read_feed(&provider.clone(), partitions).await?, first);
         Ok(())
     }
 
-    async fn read_feed(
-        provider: &IcebergWorkUnitFeed,
-        partitions: usize,
-        greedy: bool,
-    ) -> Result<Vec<Vec<u8>>> {
-        let mut config = SessionConfig::new();
-        let mut iceberg = IcebergConfig::default();
-        iceberg.greedy_file_assignment = greedy;
-        config.options_mut().extensions.insert(iceberg);
-        let context = Arc::new(TaskContext::default().with_session_config(config));
+    async fn read_feed(provider: &IcebergWorkUnitFeed, partitions: usize) -> Result<Vec<Vec<u8>>> {
+        let context = Arc::new(TaskContext::default());
         let mut files = vec![];
         for partition in 0..partitions {
             let units: Vec<_> = provider

@@ -22,7 +22,7 @@ pub(crate) enum FilePartitions {
 
 impl FilePartitions {
     /// Build destinations in the original retained-file order, without reordering files.
-    pub(crate) async fn greedy(
+    pub(crate) fn greedy(
         files: &[FileScanTask],
         task_count: usize,
         partitions_per_task: usize,
@@ -37,19 +37,12 @@ impl FilePartitions {
                 Reverse(index),
             ));
             partitions.push(0);
-            if index % 256 == 0 {
-                tokio::task::yield_now().await;
-            }
         }
         // Prefer fewer files, then task index, when byte loads tie.
         let mut loads: BinaryHeap<TaskLoad> = BinaryHeap::with_capacity(task_count);
         for task in 0..task_count {
             loads.push(Reverse((0_u128, 0_usize, task)));
-            if task % 256 == 0 {
-                tokio::task::yield_now().await;
-            }
         }
-        let mut assigned = 0;
         while let Some((bytes, _, _, Reverse(index))) = order.pop() {
             {
                 let mut least_loaded = loads.peek_mut().expect("validated nonzero task count");
@@ -57,10 +50,6 @@ impl FilePartitions {
                 partitions[index] = *task * partitions_per_task + *count % partitions_per_task;
                 *load += u128::from(bytes);
                 *count += 1;
-            }
-            assigned += 1;
-            if assigned % 256 == 0 {
-                tokio::task::yield_now().await;
             }
         }
         Self::Greedy(partitions.into_iter())

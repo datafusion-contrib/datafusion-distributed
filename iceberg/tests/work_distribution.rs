@@ -69,11 +69,31 @@ mod tests {
              GROUP BY pickup_date ORDER BY pickup_date"
         );
         let (plan, results) = harness.query_with_metrics(&sql).await?;
-        let scan = plan
+        // Assigned inputs render one scan variant per task; feeds render one scan
+        // with all task metrics. Assert the same per-task distribution in either form.
+        let mut rows: Vec<_> = plan
             .lines()
-            .find(|line| line.contains("DataSourceExec: format=iceberg"))
-            .expect("query must execute an Iceberg scan");
-        assert!(scan.contains(expected_rows), "{plan}");
+            .filter(|line| line.contains("DataSourceExec: format=iceberg"))
+            .flat_map(|line| {
+                line.split_once("output_rows={")
+                    .unwrap()
+                    .1
+                    .split_once('}')
+                    .unwrap()
+                    .0
+                    .split(", ")
+            })
+            .collect();
+        let mut expected: Vec<_> = expected_rows
+            .strip_prefix("output_rows={")
+            .unwrap()
+            .strip_suffix('}')
+            .unwrap()
+            .split(", ")
+            .collect();
+        rows.sort_unstable();
+        expected.sort_unstable();
+        assert_eq!(rows, expected, "{plan}");
         let (_, local_results) = IcebergTestHarness::new().await?.query(&sql).await?;
         assert_eq!(results, local_results);
         Ok(())

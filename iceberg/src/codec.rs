@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
+use crate::{AssignedFiles, ScanInput};
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::common::{Result, internal_err};
+use datafusion::common::{Result, exec_datafusion_err, internal_err};
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
@@ -69,11 +70,6 @@ impl PhysicalExtensionCodec for IcebergCodec {
             .schema
             .ok_or_else(|| proto_error("IcebergDataSource is missing its schema"))?;
         let schema = SchemaRef::new((&schema).try_into()?);
-        let feed = proto
-            .feed
-            .ok_or_else(|| proto_error("IcebergDataSource is missing its work-unit feed"))?;
-        let feed =
-            WorkUnitFeed::<IcebergWorkUnitFeed>::from_proto(WorkUnitFeedProto { id: feed.id })?;
         let decode_ctx = PhysicalPlanDecodeContext::new(ctx, self);
         let partitioning = parse_protobuf_partitioning(
             proto.partitioning.as_ref(),
@@ -82,6 +78,45 @@ impl PhysicalExtensionCodec for IcebergCodec {
             proto_converter,
         )?
         .ok_or_else(|| proto_error("IcebergDataSource is missing its partitioning"))?;
+        let input = match (proto.feed, proto.assigned_files) {
+            (Some(feed), None) => {
+                ScanInput::WorkUnitFeed(Box::new(WorkUnitFeed::<IcebergWorkUnitFeed>::from_proto(
+                    WorkUnitFeedProto { id: feed.id },
+                )?))
+            }
+            (None, Some(files)) => {
+                if files.partitions.len() != partitioning.partition_count()
+                    || files.partitions.is_empty()
+                {
+                    return internal_err!("Iceberg assigned files do not match scan partitioning");
+                }
+                let groups = files
+                    .partitions
+                    .into_iter()
+                    .map(|group| {
+                        group
+                            .tasks
+                            .into_iter()
+                            .map(|bytes| {
+                                rmp_serde::from_slice(&bytes).map_err(|error| {
+                                    exec_datafusion_err!("Invalid assigned Iceberg file: {error}")
+                                })
+                            })
+                            .collect::<Result<Vec<_>>>()
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                ScanInput::AssignedFiles(AssignedFiles::from_partitions(
+                    groups,
+                    ctx,
+                    files.may_filter_rows,
+                )?)
+            }
+            _ => {
+                return internal_err!(
+                    "Iceberg scan requires exactly one input: assigned files or feed"
+                );
+            }
+        };
         let fetch = proto
             .fetch
             .map(usize::try_from)
@@ -100,7 +135,7 @@ impl PhysicalExtensionCodec for IcebergCodec {
             table_snapshot: None,
             iceberg_file_io,
             iceberg_runtime: self.iceberg_runtime.clone(),
-            feed,
+            input,
         }))
     }
 
@@ -120,12 +155,44 @@ impl PhysicalExtensionCodec for IcebergCodec {
             return internal_err!("expected DataSourceExec wrapping IcebergDataSource");
         };
 
-        let feed = source.feed.to_proto();
+        let (feed, assigned_files) = match source.input() {
+            ScanInput::WorkUnitFeed(feed) => (
+                Some(pb::WorkUnitFeed {
+                    id: feed.to_proto().id,
+                }),
+                None,
+            ),
+            ScanInput::AssignedFiles(files) => {
+                let partitions = (0..files.partition_count())
+                    .map(|partition| {
+                        let tasks = files
+                            .partition(partition)?
+                            .map(|file| {
+                                rmp_serde::to_vec_named(file).map_err(|error| {
+                                    exec_datafusion_err!(
+                                        "Cannot encode assigned Iceberg file: {error}"
+                                    )
+                                })
+                            })
+                            .collect::<Result<Vec<_>>>()?;
+                        Ok(pb::FileGroup { tasks })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                (
+                    None,
+                    Some(pb::AssignedFiles {
+                        partitions,
+                        may_filter_rows: files.planned.may_filter_rows(),
+                    }),
+                )
+            }
+        };
         let proto = pb::IcebergDataSource {
             schema: Some(datafusion_proto::protobuf::Schema::try_from(
                 source.schema.as_ref(),
             )?),
-            feed: Some(pb::WorkUnitFeed { id: feed.id }),
+            feed,
+            assigned_files,
             partitioning: Some(serialize_partitioning(
                 &source.partitioning,
                 self,
@@ -168,7 +235,10 @@ mod tests {
             decoded.partitioning.to_string()
         );
         assert_eq!(source.fetch, decoded.fetch);
-        assert_eq!(source.feed.to_proto(), decoded.feed.to_proto());
+        assert_eq!(
+            source.feed().unwrap().to_proto(),
+            decoded.feed().unwrap().to_proto()
+        );
         assert_eq!(
             source.iceberg_file_io.config().props(),
             decoded.iceberg_file_io.config().props()

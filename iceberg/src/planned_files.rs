@@ -37,33 +37,52 @@ impl PlannedFiles {
         self.may_filter_rows
     }
 
+    fn new(context: &TaskContext, may_filter_rows: bool) -> Self {
+        Self {
+            tasks: Vec::new(),
+            bytes: 0,
+            rows: Some(0),
+            may_filter_rows,
+            _reservation: MemoryConsumer::new("Iceberg file planning")
+                .register(context.memory_pool()),
+        }
+    }
+
+    fn push(&mut self, task: FileScanTask) -> Result<()> {
+        // Include owned paths/delete references and allow room for Vec capacity.
+        self._reservation
+            .try_grow(retained_size(&task).saturating_mul(2))?;
+        self.bytes = self.bytes.saturating_add(task.length() as usize);
+        self.rows = self.rows.and_then(|rows| {
+            task.record_count()
+                .and_then(|n| rows.checked_add(n as usize))
+        });
+        self.may_filter_rows |= !task.deletes().is_empty();
+        self.tasks.push(task);
+        Ok(())
+    }
+
+    pub(crate) fn from_tasks(
+        tasks: Vec<FileScanTask>,
+        context: &TaskContext,
+        may_filter_rows: bool,
+    ) -> Result<Self> {
+        let mut planned = Self::new(context, may_filter_rows);
+        for task in tasks {
+            planned.push(task)?;
+        }
+        Ok(planned)
+    }
+
     pub(crate) async fn collect(
         scan: TableScan,
         context: &TaskContext,
         may_filter_rows: bool,
     ) -> Result<Self> {
-        let reservation =
-            MemoryConsumer::new("Iceberg file planning").register(context.memory_pool());
-        let mut planned = Self {
-            tasks: Vec::new(),
-            bytes: 0,
-            rows: Some(0),
-            may_filter_rows,
-            _reservation: reservation,
-        };
+        let mut planned = Self::new(context, may_filter_rows);
         let mut stream = scan.plan_files().await.map_err(df_err)?;
         while let Some(task) = stream.try_next().await.map_err(df_err)? {
-            // Account for owned paths and delete references, and allow room for Vec capacity.
-            planned
-                ._reservation
-                .try_grow(retained_size(&task).saturating_mul(2))?;
-            planned.bytes = planned.bytes.saturating_add(task.length() as usize);
-            planned.rows = planned.rows.and_then(|rows| {
-                task.record_count()
-                    .and_then(|count| rows.checked_add(count as usize))
-            });
-            planned.may_filter_rows |= !task.deletes().is_empty();
-            planned.tasks.push(task);
+            planned.push(task)?;
         }
         Ok(planned)
     }

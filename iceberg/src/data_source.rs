@@ -30,7 +30,8 @@ pub use crate::column_statistics::compute_column_stats;
 use crate::column_statistics::selected_column_statistics;
 use crate::common::{df_err, iceberg_err};
 use crate::planned_files::PlannedFiles;
-use crate::{IcebergConfig, IcebergWorkUnitFeed};
+use crate::{AssignedFiles, IcebergConfig, IcebergWorkUnitFeed, ScanInput};
+use iceberg::scan::FileScanTaskStream;
 
 /// Snapshot summary keys defined by the Iceberg table spec:
 /// https://iceberg.apache.org/spec/#optional-snapshot-summary-fields
@@ -40,93 +41,8 @@ use crate::{IcebergConfig, IcebergWorkUnitFeed};
 const TOTAL_RECORDS: &str = "total-records";
 const TOTAL_FILE_SIZE: &str = "total-files-size";
 
-/// Consumes a stream of [iceberg::scan::FileScanTask]s per partition and reads the underlying
-/// files into an Arrow stream.
-///
-/// By default [IcebergWorkUnitFeed] discovers file tasks progressively during execution.
-/// Opt-in planning retains those tasks during physical planning and feeds the same tasks to
-/// this reader at execution. This works in both single-node and distributed execution:
-///
-/// ## Single Node
-///
-/// [iceberg::scan::FileScanTask] are streamed in-memory, with as many parallel streams as
-/// partitions this [IcebergDataSource] exposes:
-///
-/// ```text
-/// ┌────────────────────────────────────────────┐
-/// │             IcebergDataSource              │
-/// │                                            │
-/// │┌──────────────────────────────────────────┐│
-/// ││           IcebergWorkUnitFeed            ││
-/// ││┌────────────┐┌────────────┐┌────────────┐││
-/// │││   Feed 0   ││   Feed 1   ││   Feed 2   │││
-/// ││└──────┬─────┘└──────┬─────┘└──────┬─────┘││
-/// │└───────┼─────────────┼─────────────┼──────┘│
-/// │  .─────▼─────. .─────▼─────. .─────▼─────. │
-/// │ (FileScanTask (FileScanTask (FileScanTask )│
-/// │  .───────────. `─────┬─────' .───────────. │
-/// │ (FileScanTask )      │      (FileScanTask )│
-/// │  `─────┬─────'       │       .───────────. │
-/// │        │             │      (FileScanTask )│
-/// │        │             │       `─────┬─────' │
-/// │        │             │             │       │
-/// │ ┌──────▼─────┐┌──────▼─────┐┌──────▼─────┐ │
-/// │ │Partition 0 ││Partition 1 ││Partition 2 │ │
-/// │ │ArrowReader ││ArrowReader ││ArrowReader │ │
-/// │ └──────┬─────┘└──────┬─────┘└──────┬─────┘ │
-/// │        │             │             │       │
-/// │  .─────▼─────.       │       .─────▼─────. │
-/// │ ( RecordBatch ).─────▼─────.( RecordBatch )│
-/// │  `─────┬─────'( RecordBatch ).───────────. │
-/// │        │       `─────┬─────'( RecordBatch )│
-/// │        │             │       `───────────' │
-/// └────────┼─────────────┼─────────────┼───────┘
-///          ▼             ▼             ▼
-/// ```
-///
-/// ## Distributed
-///
-/// [iceberg::scan::FileScanTask] are streamed over the network, with as many parallel streams as
-/// partitions * distributed tasks:
-///
-/// ```text
-///  ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─
-///                                      Coordinating Context                                   │
-///  │
-///   ┌────────────────────────────────────────────────────────────────────────────────────────┐│
-///  ││                                  IcebergWorkUnitFeed                                   │
-///   │┌─────────────┐┌─────────────┐┌────────────┐┌────────────┐┌─────────────┐┌─────────────┐││
-///  │││   Feed 0    ││   Feed 1    ││   Feed 2   ││   Feed 3   ││   Feed 4    ││   Feed 5    ││
-///   │└──────┬──────┘└─────┬───────┘└────┬───────┘└───────┬────┘└───────┬─────┘└──────┬──────┘││
-///  └└───────┼─────────────┼─────────────┼────────────────┼─────────────┼─────────────┼───────┴
-///     .─────▼─────. .─────▼─────. .─────▼─────.    .─────▼─────. .─────▼─────. .─────▼─────.
-///    (FileScanTask (FileScanTask (FileScanTask )  (FileScanTask (FileScanTask (FileScanTask )
-///     .───────────. `─────┬─────' .───────────.    `─────┬─────' .───────────. `─────┬─────'
-///    (FileScanTask )      │      (FileScanTask )         │      (FileScanTask )      │
-///     `─────┬─────'       │       .───────────.          │       `───────────'       │
-///           │             │      (FileScanTask )         │             │             │
-///  Worker 0 │             │       `─────┬─────'          │             │             │ Worker 1
-/// ┌ ─ ─ ─ ─ ┼ ─ ─ ─ ─ ─ ─ ┼ ─ ─ ─ ─ ─ ─ ┼ ─ ─ ─ ┐┌ ─ ─ ─ ┼ ─ ─ ─ ─ ─ ─ ┼ ─ ─ ─ ─ ─ ─ ┼ ─ ─ ─ ─ ┐
-///   ┌───────┼─────────────┼─────────────┼───────┐┌───────┼─────────────┼─────────────┼───────┐
-/// │ │       │     IcebergD│taSource     │       ││       │     IcebergD│taSource     │       │ │
-///   │       │             │             │       ││       │             │             │       │
-/// │ │┌──────▼─────┐┌──────▼─────┐┌──────▼─────┐ ││┌──────▼─────┐┌──────▼─────┐┌──────▼─────┐ │ │
-///   ││Partition 0 ││Partition 1 ││Partition 2 │ │││Partition 0 ││Partition 1 ││Partition 2 │ │
-/// │ ││ArrowReader ││ArrowReader ││ArrowReader │ │││ArrowReader ││ArrowReader ││ArrowReader │ │ │
-///   │└──────┬─────┘└──────┬─────┘└──────┬─────┘ ││└──────┬─────┘└──────┬─────┘└──────┬─────┘ │
-/// │ │       │             │             │       ││       │             │             │       │ │
-///   │ .─────▼─────.       │       .─────▼─────. ││       │             ▼             ▼       │
-/// │ │( RecordBatch ).─────▼─────.( RecordBatch )││ .─────▼─────. .───────────. .───────────. │ │
-///   │ `─────┬─────'( RecordBatch ).───────────. ││( RecordBatch ( RecordBatch ) RecordBatch )│
-/// │ │       │       `─────┬─────'( RecordBatch )││ `─────┬─────' `───────────' `─────┬─────' │ │
-///   │       │             │       `───────────' ││       │      ( RecordBatch )      │       │
-/// │ │       │             │             │       ││       │       `─────┬─────'       │       │ │
-///   └───────┼─────────────┼─────────────┼───────┘└───────┼─────────────┼─────────────┼───────┘
-/// │         ▼             ▼             ▼       ││       ▼             ▼             ▼         │
-///  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─
-/// ```
-///
-/// This distributed mechanism is transparent to this [DataSource].
+/// Reads Iceberg file tasks through one reader. Eager scans own an immutable
+/// assignment in [`ScanInput::AssignedFiles`]; lazy scans use a work-unit feed.
 #[derive(Debug, Clone)]
 pub struct IcebergDataSource {
     pub(crate) schema: SchemaRef,
@@ -137,7 +53,7 @@ pub struct IcebergDataSource {
     pub(crate) table_snapshot: Option<SnapshotRef>,
     pub(crate) iceberg_file_io: FileIO,
     pub(crate) iceberg_runtime: iceberg::Runtime,
-    pub(crate) feed: WorkUnitFeed<IcebergWorkUnitFeed>,
+    pub(crate) input: ScanInput,
 }
 
 /// Optional fields for building an [IcebergDataSource].
@@ -184,15 +100,14 @@ impl IcebergDataSource {
             iceberg_runtime: opts
                 .iceberg_runtime
                 .unwrap_or_else(iceberg::Runtime::current),
-            feed: WorkUnitFeed::new(IcebergWorkUnitFeed {
+            input: ScanInput::WorkUnitFeed(Box::new(WorkUnitFeed::new(IcebergWorkUnitFeed {
                 iceberg_table: table,
                 snapshot_id: opts.snapshot_id,
                 projection,
                 predicates,
                 partitioning,
-                planned: None,
                 sync_manager: Default::default(),
-            }),
+            }))),
             table_snapshot,
             column_stats: None,
         }
@@ -207,28 +122,44 @@ impl IcebergDataSource {
             );
         }
         if config.eager_file_planning
-            && let Some(feed) = self.feed.inner_mut()
+            && let Some(feed) = self.feed().and_then(WorkUnitFeed::inner)
         {
-            feed.prepare_files(&self.iceberg_runtime, context).await?;
+            let scan = feed.table_scan()?;
+            let may_filter_rows = feed.predicates.is_some();
+            let (_cancel_on_drop, canceled) = oneshot::channel::<()>();
+            let task = self.iceberg_runtime.io().spawn(async move {
+                tokio::select! {
+                    _ = canceled => exec_err!("Iceberg file planning canceled"),
+                    result = PlannedFiles::collect(scan, &context, may_filter_rows) => result,
+                }
+            });
+            let planned = Arc::new(task.await.map_err(df_err)??);
+            let mut assignments = AssignedFiles::assign(
+                planned,
+                1,
+                self.partitioning.partition_count(),
+                config.greedy_file_assignment,
+            )?;
+            self.input = ScanInput::AssignedFiles(assignments.remove(0));
         }
         Ok(self)
     }
 
     /// Returns locally retained file work, if available; an empty scan is still Some.
-    fn planned_files(&self) -> Option<&PlannedFiles> {
-        self.feed.inner()?.planned.as_deref()
+    fn planned_files(&self) -> Option<&Arc<PlannedFiles>> {
+        self.assigned_files().map(|files| &files.planned)
     }
 
     pub(crate) fn planned_file_count(&self) -> Option<usize> {
-        self.planned_files().map(|planned| planned.tasks().len())
+        self.assigned_files().map(|files| files.iter().count())
     }
 
     /// Whole-file I/O used for scan parallelism, independent of projected column sizes.
     pub(crate) fn file_scan_bytes(&self) -> Option<usize> {
-        self.feed.inner()?;
-        if let Some(planned) = self.planned_files() {
-            return Some(planned.bytes());
+        if let Some(files) = self.assigned_files() {
+            return Some(files.bytes());
         }
+        self.feed()?.inner()?;
         match &self.table_snapshot {
             Some(snapshot) => snapshot
                 .summary()
@@ -259,7 +190,7 @@ impl IcebergDataSource {
                 .collect(),
             None => fields.to_vec(),
         };
-        let planned = self.feed.inner().and_then(|feed| feed.planned.clone());
+        let planned = self.planned_files().cloned();
         let snapshot = self.table_snapshot.clone();
         let (_cancel_on_drop, canceled) = oneshot::channel::<()>();
         let task = self.iceberg_runtime.io().spawn(async move {
@@ -282,10 +213,25 @@ impl IcebergDataSource {
 }
 
 impl IcebergDataSource {
-    /// Returns the [WorkUnitFeed] implementation that feeds this
-    /// DataSource with [iceberg::scan::FileScanTask] messages.
-    pub fn feed(&self) -> &WorkUnitFeed<IcebergWorkUnitFeed> {
-        &self.feed
+    /// Input work used by this scan, available to routing before worker placement.
+    pub fn input(&self) -> &ScanInput {
+        &self.input
+    }
+
+    /// Files owned by this scan, grouped by local partition. Lazy scans return None.
+    pub fn assigned_files(&self) -> Option<&AssignedFiles> {
+        match &self.input {
+            ScanInput::AssignedFiles(files) => Some(files),
+            ScanInput::WorkUnitFeed(_) => None,
+        }
+    }
+
+    /// Work-unit feed for lazy scans. Eager scans deliver their assigned files in the plan.
+    pub fn feed(&self) -> Option<&WorkUnitFeed<IcebergWorkUnitFeed>> {
+        match &self.input {
+            ScanInput::AssignedFiles(_) => None,
+            ScanInput::WorkUnitFeed(feed) => Some(feed),
+        }
     }
 }
 
@@ -312,14 +258,21 @@ impl DataSource for IcebergDataSource {
                 .with_row_selection_enabled(config.row_selection_enabled)
                 .build();
 
-        let feed = self
-            .feed
-            .feed(partition, context)?
-            .map(|work_unit_or_err| match work_unit_or_err {
-                Ok(work_unit) => work_unit.into_task().map_err(iceberg_err),
-                Err(err) => Err(iceberg_err(err)),
-            })
-            .boxed();
+        let feed: FileScanTaskStream = match &self.input {
+            ScanInput::AssignedFiles(files) => {
+                // Clone only descriptors owned by this partition as the reader polls.
+                let files = files.clone();
+                let count = files.partition(partition)?.len();
+                // Retain the assignment without borrowing the source in a 'static stream.
+                futures::stream::iter(0..count)
+                    .map(move |offset| Ok(files.task(partition, offset).clone()))
+                    .boxed()
+            }
+            ScanInput::WorkUnitFeed(feed) => feed
+                .feed(partition, context)?
+                .map(|unit| unit.and_then(|unit| unit.into_task()).map_err(iceberg_err))
+                .boxed(),
+        };
 
         let stream = reader
             .read(feed)
@@ -339,20 +292,19 @@ impl DataSource for IcebergDataSource {
 
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "format=iceberg")?;
-        let Some(feed) = self.feed.inner() else {
-            return Ok(());
-        };
-        if let Some(projection) = &feed.projection {
-            write!(f, ", projection=[{}]", projection.join(", "))?;
+        if let Some(feed) = self.feed().and_then(WorkUnitFeed::inner) {
+            if let Some(projection) = &feed.projection {
+                write!(f, ", projection=[{}]", projection.join(", "))?;
+            }
+            if let Some(predicate) = &feed.predicates {
+                write!(f, ", predicate={predicate}")?;
+            }
         }
-        if let Some(predicate) = &feed.predicates {
-            write!(f, ", predicate={predicate}")?;
-        }
-        if let Some(planned) = self.planned_files() {
+        if let Some(planned) = self.assigned_files() {
             write!(
                 f,
                 ", planned_files={}, planned_bytes={}",
-                planned.tasks().len(),
+                planned.len(),
                 planned.bytes()
             )?;
         }
@@ -371,20 +323,20 @@ impl DataSource for IcebergDataSource {
     }
 
     fn partition_statistics(&self, _partition: Option<usize>) -> Result<Arc<Statistics>> {
-        if self.feed.inner().is_none() {
+        if self.feed().is_some_and(|feed| feed.inner().is_none()) {
             return Ok(Arc::new(Statistics::new_unknown(&self.schema)));
         }
-        let planned = self.planned_files();
+        let planned = self.assigned_files();
         let mut stats = if let Some(planned) = planned {
             let mut stats = Statistics::new_unknown(&self.schema);
             stats.num_rows = match planned.rows() {
-                Some(0) if planned.tasks().is_empty() => Precision::Exact(0),
-                Some(rows) if !planned.may_filter_rows() => Precision::Exact(rows),
+                Some(0) if planned.is_empty() => Precision::Exact(0),
+                Some(rows) if !planned.planned.may_filter_rows() => Precision::Exact(rows),
                 Some(rows) => Precision::Inexact(rows),
                 None => Precision::Absent,
             };
             // File bytes describe scan IO, not the exact size of the filtered output.
-            stats.total_byte_size = if planned.may_filter_rows() {
+            stats.total_byte_size = if planned.planned.may_filter_rows() {
                 Precision::Inexact(planned.bytes())
             } else {
                 Precision::Exact(planned.bytes())
