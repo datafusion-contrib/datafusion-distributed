@@ -12,6 +12,12 @@ members = [
 datafusion = { version = "55", default-features = false }
 datafusion-proto = { version = "55", default-features = false }
 
+# Draft: retain file column metrics using apache/iceberg-rust#3424.
+# Patch transitive dependencies too so iceberg-datafusion shares these types.
+[patch."https://github.com/apache/iceberg-rust"]
+iceberg = { git = "https://github.com/anuragmantri/iceberg-rust", rev = "fe1bf907ab0a7b041a26526120221e0c6e1ca8cd" }
+iceberg-storage-opendal = { git = "https://github.com/anuragmantri/iceberg-rust", rev = "fe1bf907ab0a7b041a26526120221e0c6e1ca8cd" }
+
 [package]
 name = "datafusion-distributed"
 version = "4.0.0"

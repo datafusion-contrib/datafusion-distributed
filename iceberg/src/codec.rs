@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::common::{Result, internal_err};
+use datafusion::common::{Result, exec_datafusion_err, internal_err};
+use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
@@ -16,10 +17,19 @@ use iceberg::io::{FileIOBuilder, StorageFactory};
 use iceberg_storage_opendal::OpenDalResolvingStorageFactory;
 use prost::Message;
 
+use crate::file_source::populate_group_statistics;
+use crate::planned_files::PlannedFiles;
 use crate::proto::generated::iceberg as pb;
+use crate::{IcebergConfig, IcebergFileSource, IcebergFileTask};
 use crate::{IcebergDataSource, IcebergWorkUnitFeed};
+use datafusion::datasource::physical_plan::{FileGroup, FileScanConfig};
+use datafusion_proto::physical_plan::from_proto::{
+    parse_protobuf_file_scan_config, parse_table_schema_from_proto,
+};
+use datafusion_proto::physical_plan::to_proto::serialize_file_scan_config;
 
-/// Physical plan codec for [`IcebergDataSource`].
+/// Physical plan codec for lazy [`IcebergDataSource`] scans and eager
+/// [`FileScanConfig`] scans using [`IcebergFileSource`].
 #[derive(Debug, Clone)]
 pub struct IcebergCodec {
     storage_factory: Arc<dyn StorageFactory>,
@@ -65,6 +75,81 @@ impl PhysicalExtensionCodec for IcebergCodec {
 
         let proto = pb::IcebergDataSource::decode(buf)
             .map_err(|error| proto_error(format!("failed to decode IcebergDataSource: {error}")))?;
+        if let Some(eager) = proto.eager {
+            if proto.feed.is_some()
+                || proto.schema.is_some()
+                || proto.partitioning.is_some()
+                || proto.fetch.is_some()
+            {
+                return internal_err!("Eager Iceberg scan cannot contain lazy scan fields");
+            }
+            let config = eager
+                .config
+                .ok_or_else(|| proto_error("Missing eager Iceberg FileScanConfig"))?;
+            let schema = parse_table_schema_from_proto(&config)?;
+            let tasks = eager
+                .tasks
+                .iter()
+                .map(|bytes| {
+                    rmp_serde::from_slice(bytes)
+                        .map_err(|error| exec_datafusion_err!("Invalid Iceberg file task: {error}"))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let planned = Arc::new(PlannedFiles::from_tasks(tasks, ctx, eager.may_filter_rows)?);
+            let options = IcebergConfig {
+                row_group_filtering_enabled: eager.row_group_filtering_enabled,
+                row_selection_enabled: eager.row_selection_enabled,
+                data_file_concurrency_limit: usize::try_from(eager.data_file_concurrency_limit)
+                    .map_err(|_| proto_error("Invalid Iceberg concurrency limit"))?,
+                ..Default::default()
+            };
+            let file_io = FileIOBuilder::new(Arc::clone(&self.storage_factory))
+                .with_props(proto.storage_properties)
+                .build();
+            let source = Arc::new(IcebergFileSource::new(
+                schema,
+                file_io,
+                self.iceberg_runtime.clone(),
+                options,
+            ));
+            let decode_ctx = PhysicalPlanDecodeContext::new(ctx, self);
+            let mut scan =
+                parse_protobuf_file_scan_config(&config, &decode_ctx, proto_converter, source)?;
+            let count = scan
+                .file_groups
+                .iter()
+                .map(|group| group.len())
+                .sum::<usize>();
+            if count != planned.tasks().len() || scan.file_groups.is_empty() {
+                return internal_err!("Iceberg file tasks do not match FileScanConfig groups");
+            }
+            let mut index = 0;
+            for group in &mut scan.file_groups {
+                let mut files = Vec::with_capacity(group.len());
+                for file in group.iter() {
+                    let task = IcebergFileTask {
+                        planned: Arc::clone(&planned),
+                        index,
+                    };
+                    // Paths are normalized by PartitionedFile, so compare against
+                    // the same conversion rather than the original absolute URI.
+                    let expected =
+                        PartitionedFile::new(task.task().data_file_path(), task.task().length());
+                    if file.object_meta.location != expected.object_meta.location
+                        || file.object_meta.size != expected.object_meta.size
+                        || file.range.is_some()
+                    {
+                        return internal_err!("Iceberg descriptor disagrees with its file entry");
+                    }
+                    files.push(file.clone().with_extension(task));
+                    index += 1;
+                }
+                *group = FileGroup::new(files);
+            }
+            let file_schema = Arc::clone(scan.file_schema());
+            populate_group_statistics(&mut scan.file_groups, &file_schema)?;
+            return Ok(DataSourceExec::from_data_source(scan));
+        }
         let schema = proto
             .schema
             .ok_or_else(|| proto_error("IcebergDataSource is missing its schema"))?;
@@ -116,12 +201,45 @@ impl PhysicalExtensionCodec for IcebergCodec {
                 node.name()
             );
         };
+        if let Some(scan) = exec.data_source().downcast_ref::<FileScanConfig>() {
+            let Some(source) = scan.file_source.downcast_ref::<IcebergFileSource>() else {
+                return internal_err!("Expected an Iceberg file source");
+            };
+            let mut tasks = Vec::new();
+            let mut may_filter_rows = false;
+            for file in scan.file_groups.iter().flat_map(|group| group.iter()) {
+                let task = file
+                    .extension::<IcebergFileTask>()
+                    .ok_or_else(|| proto_error("Missing Iceberg file task"))?;
+                may_filter_rows |= task.planned.may_filter_rows();
+                tasks.push(rmp_serde::to_vec_named(task.task()).map_err(|error| {
+                    exec_datafusion_err!("Cannot encode Iceberg file task: {error}")
+                })?);
+            }
+            let proto = pb::IcebergDataSource {
+                storage_properties: source.file_io.config().props().clone(),
+                eager: Some(pb::EagerScan {
+                    config: Some(serialize_file_scan_config(scan, self, proto_converter)?),
+                    tasks,
+                    may_filter_rows,
+                    row_group_filtering_enabled: source.config.row_group_filtering_enabled,
+                    row_selection_enabled: source.config.row_selection_enabled,
+                    data_file_concurrency_limit: source.config.data_file_concurrency_limit as u64,
+                }),
+                ..Default::default()
+            };
+            proto.encode(buf).map_err(|error| {
+                proto_error(format!("Failed to encode Iceberg file scan: {error}"))
+            })?;
+            return Ok(());
+        }
         let Some(source) = exec.data_source().downcast_ref::<IcebergDataSource>() else {
             return internal_err!("expected DataSourceExec wrapping IcebergDataSource");
         };
 
         let feed = source.feed.to_proto();
         let proto = pb::IcebergDataSource {
+            eager: None,
             schema: Some(datafusion_proto::protobuf::Schema::try_from(
                 source.schema.as_ref(),
             )?),

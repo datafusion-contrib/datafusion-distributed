@@ -10,6 +10,7 @@ use iceberg_storage_opendal::OpenDalResolvingStorageFactory;
 
 use crate::codec::IcebergCodec;
 use crate::distributed_desired_task_count_handler::iceberg_desired_task_count;
+use crate::file_source::iceberg_scale_up;
 use crate::{IcebergConfig, IcebergDataSource, IcebergTableProviderFactory};
 
 /// Configuration required to register the Iceberg SQL integration.
@@ -121,6 +122,7 @@ fn set_iceberg_integration(state: &mut SessionState, options: IcebergIntegration
             options.iceberg_runtime,
         )),
     );
+    state.set_distributed_scale_up_leaf_node_handler(iceberg_scale_up);
     state.set_distributed_desired_task_count_handler(iceberg_desired_task_count);
     state.set_distributed_work_unit_feed(|plan: &DataSourceExec| {
         plan.data_source()
@@ -144,6 +146,7 @@ impl IcebergExt for SessionStateBuilder {
                 options.iceberg_runtime,
             )),
         );
+        self.set_distributed_scale_up_leaf_node_handler(iceberg_scale_up);
         self.set_distributed_desired_task_count_handler(iceberg_desired_task_count);
         self.set_distributed_work_unit_feed(|plan: &DataSourceExec| {
             plan.data_source()

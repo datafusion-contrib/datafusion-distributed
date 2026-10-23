@@ -35,20 +35,13 @@ while building each physical scan, then deliver those same tasks to the reader a
 execution. Retained metadata is charged to the query memory pool, without a
 file-count limit. Eager planning uses metadata I/O up front. Scan statistics and
 desired distributed task counts use selected file work instead of snapshot totals;
-reader settings and file assignment are unchanged. Both modes use the same dispatcher
-and partition channels. Eager execution explicitly copies retained file descriptors
-into owned work units; lazy execution moves newly discovered descriptors into them.
+eager tasks are embedded in `FileScanConfig` file groups. Lazy execution continues
+to discover and send file tasks through a work-unit feed.
 
 ```text
-Planning                          Execution
-Eager: discover → retain files ──→ copy descriptors ─┐
-Lazy:  retain scan definition ───→ discover files ──┤
-                                                  ▼
-                                   shared task-first dispatcher
-                                                  ↓
-                                         partition channels
-                                                  ↓
-                                      local or remote readers
+Planning                                  Execution
+Eager: discover → FileScanConfig groups → Iceberg file opener
+Lazy:  retain scan → discover + feed    → Iceberg stream reader
 ```
 
 Configure the session before creating the `SessionState`:
@@ -85,8 +78,12 @@ Snapshot distinct-count estimates are retained as an inexact fallback, capped by
 selected-file row counts when known. They are not recomputed for the selected
 files and can overestimate the filtered result. Sum statistics remain unknown.
 
-Another manifest pass is needed because the pinned Iceberg API does not retain
-column metrics in file tasks. Scan task counts continue to use whole-file bytes.
+The draft pins iceberg-rust PR #3424 and retains metrics during file planning;
+statistics require no second manifest pass. Eager planning builds `FileScanConfig`
+with `IcebergFileSource` directly, without an intermediate `IcebergDataSource` or
+work-unit feed. Each file carries statistics, which are aggregated again for its
+assigned local partition and distributed task. Snapshot NDV is only attached to
+the original scan. Scan task counts continue to use whole-file bytes.
 
 ```bash
 cargo test -p datafusion-distributed-iceberg --features integration
@@ -95,3 +92,37 @@ cargo test -p datafusion-distributed-iceberg --features integration
 Local TPC-H Iceberg benchmarks use the separate
 [`datafusion-distributed-iceberg-benchmarks`](benchmarks/README.md) package. This keeps benchmark
 preparation and execution dependencies out of this read-only integration crate.
+
+## Experimental eager file scans
+
+With `iceberg.eager_file_planning=true`, the table provider returns a
+`DataSourceExec` containing DataFusion's `FileScanConfig`. Each `PartitionedFile`
+has an `IcebergFileTask` extension containing the complete Iceberg read task:
+
+```text
+manifest planning + pruning
+  -> FileScanConfig.file_groups
+     -> PartitionedFile + IcebergFileTask
+  -> per-task FileScanConfig
+  -> routing inspects file_groups
+  -> codec preserves file groups and complete Iceberg tasks
+  -> IcebergFileSource opens each task with iceberg-rust
+```
+
+Routing can inspect `FileScanConfig.file_groups` directly, or read
+`file.extension::<IcebergFileTask>().map(IcebergFileTask::task)` for the original
+Iceberg URI and delete metadata. Round-robin and greedy assignment both preserve
+whole tasks; automatic byte-range splitting is disabled. Lazy scans continue to
+use `IcebergDataSource` and a coordinator work-unit feed.
+
+This prototype uses the standard file opener adapter. DataFusion schedules file
+opens; the Iceberg reader receives one task per open, so the existing
+`data_file_concurrency_limit` no longer controls concurrency across eager files.
+The opener uses Iceberg `FileIO`, not DataFusion's object store. Consequently the
+config uses the built-in local object-store URL as an unused placeholder; use the
+attached task's complete URI for storage-aware routing. These are deliberate
+limitations to evaluate before adopting this representation. Distributed
+assignment is synchronous because DFD's scale-up callback is synchronous; greedy
+assignment no longer yields between batches of metadata. Re-executing a physical
+file scan requires `ExecutionPlan::reset_state()`, as with other DataFusion file
+scans.

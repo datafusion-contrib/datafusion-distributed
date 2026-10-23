@@ -7,6 +7,7 @@ message IcebergDataSource {
   DataFusionPartitioning partitioning = 3;
   optional uint64 fetch = 4;
   map<string, string> storage_properties = 5;
+  EagerScan eager = 6; // Exclusive with the legacy lazy scan fields.
 }
 
 message WorkUnitFeed {
@@ -16,3 +17,14 @@ message WorkUnitFeed {
 // The generated Rust fields use DataFusion's canonical protobuf types.
 message DataFusionSchema {}
 message DataFusionPartitioning {}
+
+message EagerScan {
+  DataFusionFileScanConfig config = 1;
+  // One complete task per file entry, in file-group iteration order.
+  repeated bytes tasks = 2;
+  bool may_filter_rows = 3;
+  bool row_group_filtering_enabled = 4;
+  bool row_selection_enabled = 5;
+  uint64 data_file_concurrency_limit = 6;
+}
+message DataFusionFileScanConfig {}

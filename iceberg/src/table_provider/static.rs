@@ -2,18 +2,16 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::catalog::memory::DataSourceExec;
 use datafusion::catalog::{Session, TableProvider};
 use datafusion::common::{Result, exec_datafusion_err, plan_datafusion_err};
 use datafusion::datasource::TableType;
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown};
-use datafusion::physical_expr::Partitioning;
 use datafusion::physical_plan::ExecutionPlan;
 use iceberg::arrow::schema_to_arrow_schema;
 
+use super::ScanOptions;
+use super::plan_scan;
 use crate::common::df_err;
-use crate::data_source::IcebergDataSourceOptions;
-use crate::{IcebergConfig, IcebergDataSource};
 
 /// Static, read-only provider for a table or a specific snapshot.
 #[derive(Debug, Clone)]
@@ -81,26 +79,19 @@ impl TableProvider for IcebergStaticTableProvider {
                 "Snapshot {id} not found in table's metadata"
             ));
         }
-        let data_source = IcebergDataSource::new(
+        plan_scan(
             self.table.clone(),
             self.schema.clone(),
-            Partitioning::UnknownPartitioning(state.config().target_partitions()),
-            IcebergDataSourceOptions {
+            state,
+            ScanOptions {
                 snapshot_id: self.snapshot_id,
                 projection,
                 filters,
                 fetch: limit,
                 iceberg_runtime: Some(self.iceberg_runtime.clone()),
             },
-        );
-        let mut data_source = data_source.with_planned_files(state.task_ctx()).await?;
-        let iceberg_config = IcebergConfig::from_task_context(&state.task_ctx());
-        if iceberg_config.column_stats_enabled {
-            data_source = data_source
-                .with_column_statistics(self.table.clone(), projection.map(Vec::as_slice))
-                .await?;
-        }
-        Ok(DataSourceExec::from_data_source(data_source))
+        )
+        .await
     }
 
     fn supports_filters_pushdown(
