@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use datafusion::arrow::datatypes::{Schema, SchemaRef};
+use datafusion::common::stats::Precision;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{Result, Statistics, exec_datafusion_err, exec_err};
 use datafusion::datasource::listing::PartitionedFile;
@@ -7,8 +9,9 @@ use datafusion::datasource::physical_plan::{
     FileGroup, FileScanConfig, FileScanConfigBuilder, FileSource,
 };
 use datafusion::datasource::physical_plan::{FileOpenFuture, FileOpener};
-use datafusion::datasource::source::{DataSource, DataSourceExec};
+use datafusion::datasource::source::DataSourceExec;
 use datafusion::datasource::table_schema::TableSchema;
+use datafusion::execution::TaskContext;
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::object_store::ObjectStore;
 use datafusion::physical_expr::PhysicalExpr;
@@ -21,11 +24,16 @@ use futures::{FutureExt, StreamExt};
 use iceberg::arrow::ArrowReaderBuilder;
 use iceberg::io::FileIO;
 use iceberg::scan::FileScanTask;
+use iceberg::table::Table;
+use iceberg_datafusion::read::convert_filters_to_predicate;
+use tokio::sync::oneshot;
 
+use crate::IcebergConfig;
+use crate::column_statistics::{apply_snapshot_ndv, file_statistics, metric_columns};
 use crate::common::df_err;
 use crate::file_partitions::FilePartitions;
 use crate::planned_files::PlannedFiles;
-use crate::{IcebergConfig, IcebergDataSource};
+use crate::table_provider::ScanOptions;
 
 /// Iceberg metadata attached to a [`PartitionedFile`]. The descriptor and its
 /// memory reservation remain shared when the file is assigned to a task.
@@ -142,45 +150,97 @@ impl FileOpener for IcebergFileSource {
     }
 }
 
-impl IcebergDataSource {
-    /// Finish planning: eager scans become standard file scans; lazy scans retain their feed.
-    pub(crate) fn into_scan(self, config: IcebergConfig) -> Result<Arc<dyn ExecutionPlan>> {
-        let Some(planned) = self.planned.clone() else {
-            return Ok(DataSourceExec::from_data_source(self));
-        };
-        let statistics = self.partition_statistics(None)?.as_ref().clone();
-        let mut files = Vec::with_capacity(planned.tasks().len());
-        for (index, task) in planned.tasks().iter().enumerate() {
-            files.push(
-                PartitionedFile::new(task.data_file_path(), task.length()).with_extension(
-                    IcebergFileTask {
-                        planned: Arc::clone(&planned),
-                        index,
-                    },
-                ),
-            );
-        }
-        let groups = assign_files(
-            files,
-            1,
-            self.partitioning.partition_count(),
-            config.greedy_file_assignment,
-        )?;
-        let source = IcebergFileSource::new(
-            TableSchema::from(self.schema),
-            self.iceberg_file_io,
-            self.iceberg_runtime,
-            config,
-        );
-        // FileIO resolves Iceberg URIs itself. FileScanConfig still requires a
-        // registered store; the built-in local store is unused by this opener.
-        let scan = FileScanConfigBuilder::new(ObjectStoreUrl::local_filesystem(), Arc::new(source))
-            .with_file_groups(groups.into_iter().next().expect("one task"))
-            .with_statistics(statistics)
-            .with_limit(self.fetch)
-            .build();
-        Ok(DataSourceExec::from_data_source(scan))
+/// Plan an eager scan directly into DataFusion's file scan representation.
+pub(crate) async fn plan_scan(
+    table: Table,
+    schema: SchemaRef,
+    options: ScanOptions<'_>,
+    context: Arc<TaskContext>,
+    config: IcebergConfig,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let snapshot = match options.snapshot_id {
+        Some(id) => table.metadata().snapshot_by_id(id),
+        None => table.metadata().current_snapshot(),
     }
+    .cloned();
+    let iceberg_schema = match &snapshot {
+        Some(snapshot) if options.snapshot_id.is_some() => {
+            snapshot.schema(table.metadata()).map_err(df_err)?
+        }
+        _ => Arc::clone(table.metadata().current_schema()),
+    };
+    let fields = iceberg_schema.as_struct().fields();
+    let fields: Vec<_> = match options.projection {
+        Some(indices) => indices.iter().map(|&i| Arc::clone(&fields[i])).collect(),
+        None => fields.to_vec(),
+    };
+    let output_schema = match options.projection {
+        Some(indices) => Arc::new(schema.project(indices)?),
+        None => schema.clone(),
+    };
+    let mut builder = table.scan();
+    if let Some(id) = options.snapshot_id {
+        builder = builder.snapshot_id(id);
+    }
+    if let Some(indices) = options.projection {
+        builder = builder.select(indices.iter().map(|&i| schema.field(i).name()));
+    }
+    let predicate = convert_filters_to_predicate(options.filters);
+    let may_filter_rows = predicate.is_some();
+    if let Some(predicate) = predicate {
+        builder = builder.with_filter(predicate);
+    }
+    if config.column_stats_enabled {
+        builder = builder.with_column_stats(metric_columns(&iceberg_schema, &fields));
+    }
+    let scan = builder.build().map_err(df_err)?;
+    let runtime = options
+        .iceberg_runtime
+        .unwrap_or_else(iceberg::Runtime::current);
+    let partitions = context.session_config().target_partitions();
+    let (_cancel_on_drop, canceled) = oneshot::channel::<()>();
+    let task = runtime.io().spawn(async move {
+        tokio::select! {
+            _ = canceled => exec_err!("Iceberg file planning canceled"),
+            result = PlannedFiles::collect(scan, &context, may_filter_rows) => result,
+        }
+    });
+    let planned = Arc::new(task.await.map_err(df_err)??);
+    let mut files = Vec::with_capacity(planned.tasks().len());
+    for (index, task) in planned.tasks().iter().enumerate() {
+        files.push(
+            PartitionedFile::new(task.data_file_path(), task.length())
+                .with_statistics(Arc::new(file_statistics(
+                    task,
+                    &output_schema,
+                    &fields,
+                    may_filter_rows,
+                    config.column_stats_enabled,
+                )))
+                .with_extension(IcebergFileTask {
+                    planned: Arc::clone(&planned),
+                    index,
+                }),
+        );
+    }
+    let mut groups = assign_files(files, 1, partitions, config.greedy_file_assignment)?;
+    let mut statistics = populate_group_statistics(&mut groups[0], &output_schema)?;
+    if config.column_stats_enabled && !planned.tasks().is_empty() {
+        apply_snapshot_ndv(&mut statistics, &table, snapshot.as_ref(), &fields);
+    }
+    let source = IcebergFileSource::new(
+        TableSchema::from(output_schema),
+        table.file_io().clone(),
+        runtime,
+        config,
+    );
+    // FileIO resolves Iceberg URIs itself. The required registered store is unused.
+    let scan = FileScanConfigBuilder::new(ObjectStoreUrl::local_filesystem(), Arc::new(source))
+        .with_file_groups(groups.into_iter().next().expect("one task"))
+        .with_statistics(statistics)
+        .with_limit(options.fetch)
+        .build();
+    Ok(DataSourceExec::from_data_source(scan))
 }
 
 pub(crate) fn assign_files(
@@ -244,17 +304,18 @@ pub(crate) fn iceberg_scale_up(
             IcebergConfig::from_session_config(ev.session_config).greedy_file_assignment,
         )?;
         let mut variants = Vec::with_capacity(groups.len());
-        for groups in groups {
+        for mut groups in groups {
+            let statistics = populate_group_statistics(&mut groups, scan.file_schema())?;
             let source = IcebergFileSource {
                 metrics: Default::default(),
                 ..source.clone()
             };
-            // Whole-scan column aggregates do not describe this task's subset.
+            // Aggregate only the file entries assigned to this task.
             let mut template = scan.clone();
             template.file_source = Arc::new(source);
             let config = FileScanConfigBuilder::from(template)
                 .with_file_groups(groups)
-                .with_statistics(Statistics::new_unknown(scan.file_schema()))
+                .with_statistics(statistics)
                 .build();
             variants.push(DataSourceExec::from_data_source(config) as Arc<dyn ExecutionPlan>);
         }
@@ -262,4 +323,50 @@ pub(crate) fn iceberg_scale_up(
             DistributedLeafExec::try_new(Arc::clone(ev.plan), variants)?,
         )))
     })())
+}
+
+/// Keep file, local-partition and distributed-task statistics aligned after grouping.
+pub(crate) fn populate_group_statistics(
+    groups: &mut [FileGroup],
+    schema: &Schema,
+) -> Result<Statistics> {
+    for group in groups.iter_mut() {
+        let stats = aggregate_file_statistics(group.iter(), schema)?;
+        *group = group.clone().with_statistics(Arc::new(stats));
+    }
+    aggregate_file_statistics(groups.iter().flat_map(|group| group.iter()), schema)
+}
+
+fn aggregate_file_statistics<'a>(
+    mut files: impl Iterator<Item = &'a PartitionedFile>,
+    schema: &Schema,
+) -> Result<Statistics> {
+    let Some(first) = files.next() else {
+        let mut stats = Statistics::new_unknown(schema);
+        stats.num_rows = Precision::Exact(0);
+        stats.total_byte_size = Precision::Exact(0);
+        for column in &mut stats.column_statistics {
+            column.null_count = Precision::Exact(0);
+            column.distinct_count = Precision::Exact(0);
+            column.byte_size = Precision::Inexact(0);
+        }
+        return Ok(stats);
+    };
+    let unknown = Statistics::new_unknown(schema);
+    let mut stats = Statistics::try_merge_iter(
+        std::iter::once(first)
+            .chain(files)
+            .map(|file| file.statistics.as_deref().unwrap_or(&unknown)),
+        schema,
+    )?;
+    if let Some(bytes) = stats
+        .column_statistics
+        .iter()
+        .try_fold(0usize, |total, col| {
+            total.checked_add(*col.byte_size.get_value()?)
+        })
+    {
+        stats.total_byte_size = Precision::Inexact(bytes);
+    }
+    Ok(stats)
 }

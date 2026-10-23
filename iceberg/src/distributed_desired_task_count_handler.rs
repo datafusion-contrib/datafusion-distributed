@@ -27,7 +27,7 @@ pub fn iceberg_desired_task_count(
         (bytes, Some(count))
     } else {
         let node = source.downcast_ref::<IcebergDataSource>()?;
-        (node.file_scan_bytes()?, node.planned_file_count())
+        (node.file_scan_bytes()?, None)
     };
     let config = DistributedConfig::from_session_config(ev.session_config).ok()?;
 

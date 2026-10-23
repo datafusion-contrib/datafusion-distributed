@@ -4,9 +4,10 @@ mod tests {
 
     use async_trait::async_trait;
     use datafusion::common::Result;
+    use datafusion::common::stats::Precision;
     use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
     use datafusion::datasource::physical_plan::FileScanConfig;
-    use datafusion::datasource::source::DataSourceExec;
+    use datafusion::datasource::source::{DataSource, DataSourceExec};
     use datafusion::execution::TaskContext;
     use datafusion::physical_plan::{ExecutionPlan, collect};
     use datafusion_distributed::DistributedCodec;
@@ -140,6 +141,7 @@ mod tests {
             .configure_session(|state| {
                 let mut config = IcebergConfig::default();
                 config.eager_file_planning = eager;
+                config.column_stats_enabled = eager;
                 config.greedy_file_assignment = greedy;
                 state
                     .with_distributed_option_extension(config)
@@ -174,6 +176,30 @@ mod tests {
                     let decoded = proto.try_into_physical_plan(ev.task_ctx, &codec)?;
                     let restored = file_scan(&decoded).unwrap();
                     assert_eq!(scan.file_groups.len(), restored.file_groups.len());
+                    let rows: usize = scan
+                        .file_groups
+                        .iter()
+                        .flat_map(|group| group.iter())
+                        .map(|file| {
+                            file.extension::<IcebergFileTask>()
+                                .unwrap()
+                                .task()
+                                .record_count()
+                                .unwrap() as usize
+                        })
+                        .sum();
+                    let stats = scan.partition_statistics(None)?;
+                    assert_eq!(stats.num_rows.get_value(), Some(&rows));
+                    assert_eq!(
+                        stats.as_ref(),
+                        restored.partition_statistics(None)?.as_ref()
+                    );
+                    assert!(
+                        stats
+                            .column_statistics
+                            .iter()
+                            .all(|column| column.distinct_count == Precision::Absent)
+                    );
                     for (expected, actual) in scan.file_groups.iter().zip(&restored.file_groups) {
                         let tasks = |group: &datafusion::datasource::physical_plan::FileGroup| {
                             group

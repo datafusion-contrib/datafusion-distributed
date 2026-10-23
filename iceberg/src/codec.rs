@@ -17,6 +17,7 @@ use iceberg::io::{FileIOBuilder, StorageFactory};
 use iceberg_storage_opendal::OpenDalResolvingStorageFactory;
 use prost::Message;
 
+use crate::file_source::populate_group_statistics;
 use crate::planned_files::PlannedFiles;
 use crate::proto::generated::iceberg as pb;
 use crate::{IcebergConfig, IcebergFileSource, IcebergFileTask};
@@ -145,6 +146,8 @@ impl PhysicalExtensionCodec for IcebergCodec {
                 }
                 *group = FileGroup::new(files);
             }
+            let file_schema = Arc::clone(scan.file_schema());
+            populate_group_statistics(&mut scan.file_groups, &file_schema)?;
             return Ok(DataSourceExec::from_data_source(scan));
         }
         let schema = proto
@@ -174,7 +177,6 @@ impl PhysicalExtensionCodec for IcebergCodec {
             .build();
 
         Ok(DataSourceExec::from_data_source(IcebergDataSource {
-            planned: None,
             schema,
             partitioning,
             fetch,

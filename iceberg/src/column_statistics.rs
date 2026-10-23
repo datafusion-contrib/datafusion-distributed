@@ -1,11 +1,13 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
+use datafusion::arrow::datatypes::Schema;
 use datafusion::common::stats::Precision;
-use datafusion::common::{ColumnStatistics, Result, exec_err};
+use datafusion::common::{ColumnStatistics, Result, Statistics};
 use datafusion::error::DataFusionError;
 use datafusion::scalar::ScalarValue;
 use iceberg::puffin::APACHE_DATASKETCHES_THETA_V1;
+use iceberg::scan::FileScanTask;
 use iceberg::spec::{
     DataFile, Datum, ManifestContentType, ManifestList, NestedFieldRef, PrimitiveLiteral,
     PrimitiveType, SnapshotRef, Type,
@@ -13,112 +15,128 @@ use iceberg::spec::{
 use iceberg::table::Table;
 
 use crate::common::df_err;
-use crate::planned_files::PlannedFiles;
 
-/// Selected-file metrics, with snapshot NDV retained only as an inexact fallback.
-/// FileScanTask does not retain manifest metrics, so this requires a metadata-only
-/// second pass. Stop as soon as all selected files have been found.
-pub(crate) async fn selected_column_statistics(
+/// Snapshot sketches cannot be restricted to selected files. Keep their NDV
+/// only as an inexact scan-level estimate, capped by the selected row count.
+pub(crate) fn apply_snapshot_ndv(
+    statistics: &mut Statistics,
     table: &Table,
-    snapshot: &SnapshotRef,
+    snapshot: Option<&SnapshotRef>,
     fields: &[NestedFieldRef],
-    planned: &PlannedFiles,
-) -> Result<Vec<ColumnStatistics>> {
-    let files = planned.tasks();
-    if files.is_empty() || fields.is_empty() {
-        return Ok(vec![
-            ColumnStatistics {
-                null_count: Precision::Exact(0),
-                distinct_count: Precision::Exact(0),
-                byte_size: Precision::Inexact(0),
-                ..ColumnStatistics::new_unknown()
-            };
-            fields.len()
-        ]);
-    }
-    if files
-        .iter()
-        .any(|task| task.start() != 0 || task.length() != task.file_size_in_bytes())
-    {
-        // Full-file metrics cannot describe a byte-range task.
-        return Ok(vec![ColumnStatistics::new_unknown(); fields.len()]);
-    }
-    let mut remaining: HashSet<_> = files.iter().map(|task| task.data_file_path()).collect();
-    if remaining.len() != files.len() {
-        return exec_err!("Duplicate whole-file tasks in Iceberg column statistics lookup");
-    }
-    let field_ids: Vec<_> = fields
-        .iter()
-        .map(|field| {
-            let mut ids = vec![];
-            leaf_ids(field, &mut ids);
-            ids
-        })
-        .collect();
-    let mut statistics = vec![None; fields.len()];
-    let manifests = table
-        .manifest_list_reader(snapshot)
-        .load()
-        .await
-        .map_err(df_err)?;
-    for manifest in manifests
-        .entries()
-        .iter()
-        .filter(|manifest| manifest.content == ManifestContentType::Data)
-    {
-        let manifest = table
-            .manifest_reader()
-            .read(manifest)
-            .await
-            .map_err(df_err)?;
-        for entry in manifest.entries().iter().filter(|entry| entry.is_alive()) {
-            let file = entry.data_file();
-            if !remaining.remove(file.file_path()) {
-                continue;
-            }
-            for ((acc, field), ids) in statistics.iter_mut().zip(fields).zip(&field_ids) {
-                // Leaf metrics cannot describe a parent struct/list/map's value or null count.
-                let mut next = if matches!(field.field_type.as_ref(), Type::Primitive(_)) {
-                    data_file_col_stats(file, field.id)
-                } else {
-                    ColumnStatistics::new_unknown()
-                };
-                next.byte_size = ids
-                    .iter()
-                    .try_fold(0_usize, |total, id| {
-                        let size = usize::try_from(*file.column_sizes().get(id)?).ok()?;
-                        total.checked_add(size)
-                    })
-                    .map(Precision::Inexact)
-                    .unwrap_or(Precision::Absent);
-                *acc = Some(merge_col_stats(acc.take(), next));
-            }
-        }
-        if remaining.is_empty() {
-            break;
-        }
-    }
-    if !remaining.is_empty() {
-        return exec_err!("Planned Iceberg files missing from snapshot manifests");
-    }
+) {
+    let Some(snapshot) = snapshot else {
+        return;
+    };
     let ndvs = ndv_from_metadata(table, snapshot.snapshot_id());
-    Ok(statistics
-        .into_iter()
-        .zip(fields)
-        .map(|(stats, field)| {
-            let mut stats = stats.unwrap_or_else(ColumnStatistics::new_unknown);
-            if planned.may_filter_rows() {
-                stats.null_count = stats.null_count.to_inexact();
-            }
-            // Snapshot sketches cannot be restricted to selected files. Retain their
-            // estimate, capped by the selected rows, without claiming exactness.
-            if let Some(&ndv) = ndvs.get(&field.id) {
-                stats.distinct_count =
-                    Precision::Inexact(planned.rows().map_or(ndv, |rows| ndv.min(rows)));
-            }
-            stats
+    for (stats, field) in statistics.column_statistics.iter_mut().zip(fields) {
+        if let Some(&ndv) = ndvs.get(&field.id) {
+            stats.distinct_count = Precision::Inexact(
+                statistics
+                    .num_rows
+                    .get_value()
+                    .map_or(ndv, |rows| ndv.min(*rows)),
+            );
+        }
+    }
+}
+
+/// Statistics carried by one standard file entry, before assignment to workers.
+pub(crate) fn file_statistics(
+    task: &FileScanTask,
+    schema: &Schema,
+    fields: &[NestedFieldRef],
+    may_filter_rows: bool,
+    column_stats_enabled: bool,
+) -> Statistics {
+    let mut stats = Statistics::new_unknown(schema);
+    stats.total_byte_size = Precision::Exact(task.length() as usize);
+    if task.start() == 0 && task.length() == task.file_size_in_bytes() {
+        stats.num_rows = task
+            .record_count()
+            .and_then(|n| usize::try_from(n).ok())
+            .map(Precision::Exact)
+            .unwrap_or(Precision::Absent);
+        if column_stats_enabled {
+            stats.column_statistics = fields
+                .iter()
+                .map(|field| task_column_statistics(task, field))
+                .collect();
+        }
+    }
+    if may_filter_rows || !task.deletes().is_empty() {
+        stats.num_rows = stats.num_rows.to_inexact();
+        stats.total_byte_size = stats.total_byte_size.to_inexact();
+        for column in &mut stats.column_statistics {
+            column.null_count = column.null_count.to_inexact();
+        }
+    }
+    stats
+}
+
+fn task_column_statistics(task: &FileScanTask, field: &NestedFieldRef) -> ColumnStatistics {
+    let Some(metrics) = task.column_stats() else {
+        return ColumnStatistics::new_unknown();
+    };
+    let mut stats = ColumnStatistics::new_unknown();
+    if let Type::Primitive(_) = field.field_type.as_ref() {
+        stats.null_count = metrics
+            .null_value_counts()
+            .get(&field.id)
+            .and_then(|n| usize::try_from(*n).ok())
+            .map(Precision::Exact)
+            .unwrap_or(Precision::Absent);
+        // Bounds retain their manifest type. Promote to the scan schema's type
+        // before merging files written before and after schema evolution.
+        let bound = |datum: &Datum| {
+            datum
+                .clone()
+                .to(field.field_type.as_ref())
+                .ok()
+                .as_ref()
+                .and_then(datum_to_scalar)
+        };
+        stats.min_value = metrics
+            .lower_bounds()
+            .get(&field.id)
+            .and_then(bound)
+            .map(Precision::Inexact)
+            .unwrap_or(Precision::Absent);
+        stats.max_value = metrics
+            .upper_bounds()
+            .get(&field.id)
+            .and_then(bound)
+            .map(Precision::Inexact)
+            .unwrap_or(Precision::Absent);
+    }
+    let mut ids = Vec::new();
+    leaf_ids(field, &mut ids);
+    stats.byte_size = ids
+        .iter()
+        .try_fold(0usize, |total, id| {
+            total.checked_add(usize::try_from(*metrics.column_sizes().get(id)?).ok()?)
         })
-        .collect())
+        .map(Precision::Inexact)
+        .unwrap_or(Precision::Absent);
+    stats
+}
+
+/// Names of primitive leaves whose metrics contribute to the projected columns.
+pub(crate) fn metric_columns(
+    schema: &iceberg::spec::Schema,
+    fields: &[NestedFieldRef],
+) -> Vec<String> {
+    let mut ids = Vec::new();
+    for field in fields {
+        leaf_ids(field, &mut ids);
+    }
+    ids.into_iter()
+        .filter(|id| {
+            schema
+                .field_by_id(*id)
+                .is_some_and(|field| matches!(field.field_type.as_ref(), Type::Primitive(_)))
+        })
+        .filter_map(|id| schema.name_by_field_id(id).map(str::to_owned))
+        .collect()
 }
 
 fn leaf_ids(field: &NestedFieldRef, ids: &mut Vec<i32>) {

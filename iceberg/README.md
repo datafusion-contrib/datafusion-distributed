@@ -78,8 +78,12 @@ Snapshot distinct-count estimates are retained as an inexact fallback, capped by
 selected-file row counts when known. They are not recomputed for the selected
 files and can overestimate the filtered result. Sum statistics remain unknown.
 
-Another manifest pass is needed because the pinned Iceberg API does not retain
-column metrics in file tasks. Scan task counts continue to use whole-file bytes.
+The draft pins iceberg-rust PR #3424 and retains metrics during file planning;
+statistics require no second manifest pass. Eager planning builds `FileScanConfig`
+with `IcebergFileSource` directly, without an intermediate `IcebergDataSource` or
+work-unit feed. Each file carries statistics, which are aggregated again for its
+assigned local partition and distributed task. Snapshot NDV is only attached to
+the original scan. Scan task counts continue to use whole-file bytes.
 
 ```bash
 cargo test -p datafusion-distributed-iceberg --features integration

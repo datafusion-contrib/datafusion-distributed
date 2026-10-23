@@ -6,7 +6,8 @@ mod tests {
     use datafusion::common::stats::Precision;
     use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
     use datafusion::common::{ColumnStatistics, Statistics, internal_datafusion_err};
-    use datafusion::datasource::source::DataSourceExec;
+    use datafusion::datasource::physical_plan::FileScanConfig;
+    use datafusion::datasource::source::{DataSource, DataSourceExec};
     use datafusion::error::Result;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion::physical_plan::displayable;
@@ -17,7 +18,9 @@ mod tests {
         FIXTURE_URI, IcebergTestHarness, IcebergTestHarnessBuilder, empty_taxi_metadata_builder,
         taxi_metadata,
     };
-    use datafusion_distributed_iceberg::{IcebergConfig, IcebergExt};
+    use datafusion_distributed_iceberg::{
+        IcebergConfig, IcebergExt, IcebergFileSource, IcebergFileTask,
+    };
     use iceberg::puffin::APACHE_DATASKETCHES_THETA_V1;
     use iceberg::spec::{
         BlobMetadata, DataContentType, DataFileBuilder, DataFileFormat, Datum, Literal, Operation,
@@ -28,6 +31,48 @@ mod tests {
     const TAXI_ROWS: usize = 175_000;
     const TAXI_BYTES: usize = 4_480_382;
     const TAXI_COLUMNS: usize = 13;
+
+    #[tokio::test]
+    async fn eager_file_metrics_and_statistics_survive_transport() -> Result<(), Box<dyn Error>> {
+        let harness = harness_with_manifest_metrics(true).await?;
+        let original = harness.scan().await?;
+        let decoded = harness.roundtrip_plan(Arc::clone(&original))?;
+        for plan in [original, decoded] {
+            let exec = plan.downcast_ref::<DataSourceExec>().unwrap();
+            let scan = exec.data_source().downcast_ref::<FileScanConfig>().unwrap();
+            assert!(scan.file_source.is::<IcebergFileSource>());
+            let mut rows = 0;
+            for (partition, group) in scan.file_groups.iter().enumerate() {
+                let mut partition_rows = 0;
+                for file in group.iter() {
+                    let task = file.extension::<IcebergFileTask>().unwrap().task();
+                    assert!(task.column_stats().is_some());
+                    let stats = file.statistics.as_ref().unwrap();
+                    assert_eq!(
+                        stats.num_rows,
+                        Precision::Exact(task.record_count().unwrap() as usize)
+                    );
+                    assert!(
+                        stats
+                            .column_statistics
+                            .iter()
+                            .any(|column| column.byte_size.get_value().is_some())
+                    );
+                    partition_rows += task.record_count().unwrap() as usize;
+                }
+                assert_eq!(
+                    scan.partition_statistics(Some(partition))?.num_rows,
+                    Precision::Exact(partition_rows)
+                );
+                rows += partition_rows;
+            }
+            assert_eq!(
+                scan.partition_statistics(None)?.num_rows,
+                Precision::Exact(rows)
+            );
+        }
+        Ok(())
+    }
 
     #[tokio::test]
     async fn missing_snapshot_summary_statistics_are_absent() -> Result<()> {

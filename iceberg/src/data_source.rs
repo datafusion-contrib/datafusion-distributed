@@ -3,7 +3,7 @@ use std::sync::Arc;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::stats::Precision;
 use datafusion::common::tree_node::TreeNodeRecursion;
-use datafusion::common::{ColumnStatistics, Statistics, config_err, exec_err};
+use datafusion::common::{ColumnStatistics, Statistics, exec_err};
 use datafusion::config::ConfigOptions;
 use datafusion::datasource::source::DataSource;
 use datafusion::error::Result;
@@ -16,7 +16,6 @@ use datafusion::physical_plan::limit::LimitStream;
 use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{DisplayFormatType, SortOrderPushdownResult};
-use datafusion::prelude::Expr;
 use datafusion_distributed::WorkUnitFeed;
 use futures::{StreamExt, TryStreamExt};
 use iceberg::arrow::ArrowReaderBuilder;
@@ -26,10 +25,10 @@ use iceberg::table::Table;
 use iceberg_datafusion::read::convert_filters_to_predicate;
 use tokio::sync::oneshot;
 
+use crate::table_provider::ScanOptions;
+
 pub use crate::column_statistics::compute_column_stats;
-use crate::column_statistics::selected_column_statistics;
 use crate::common::{df_err, iceberg_err};
-use crate::planned_files::PlannedFiles;
 use crate::{IcebergConfig, IcebergWorkUnitFeed};
 
 /// Snapshot summary keys defined by the Iceberg table spec:
@@ -40,12 +39,9 @@ use crate::{IcebergConfig, IcebergWorkUnitFeed};
 const TOTAL_RECORDS: &str = "total-records";
 const TOTAL_FILE_SIZE: &str = "total-files-size";
 
-/// Feed-backed Iceberg scan used by lazy execution. During physical planning,
-/// eager discovery temporarily retains tasks here for statistics, then
-/// conversion builds a standard `FileScanConfig`.
+/// Feed-backed Iceberg scan used by lazy execution.
 #[derive(Debug, Clone)]
 pub struct IcebergDataSource {
-    pub(crate) planned: Option<Arc<PlannedFiles>>,
     pub(crate) schema: SchemaRef,
     pub(crate) partitioning: Partitioning,
     pub(crate) fetch: Option<usize>,
@@ -57,23 +53,13 @@ pub struct IcebergDataSource {
     pub(crate) feed: WorkUnitFeed<IcebergWorkUnitFeed>,
 }
 
-/// Optional fields for building an [IcebergDataSource].
-#[derive(Default, Clone)]
-pub(crate) struct IcebergDataSourceOptions<'a> {
-    pub(crate) snapshot_id: Option<i64>,
-    pub(crate) projection: Option<&'a Vec<usize>>,
-    pub(crate) fetch: Option<usize>,
-    pub(crate) filters: &'a [Expr],
-    pub(crate) iceberg_runtime: Option<iceberg::Runtime>,
-}
-
 impl IcebergDataSource {
     /// Creates a new [`IcebergDataSource`] object.
     pub(crate) fn new(
         table: iceberg::table::Table,
         schema: SchemaRef,
         partitioning: Partitioning,
-        opts: IcebergDataSourceOptions<'_>,
+        opts: ScanOptions<'_>,
     ) -> Self {
         let output_schema = match opts.projection {
             None => schema.clone(),
@@ -93,7 +79,6 @@ impl IcebergDataSource {
         let predicates = convert_filters_to_predicate(opts.filters);
 
         Self {
-            planned: None,
             schema: output_schema,
             iceberg_file_io: table.file_io().clone(),
             partitioning: partitioning.clone(),
@@ -115,46 +100,9 @@ impl IcebergDataSource {
         }
     }
 
-    /// Optionally retain selected file work for planning and execution.
-    pub(crate) async fn with_planned_files(mut self, context: Arc<TaskContext>) -> Result<Self> {
-        let config = IcebergConfig::from_task_context(&context);
-        if config.greedy_file_assignment && !config.eager_file_planning {
-            return config_err!(
-                "Iceberg greedy_file_assignment requires iceberg.eager_file_planning=true"
-            );
-        }
-        if config.eager_file_planning
-            && let Some(feed) = self.feed.inner()
-        {
-            let scan = feed.table_scan()?;
-            let may_filter_rows = feed.predicates.is_some();
-            let (_cancel_on_drop, canceled) = oneshot::channel::<()>();
-            let task = self.iceberg_runtime.io().spawn(async move {
-                tokio::select! {
-                    _ = canceled => exec_err!("Iceberg file planning canceled"),
-                    result = PlannedFiles::collect(scan, &context, may_filter_rows) => result,
-                }
-            });
-            self.planned = Some(Arc::new(task.await.map_err(df_err)??));
-        }
-        Ok(self)
-    }
-
-    /// Returns locally retained file work, if available; an empty scan is still Some.
-    fn planned_files(&self) -> Option<&PlannedFiles> {
-        self.planned.as_deref()
-    }
-
-    pub(crate) fn planned_file_count(&self) -> Option<usize> {
-        self.planned_files().map(|planned| planned.tasks().len())
-    }
-
     /// Whole-file I/O used for scan parallelism, independent of projected column sizes.
     pub(crate) fn file_scan_bytes(&self) -> Option<usize> {
         self.feed.inner()?;
-        if let Some(planned) = self.planned_files() {
-            return Some(planned.bytes());
-        }
         match &self.table_snapshot {
             Some(snapshot) => snapshot
                 .summary()
@@ -166,7 +114,7 @@ impl IcebergDataSource {
         }
     }
 
-    /// Aggregate selected-file metrics for eager scans, otherwise snapshot metrics.
+    /// Aggregate snapshot column metrics for lazy scans.
     pub(crate) async fn with_column_statistics(
         mut self,
         table: Table,
@@ -185,18 +133,12 @@ impl IcebergDataSource {
                 .collect(),
             None => fields.to_vec(),
         };
-        let planned = self.planned.clone();
         let snapshot = self.table_snapshot.clone();
         let (_cancel_on_drop, canceled) = oneshot::channel::<()>();
         let task = self.iceberg_runtime.io().spawn(async move {
             tokio::select! {
                 _ = canceled => exec_err!("Iceberg column statistics canceled"),
                 stats = async {
-                    if let Some(planned) = planned
-                        && let Some(snapshot) = &snapshot
-                    {
-                        return selected_column_statistics(&table, snapshot, &fields, &planned).await;
-                    }
                     let field_ids = fields.iter().map(|field| field.id).collect();
                     compute_column_stats(table, field_ids, snapshot).await
                 } => stats,
@@ -274,14 +216,6 @@ impl DataSource for IcebergDataSource {
         if let Some(predicate) = &feed.predicates {
             write!(f, ", predicate={predicate}")?;
         }
-        if let Some(planned) = self.planned_files() {
-            write!(
-                f,
-                ", planned_files={}, planned_bytes={}",
-                planned.tasks().len(),
-                planned.bytes()
-            )?;
-        }
         if let Some(fetch) = self.fetch {
             write!(f, ", fetch={fetch}")?;
         }
@@ -300,25 +234,7 @@ impl DataSource for IcebergDataSource {
         if self.feed.inner().is_none() {
             return Ok(Arc::new(Statistics::new_unknown(&self.schema)));
         }
-        let planned = self.planned_files();
-        let mut stats = if let Some(planned) = planned {
-            let mut stats = Statistics::new_unknown(&self.schema);
-            stats.num_rows = match planned.rows() {
-                Some(0) if planned.tasks().is_empty() => Precision::Exact(0),
-                Some(rows) if !planned.may_filter_rows() => Precision::Exact(rows),
-                Some(rows) => Precision::Inexact(rows),
-                None => Precision::Absent,
-            };
-            // File bytes describe scan IO, not the exact size of the filtered output.
-            stats.total_byte_size = if planned.may_filter_rows() {
-                Precision::Inexact(planned.bytes())
-            } else {
-                Precision::Exact(planned.bytes())
-            };
-            stats
-        } else {
-            stats_from_snapshot(self.table_snapshot.clone(), &self.schema)?
-        };
+        let mut stats = stats_from_snapshot(self.table_snapshot.clone(), &self.schema)?;
 
         if let Some(col_stats) = &self.column_stats {
             stats.column_statistics = col_stats.clone();
