@@ -163,6 +163,24 @@ Details: 8rem for search box etc*/
     width: auto;
 }
 
+/* Also handle the case where .blog-numbered-table is on a wrapper <div>
+   around a plain markdown table (so the markdown source renders cleanly in
+   a markdown preview, without MyST {table} directive syntax leaking through). */
+.bd-content div.blog-numbered-table {
+    display: block;
+    margin-inline: auto;
+    max-width: 100%;
+    text-align: center;
+    width: fit-content;
+}
+
+.bd-content div.blog-numbered-table table {
+    display: table;
+    margin-inline: auto;
+    text-align: left;
+    width: auto;
+}
+
 .bd-content .table-number {
     text-align: center;
 }
