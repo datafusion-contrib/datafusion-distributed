@@ -93,6 +93,7 @@ impl TableProvider for IcebergStaticTableProvider {
                 iceberg_runtime: Some(self.iceberg_runtime.clone()),
             },
         );
+        data_source = data_source.with_planned_files(state.task_ctx()).await?;
         let iceberg_config = IcebergConfig::from_task_context(&state.task_ctx());
         if iceberg_config.column_stats_enabled {
             data_source = data_source
