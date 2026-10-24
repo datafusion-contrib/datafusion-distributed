@@ -283,6 +283,7 @@ impl DataSource for IcebergDataSource {
         let Some(feed) = self.feed.inner() else {
             return Ok(());
         };
+        write!(f, ", table={}", feed.iceberg_table.identifier())?;
         if let Some(projection) = &feed.projection {
             write!(f, ", projection=[{}]", projection.join(", "))?;
         }
