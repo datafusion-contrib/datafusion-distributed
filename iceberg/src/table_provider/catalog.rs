@@ -3,18 +3,15 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::Session;
-use datafusion::datasource::source::DataSourceExec;
 use datafusion::datasource::{TableProvider, TableType};
 use datafusion::error::Result;
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown};
-use datafusion::physical_expr::Partitioning;
 use datafusion::physical_plan::ExecutionPlan;
 use iceberg::arrow::schema_to_arrow_schema;
 use iceberg::{Catalog, NamespaceIdent, TableIdent};
 
-use super::scan::IcebergDataSourceOptions;
+use super::scan::{IcebergDataSourceOptions, plan_scan};
 use crate::common::df_err;
-use crate::{IcebergConfig, IcebergDataSource};
 
 /// Catalog-backed, read-only table provider with automatic metadata refresh.
 ///
@@ -71,10 +68,9 @@ impl TableProvider for IcebergCatalogTableProvider {
             .load_table(&self.table_ident)
             .await
             .map_err(df_err)?;
-        let mut data_source = IcebergDataSource::new(
+        plan_scan(
             table.clone(),
             self.schema.clone(),
-            Partitioning::UnknownPartitioning(state.config().target_partitions()),
             IcebergDataSourceOptions {
                 snapshot_id: None,
                 projection,
@@ -82,15 +78,9 @@ impl TableProvider for IcebergCatalogTableProvider {
                 fetch: limit,
                 iceberg_runtime: Some(self.iceberg_runtime.clone()),
             },
-        );
-        let iceberg_config = IcebergConfig::from_task_context(&state.task_ctx());
-        if iceberg_config.column_stats_enabled {
-            data_source = data_source
-                .with_column_statistics(table, projection)
-                .await?;
-        }
-
-        Ok(DataSourceExec::from_data_source(data_source))
+            state.task_ctx(),
+        )
+        .await
     }
 
     fn supports_filters_pushdown(

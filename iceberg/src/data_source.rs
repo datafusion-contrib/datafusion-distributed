@@ -1,9 +1,6 @@
-use crate::column_statistics::compute_column_stats;
 use crate::scan::{ScanConfig, stats_from_snapshot};
-use crate::table_provider::scan::IcebergDataSourceOptions;
 use std::sync::Arc;
 
-use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{ColumnStatistics, Statistics};
 use datafusion::config::ConfigOptions;
@@ -19,11 +16,9 @@ use datafusion::physical_plan::{DisplayFormatType, SortOrderPushdownResult};
 use datafusion_distributed::WorkUnitFeed;
 use futures::StreamExt;
 use iceberg::spec::SnapshotRef;
-use iceberg::table::Table;
-use iceberg_datafusion::read::convert_filters_to_predicate;
 
 use crate::IcebergWorkUnitFeed;
-use crate::common::{df_err, iceberg_err};
+use crate::common::iceberg_err;
 
 /// Consumes a stream of [iceberg::scan::FileScanTask]s per partition and reads the underlying
 /// files into an Arrow stream.
@@ -118,78 +113,6 @@ pub struct IcebergDataSource {
     pub(crate) column_stats: Option<Vec<ColumnStatistics>>,
     pub(crate) table_snapshot: Option<SnapshotRef>,
     pub(crate) feed: WorkUnitFeed<IcebergWorkUnitFeed>,
-}
-
-impl IcebergDataSource {
-    /// Creates a new [`IcebergDataSource`] object.
-    pub(crate) fn new(
-        table: iceberg::table::Table,
-        schema: SchemaRef,
-        partitioning: Partitioning,
-        opts: IcebergDataSourceOptions<'_>,
-    ) -> Self {
-        let output_schema = match opts.projection {
-            None => schema.clone(),
-            Some(projection) => Arc::new(schema.project(projection).unwrap()),
-        };
-        let projection = opts.projection.map(|v| {
-            v.iter()
-                .map(|p| schema.field(*p).name().clone())
-                .collect::<Vec<String>>()
-        });
-        // Necessary for time-travel queries
-        let table_snapshot = match opts.snapshot_id {
-            Some(snapshot_id) => table.metadata().snapshot_by_id(snapshot_id),
-            None => table.metadata().current_snapshot(),
-        }
-        .cloned();
-        let predicates = convert_filters_to_predicate(opts.filters);
-
-        Self {
-            scan: ScanConfig {
-                schema: output_schema,
-                iceberg_file_io: table.file_io().clone(),
-                partitioning: partitioning.clone(),
-                fetch: opts.fetch,
-                metrics: ExecutionPlanMetricsSet::new(),
-                iceberg_runtime: opts
-                    .iceberg_runtime
-                    .unwrap_or_else(iceberg::Runtime::current),
-            },
-            feed: WorkUnitFeed::new(IcebergWorkUnitFeed {
-                iceberg_table: table,
-                snapshot_id: opts.snapshot_id,
-                projection,
-                predicates,
-                partitioning,
-                sync_manager: Default::default(),
-            }),
-            table_snapshot,
-            column_stats: None,
-        }
-    }
-
-    /// Creating an instance with per column statistics calculation, including:
-    /// - null_count, min_value, max_value, byte_size
-    pub(crate) async fn with_column_statistics(
-        mut self,
-        table: Table,
-        projection: Option<&Vec<usize>>,
-    ) -> Result<Self> {
-        let schema = match &self.table_snapshot {
-            Some(snap) => snap.schema(table.metadata()).map_err(df_err)?,
-            // empty table
-            None => table.metadata().current_schema().clone(),
-        };
-        let fields = schema.as_struct().fields().to_vec();
-        let field_ids: Vec<i32> = match projection {
-            Some(projection) => projection.iter().map(|&idx| fields[idx].id).collect(),
-            None => fields.iter().map(|f| f.id).collect(),
-        };
-        self.column_stats =
-            Some(compute_column_stats(table, field_ids, self.table_snapshot.clone()).await?);
-        Ok(self)
-    }
 }
 
 impl IcebergDataSource {
