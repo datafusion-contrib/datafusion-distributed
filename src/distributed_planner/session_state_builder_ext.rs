@@ -42,14 +42,21 @@ pub fn inject_distributed_extensions(cfg: &mut SessionConfig) {
         .optimizer
         .enable_physical_uncorrelated_scalar_subquery = false;
 
+    // Add default event handlers for FileScanConfig nodes.
     DesiredTaskCountHandlers::push_builtin(cfg, Arc::new(file_scan_config_desired_task_count));
     ScaleUpLeafNodeHandlers::push_builtin(cfg, Arc::new(file_scan_config_scale_up_leaf_node));
 
+    // Add default routing event handlers:
     RouteTaskHandlers::extend_builtin(
         cfg,
         vec![
+            // 1. If there's a single task to route, place it in the coordinator if it can also act as
+            //    a worker.
             Arc::new(SingleTaskCoordinatorRouteTaskHandler),
+            // 2. If there's a single task to route, and it cannot be placed in the coordinator,
+            //    co-locate it in one of the workers from the stage below to avoid network transfers.
             Arc::new(SingleTaskChildUrlRouteTaskHandler),
+            // 3. If everything above fails, just place randomly.
             Arc::new(RandomRouteTaskHandler),
         ],
     );
