@@ -17,10 +17,11 @@ pub struct Cost {
     pub network: Precision<usize>,
 }
 
-/// Information supplied when a stage is built during dynamic planning.
+/// Information supplied when a stage is built during distributed planning.
 #[derive(Clone)]
 pub struct StageBuiltEvent<'a> {
-    /// Estimated cost of the original stage plan, up to network boundaries.
+    /// Estimated cost of the original stage plan, up to network boundaries. Only estimated when
+    /// planning with dynamic task counts, otherwise all the costs are absent.
     pub cost: Cost,
     /// Stage plan before task-count propagation and runtime sampling.
     pub plan: Arc<dyn ExecutionPlan>,
@@ -55,14 +56,14 @@ impl StageBuiltEventResponse {
         self
     }
 
-    /// Adds metrics to display at the stage boundary.
+    /// Sets the metrics to display at the stage boundary.
     pub fn with_metrics(mut self, metrics_set: MetricsSet) -> Self {
         self.metrics = metrics_set;
         self
     }
 }
 
-/// Handles a stage built during dynamic planning.
+/// Handles a stage built during distributed planning.
 ///
 /// Custom handlers run in registration order, followed by built-in handlers. Each receives the
 /// previous handler's plan; task-count annotations are merged and metrics are accumulated.
