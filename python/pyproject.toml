@@ -19,7 +19,7 @@ dev = [
 [tool.maturin]
 features = ["pyo3/extension-module"]
 python-source = "."
-module-name = "datafusion_distributed._internal"
+module-name = "datafusion_distributed._native"
 
 [tool.uv]
 # Editable installs still contain a compiled extension. Rebuild it when either

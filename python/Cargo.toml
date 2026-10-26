@@ -23,5 +23,5 @@ url = "2.5.7"
 pyo3-build-config = "0.29"
 
 [lib]
-name = "_internal"
+name = "_native"
 crate-type = ["cdylib", "rlib"]
