@@ -1,5 +1,6 @@
+use crate::common::assign_files;
+use crate::common::df_err;
 use crate::common::scan_config::ScanConfig;
-use crate::common::{df_err, file_partition};
 use crate::eager::planned_files::PlannedFiles;
 use crate::table_provider::column_statistics::compute_column_stats;
 use crate::{EagerIcebergDataSource, IcebergConfig, IcebergWorkUnitFeed, LazyIcebergDataSource};
@@ -114,10 +115,9 @@ pub(crate) async fn plan_scan(
         if let Some(column_stats) = column_stats {
             statistics.column_statistics = column_stats;
         }
-        let mut partitions = vec![Vec::new(); partitioning.partition_count()];
-        for index in 0..planned.tasks().len() {
-            partitions[file_partition(index, 1, partitioning.partition_count())].push(index);
-        }
+        let partitions = assign_files(planned.tasks().iter(), 1, partitioning.partition_count())?
+            .pop()
+            .expect("one task was assigned");
         return Ok(DataSourceExec::from_data_source(EagerIcebergDataSource {
             scan,
             statistics: Arc::new(statistics),

@@ -1,0 +1,8 @@
+---
+source: iceberg/tests/file_assignment.rs
+expression: assignments(&plan)?
+---
+task 0, partition 0: [file-0.parquet (10 bytes)]
+task 0, partition 1: [file-2.parquet (10 bytes)]
+task 1, partition 0: [file-1.parquet (10 bytes)]
+task 1, partition 1: [file-3.parquet (10 bytes)]

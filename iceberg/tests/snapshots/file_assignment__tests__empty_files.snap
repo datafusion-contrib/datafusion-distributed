@@ -1,0 +1,6 @@
+---
+source: iceberg/tests/file_assignment.rs
+expression: assignments(&empty.scan().await?)?
+---
+task 0, partition 0: []
+task 0, partition 1: []
