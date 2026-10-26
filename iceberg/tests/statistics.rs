@@ -11,7 +11,8 @@ mod tests {
     use datafusion::scalar::ScalarValue;
     use datafusion_distributed_iceberg::IcebergExt;
     use datafusion_distributed_iceberg::test_utils::{
-        FIXTURE_URI, IcebergTestHarness, empty_taxi_metadata_builder, taxi_metadata,
+        FIXTURE_URI, IcebergTestHarness, IcebergTestHarnessBuilder, empty_taxi_metadata_builder,
+        taxi_metadata,
     };
     use iceberg::io::{MemoryStorage, Storage};
     use iceberg::spec::{
@@ -34,6 +35,53 @@ mod tests {
 
         assert_eq!(stats.num_rows, Precision::Absent);
         assert_eq!(stats.total_byte_size, Precision::Absent);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn planned_file_statistics_use_manifest_totals_when_snapshot_summary_is_missing()
+    -> Result<()> {
+        let harness = IcebergTestHarness::builder()
+            .with_table_metadata(metadata_without_summary_statistics())
+            .configure_iceberg(|config| config.eager_file_planning = true)
+            .build()
+            .await?;
+        let stats = query_statistics(&harness, "SELECT * FROM taxi").await?;
+        assert_eq!(stats.num_rows, Precision::Exact(TAXI_ROWS));
+        assert_eq!(stats.total_byte_size, Precision::Exact(TAXI_BYTES));
+
+        let filtered = query_statistics(
+            &harness,
+            "SELECT pickup_date FROM taxi WHERE pickup_date = DATE '2024-01-10'",
+        )
+        .await?;
+        assert!(matches!(filtered.num_rows, Precision::Inexact(_)));
+        assert!(matches!(filtered.total_byte_size, Precision::Inexact(_)));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn eager_filtered_scan_skips_unused_column_statistics() -> Result<(), Box<dyn Error>> {
+        // The manifest's partition summary excludes this query. Poison its contents
+        // so a redundant whole-snapshot column-statistics read fails the test.
+        let harness = manifest_metrics_builder()
+            .await?
+            .with_file(
+                format!("{FIXTURE_URI}/metadata/column-metrics.avro"),
+                vec![],
+            )
+            .configure_iceberg(|config| {
+                config.eager_file_planning = true;
+                config.column_stats_enabled = true;
+            })
+            .build()
+            .await?;
+        let stats = query_statistics(
+            &harness,
+            "SELECT * FROM taxi WHERE pickup_date = DATE '1900-01-01'",
+        )
+        .await?;
+        assert_eq!(stats.num_rows, Precision::Exact(0));
         Ok(())
     }
 
@@ -253,6 +301,14 @@ mod tests {
     async fn harness_with_manifest_metrics(
         enabled: bool,
     ) -> Result<IcebergTestHarness, Box<dyn Error>> {
+        Ok(manifest_metrics_builder()
+            .await?
+            .configure_session(|state| Ok(state.with_iceberg_column_stats_enabled(enabled)))?
+            .build()
+            .await?)
+    }
+
+    async fn manifest_metrics_builder() -> Result<IcebergTestHarnessBuilder, Box<dyn Error>> {
         let metadata = taxi_metadata();
         let snapshot = metadata.current_snapshot().expect("taxi has a snapshot");
         let storage = MemoryStorage::new();
@@ -309,9 +365,6 @@ mod tests {
                 storage.read(snapshot.manifest_list()).await?.to_vec(),
             )
             .with_table_option("iceberg.snapshot_id", snapshot.snapshot_id().to_string())
-            .with_table_metadata(metadata)
-            .configure_session(|state| Ok(state.with_iceberg_column_stats_enabled(enabled)))?
-            .build()
-            .await?)
+            .with_table_metadata(metadata))
     }
 }

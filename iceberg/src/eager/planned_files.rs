@@ -1,6 +1,8 @@
 use std::mem::{size_of, size_of_val};
 
-use datafusion::common::Result;
+use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::common::stats::Precision;
+use datafusion::common::{Result, Statistics};
 use datafusion::execution::TaskContext;
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use futures::TryStreamExt;
@@ -19,6 +21,29 @@ pub(crate) struct PlannedFiles {
 impl PlannedFiles {
     pub(crate) fn tasks(&self) -> &[FileScanTask] {
         &self.tasks
+    }
+
+    /// Summarize selected file work; predicates and deletes can reduce output rows.
+    pub(crate) fn statistics(&self, schema: &SchemaRef, may_filter_rows: bool) -> Statistics {
+        let bytes = self.tasks.iter().fold(0usize, |bytes, task| {
+            bytes.saturating_add(task.length() as usize)
+        });
+        let rows = self.tasks.iter().try_fold(0usize, |rows, task| {
+            rows.checked_add(usize::try_from(task.record_count()?).ok()?)
+        });
+        let mut statistics = Statistics::new_unknown(schema);
+        statistics.num_rows = match rows {
+            Some(0) if self.tasks.is_empty() => Precision::Exact(0),
+            Some(rows) if !may_filter_rows => Precision::Exact(rows),
+            Some(rows) => Precision::Inexact(rows),
+            None => Precision::Absent,
+        };
+        statistics.total_byte_size = if may_filter_rows {
+            Precision::Inexact(bytes)
+        } else {
+            Precision::Exact(bytes)
+        };
+        statistics
     }
 
     fn new(context: &TaskContext) -> Self {
