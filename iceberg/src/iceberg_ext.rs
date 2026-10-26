@@ -8,8 +8,10 @@ use delegate::delegate;
 use iceberg::io::StorageFactory;
 use iceberg_storage_opendal::OpenDalResolvingStorageFactory;
 
+use crate::assigned_codec::AssignedIcebergCodec;
 use crate::codec::IcebergCodec;
 use crate::distributed_desired_task_count_handler::iceberg_desired_task_count;
+use crate::distributed_scale_up_handler::iceberg_scale_up;
 use crate::{IcebergConfig, IcebergDataSource, IcebergTableProviderFactory};
 
 /// Configuration required to register the Iceberg SQL integration.
@@ -114,6 +116,10 @@ fn set_iceberg_integration(state: &mut SessionState, options: IcebergIntegration
         Arc::clone(&options.storage_factory),
         options.iceberg_runtime.clone(),
     );
+    let assigned_codec = AssignedIcebergCodec::new(
+        Arc::clone(&options.storage_factory),
+        options.iceberg_runtime.clone(),
+    );
     state.table_factories_mut().insert(
         TABLE_FACTORY_IDENTIFIER.to_string(),
         Arc::new(IcebergTableProviderFactory::new_with_runtime(
@@ -122,18 +128,25 @@ fn set_iceberg_integration(state: &mut SessionState, options: IcebergIntegration
         )),
     );
     state.set_distributed_desired_task_count_handler(iceberg_desired_task_count);
+    // Assigned sources specialize their file groups; only lazy sources register feeds.
+    state.set_distributed_scale_up_leaf_node_handler(iceberg_scale_up);
     state.set_distributed_work_unit_feed(|plan: &DataSourceExec| {
         plan.data_source()
             .downcast_ref::<IcebergDataSource>()
             .map(IcebergDataSource::feed)
     });
     state.set_distributed_user_codec(codec);
+    state.set_distributed_user_codec(assigned_codec);
 }
 
 impl IcebergExt for SessionStateBuilder {
     fn set_iceberg_integration(&mut self, options: IcebergIntegrationOptions) {
         iceberg_config_mut(self.config().get_or_insert_default());
         let codec = IcebergCodec::new(
+            Arc::clone(&options.storage_factory),
+            options.iceberg_runtime.clone(),
+        );
+        let assigned_codec = AssignedIcebergCodec::new(
             Arc::clone(&options.storage_factory),
             options.iceberg_runtime.clone(),
         );
@@ -145,12 +158,15 @@ impl IcebergExt for SessionStateBuilder {
             )),
         );
         self.set_distributed_desired_task_count_handler(iceberg_desired_task_count);
+        // Same hooks as SessionState, registered before the builder creates the state.
+        self.set_distributed_scale_up_leaf_node_handler(iceberg_scale_up);
         self.set_distributed_work_unit_feed(|plan: &DataSourceExec| {
             plan.data_source()
                 .downcast_ref::<IcebergDataSource>()
                 .map(IcebergDataSource::feed)
         });
         self.set_distributed_user_codec(codec);
+        self.set_distributed_user_codec(assigned_codec);
     }
 
     delegate! {

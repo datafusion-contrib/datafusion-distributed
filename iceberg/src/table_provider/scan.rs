@@ -1,9 +1,10 @@
 use crate::column_statistics::compute_column_stats;
-use crate::common::df_err;
-use crate::scan::ScanConfig;
-use crate::{IcebergConfig, IcebergDataSource, IcebergWorkUnitFeed};
+use crate::common::{df_err, file_partition};
+use crate::planned_files::PlannedFiles;
+use crate::scan::{ScanConfig, stats_from_snapshot};
+use crate::{AssignedIcebergDataSource, IcebergConfig, IcebergDataSource, IcebergWorkUnitFeed};
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::common::Result;
+use datafusion::common::{Result, config_err, exec_err};
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::Partitioning;
@@ -13,6 +14,7 @@ use datafusion_distributed::WorkUnitFeed;
 use iceberg::table::Table;
 use iceberg_datafusion::read::convert_filters_to_predicate;
 use std::sync::Arc;
+use tokio::sync::oneshot;
 
 /// Optional fields for building an [IcebergDataSource](crate::IcebergDataSource).
 #[derive(Default, Clone)]
@@ -73,6 +75,47 @@ pub(crate) async fn plan_scan(
     } else {
         None
     };
+    if IcebergConfig::from_task_context(&context).eager_file_planning {
+        if partitioning.partition_count() == 0 {
+            return config_err!("Iceberg scan requires at least one output partition");
+        }
+        let mut statistics = stats_from_snapshot(table_snapshot.clone(), &scan.schema)?;
+        if let Some(column_stats) = column_stats {
+            statistics.column_statistics = column_stats;
+        }
+        let mut builder = table.scan();
+        if let Some(snapshot_id) = opts.snapshot_id {
+            builder = builder.snapshot_id(snapshot_id);
+        }
+        if let Some(columns) = &projection {
+            builder = builder.select(columns);
+        }
+        if let Some(predicates) = predicates {
+            builder = builder.with_filter(predicates);
+        }
+        let table_scan = builder.build().map_err(df_err)?;
+        // File discovery runs on Iceberg's I/O runtime and is canceled if planning is dropped.
+        let (_cancel_on_drop, canceled) = oneshot::channel::<()>();
+        let task = scan.iceberg_runtime.io().spawn(async move {
+            tokio::select! {
+                _ = canceled => exec_err!("Iceberg scan planning canceled"),
+                planned = PlannedFiles::collect(table_scan, &context) => planned,
+            }
+        });
+        let planned = Arc::new(task.await.map_err(df_err)??);
+        let mut partitions = vec![Vec::new(); partitioning.partition_count()];
+        for index in 0..planned.tasks().len() {
+            partitions[file_partition(index, 1, partitioning.partition_count())].push(index);
+        }
+        return Ok(DataSourceExec::from_data_source(
+            AssignedIcebergDataSource {
+                scan,
+                statistics: Arc::new(statistics),
+                files: planned,
+                partitions: partitions.into(),
+            },
+        ));
+    }
     let feed = WorkUnitFeed::new(IcebergWorkUnitFeed {
         iceberg_table: table,
         snapshot_id: opts.snapshot_id,

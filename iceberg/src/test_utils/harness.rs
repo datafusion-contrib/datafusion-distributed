@@ -31,7 +31,7 @@ use iceberg::{Error, ErrorKind, Result as IcebergResult};
 use serde::{Deserialize, Serialize};
 
 use super::taxi_metadata;
-use crate::{IcebergExt, IcebergIntegrationOptions, iceberg_desired_task_count};
+use crate::{IcebergConfig, IcebergExt, IcebergIntegrationOptions, iceberg_desired_task_count};
 
 pub const FIXTURE_URI: &str = "s3://iceberg-test/warehouse/taxi";
 const WAREHOUSE_URI: &str = "s3://iceberg-test/warehouse/";
@@ -136,6 +136,15 @@ impl IcebergTestHarnessBuilder {
     ) -> Result<Self> {
         self.session_builder = configure(self.session_builder)?;
         Ok(self)
+    }
+
+    /// Customizes Iceberg settings while preserving other session options.
+    pub fn configure_iceberg(mut self, configure: impl FnOnce(&mut IcebergConfig)) -> Self {
+        let session = self.session_builder.config().get_or_insert_default();
+        let mut config = IcebergConfig::from_config_options(session.options());
+        configure(&mut config);
+        session.set_distributed_option_extension(config);
+        self
     }
 
     /// Serves the supplied metadata while reading data files from the taxi fixture.

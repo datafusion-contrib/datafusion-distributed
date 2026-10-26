@@ -6,41 +6,38 @@ mod tests {
 
     #[tokio::test]
     async fn pruned_files_use_distinct_workers_before_local_partitions() -> Result<()> {
-        assert_distribution(
-            4,
-            16,
-            "2024-01-11",
-            "output_rows={0:25.00 K, 1:25.00 K, 2:25.00 K, 3:25.00 K}",
-        )
-        .await
+        assert_distribution(4, 16, "2024-01-11", "lazy_pruned_files", false).await
+    }
+
+    #[tokio::test]
+    async fn planned_files_use_distinct_workers_before_local_partitions() -> Result<()> {
+        assert_distribution(4, 16, "2024-01-11", "eager_pruned_files", true).await
     }
 
     #[tokio::test]
     async fn files_wrap_across_workers_and_local_partitions() -> Result<()> {
-        assert_distribution(
-            3,
-            2,
-            "2024-01-14",
-            "output_rows={0:75.00 K, 1:50.00 K, 2:50.00 K}",
-        )
-        .await
+        for (eager, snapshot) in [
+            (false, "lazy_wrapping_files"),
+            (true, "eager_wrapping_files"),
+        ] {
+            assert_distribution(3, 2, "2024-01-14", snapshot, eager).await?;
+        }
+        Ok(())
     }
 
     async fn assert_distribution(
         workers: usize,
         partitions: usize,
         last_date: &str,
-        expected_rows: &str,
+        snapshot: &str,
+        eager_file_planning: bool,
     ) -> Result<()> {
         let harness = IcebergTestHarness::builder()
             .with_workers(workers)
+            .configure_iceberg(|config| config.eager_file_planning = eager_file_planning)
             .configure_session(|mut state| {
-                state
-                    .config()
-                    .get_or_insert_default()
-                    .options_mut()
-                    .execution
-                    .target_partitions = partitions;
+                let session = state.config().get_or_insert_default();
+                session.options_mut().execution.target_partitions = partitions;
                 state.with_distributed_file_scan_config_bytes_per_partition(1)
             })?
             .build()
@@ -51,11 +48,17 @@ mod tests {
              GROUP BY pickup_date ORDER BY pickup_date"
         );
         let (plan, results) = harness.query_with_metrics(&sql).await?;
-        let scan = plan
+        let scans = plan
             .lines()
-            .find(|line| line.contains("DataSourceExec: format=iceberg"))
-            .expect("query must execute an Iceberg scan");
-        assert!(scan.contains(expected_rows), "{plan}");
+            .filter(|line| line.contains("DataSourceExec: format=iceberg"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        // Keep each scan's per-task row counts; omit timing and unrelated metrics.
+        insta::with_settings!({
+            filters => [(r"(?m)^.*?(output_rows=\{[^}]*\}).*$", "$1")],
+        }, {
+            insta::assert_snapshot!(snapshot, scans);
+        });
         let (_, local_results) = IcebergTestHarness::new().await?.query(&sql).await?;
         assert_eq!(results, local_results);
         Ok(())

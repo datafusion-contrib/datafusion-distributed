@@ -16,3 +16,15 @@ message WorkUnitFeed {
 // The generated Rust fields use DataFusion's canonical protobuf types.
 message DataFusionSchema {}
 message DataFusionPartitioning {}
+
+message ScanConfig {
+  DataFusionSchema schema = 1;
+  DataFusionPartitioning partitioning = 2;
+  optional uint64 fetch = 3;
+  map<string, string> storage_properties = 4;
+}
+message AssignedScan {
+  ScanConfig config = 1;
+  repeated FileGroup partitions = 2;
+}
+message FileGroup { repeated bytes tasks = 1; }

@@ -1,22 +1,21 @@
 use std::num::NonZeroUsize;
 
 use datafusion::common::{Result, config_datafusion_err};
-use datafusion::datasource::source::{DataSource, DataSourceExec};
+use datafusion::datasource::source::DataSourceExec;
 use datafusion_distributed::{
     DesiredTaskCountEvent, DesiredTaskCountEventResponse, DistributedConfig,
 };
 
-use crate::IcebergDataSource;
+use crate::{AssignedIcebergDataSource, IcebergDataSource};
 
 /// Estimates scan parallelism from the selected Iceberg snapshot's total file size.
 pub fn iceberg_desired_task_count(
     ev: DesiredTaskCountEvent,
 ) -> Option<Result<DesiredTaskCountEventResponse>> {
-    let node = ev
-        .plan
-        .downcast_ref::<DataSourceExec>()?
-        .data_source()
-        .downcast_ref::<IcebergDataSource>()?;
+    let node = ev.plan.downcast_ref::<DataSourceExec>()?.data_source();
+    if !node.is::<IcebergDataSource>() && !node.is::<AssignedIcebergDataSource>() {
+        return None;
+    }
     let statistics = match node.partition_statistics(None) {
         Ok(statistics) => statistics,
         Err(error) => return Some(Err(error)),
