@@ -6,12 +6,14 @@
 //! integration. It deliberately contains no distributed execution adaptation
 //! and no production Iceberg write or commit implementation.
 
+mod column_statistics;
 mod common;
 mod config;
 mod data_source;
 mod distributed_desired_task_count_handler;
 mod iceberg_ext;
 mod proto;
+mod scan;
 mod table_provider;
 mod work_unit_feed;
 
