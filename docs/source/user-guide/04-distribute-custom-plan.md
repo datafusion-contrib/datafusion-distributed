@@ -129,6 +129,22 @@ What the return value means:
   `soft` as its soft task-count estimate. Use `DesiredTaskCountEventResponse::exactly_one()` for a
   node that must run in one task without contributing a soft estimate upstream. Incompatible exact
   requirements cause planning to fail.
+- `DesiredTaskCountEventResponse::min(n, soft)` — requires **at least** `n` tasks while retaining
+  `soft` as its soft task-count estimate. The planner may still choose more tasks.
+- `DesiredTaskCountEventResponse::max(n, soft)` — allows **at most** `n` tasks while retaining
+  `soft` as its soft task-count estimate. Use it for a source that can only serve a limited number
+  of concurrent readers. The planner may still choose fewer tasks.
+- `DesiredTaskCountEventResponse::try_range(min, max, soft)` — requires **between** `min` and `max`
+  tasks (inclusive). It returns an error if `min > max`, and is equivalent to `exact` when
+  `min == max`.
+
+Restrictions from different nodes in the same stage are combined: a stage with `min(2, ..)` on one
+node and `max(4, ..)` on another runs in 2 to 4 tasks. If the restrictions cannot all be satisfied,
+for example `min(4, ..)` and `max(2, ..)`, planning fails. Planning also fails if an exact or
+minimum requirement is larger than the number of available workers, whereas a maximum above that
+number has no effect. For isolated union children, each child's restriction bounds that child's
+share of the union's tasks.
+
 - `None` — defer to the other registered handlers (and finally the built-in
   file-scan handler).
 - `Some(Err(...))` — stop planning and return the error to the caller.

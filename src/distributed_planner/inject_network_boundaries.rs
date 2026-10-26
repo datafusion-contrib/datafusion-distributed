@@ -270,16 +270,19 @@ async fn _inject_network_boundaries(
             let child_count = nb_ctx.task_count(child)?;
             load += match child_count.restriction {
                 TaskCountRestriction::Exact(count) => child_count.soft.min(count.get() as f64),
-                _ => child_count.soft,
+                _ => child_count
+                    .get_max()
+                    .map_or(child_count.soft, |m| child_count.soft.min(m.get() as f64)),
             };
-            if let TaskCountRestriction::Exact(count) | TaskCountRestriction::Min(count) =
-                child_count.restriction
-            {
+            if let Some(count) = child_count.get_min() {
                 min = Some(min.map_or(count, |current| current.max(count)));
             }
         }
         // Exact children cannot use more tasks than their combined counts. A flexible child
         // can absorb additional tasks, so it leaves the upper bound unlimited.
+        //
+        // Max could be set as the sum of the child maxes, but we don't do that here to allow the
+        // union to potentially scale up to meet the needs of a larger sibling
         match min {
             Some(value) => TaskCountAnnotation::min(value, load),
             None => TaskCountAnnotation::soft(load),
@@ -347,12 +350,11 @@ async fn _inject_network_boundaries(
     )?;
     // Cap the reconciled task count by the configured max-per-stage budget.
     let max_tasks = nb_ctx.max_tasks()?;
-    if let TaskCountRestriction::Exact(count) | TaskCountRestriction::Min(count) =
-        task_count.restriction
-        && count.get() > max_tasks
+    if let Some(min) = task_count.get_min()
+        && max_tasks < min.get()
     {
         return plan_err!(
-            "Cannot assign a required task count of {count}, the max task slots available are {max_tasks}"
+            "Cannot assign a required task count of {min}, the max task slots available are {max_tasks}"
         );
     }
     task_count.soft = task_count.soft.min(max_tasks as f64);
