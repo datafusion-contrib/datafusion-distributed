@@ -17,7 +17,7 @@ use prost::{DecodeError, Message};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
-use crate::common::df_err;
+use crate::common::{df_err, file_partition};
 
 #[derive(Clone, PartialEq, prost::Message)]
 struct SerializedFileScanTask {
@@ -267,8 +267,7 @@ impl WorkUnitFeedProvider for IcebergWorkUnitFeed {
                 // This routing assumes UnknownPartitioning, not hash or range partitioning.
                 let mut i = 0;
                 while let Some(scan_task_or_err) = stream.next().await {
-                    let partition = (i % task_count) * partitions_per_task
-                        + (i / task_count) % partitions_per_task;
+                    let partition = file_partition(i, task_count, partitions_per_task);
                     let work_unit = scan_task_or_err
                         .map(FileScanTaskWorkUnit::new)
                         .map_err(df_err);
