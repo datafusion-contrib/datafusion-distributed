@@ -61,7 +61,7 @@ pub(super) async fn prepare_dynamic_plan(
                 plan,
                 mut metrics,
             } = StageBuiltHandlers::handle(ev)?;
-            let task_count = task_count.merge(propagated_task_count)?;
+            let task_count = nb_ctx.cap_task_count(task_count.merge(propagated_task_count)?)?;
 
             // Propagate the final task_count inferred based on runtime statistics and compute cost.
             // Here is where leaf nodes are scaled up by ScaleUpLeafNodeHandler, and the
