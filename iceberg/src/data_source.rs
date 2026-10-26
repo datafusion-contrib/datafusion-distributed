@@ -1,5 +1,6 @@
 use crate::column_statistics::compute_column_stats;
-use crate::scan::stats_from_snapshot;
+use crate::scan::{ScanConfig, stats_from_snapshot};
+use crate::table_provider::scan::IcebergDataSourceOptions;
 use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
@@ -13,21 +14,16 @@ use datafusion::physical_expr::projection::ProjectionExprs;
 use datafusion::physical_expr::{EquivalenceProperties, PhysicalExpr};
 use datafusion::physical_expr::{Partitioning, PhysicalSortExpr};
 use datafusion::physical_plan::filter_pushdown::{FilterPushdownPropagation, PushedDown};
-use datafusion::physical_plan::limit::LimitStream;
-use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet};
-use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
 use datafusion::physical_plan::{DisplayFormatType, SortOrderPushdownResult};
-use datafusion::prelude::Expr;
 use datafusion_distributed::WorkUnitFeed;
-use futures::{StreamExt, TryStreamExt};
-use iceberg::arrow::ArrowReaderBuilder;
-use iceberg::io::FileIO;
+use futures::StreamExt;
 use iceberg::spec::SnapshotRef;
 use iceberg::table::Table;
 use iceberg_datafusion::read::convert_filters_to_predicate;
 
+use crate::IcebergWorkUnitFeed;
 use crate::common::{df_err, iceberg_err};
-use crate::{IcebergConfig, IcebergWorkUnitFeed};
 
 /// Consumes a stream of [iceberg::scan::FileScanTask]s per partition and reads the underlying
 /// files into an Arrow stream.
@@ -118,25 +114,10 @@ use crate::{IcebergConfig, IcebergWorkUnitFeed};
 /// This distributed mechanism is transparent to this [DataSource].
 #[derive(Debug, Clone)]
 pub struct IcebergDataSource {
-    pub(crate) schema: SchemaRef,
-    pub(crate) partitioning: Partitioning,
-    pub(crate) fetch: Option<usize>,
-    pub(crate) metrics: ExecutionPlanMetricsSet,
+    pub(crate) scan: ScanConfig,
     pub(crate) column_stats: Option<Vec<ColumnStatistics>>,
     pub(crate) table_snapshot: Option<SnapshotRef>,
-    pub(crate) iceberg_file_io: FileIO,
-    pub(crate) iceberg_runtime: iceberg::Runtime,
     pub(crate) feed: WorkUnitFeed<IcebergWorkUnitFeed>,
-}
-
-/// Optional fields for building an [IcebergDataSource].
-#[derive(Default, Clone)]
-pub(crate) struct IcebergDataSourceOptions<'a> {
-    pub(crate) snapshot_id: Option<i64>,
-    pub(crate) projection: Option<&'a Vec<usize>>,
-    pub(crate) fetch: Option<usize>,
-    pub(crate) filters: &'a [Expr],
-    pub(crate) iceberg_runtime: Option<iceberg::Runtime>,
 }
 
 impl IcebergDataSource {
@@ -165,14 +146,16 @@ impl IcebergDataSource {
         let predicates = convert_filters_to_predicate(opts.filters);
 
         Self {
-            schema: output_schema,
-            iceberg_file_io: table.file_io().clone(),
-            partitioning: partitioning.clone(),
-            fetch: opts.fetch,
-            metrics: ExecutionPlanMetricsSet::new(),
-            iceberg_runtime: opts
-                .iceberg_runtime
-                .unwrap_or_else(iceberg::Runtime::current),
+            scan: ScanConfig {
+                schema: output_schema,
+                iceberg_file_io: table.file_io().clone(),
+                partitioning: partitioning.clone(),
+                fetch: opts.fetch,
+                metrics: ExecutionPlanMetricsSet::new(),
+                iceberg_runtime: opts
+                    .iceberg_runtime
+                    .unwrap_or_else(iceberg::Runtime::current),
+            },
             feed: WorkUnitFeed::new(IcebergWorkUnitFeed {
                 iceberg_table: table,
                 snapshot_id: opts.snapshot_id,
@@ -230,39 +213,15 @@ impl DataSource for IcebergDataSource {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        let config = IcebergConfig::from_task_context(&context);
-
-        let reader =
-            ArrowReaderBuilder::new(self.iceberg_file_io.clone(), self.iceberg_runtime.clone())
-                .with_batch_size(context.session_config().batch_size())
-                .with_data_file_concurrency_limit(config.data_file_concurrency_limit)
-                .with_row_group_filtering_enabled(config.row_group_filtering_enabled)
-                .with_row_selection_enabled(config.row_selection_enabled)
-                .build();
-
         let feed = self
             .feed
-            .feed(partition, context)?
+            .feed(partition, Arc::clone(&context))?
             .map(|work_unit_or_err| match work_unit_or_err {
                 Ok(work_unit) => work_unit.into_task().map_err(iceberg_err),
                 Err(err) => Err(iceberg_err(err)),
             })
             .boxed();
-
-        let stream = reader
-            .read(feed)
-            .map(|result| result.stream())
-            .map_err(df_err)?
-            .map_err(df_err);
-
-        let stream = Box::pin(RecordBatchStreamAdapter::new(
-            Arc::clone(&self.schema),
-            stream,
-        )) as SendableRecordBatchStream;
-
-        let metrics = BaselineMetrics::new(&self.metrics, partition);
-
-        Ok(Box::pin(LimitStream::new(stream, 0, self.fetch, metrics)))
+        self.scan.open(feed, partition, context)
     }
 
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -277,25 +236,25 @@ impl DataSource for IcebergDataSource {
         if let Some(predicate) = &feed.predicates {
             write!(f, ", predicate={predicate}")?;
         }
-        if let Some(fetch) = self.fetch {
+        if let Some(fetch) = self.scan.fetch {
             write!(f, ", fetch={fetch}")?;
         }
         Ok(())
     }
 
     fn output_partitioning(&self) -> Partitioning {
-        self.partitioning.clone()
+        self.scan.partitioning.clone()
     }
 
     fn eq_properties(&self) -> EquivalenceProperties {
-        EquivalenceProperties::new(Arc::clone(&self.schema))
+        EquivalenceProperties::new(Arc::clone(&self.scan.schema))
     }
 
     fn partition_statistics(&self, _partition: Option<usize>) -> Result<Arc<Statistics>> {
         if self.feed.inner().is_none() {
-            return Ok(Arc::new(Statistics::new_unknown(&self.schema)));
+            return Ok(Arc::new(Statistics::new_unknown(&self.scan.schema)));
         }
-        let mut stats = stats_from_snapshot(self.table_snapshot.clone(), &self.schema)?;
+        let mut stats = stats_from_snapshot(self.table_snapshot.clone(), &self.scan.schema)?;
 
         if let Some(col_stats) = &self.column_stats {
             stats.column_statistics = col_stats.clone();
@@ -306,12 +265,12 @@ impl DataSource for IcebergDataSource {
 
     fn with_fetch(&self, fetch: Option<usize>) -> Option<Arc<dyn DataSource>> {
         let mut self_clone = self.clone();
-        self_clone.fetch = fetch;
+        self_clone.scan.fetch = fetch;
         Some(Arc::new(self_clone))
     }
 
     fn fetch(&self) -> Option<usize> {
-        self.fetch
+        self.scan.fetch
     }
 
     fn try_swapping_with_projection(
@@ -322,7 +281,7 @@ impl DataSource for IcebergDataSource {
     }
 
     fn metrics(&self) -> ExecutionPlanMetricsSet {
-        self.metrics.clone()
+        self.scan.metrics.clone()
     }
 
     fn try_pushdown_filters(

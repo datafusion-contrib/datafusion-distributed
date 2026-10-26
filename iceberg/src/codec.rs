@@ -1,3 +1,4 @@
+use crate::scan::ScanConfig;
 use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
@@ -92,14 +93,16 @@ impl PhysicalExtensionCodec for IcebergCodec {
             .build();
 
         Ok(DataSourceExec::from_data_source(IcebergDataSource {
-            schema,
-            partitioning,
-            fetch,
-            metrics: Default::default(),
+            scan: ScanConfig {
+                schema,
+                partitioning,
+                fetch,
+                metrics: Default::default(),
+                iceberg_file_io,
+                iceberg_runtime: self.iceberg_runtime.clone(),
+            },
             column_stats: None,
             table_snapshot: None,
-            iceberg_file_io,
-            iceberg_runtime: self.iceberg_runtime.clone(),
             feed,
         }))
     }
@@ -123,16 +126,16 @@ impl PhysicalExtensionCodec for IcebergCodec {
         let feed = source.feed.to_proto();
         let proto = pb::IcebergDataSource {
             schema: Some(datafusion_proto::protobuf::Schema::try_from(
-                source.schema.as_ref(),
+                source.scan.schema.as_ref(),
             )?),
             feed: Some(pb::WorkUnitFeed { id: feed.id }),
             partitioning: Some(serialize_partitioning(
-                &source.partitioning,
+                &source.scan.partitioning,
                 self,
                 proto_converter,
             )?),
-            fetch: source.fetch.map(|value| value as u64),
-            storage_properties: source.iceberg_file_io.config().props().clone(),
+            fetch: source.scan.fetch.map(|value| value as u64),
+            storage_properties: source.scan.iceberg_file_io.config().props().clone(),
         };
         proto
             .encode(buf)
@@ -162,18 +165,18 @@ mod tests {
         let source = iceberg_source(&source_plan)?;
         let decoded = iceberg_source(&decoded_source_plan)?;
 
-        assert_eq!(source.schema, decoded.schema);
+        assert_eq!(source.scan.schema, decoded.scan.schema);
         assert_eq!(
-            source.partitioning.to_string(),
-            decoded.partitioning.to_string()
+            source.scan.partitioning.to_string(),
+            decoded.scan.partitioning.to_string()
         );
-        assert_eq!(source.fetch, decoded.fetch);
+        assert_eq!(source.scan.fetch, decoded.scan.fetch);
         assert_eq!(source.feed.to_proto(), decoded.feed.to_proto());
         assert_eq!(
-            source.iceberg_file_io.config().props(),
-            decoded.iceberg_file_io.config().props()
+            source.scan.iceberg_file_io.config().props(),
+            decoded.scan.iceberg_file_io.config().props()
         );
-        let properties = decoded.iceberg_file_io.config().props();
+        let properties = decoded.scan.iceberg_file_io.config().props();
         assert_eq!(
             properties.get("fixture.storage").map(String::as_str),
             Some("roundtrip's value")
@@ -184,7 +187,7 @@ mod tests {
         );
         assert_eq!(
             decoded.partition_statistics(None)?.as_ref(),
-            &Statistics::new_unknown(&decoded.schema)
+            &Statistics::new_unknown(&decoded.scan.schema)
         );
         Ok(())
     }

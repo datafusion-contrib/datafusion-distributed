@@ -1,7 +1,64 @@
+use crate::{IcebergConfig, common::df_err};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::stats::Precision;
-use datafusion::common::{ColumnStatistics, Result, Statistics};
+use datafusion::common::{ColumnStatistics, Statistics};
+use datafusion::error::Result;
+use datafusion::execution::{SendableRecordBatchStream, TaskContext};
+use datafusion::physical_expr::Partitioning;
+use datafusion::physical_plan::limit::LimitStream;
+use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet};
+use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+use futures::TryStreamExt;
+use iceberg::arrow::ArrowReaderBuilder;
+use iceberg::io::FileIO;
+use iceberg::scan::FileScanTaskStream;
 use iceberg::spec::SnapshotRef;
+use std::sync::Arc;
+
+/// Execution settings shared by assigned-file and feed-backed scans.
+#[derive(Debug, Clone)]
+pub(crate) struct ScanConfig {
+    pub(crate) schema: SchemaRef,
+    pub(crate) partitioning: Partitioning,
+    pub(crate) fetch: Option<usize>,
+    pub(crate) metrics: ExecutionPlanMetricsSet,
+    pub(crate) iceberg_file_io: FileIO,
+    pub(crate) iceberg_runtime: iceberg::Runtime,
+}
+
+impl ScanConfig {
+    pub(crate) fn open(
+        &self,
+        tasks: FileScanTaskStream,
+        partition: usize,
+        context: Arc<TaskContext>,
+    ) -> Result<SendableRecordBatchStream> {
+        let config = IcebergConfig::from_task_context(&context);
+
+        let reader =
+            ArrowReaderBuilder::new(self.iceberg_file_io.clone(), self.iceberg_runtime.clone())
+                .with_batch_size(context.session_config().batch_size())
+                .with_data_file_concurrency_limit(config.data_file_concurrency_limit)
+                .with_row_group_filtering_enabled(config.row_group_filtering_enabled)
+                .with_row_selection_enabled(config.row_selection_enabled)
+                .build();
+
+        let stream = reader
+            .read(tasks)
+            .map(|result| result.stream())
+            .map_err(df_err)?
+            .map_err(df_err);
+
+        let stream = Box::pin(RecordBatchStreamAdapter::new(
+            Arc::clone(&self.schema),
+            stream,
+        )) as SendableRecordBatchStream;
+
+        let metrics = BaselineMetrics::new(&self.metrics, partition);
+
+        Ok(Box::pin(LimitStream::new(stream, 0, self.fetch, metrics)))
+    }
+}
 
 /// Snapshot summary keys defined by the Iceberg table spec:
 /// https://iceberg.apache.org/spec/#optional-snapshot-summary-fields

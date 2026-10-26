@@ -12,8 +12,8 @@ use datafusion::physical_plan::ExecutionPlan;
 use iceberg::arrow::schema_to_arrow_schema;
 use iceberg::{Catalog, NamespaceIdent, TableIdent};
 
+use super::scan::IcebergDataSourceOptions;
 use crate::common::df_err;
-use crate::data_source::IcebergDataSourceOptions;
 use crate::{IcebergConfig, IcebergDataSource};
 
 /// Catalog-backed, read-only table provider with automatic metadata refresh.

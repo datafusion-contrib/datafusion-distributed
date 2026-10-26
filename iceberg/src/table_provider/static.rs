@@ -11,8 +11,8 @@ use datafusion::physical_expr::Partitioning;
 use datafusion::physical_plan::ExecutionPlan;
 use iceberg::arrow::schema_to_arrow_schema;
 
+use super::scan::IcebergDataSourceOptions;
 use crate::common::df_err;
-use crate::data_source::IcebergDataSourceOptions;
 use crate::{IcebergConfig, IcebergDataSource};
 
 /// Static, read-only provider for a table or a specific snapshot.
