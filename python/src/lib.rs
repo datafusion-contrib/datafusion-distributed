@@ -1,11 +1,13 @@
-//! Registration for the `datafusion_distributed._internal` native module.
+//! Registration for the `datafusion_distributed._native` native module.
 //!
 //! This extension links datafusion-python in order to own its distributed
 //! [`PySessionContext`](datafusion_python::context::PySessionContext). The installed
 //! `datafusion` wheel loads a different native extension, so even identically named
 //! PyO3 classes from the two modules have different Python type identities. Opaque
 //! values without a serialization or FFI protocol must be registered here and
-//! constructed through this package's Python wrappers.
+//! constructed through this package's Python wrappers. The pure-Python `_internal`
+//! module re-exports these symbols so the public package layout and type stubs do not
+//! expose the distinct native-module name.
 
 mod context;
 mod expression;
@@ -16,7 +18,7 @@ mod worker_resolver;
 use pyo3::prelude::*;
 
 // When adding new symbols exposed to python here, remember to update the _internal.pyi definitions.
-#[pymodule]
+#[pymodule(name = "_native")]
 fn _internal(m: &Bound<'_, PyModule>) -> PyResult<()> {
     pyo3_log::init();
 
