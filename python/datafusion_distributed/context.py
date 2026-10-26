@@ -48,8 +48,30 @@ class SessionConfig(DataFusionSessionConfig):
     def __init__(self, config_options: dict[str, str] | None = None) -> None:
         """Create a new :py:class:`SessionConfig` with the given configuration options.
 
+        Each entry is applied as though passed to :py:meth:`set`, so the same
+        keys are rejected. See :ref:`configuration`.
+
         Args:
-            config_options: Configuration options.
+            config_options: Options to apply, keyed by fully qualified name.
+
+        Raises:
+            ValueError: If a key names no known option, or a value does not
+                parse as that option's declared type. Which of several bad
+                entries is reported is not defined.
+
+        Example usage:
+
+        >>> from datafusion import SessionConfig, SessionContext
+        >>> ctx = SessionContext(SessionConfig())
+        >>> config = SessionConfig(
+        ...     config_options={"datafusion.execution.batch_size": "1024"}
+        ... )
+        >>> ctx = SessionContext(config.with_information_schema(True))
+        >>> ctx.sql(
+        ...     "select value from information_schema.df_settings"
+        ...     " where name = 'datafusion.execution.batch_size'"
+        ... ).collect()[0]["value"][0]
+        <pyarrow.StringScalar: '1024'>
         """
         # Calling the upstream constructor would allocate datafusion._internal's
         # distinct PySessionConfig, which the local PySessionContext cannot extract.
@@ -270,7 +292,8 @@ class DistributedSessionContext(SessionContext):
         every capsule has been validated, so a hook that raises leaves the
         session as it was. A hook that *mutates* the context it is handed —
         registering a table, say — is not rolled back, which is why bundle
-        objects must be configuration-only.
+        objects must be configuration-only. See
+        :ref:`extension_bundles_transaction`.
 
         Shares its session with this context — see :py:class:`SessionContext`.
 

@@ -6,7 +6,7 @@ build-backend = "maturin"
 name = "datafusion-distributed"
 requires-python = ">=3.10"
 dependencies = [
-  "datafusion @ git+https://github.com/apache/datafusion-python@59c1fd1e93705d982b5bb4e9ce37da60a467fff8",
+  "datafusion==55.0.0",
 ]
 dynamic = ["version"]
 
