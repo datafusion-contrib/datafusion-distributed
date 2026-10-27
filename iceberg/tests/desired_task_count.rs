@@ -1,7 +1,10 @@
 #[cfg(all(feature = "integration", test))]
 mod tests {
     use datafusion::common::Result;
+    use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
+    use datafusion::datasource::source::DataSourceExec;
     use datafusion_distributed::DistributedExt;
+    use datafusion_distributed_iceberg::EagerIcebergDataSource;
     use datafusion_distributed_iceberg::test_utils::{
         IcebergTestHarness, empty_taxi_metadata_builder, taxi_metadata,
     };
@@ -54,6 +57,37 @@ mod tests {
         | 2024-01-14  | 25000 |
         +-------------+-------+
         ");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn planned_scan_tasks_are_bounded_by_selected_file_work() -> Result<()> {
+        let harness = IcebergTestHarness::builder()
+            .configure_iceberg(|config| config.eager_file_planning = true)
+            .configure_session(|mut state| {
+                let session = state.config().get_or_insert_default();
+                session.options_mut().execution.target_partitions = 2;
+                state.with_distributed_file_scan_config_bytes_per_partition(1)
+            })?
+            .build()
+            .await?;
+        assert_eq!(
+            harness.estimate_task_count(&harness.scan().await?)?,
+            Some(7)
+        );
+        let plan = harness
+            .physical_plan("SELECT pickup_date FROM taxi WHERE pickup_date = DATE '2024-01-10'")
+            .await?;
+        let mut estimates = Vec::new();
+        plan.apply(|node| {
+            if let Some(exec) = node.downcast_ref::<DataSourceExec>()
+                && exec.data_source().is::<EagerIcebergDataSource>()
+            {
+                estimates.push(harness.estimate_task_count(node)?);
+            }
+            Ok(TreeNodeRecursion::Continue)
+        })?;
+        assert_eq!(estimates, vec![Some(1)]);
         Ok(())
     }
 

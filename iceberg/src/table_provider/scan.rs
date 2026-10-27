@@ -1,4 +1,4 @@
-use crate::common::scan_config::{ScanConfig, stats_from_snapshot};
+use crate::common::scan_config::ScanConfig;
 use crate::common::{df_err, file_partition};
 use crate::eager::planned_files::PlannedFiles;
 use crate::table_provider::column_statistics::compute_column_stats;
@@ -60,7 +60,41 @@ pub(crate) async fn plan_scan(
             .iceberg_runtime
             .unwrap_or_else(iceberg::Runtime::current),
     };
-    let column_stats = if IcebergConfig::from_task_context(&context).column_stats_enabled {
+    let planned = if IcebergConfig::from_task_context(&context).eager_file_planning {
+        if partitioning.partition_count() == 0 {
+            return config_err!("Iceberg scan requires at least one output partition");
+        }
+        let mut builder = table.scan();
+        if let Some(snapshot_id) = opts.snapshot_id {
+            builder = builder.snapshot_id(snapshot_id);
+        }
+        if let Some(columns) = &projection {
+            builder = builder.select(columns);
+        }
+        if let Some(predicates) = &predicates {
+            builder = builder.with_filter(predicates.clone());
+        }
+        let table_scan = builder.build().map_err(df_err)?;
+        // File discovery runs on Iceberg's I/O runtime and is canceled if planning is dropped.
+        let (_cancel_on_drop, canceled) = oneshot::channel::<()>();
+        let planning_context = Arc::clone(&context);
+        let task = scan.iceberg_runtime.io().spawn(async move {
+            tokio::select! {
+                _ = canceled => exec_err!("Iceberg scan planning canceled"),
+                planned = PlannedFiles::collect(table_scan, &planning_context) => planned,
+            }
+        });
+        Some(Arc::new(task.await.map_err(df_err)??))
+    } else {
+        None
+    };
+    let may_filter_rows = predicates.is_some()
+        || planned
+            .as_ref()
+            .is_some_and(|files| files.tasks().iter().any(|task| !task.deletes().is_empty()));
+    let column_stats = if IcebergConfig::from_task_context(&context).column_stats_enabled
+        && !(planned.is_some() && may_filter_rows)
+    {
         let schema = match &table_snapshot {
             Some(snap) => snap.schema(table.metadata()).map_err(df_err)?,
             // empty table
@@ -75,36 +109,11 @@ pub(crate) async fn plan_scan(
     } else {
         None
     };
-    if IcebergConfig::from_task_context(&context).eager_file_planning {
-        if partitioning.partition_count() == 0 {
-            return config_err!("Iceberg scan requires at least one output partition");
-        }
-        // TODO: derive eager statistics from selected files in PR #787:
-        // https://github.com/datafusion-contrib/datafusion-distributed/pull/787
-        let mut statistics = stats_from_snapshot(table_snapshot.clone(), &scan.schema)?;
+    if let Some(planned) = planned {
+        let mut statistics = planned.statistics(&scan.schema, may_filter_rows);
         if let Some(column_stats) = column_stats {
             statistics.column_statistics = column_stats;
         }
-        let mut builder = table.scan();
-        if let Some(snapshot_id) = opts.snapshot_id {
-            builder = builder.snapshot_id(snapshot_id);
-        }
-        if let Some(columns) = &projection {
-            builder = builder.select(columns);
-        }
-        if let Some(predicates) = predicates {
-            builder = builder.with_filter(predicates);
-        }
-        let table_scan = builder.build().map_err(df_err)?;
-        // File discovery runs on Iceberg's I/O runtime and is canceled if planning is dropped.
-        let (_cancel_on_drop, canceled) = oneshot::channel::<()>();
-        let task = scan.iceberg_runtime.io().spawn(async move {
-            tokio::select! {
-                _ = canceled => exec_err!("Iceberg scan planning canceled"),
-                planned = PlannedFiles::collect(table_scan, &context) => planned,
-            }
-        });
-        let planned = Arc::new(task.await.map_err(df_err)??);
         let mut partitions = vec![Vec::new(); partitioning.partition_count()];
         for index in 0..planned.tasks().len() {
             partitions[file_partition(index, 1, partitioning.partition_count())].push(index);

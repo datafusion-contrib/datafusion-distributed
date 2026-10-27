@@ -78,9 +78,12 @@ Iceberg's `FileIO` handles storage in both cases. Eager planning waits for metad
 discovery and increases worker-plan payloads; lazy scans overlap discovery with
 reading and deliver descriptors through the coordinator's feed.
 
-Both modes retain the existing snapshot statistics and task-size estimates.
-Selected-file task sizing, greedy assignment, and selected-file column statistics
-are separate changes. Task-local eager variants and decoded plans report unknown
+Eager scans derive row counts and bytes from selected files and cap task estimates
+by the number of selected files. Predicates or deletes make row counts inexact;
+empty selections have exactly zero rows. Whole-snapshot column statistics are
+skipped when they would describe a different row set. Lazy scans retain snapshot
+statistics and task-size estimates. Greedy assignment and selected-file column
+statistics are separate changes. Task-local eager variants and decoded plans report unknown
 statistics rather than applying whole-snapshot aggregates to a subset.
 
 ```bash

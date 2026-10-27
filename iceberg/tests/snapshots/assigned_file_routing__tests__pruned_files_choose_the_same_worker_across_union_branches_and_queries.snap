@@ -5,7 +5,7 @@ expression: output
 Date: 2024-01-08
 Task 0 -> http://url-1/
   s3://iceberg-test/warehouse/taxi/data/pickup_date=2024-01-08/data_0.parquet
-Task 2 -> http://url-1/
+Task 1 -> http://url-1/
   s3://iceberg-test/warehouse/taxi/data/pickup_date=2024-01-08/data_0.parquet
 +------+----------+
 | kind | count(*) |
@@ -16,7 +16,7 @@ Task 2 -> http://url-1/
 Date: 2024-01-09
 Task 0 -> http://url-2/
   s3://iceberg-test/warehouse/taxi/data/pickup_date=2024-01-09/data_0.parquet
-Task 2 -> http://url-2/
+Task 1 -> http://url-2/
   s3://iceberg-test/warehouse/taxi/data/pickup_date=2024-01-09/data_0.parquet
 +------+----------+
 | kind | count(*) |
@@ -27,7 +27,7 @@ Task 2 -> http://url-2/
 Date: 2024-01-08
 Task 0 -> http://url-1/
   s3://iceberg-test/warehouse/taxi/data/pickup_date=2024-01-08/data_0.parquet
-Task 2 -> http://url-1/
+Task 1 -> http://url-1/
   s3://iceberg-test/warehouse/taxi/data/pickup_date=2024-01-08/data_0.parquet
 +------+----------+
 | kind | count(*) |

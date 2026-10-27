@@ -8,7 +8,8 @@ use datafusion_distributed::{
 
 use crate::{EagerIcebergDataSource, LazyIcebergDataSource};
 
-/// Estimates scan parallelism from the selected Iceberg snapshot's total file size.
+/// Estimates scan parallelism from selected file bytes, bounded by available file work.
+/// Lazy scans continue to use snapshot totals.
 pub fn iceberg_desired_task_count(
     ev: DesiredTaskCountEvent,
 ) -> Option<Result<DesiredTaskCountEventResponse>> {
@@ -29,7 +30,14 @@ pub fn iceberg_desired_task_count(
             config.file_scan_config_bytes_per_partition,
             ev.session_config.target_partitions(),
         )
-        .map(DesiredTaskCountEventResponse::soft),
+        .map(|count| {
+            let count = node
+                .downcast_ref::<EagerIcebergDataSource>()
+                .map_or(count, |source| {
+                    count.min(source.planned_files().count() as f64)
+                });
+            DesiredTaskCountEventResponse::soft(count)
+        }),
     )
 }
 
