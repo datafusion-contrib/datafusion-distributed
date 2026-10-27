@@ -1,10 +1,10 @@
 use crate::common::{OnceLockResult, require_one_child};
-use crossbeam_queue::SegQueue;
 use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::runtime::SpawnedTask;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::{DataFusionError, Result};
-use datafusion::execution::memory_pool::MemoryConsumer;
+use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
@@ -12,11 +12,20 @@ use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties, internal_err,
 };
 use futures::{Stream, StreamExt};
+use std::collections::VecDeque;
 use std::fmt::Formatter;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context, Poll};
 use tokio_stream::wrappers::WatchStream;
+use tokio_util::sync::CancellationToken;
+
+/// Number of appended entries between two passes that evict the entries every broadcast reader
+/// has already read (see [QueueState]). Each pass scans all readers while holding the queue lock,
+/// so running it on every append would add work proportional to the number of consumer tasks to
+/// every batch. In exchange, an entry that every reader has already read can stay in memory for
+/// up to `RECLAIM_INTERVAL - 1` more appends before being evicted.
+const RECLAIM_INTERVAL: usize = 8;
 
 /// [ExecutionPlan] that scales up partitions for network broadcasting.
 ///
@@ -77,7 +86,9 @@ pub struct BroadcastExec {
     queues: Vec<OnceLockResult<StreamAndTask>>,
 }
 
-type StreamAndTask = (SegQueue<SendableRecordBatchStream>, Arc<SpawnedTask<()>>);
+type BroadcastMessage =
+    std::result::Result<(RecordBatch, Arc<MemoryReservation>), Arc<DataFusionError>>;
+type StreamAndTask = (BroadcastReaders<BroadcastMessage>, Arc<SpawnedTask<()>>);
 
 impl BroadcastExec {
     pub fn new(input: Arc<dyn ExecutionPlan>, consumer_task_count: usize) -> Self {
@@ -109,6 +120,18 @@ impl BroadcastExec {
 
     pub fn input(&self) -> &Arc<dyn ExecutionPlan> {
         &self.input
+    }
+}
+
+impl Drop for BroadcastExec {
+    fn drop(&mut self) {
+        // The last plan reference is gone, so its unclaimed virtual partitions cannot
+        // execute. Active streams may still hold their producer task and queue alive.
+        for queue in &self.queues {
+            if let Some(Ok((readers, _task))) = queue.get() {
+                readers.release_pending();
+            }
+        }
     }
 }
 
@@ -160,57 +183,61 @@ impl ExecutionPlan for BroadcastExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        let real_partition = partition % self.input_partition_count();
+        let input_partition_count = self.input_partition_count();
+        let real_partition = partition % input_partition_count;
+        let consumer_task = partition / input_partition_count;
 
         let input = Arc::clone(&self.input);
 
         let queue_or_err = self.queues[real_partition].get_or_init(|| {
-            let queue = BroadcastQueue::new();
-            let consumers = SegQueue::new();
-            for _ in 0..self.consumer_task_count {
-                consumers.push(Box::pin(RecordBatchStreamAdapter::new(
-                    self.schema(),
-                    queue.new_consumer().map(|msg| match msg {
-                        Ok((batch, _reservation)) => Ok(batch),
-                        Err(e) => Err(DataFusionError::Shared(e)),
-                    }),
-                )) as SendableRecordBatchStream);
-            }
+            let queue = BroadcastQueue::new(self.consumer_task_count);
+            let readers = queue.readers();
 
             let pool = Arc::clone(context.memory_pool());
             let mut stream = input.execute(real_partition, context).map_err(Arc::new)?;
+            let cancel = queue.shared.cancel.clone();
             let task = SpawnedTask::spawn(async move {
                 let mem_consumer = MemoryConsumer::new(format!("BroadcastExec[{real_partition}]"));
 
-                while let Some(msg) = stream.next().await {
+                loop {
+                    let msg = tokio::select! {
+                        _ = cancel.cancelled() => break,
+                        msg = stream.next() => msg,
+                    };
+                    let Some(msg) = msg else { break };
                     match msg {
                         Ok(record_batch) => {
                             let reservation = mem_consumer.clone_with_new_id().register(&pool);
                             reservation.grow(record_batch.get_array_memory_size());
-                            queue.push(Ok((record_batch, Arc::new(reservation))));
+                            if !queue.push(Ok((record_batch, Arc::new(reservation)))) {
+                                // If there are no remaining readers, short-circuit.
+                                break;
+                            }
                         }
                         Err(err) => {
-                            queue.push(Err(Arc::new(err)));
+                            let _ = queue.push(Err(Arc::new(err)));
                             break;
                         }
                     }
                 }
             });
 
-            Ok::<_, Arc<DataFusionError>>((consumers, Arc::new(task)))
+            Ok::<_, Arc<DataFusionError>>((readers, Arc::new(task)))
         });
         let (consumer, task) = match queue_or_err {
-            Ok((consumers, task)) => (consumers.pop(), Arc::clone(task)),
+            Ok((readers, task)) => (readers.claim(consumer_task)?, Arc::clone(task)),
             Err(err) => return Err(DataFusionError::Shared(Arc::clone(err))),
-        };
-        let Some(consumer) = consumer else {
-            return internal_err!("Too many consumers for real partition {real_partition}");
         };
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             self.schema(),
-            consumer.inspect(move |_| {
-                let _ = &task;
-            }),
+            consumer
+                .map(|msg| match msg {
+                    Ok((batch, _reservation)) => Ok(batch),
+                    Err(e) => Err(DataFusionError::Shared(e)),
+                })
+                .inspect(move |_| {
+                    let _ = &task;
+                }),
         )))
     }
 
@@ -219,96 +246,388 @@ impl ExecutionPlan for BroadcastExec {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct BroadcastState {
-    len: usize,
+/// Buffered output of a single [BroadcastExec] input partition.
+///
+/// [BroadcastExec] executes each input partition only once, but every consumer task reads it
+/// through its own output partition. Each input partition therefore has one queue: the producer
+/// task appends the input partition's batches as entries, and every consumer task gets a reader
+/// that independently reads all entries from the start.
+///
+/// Entries are addressed with cursors: absolute positions in the stream of appended entries.
+/// Cursors only grow and are not reused after entries are evicted:
+/// - `base_cursor`: position of the first entry still retained in `entries`.
+/// - `tail_cursor`: position that the next appended entry will take.
+/// - `next_cursor`: per reader, position of the next entry that reader will read. A reader that
+///   was not claimed yet (`Pending`) counts as being at position 0, as it still needs to read
+///   every entry once its consumer task starts.
+///
+/// Assume we have 4 consumer tasks, each represented as a reader. This could create a situation
+/// such as:
+///
+/// ```text
+///
+///               base_cursor               tail_cursor
+///                    │                         │
+///                    ▼                         ▼
+///            ┌ ─ ─┌────┬────┬────┐     ┌────┬────┐
+///  entries:    e0 │ e1 │ e2 │ e3 │ ... │eN-1│ eN │
+///            └ ─ ─└────┴────┴────┘     └────┴────┘
+///                         ▲                    ▲
+///                  ┌──────┘   ┌────────────────┴────┐
+///                  │          │                     │
+///            ┌──────────┬──────────┬──────────┬──────────┐
+///  readers:  │   r0:    │   r1:    │   r2:    │   r3:    │
+///            │Reading(2)│Reading(N)│ Released │Reading(N)│
+///            └──────────┴──────────┴──────────┴──────────┘
+/// ```
+///
+/// Evicting entries requires scanning every reader to find the most lagging one, so rather than
+/// doing it on every append, the queue does it only when an append moves `tail_cursor` to a
+/// multiple of [RECLAIM_INTERVAL], or when a reader is released. Each of these passes removes the
+/// entries before the smallest `next_cursor` among the readers that are not released, and moves
+/// `base_cursor` up to it.
+///
+/// In this example, entry `e0` is shown using a dashed line because it was already evicted, and
+/// `base_cursor` now points at `e1`. Every reader that is not released has already read `e1`,
+/// so `e1` could be evicted, but it stays in memory until the next eviction pass. Assuming that
+/// the append of `eN+1` triggers that pass, `e1` gets evicted, as `r0` is the most lagging reader
+/// and it only needs `e2` onwards:
+///
+/// ```text
+///                    base_cursor               tail_cursor
+///                         │                         │
+///                         ▼                         ▼
+///            ┌ ─ ─┌ ─ ─┌────┬────┐     ┌────┬────┬────┐
+///  entries:    e0 │ e1 │ e2 │ e3 │ ... │eN-1│ eN │eN+1│
+///            └ ─ ─└ ─ ─└────┴────┘     └────┴────┴────┘
+///                         ▲                    ▲    ▲
+///                  ┌──────┘   ┌────────────────┘    │
+///                  │          │                     │
+///            ┌──────────┬──────────┬──────────┬────────────┐
+///  readers:  │   r0:    │   r1:    │   r2:    │    r3:     │
+///            │Reading(2)│Reading(N)│ Released │Reading(N+1)│
+///            └──────────┴──────────┴──────────┴────────────┘
+/// ```
+#[derive(Debug)]
+struct QueueState<T> {
+    entries: VecDeque<T>,
+    base_cursor: usize,
+    tail_cursor: usize,
+    readers: Box<[ReaderSlot]>,
+    retaining_readers: usize,
     closed: bool,
 }
 
 #[derive(Debug)]
+enum ReaderSlot {
+    Pending,
+    Reading { next_cursor: usize },
+    Released,
+}
+
+/// Shared state and signals for one [BroadcastExec] input partition.
+///
+/// The producer task owns the input stream and queue handle while every consumer stream shares the
+/// same queue state but has its own reader cursor and notification receiver. There are two flows
+/// this is responsible for: queue updates and cancellation.
+///
+/// ## Queue Push Flow:
+///
+/// ```text
+///                                                                                  ┌───────────────────reads──────────────────┐
+///                                                                                  │  ┌─────────(each acquire lock)─────────┐ │
+///                                                                                  │  │ ┌─────────────────────────────────┐ │ │
+///                                                                                  │  │ │                                 │ │ │
+///                                                                                  │  │ │             ┌────────────────┐  │ │ │
+///                                   ┌─────────────────────────┐                    │  │ │             │                │  │ │ │
+///                                   │BroadcastShared          │                    │  │ │       ┌────▶│   Consumer 0   │──┘ │ │
+///                                   │ ┌─────────────────────┐◀┼────────────────────┘  │ │       │     │                │    │ │
+///                           ┌───────┼▶│  Mutex(QueueState)  │◀┼───────────────────────┘ │       │     └────────────────┘    │ │
+///                         push      │ └─────────────────────┘◀┼─────────────────────────┘       │                           │ │
+///                    (acquires lock)│            │notify      │                                 │                           │ │
+/// ┌────────────────┐        │       │            ▼            │                                 │     ┌────────────────┐    │ │
+/// │                │        │       │ ┌─────────────────────┐ │   notify   ┌───────────────┐    │     │                │    │ │
+/// │    Producer    │────────┘       │ │       Sender        │ ├──signals──▶│ Watch Channel │─notify──▶│   Consumer 1   │────┘ │
+/// │                │                │ └─────────────────────┘ │            └───────────────┘ signal   │                │      │
+/// └────────────────┘                │ ┌─────────────────────┐ │                                 │     └────────────────┘      │
+///                                   │ │  CancellationToken  │ │                                 │                             │
+///                                   │ └─────────────────────┘ │                                 │           ...               │
+///                                   └─────────────────────────┘                                 │                             │
+///                                                                                               │     ┌────────────────┐      │
+///                                                                                               │     │                │      │
+///                                                                                               └────▶│   Consumer N   │──────┘
+///                                                                                                     │                │
+///                                                                                                     └────────────────┘
+/// ```
+///
+/// A consumer stream has access to the shared `Arc`, but only `queue_state` is locked so its
+/// `poll_next` holds that mutex while it reads an entry. The producer follows the same rule,
+/// it appends under the mutex, then sends the notification after unlocking.
+///
+/// ## Cancellation flow:
+///
+/// ```text
+///                                                                                                            ┌────────────────┐
+///                                   ┌─────────────────────────┐                      ┌───────────────────────│                │
+/// ┌─────── close ───────────┐       │BroadcastShared          │                      │         ┌─────────────│   Consumer 0   │
+/// │   (acquires lock)       │       │ ┌─────────────────────┐ │    release reader    │         │    ┌───────▶│                │
+/// │                         └───────┼▶│  Mutex(QueueState)  │◀┼───(acquires lock)────┘         │    │        └────────────────┘
+/// │  ┌────────────────┐             │ └─────────────────────┘ │                                │    │
+/// │  │                │             │  notify on │            │                                │    │
+/// └──│    Producer    │◀──────┐     │    close   ▼            │                                │    │        ┌────────────────┐
+///    │                │       │     │ ┌─────────────────────┐ │  notify    ┌───────────────┐   │    │        │                │
+///    └────────────────┘     cancel  │ │       Sender        │─┼──signals──▶│ Watch Channel │───┼──notify────▶│   Consumer 1   │
+///                           signal  │ └─────────────────────┘ │            └───────────────┘   │  signal     │                │
+///                             │     │ ┌─────────────────────┐ │                                │    │        └────────────────┘
+///                             └─────┼─│  CancellationToken  │◀┼──────────────cancel────────────┘    │
+///                                   │ └─────────────────────┘ │                                     │                 ...
+///                                   └─────────────────────────┘                                     │
+///                                                                                                   │        ┌────────────────┐
+///                                                                                                   │        │                │
+///                                                                                                   └───────▶│   Consumer N   │
+///                                                                                                            │                │
+///                                                                                                            └────────────────┘
+/// ```
+///
+/// In this case, the consumer initiates the action by mutating the queue state to release itself.
+/// Only in the case that the last reader has dropped the consumer will also set the
+/// `CancellationToken` to tell the producer to close the queue.
+///
+/// Also, a consumer stream may outlive the `BroadcastExec`. In this case, the plan's `Drop` releases
+/// only still `Pending` readers while active `BroadcastConsumer`s keep the shared state alive, and
+/// keeps the producer task alive until those streams finish or are dropped.
+#[derive(Debug)]
+struct BroadcastShared<T: Clone> {
+    queue_state: Mutex<QueueState<T>>,
+    notify: tokio::sync::watch::Sender<()>,
+    cancel: CancellationToken,
+}
+
+#[derive(Debug)]
 struct BroadcastQueue<T: Clone> {
-    entries: Arc<Mutex<Vec<T>>>,
-    notify: tokio::sync::watch::Sender<BroadcastState>,
+    shared: Arc<BroadcastShared<T>>,
+}
+
+#[derive(Debug)]
+struct BroadcastReaders<T: Clone> {
+    shared: Arc<BroadcastShared<T>>,
 }
 
 impl<T: Clone> BroadcastQueue<T> {
-    fn new() -> Self {
-        let (notify, _rx) = tokio::sync::watch::channel(BroadcastState {
-            len: 0,
-            closed: false,
-        });
+    fn new(expected_readers: usize) -> Self {
+        let (notify, _rx) = tokio::sync::watch::channel(());
         Self {
-            entries: Arc::new(Mutex::new(vec![])),
-            notify,
+            shared: Arc::new(BroadcastShared {
+                queue_state: Mutex::new(QueueState {
+                    entries: VecDeque::new(),
+                    base_cursor: 0,
+                    tail_cursor: 0,
+                    readers: (0..expected_readers).map(|_| ReaderSlot::Pending).collect(),
+                    retaining_readers: expected_readers,
+                    closed: false,
+                }),
+                notify,
+                cancel: CancellationToken::new(),
+            }),
         }
     }
 
-    fn new_consumer(&self) -> BroadcastConsumer<T> {
-        let rx = self.notify.subscribe();
-        let state = *rx.borrow();
-        BroadcastConsumer {
-            index: 0,
-            entries: Arc::clone(&self.entries),
-            notify: WatchStream::new(rx),
-            state,
+    fn readers(&self) -> BroadcastReaders<T> {
+        BroadcastReaders {
+            shared: Arc::clone(&self.shared),
         }
     }
 
-    fn push(&self, entry: T) {
-        let len = {
-            let mut entries = self.entries.lock().unwrap();
-            entries.push(entry);
-            entries.len()
+    /// Appends a value to the entry queue and increments `tail_cursor`. Every `RECLAIM_INTERVAL`
+    /// calls, this checks for reclaimable entries in the queue.
+    ///
+    /// This method will not append the value and returns `false` if no retaining readers remain.
+    fn push(&self, value: T) -> bool {
+        let reclaimed = {
+            let mut queue_state = self.shared.queue_state.lock().unwrap();
+
+            if queue_state.retaining_readers == 0 {
+                return false;
+            }
+
+            queue_state.entries.push_back(value);
+            queue_state.tail_cursor += 1;
+            if queue_state.tail_cursor.is_multiple_of(RECLAIM_INTERVAL) {
+                Self::reclaim_processed_entries(&mut queue_state)
+            } else {
+                Vec::new()
+            }
         };
-        let mut state = *self.notify.borrow();
-        state.len = len;
-        let _ = self.notify.send(state);
+
+        drop(reclaimed);
+
+        self.shared.notify.send_replace(());
+        true
+    }
+
+    /// Frees all entries in the queue that have been processed and updates `base_cursor` to point
+    /// at the first non-freeable position.
+    fn reclaim_processed_entries(queue_state: &mut QueueState<T>) -> Vec<T> {
+        let minimum_cursor = queue_state
+            .readers
+            .iter()
+            .filter_map(|reader| match reader {
+                ReaderSlot::Pending => Some(0),
+                ReaderSlot::Reading { next_cursor } => Some(*next_cursor),
+                ReaderSlot::Released => None,
+            })
+            .min()
+            .unwrap_or(queue_state.tail_cursor);
+
+        let reclaim_count = minimum_cursor - queue_state.base_cursor;
+        queue_state.base_cursor = minimum_cursor;
+        queue_state.entries.drain(..reclaim_count).collect()
     }
 }
 
 impl<T: Clone> Drop for BroadcastQueue<T> {
     fn drop(&mut self) {
-        let mut state = *self.notify.borrow();
-        state.closed = true;
-        let _ = self.notify.send(state);
+        {
+            let mut state = self.shared.queue_state.lock().unwrap();
+            state.closed = true;
+        }
+        self.shared.notify.send_replace(());
+    }
+}
+
+impl<T: Clone> BroadcastReaders<T> {
+    /// Creates a new `BroadcastConsumer` for a given consumer task and claims its reader slot,
+    /// starting at cursor zero.
+    ///
+    /// Returns an error if the consumer task is out of range or if the same reader is claimed more
+    /// than once.
+    fn claim(&self, consumer_task: usize) -> Result<BroadcastConsumer<T>> {
+        let rx = self.shared.notify.subscribe();
+        let mut state = self.shared.queue_state.lock().unwrap();
+        let Some(reader) = state.readers.get_mut(consumer_task) else {
+            return internal_err!("broadcast consumer {consumer_task} is out of range");
+        };
+        match reader {
+            ReaderSlot::Pending => *reader = ReaderSlot::Reading { next_cursor: 0 },
+            ReaderSlot::Reading { .. } | ReaderSlot::Released => {
+                return internal_err!("broadcast consumer {consumer_task} cannot execute twice");
+            }
+        }
+        Ok(BroadcastConsumer {
+            consumer_id: consumer_task,
+            shared: Arc::clone(&self.shared),
+            notify: WatchStream::new(rx),
+        })
+    }
+
+    /// Sets all `ReaderSlot::Pending` readers to `ReaderSlot::Released`. This also cleans up newly
+    /// freeable entries and cancels the producer if all readers are released.
+    fn release_pending(&self) {
+        let (no_readers_remain, reclaimed) = {
+            let mut state = self.shared.queue_state.lock().unwrap();
+            let mut released = 0;
+            for reader in &mut state.readers {
+                if matches!(reader, ReaderSlot::Pending) {
+                    *reader = ReaderSlot::Released;
+                    released += 1;
+                }
+            }
+            state.retaining_readers -= released;
+            let reclaimed = BroadcastQueue::<T>::reclaim_processed_entries(&mut state);
+            (state.retaining_readers == 0, reclaimed)
+        };
+
+        drop(reclaimed);
+
+        if no_readers_remain {
+            self.shared.cancel.cancel();
+        }
     }
 }
 
 /// A consumer stream that reads from the broadcast queue.
-struct BroadcastConsumer<T> {
-    index: usize,
-    entries: Arc<Mutex<Vec<T>>>,
-    notify: WatchStream<BroadcastState>,
-    state: BroadcastState,
+struct BroadcastConsumer<T: Clone> {
+    consumer_id: usize,
+    shared: Arc<BroadcastShared<T>>,
+    notify: WatchStream<()>,
 }
 
 impl<T: Clone> Stream for BroadcastConsumer<T> {
     type Item = T;
 
+    /// Poll the next value from the stream reading from the shared entry queue.
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         loop {
-            if self.index < self.state.len {
-                let entry = self.entries.lock().unwrap().get(self.index).cloned();
-                if let Some(v) = entry {
-                    self.index += 1;
-                    return Poll::Ready(Some(v));
+            let (value, closed) = {
+                let mut state = self.shared.queue_state.lock().unwrap();
+                let next_cursor = match state.readers[self.consumer_id] {
+                    ReaderSlot::Reading { next_cursor } => next_cursor,
+                    ReaderSlot::Released => return Poll::Ready(None),
+                    ReaderSlot::Pending => unreachable!("an unclaimed consumer was polled"),
+                };
+                if next_cursor < state.tail_cursor {
+                    let offset = next_cursor
+                        .checked_sub(state.base_cursor)
+                        .expect("broadcast consumer fell behind evicted entries");
+                    let value = state
+                        .entries
+                        .get(offset)
+                        .expect("broadcast entry cursor was not retained")
+                        .clone();
+                    state.readers[self.consumer_id] = ReaderSlot::Reading {
+                        next_cursor: next_cursor + 1,
+                    };
+                    (Some(value), false)
+                } else {
+                    (None, state.closed)
                 }
+            };
+
+            if let Some(value) = value {
+                return Poll::Ready(Some(value));
             }
 
-            if self.state.closed {
+            if closed {
+                self.shared.release(self.consumer_id);
                 return Poll::Ready(None);
             }
 
             match Pin::new(&mut self.notify).poll_next(cx) {
-                Poll::Ready(Some(state)) => {
-                    self.state = state;
-                }
+                Poll::Ready(Some(_)) => continue,
                 Poll::Ready(None) => {
-                    self.state.closed = true;
+                    self.shared.release(self.consumer_id);
+                    return Poll::Ready(None);
                 }
                 Poll::Pending => return Poll::Pending,
             }
         }
+    }
+}
+
+impl<T: Clone> BroadcastShared<T> {
+    fn release(&self, consumer_id: usize) {
+        let (no_readers_remain, reclaimed) = {
+            let mut state = self.queue_state.lock().unwrap();
+            if matches!(state.readers[consumer_id], ReaderSlot::Released) {
+                return;
+            }
+            state.readers[consumer_id] = ReaderSlot::Released;
+            state.retaining_readers -= 1;
+            let reclaimed = BroadcastQueue::<T>::reclaim_processed_entries(&mut state);
+            (state.retaining_readers == 0, reclaimed)
+        };
+
+        drop(reclaimed);
+
+        if no_readers_remain {
+            self.cancel.cancel();
+        }
+    }
+}
+
+impl<T: Clone> Drop for BroadcastConsumer<T> {
+    fn drop(&mut self) {
+        self.shared.release(self.consumer_id);
     }
 }
 
@@ -335,6 +654,114 @@ mod tests {
         for (idx, expected_value) in expected.iter().enumerate() {
             assert_eq!(values.value(idx), *expected_value);
         }
+    }
+
+    fn buffered_len<T: Clone>(queue: &BroadcastQueue<T>) -> usize {
+        queue.shared.queue_state.lock().unwrap().entries.len()
+    }
+
+    fn cursor_bounds<T: Clone>(queue: &BroadcastQueue<T>) -> (usize, usize) {
+        let state = queue.shared.queue_state.lock().unwrap();
+        (state.base_cursor, state.tail_cursor)
+    }
+
+    #[tokio::test]
+    async fn broadcast_queue_evicts_consumed_prefix() {
+        let queue = BroadcastQueue::new(2);
+        let mut consumer0 = queue.readers().claim(0).expect("consumer 0 registration");
+        let mut consumer1 = queue.readers().claim(1).expect("consumer 1 registration");
+
+        queue.push(10);
+        queue.push(20);
+        assert_eq!(buffered_len(&queue), 2);
+
+        assert_eq!(consumer0.next().await, Some(10));
+        assert_eq!(buffered_len(&queue), 2);
+        assert_eq!(consumer1.next().await, Some(10));
+        assert_eq!(cursor_bounds(&queue), (0, 2));
+
+        assert_eq!(consumer0.next().await, Some(20));
+        assert_eq!(buffered_len(&queue), 2);
+        assert_eq!(consumer1.next().await, Some(20));
+        assert_eq!(buffered_len(&queue), 2);
+
+        // The eighth append observes that consumers have advanced and removes the consumed prefix.
+        for value in [30, 40, 50, 60, 70, 80] {
+            queue.push(value);
+        }
+        assert_eq!(cursor_bounds(&queue), (2, 8));
+        assert_eq!(buffered_len(&queue), 6);
+
+        drop(consumer0);
+        drop(consumer1);
+        assert_eq!(buffered_len(&queue), 0);
+    }
+
+    #[tokio::test]
+    async fn broadcast_queue_drop_releases_unread_entries() {
+        let queue = BroadcastQueue::new(2);
+        let mut consumer0 = queue.readers().claim(0).expect("consumer 0 registration");
+        let mut consumer1 = queue.readers().claim(1).expect("consumer 1 registration");
+
+        queue.push(10);
+        queue.push(20);
+        assert_eq!(consumer0.next().await, Some(10));
+        drop(consumer0);
+        assert!(!queue.shared.cancel.is_cancelled());
+
+        // The dropped consumer must no longer pin the unread suffix, including entries produced
+        // after the first reader is released.
+        queue.push(30);
+        assert_eq!(consumer1.next().await, Some(10));
+        assert_eq!(consumer1.next().await, Some(20));
+        assert_eq!(consumer1.next().await, Some(30));
+        drop(consumer1);
+        assert!(queue.shared.cancel.is_cancelled());
+        assert_eq!(buffered_len(&queue), 0);
+        assert!(!queue.push(20));
+    }
+
+    #[tokio::test]
+    async fn broadcast_queue_releases_reader_at_eof() {
+        let queue = BroadcastQueue::new(1);
+        let shared = Arc::clone(&queue.shared);
+        let mut consumer = queue.readers().claim(0).expect("consumer registration");
+
+        assert!(queue.push(10));
+        assert_eq!(consumer.next().await, Some(10));
+        drop(queue);
+
+        assert_eq!(consumer.next().await, None);
+        assert_eq!(shared.queue_state.lock().unwrap().entries.len(), 0);
+        assert!(shared.cancel.is_cancelled());
+        assert_eq!(consumer.next().await, None);
+    }
+
+    #[tokio::test]
+    async fn broadcast_exec_releases_pending_readers_when_plan_drops() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let input = Arc::new(MockExec::new_partitioned(vec![vec![]], Arc::clone(&schema)));
+        let broadcast = BroadcastExec::new(input, 2);
+        let task_ctx = SessionContext::new().task_ctx();
+
+        let stream = broadcast.execute(0, task_ctx)?;
+        let shared = Arc::clone(
+            &broadcast.queues[0]
+                .get()
+                .expect("initialized queue")
+                .as_ref()
+                .expect("queue initialization")
+                .0
+                .shared,
+        );
+
+        drop(broadcast);
+        assert_eq!(shared.queue_state.lock().unwrap().retaining_readers, 1);
+        drop(stream);
+        assert_eq!(shared.queue_state.lock().unwrap().retaining_readers, 0);
+        assert!(shared.cancel.is_cancelled());
+
+        Ok(())
     }
 
     #[tokio::test]
@@ -423,6 +850,23 @@ mod tests {
         assert_int32_batch_values(&batches1[0], &[1]);
         assert_int32_batch_values(&batches2[0], &[0]);
         assert_int32_batch_values(&batches3[0], &[1]);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn broadcast_exec_claims_virtual_partition_once() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let input = Arc::new(MockExec::new_partitioned(vec![vec![]], Arc::clone(&schema)));
+        let broadcast = BroadcastExec::new(input, 2);
+        let task_ctx = SessionContext::new().task_ctx();
+
+        let _stream = broadcast.execute(0, Arc::clone(&task_ctx))?;
+        let err = broadcast
+            .execute(0, task_ctx)
+            .err()
+            .expect("duplicate execute");
+        assert!(err.to_string().contains("consumer 0 cannot execute twice"));
 
         Ok(())
     }
