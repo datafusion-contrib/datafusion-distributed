@@ -147,17 +147,6 @@ impl IcebergTestHarnessBuilder {
         self
     }
 
-    /// Sets the number of local execution partitions while retaining session options.
-    pub fn with_target_partitions(mut self, partitions: usize) -> Self {
-        self.session_builder
-            .config()
-            .get_or_insert_default()
-            .options_mut()
-            .execution
-            .target_partitions = partitions;
-        self
-    }
-
     /// Discovers files during planning instead of execution.
     pub fn with_eager_file_planning(self) -> Self {
         self.configure_iceberg(|config| config.eager_file_planning = true)

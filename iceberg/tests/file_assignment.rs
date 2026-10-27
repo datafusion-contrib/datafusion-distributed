@@ -27,8 +27,9 @@ mod tests {
                 .await?
                 .with_eager_file_planning()
                 .with_workers(2)
-                .with_target_partitions(2)
-                .configure_session(|state| {
+                .configure_session(|mut state| {
+                    let session = state.config().get_or_insert_default();
+                    session.options_mut().execution.target_partitions = 2;
                     state.with_distributed_file_scan_config_bytes_per_partition(1)
                 })?
                 .build()
@@ -47,8 +48,9 @@ mod tests {
                 .await?
                 .with_eager_file_planning()
                 .with_workers(2)
-                .with_target_partitions(2)
-                .configure_session(|state| {
+                .configure_session(|mut state| {
+                    let session = state.config().get_or_insert_default();
+                    session.options_mut().execution.target_partitions = 2;
                     state.with_distributed_file_scan_config_bytes_per_partition(1)
                 })?
                 .build()
@@ -64,7 +66,11 @@ mod tests {
         let harness = file_fixture([100, 90, 10, 5, 4, 3].into_iter().enumerate().rev())
             .await?
             .with_eager_file_planning()
-            .with_target_partitions(2)
+            .configure_session(|mut state| {
+                let session = state.config().get_or_insert_default();
+                session.options_mut().execution.target_partitions = 2;
+                Ok(state)
+            })?
             .build()
             .await?;
         insta::assert_snapshot!("local_skew", assignments(&harness.scan().await?)?);
@@ -76,7 +82,11 @@ mod tests {
         let harness = file_fixture([])
             .await?
             .with_eager_file_planning()
-            .with_target_partitions(2)
+            .configure_session(|mut state| {
+                let session = state.config().get_or_insert_default();
+                session.options_mut().execution.target_partitions = 2;
+                Ok(state)
+            })?
             .build()
             .await?;
         insta::assert_snapshot!("empty_files", assignments(&harness.scan().await?)?);
