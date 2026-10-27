@@ -22,7 +22,7 @@ struct Passthrough;
 
 #[async_trait]
 impl WorkerPlanRewriteHandler for Passthrough {
-    async fn rewrite_worker_plan(
+    async fn handle(
         &self,
         event: WorkerPlanRewriteEvent<'_>,
     ) -> Result<WorkerPlanRewriteEventResponse> {
@@ -61,3 +61,65 @@ already been decided. It is **not** a way to change how a query is split across
 the cluster — for that, see
 [Building Custom Distributed Plans](05-custom-distributed-plans.md).
 ```
+
+## Wrapping a stage root
+
+Stage-result caching, tracing, progress reporting, runtime context, and resource
+checks can apply to an entire producer stage. An explicit wrapper at the stage root
+can cover the producer that distributes batches to downstream tasks.
+
+Implement `StageRootWrapper`: `wrap` adds your node, and `matches` identifies an
+existing instance of it, typically with `plan.is::<MyRootExec>()`. DFD needs this
+recognition to avoid wrapping twice, reset task-local wrapper state, and rebuild the
+producer beneath your wrapper while keeping the wrapper on top.
+
+Register the same implementation with
+`DistributedExt::with_distributed_stage_root_wrapper` on the coordinator session and
+every worker session. The implementation stays local to each session; its node uses
+the normal physical-plan codec.
+
+For example, application session builders can share this configuration:
+
+```rust
+# use datafusion::execution::SessionStateBuilder;
+# use datafusion_distributed::{DistributedExt, StageRootWrapper};
+fn with_stage_wrapper(
+    builder: SessionStateBuilder,
+    wrapper: impl StageRootWrapper,
+) -> SessionStateBuilder {
+    builder.with_distributed_stage_root_wrapper(wrapper)
+}
+```
+
+During execution preparation, the coordinator assembles each stage's producer before
+ensuring its outer wrapper, including plans built directly with `DistributedExec::new`.
+Wrappers within the original input stay in place, while an existing root can be reused
+when no additional producer is needed. Producer replacement and sampler insertion
+then operate below the outer wrapper:
+
+```text
+StageRootExec
+  RepartitionExec or BroadcastExec
+    SamplerExec, when sampling is enabled
+      Input
+```
+
+The node's `children()` must expose the supplied plan as its sole child. Successful
+execution produces the same rows and preserves the child's schema, partitioning,
+ordering, boundedness, and emission type.
+
+At worker task setup, DFD calls the root wrapper's `reset_state()` once after decoding,
+before rewrite handlers and sampling. Stateful wrappers implement this DataFusion
+method to create fresh task-local metrics or budgets while retaining their settings
+and the same child. Later producer updates use `replace_children`, which retains that
+task's state and the supplied child subtree. This preserves initialized sampler state.
+Only the stage-root node is rebuilt. When no producer replacement is required, the
+wrapped plan stays intact.
+
+Keep the wrapper present on both the coordinator and workers so their metric layouts
+agree. Configure its runtime behavior through the local session. Worker plan rewrite
+handlers retain their existing position before sampling begins.
+
+For dynamic shuffle and broadcast stages, the initial producer is in place before
+wrapping. Sampling starts at the sampler's input and uses the behavior attached to
+that subtree.

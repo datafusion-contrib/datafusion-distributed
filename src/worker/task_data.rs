@@ -1,5 +1,6 @@
 use crate::common::OnceLockResult;
 use crate::common::now_ns;
+use crate::distributed_planner::replace_stage_producer;
 use crate::{MaxLatencyMetric, ProducerHead, TaskCompletedDynamicFilters, TaskMetrics};
 use datafusion::common::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
@@ -110,7 +111,11 @@ impl TaskData {
             let producer_head =
                 producer_head.ensure_decoded(self.base_plan.schema(), &self.task_ctx)?;
 
-            Ok(producer_head.insert(Arc::clone(&self.base_plan))?)
+            Ok(replace_stage_producer(
+                Arc::clone(&self.base_plan),
+                self.task_ctx.session_config(),
+                producer_head,
+            )?)
         });
         match result {
             Ok(plan) => Ok(Arc::clone(plan)),
