@@ -1,6 +1,6 @@
-use crate::AssignedIcebergDataSource;
-use crate::planned_files::PlannedFiles;
-use crate::scan::ScanConfig;
+use crate::EagerIcebergDataSource;
+use crate::common::scan_config::ScanConfig;
+use crate::eager::planned_files::PlannedFiles;
 use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
@@ -20,14 +20,14 @@ use prost::Message;
 
 use crate::proto::generated::iceberg as pb;
 
-/// Physical plan codec for [`AssignedIcebergDataSource`].
+/// Physical plan codec for [`EagerIcebergDataSource`].
 #[derive(Debug, Clone)]
-pub struct AssignedIcebergCodec {
+pub struct EagerIcebergCodec {
     storage_factory: Arc<dyn StorageFactory>,
     iceberg_runtime: iceberg::Runtime,
 }
 
-impl AssignedIcebergCodec {
+impl EagerIcebergCodec {
     /// Creates a codec using the storage and runtime configured on this process.
     pub fn new(
         storage_factory: Arc<dyn StorageFactory>,
@@ -40,7 +40,7 @@ impl AssignedIcebergCodec {
     }
 }
 
-impl Default for AssignedIcebergCodec {
+impl Default for EagerIcebergCodec {
     fn default() -> Self {
         Self::new(
             Arc::new(OpenDalResolvingStorageFactory::new()),
@@ -49,7 +49,7 @@ impl Default for AssignedIcebergCodec {
     }
 }
 
-impl PhysicalExtensionCodec for AssignedIcebergCodec {
+impl PhysicalExtensionCodec for EagerIcebergCodec {
     fn try_decode(
         &self,
         buf: &[u8],
@@ -59,14 +59,12 @@ impl PhysicalExtensionCodec for AssignedIcebergCodec {
     ) -> Result<Arc<dyn ExecutionPlan>> {
         if !inputs.is_empty() {
             return internal_err!(
-                "AssignedIcebergDataSource should have no children, got {}",
+                "EagerIcebergDataSource should have no children, got {}",
                 inputs.len()
             );
         }
         let source = pb::AssignedScan::decode(buf).map_err(|error| {
-            proto_error(format!(
-                "failed to decode AssignedIcebergDataSource: {error}"
-            ))
+            proto_error(format!("failed to decode EagerIcebergDataSource: {error}"))
         })?;
         let scan = self.decode_config(source.config, ctx, proto_converter)?;
         if source.partitions.is_empty()
@@ -99,14 +97,12 @@ impl PhysicalExtensionCodec for AssignedIcebergCodec {
             })
             .collect::<Vec<_>>();
         let files = Arc::new(PlannedFiles::from_tasks(tasks, ctx)?);
-        Ok(DataSourceExec::from_data_source(
-            AssignedIcebergDataSource {
-                statistics: Arc::new(Statistics::new_unknown(&scan.schema)),
-                scan,
-                files,
-                partitions: partitions.into(),
-            },
-        ))
+        Ok(DataSourceExec::from_data_source(EagerIcebergDataSource {
+            statistics: Arc::new(Statistics::new_unknown(&scan.schema)),
+            scan,
+            files,
+            partitions: partitions.into(),
+        }))
     }
 
     fn try_encode(
@@ -117,15 +113,12 @@ impl PhysicalExtensionCodec for AssignedIcebergCodec {
     ) -> Result<()> {
         let Some(exec) = node.downcast_ref::<DataSourceExec>() else {
             return internal_err!(
-                "expected DataSourceExec wrapping AssignedIcebergDataSource, got {}",
+                "expected DataSourceExec wrapping EagerIcebergDataSource, got {}",
                 node.name()
             );
         };
-        let Some(source) = exec
-            .data_source()
-            .downcast_ref::<AssignedIcebergDataSource>()
-        else {
-            return internal_err!("expected DataSourceExec wrapping AssignedIcebergDataSource");
+        let Some(source) = exec.data_source().downcast_ref::<EagerIcebergDataSource>() else {
+            return internal_err!("expected DataSourceExec wrapping EagerIcebergDataSource");
         };
         let partitions = (0..source.partitions.len())
             .map(|partition| {
@@ -145,14 +138,12 @@ impl PhysicalExtensionCodec for AssignedIcebergCodec {
             partitions,
         };
         proto.encode(buf).map_err(|error| {
-            proto_error(format!(
-                "failed to encode AssignedIcebergDataSource: {error}"
-            ))
+            proto_error(format!("failed to encode EagerIcebergDataSource: {error}"))
         })
     }
 }
 
-impl AssignedIcebergCodec {
+impl EagerIcebergCodec {
     fn decode_config(
         &self,
         proto: Option<pb::ScanConfig>,
@@ -162,7 +153,7 @@ impl AssignedIcebergCodec {
         let proto = proto.ok_or_else(|| proto_error("Missing Iceberg scan config"))?;
         let schema = proto
             .schema
-            .ok_or_else(|| proto_error("AssignedIcebergDataSource is missing its schema"))?;
+            .ok_or_else(|| proto_error("EagerIcebergDataSource is missing its schema"))?;
         let schema = SchemaRef::new((&schema).try_into()?);
         let decode_ctx = PhysicalPlanDecodeContext::new(ctx, self);
         let partitioning = parse_protobuf_partitioning(
@@ -171,7 +162,7 @@ impl AssignedIcebergCodec {
             &schema,
             proto_converter,
         )?
-        .ok_or_else(|| proto_error("AssignedIcebergDataSource is missing its partitioning"))?;
+        .ok_or_else(|| proto_error("EagerIcebergDataSource is missing its partitioning"))?;
         let fetch = proto
             .fetch
             .map(usize::try_from)
@@ -222,9 +213,9 @@ mod tests {
         let exec = plan.downcast_ref::<DataSourceExec>().unwrap();
         let source = exec
             .data_source()
-            .downcast_ref::<crate::IcebergDataSource>()
+            .downcast_ref::<crate::LazyIcebergDataSource>()
             .unwrap();
-        let codec = AssignedIcebergCodec::default();
+        let codec = EagerIcebergCodec::default();
         let context = TaskContext::default();
         let proto_converter = datafusion_proto::physical_plan::DefaultPhysicalProtoConverter {};
         let config = codec.encode_config(&source.scan, &proto_converter)?;

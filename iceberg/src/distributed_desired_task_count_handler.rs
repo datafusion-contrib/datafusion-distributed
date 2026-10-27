@@ -6,14 +6,14 @@ use datafusion_distributed::{
     DesiredTaskCountEvent, DesiredTaskCountEventResponse, DistributedConfig,
 };
 
-use crate::{AssignedIcebergDataSource, IcebergDataSource};
+use crate::{EagerIcebergDataSource, LazyIcebergDataSource};
 
 /// Estimates scan parallelism from the selected Iceberg snapshot's total file size.
 pub fn iceberg_desired_task_count(
     ev: DesiredTaskCountEvent,
 ) -> Option<Result<DesiredTaskCountEventResponse>> {
     let node = ev.plan.downcast_ref::<DataSourceExec>()?.data_source();
-    if !node.is::<IcebergDataSource>() && !node.is::<AssignedIcebergDataSource>() {
+    if !node.is::<LazyIcebergDataSource>() && !node.is::<EagerIcebergDataSource>() {
         return None;
     }
     let statistics = match node.partition_statistics(None) {

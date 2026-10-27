@@ -1,8 +1,8 @@
-use crate::column_statistics::compute_column_stats;
+use crate::common::scan_config::{ScanConfig, stats_from_snapshot};
 use crate::common::{df_err, file_partition};
-use crate::planned_files::PlannedFiles;
-use crate::scan::{ScanConfig, stats_from_snapshot};
-use crate::{AssignedIcebergDataSource, IcebergConfig, IcebergDataSource, IcebergWorkUnitFeed};
+use crate::eager::planned_files::PlannedFiles;
+use crate::table_provider::column_statistics::compute_column_stats;
+use crate::{EagerIcebergDataSource, IcebergConfig, IcebergWorkUnitFeed, LazyIcebergDataSource};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::{Result, config_err, exec_err};
 use datafusion::datasource::source::DataSourceExec;
@@ -16,7 +16,7 @@ use iceberg_datafusion::read::convert_filters_to_predicate;
 use std::sync::Arc;
 use tokio::sync::oneshot;
 
-/// Optional fields for building an [IcebergDataSource](crate::IcebergDataSource).
+/// Optional fields for planning an eager or lazy Iceberg scan.
 #[derive(Default, Clone)]
 pub(crate) struct IcebergDataSourceOptions<'a> {
     pub(crate) snapshot_id: Option<i64>,
@@ -34,7 +34,7 @@ pub(crate) async fn plan_scan(
 ) -> Result<Arc<dyn ExecutionPlan>> {
     let output_schema = match opts.projection {
         None => schema.clone(),
-        Some(projection) => Arc::new(schema.project(projection).unwrap()),
+        Some(projection) => Arc::new(schema.project(projection)?),
     };
     let projection = opts.projection.map(|v| {
         v.iter()
@@ -79,6 +79,8 @@ pub(crate) async fn plan_scan(
         if partitioning.partition_count() == 0 {
             return config_err!("Iceberg scan requires at least one output partition");
         }
+        // TODO: derive eager statistics from selected files in PR #787:
+        // https://github.com/datafusion-contrib/datafusion-distributed/pull/787
         let mut statistics = stats_from_snapshot(table_snapshot.clone(), &scan.schema)?;
         if let Some(column_stats) = column_stats {
             statistics.column_statistics = column_stats;
@@ -107,14 +109,12 @@ pub(crate) async fn plan_scan(
         for index in 0..planned.tasks().len() {
             partitions[file_partition(index, 1, partitioning.partition_count())].push(index);
         }
-        return Ok(DataSourceExec::from_data_source(
-            AssignedIcebergDataSource {
-                scan,
-                statistics: Arc::new(statistics),
-                files: planned,
-                partitions: partitions.into(),
-            },
-        ));
+        return Ok(DataSourceExec::from_data_source(EagerIcebergDataSource {
+            scan,
+            statistics: Arc::new(statistics),
+            files: planned,
+            partitions: partitions.into(),
+        }));
     }
     let feed = WorkUnitFeed::new(IcebergWorkUnitFeed {
         iceberg_table: table,
@@ -124,7 +124,7 @@ pub(crate) async fn plan_scan(
         partitioning,
         sync_manager: Default::default(),
     });
-    Ok(DataSourceExec::from_data_source(IcebergDataSource {
+    Ok(DataSourceExec::from_data_source(LazyIcebergDataSource {
         scan,
         feed,
         table_snapshot,

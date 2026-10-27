@@ -1,6 +1,6 @@
 use crate::common::file_partition;
-use crate::planned_files::PlannedFiles;
-use crate::scan::ScanConfig;
+use crate::common::scan_config::ScanConfig;
+use crate::eager::planned_files::PlannedFiles;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{Statistics, exec_err};
 use datafusion::datasource::source::DataSource;
@@ -18,13 +18,13 @@ use std::sync::Arc;
 /// Routing handlers inspect these files through the task-specialized plan; the
 /// codec transports the same partition groups to the worker's Iceberg reader.
 #[derive(Debug, Clone)]
-pub struct AssignedIcebergDataSource {
+pub struct EagerIcebergDataSource {
     pub(crate) scan: ScanConfig,
     pub(crate) statistics: Arc<Statistics>,
     pub(crate) files: Arc<PlannedFiles>,
     pub(crate) partitions: Arc<[Vec<usize>]>,
 }
-impl AssignedIcebergDataSource {
+impl EagerIcebergDataSource {
     /// Borrow this scan's files for placement or inspection, without I/O or cloning.
     /// File iteration order does not promise row ordering.
     pub fn planned_files(&self) -> impl Iterator<Item = &FileScanTask> {
@@ -80,7 +80,7 @@ impl AssignedIcebergDataSource {
             .collect())
     }
 }
-impl DataSource for AssignedIcebergDataSource {
+impl DataSource for EagerIcebergDataSource {
     fn apply_expressions(
         &self,
         _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,

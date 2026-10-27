@@ -1,4 +1,4 @@
-use crate::scan::{ScanConfig, stats_from_snapshot};
+use crate::common::scan_config::{ScanConfig, stats_from_snapshot};
 use std::sync::Arc;
 
 use datafusion::common::tree_node::TreeNodeRecursion;
@@ -30,11 +30,11 @@ use crate::common::iceberg_err;
 /// ## Single Node
 ///
 /// [iceberg::scan::FileScanTask] are streamed in-memory, with as many parallel streams as
-/// partitions this [IcebergDataSource] exposes:
+/// partitions this [LazyIcebergDataSource] exposes:
 ///
 /// ```text
 /// ┌────────────────────────────────────────────┐
-/// │             IcebergDataSource              │
+/// │           LazyIcebergDataSource            │
 /// │                                            │
 /// │┌──────────────────────────────────────────┐│
 /// ││           IcebergWorkUnitFeed            ││
@@ -108,14 +108,14 @@ use crate::common::iceberg_err;
 ///
 /// This distributed mechanism is transparent to this [DataSource].
 #[derive(Debug, Clone)]
-pub struct IcebergDataSource {
+pub struct LazyIcebergDataSource {
     pub(crate) scan: ScanConfig,
     pub(crate) column_stats: Option<Vec<ColumnStatistics>>,
     pub(crate) table_snapshot: Option<SnapshotRef>,
     pub(crate) feed: WorkUnitFeed<IcebergWorkUnitFeed>,
 }
 
-impl IcebergDataSource {
+impl LazyIcebergDataSource {
     /// Returns the [WorkUnitFeed] implementation that feeds this
     /// DataSource with [iceberg::scan::FileScanTask] messages.
     pub fn feed(&self) -> &WorkUnitFeed<IcebergWorkUnitFeed> {
@@ -123,7 +123,7 @@ impl IcebergDataSource {
     }
 }
 
-impl DataSource for IcebergDataSource {
+impl DataSource for LazyIcebergDataSource {
     fn apply_expressions(
         &self,
         _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,

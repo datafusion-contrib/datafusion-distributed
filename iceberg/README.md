@@ -54,14 +54,14 @@ Eager: discover → source owns files → assign task-local groups → route →
 Lazy:  scan definition → remote feed reference → discover and dispatch → worker reads
 ```
 
-`AssignedIcebergDataSource` owns eager partition groups. Like standard file scans,
+`EagerIcebergDataSource` owns eager partition groups. Like standard file scans,
 the scale-up handler creates a source per task before routing. The router can
 borrow those files from `RouteTaskEvent::task_specialized_plan`:
 
 ```rust
-use datafusion_distributed_iceberg::AssignedIcebergDataSource;
+use datafusion_distributed_iceberg::EagerIcebergDataSource;
 
-fn assigned_paths(source: &AssignedIcebergDataSource) -> Vec<&str> {
+fn assigned_paths(source: &EagerIcebergDataSource) -> Vec<&str> {
     source.planned_files().map(|file| file.data_file_path()).collect()
 }
 ```
@@ -72,7 +72,7 @@ sources share descriptor storage and its memory reservation on the coordinator.
 The codec sends only each task's assigned groups in its plan; workers restore
 those groups without discovering or reassigning files.
 
-Lazy scans remain `IcebergDataSource` instances backed by a work-unit feed.
+Lazy scans remain `LazyIcebergDataSource` instances backed by a work-unit feed.
 Both sources use the same reader configuration and file-task-to-batch execution.
 Iceberg's `FileIO` handles storage in both cases. Eager planning waits for metadata
 discovery and increases worker-plan payloads; lazy scans overlap discovery with

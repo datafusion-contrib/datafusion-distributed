@@ -7,7 +7,7 @@ use datafusion_distributed::{
     DistributedLeafExec, ScaleUpLeafNodeEvent, ScaleUpLeafNodeEventResponse,
 };
 
-use crate::AssignedIcebergDataSource;
+use crate::EagerIcebergDataSource;
 
 /// Like DFD's FileScanConfig scale-up handler, build one scan variant per task
 /// before routing. File assignment belongs to the source, not to the handler.
@@ -17,7 +17,7 @@ pub(crate) fn iceberg_scale_up(
     let exec = ev.plan.downcast_ref::<DataSourceExec>()?;
     let source = exec
         .data_source()
-        .downcast_ref::<AssignedIcebergDataSource>()?;
+        .downcast_ref::<EagerIcebergDataSource>()?;
     if ev.task_count <= 1 {
         return None;
     }
