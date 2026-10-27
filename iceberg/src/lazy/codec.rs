@@ -1,3 +1,4 @@
+use crate::common::scan_config::ScanConfig;
 use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
@@ -17,16 +18,16 @@ use iceberg_storage_opendal::OpenDalResolvingStorageFactory;
 use prost::Message;
 
 use crate::proto::generated::iceberg as pb;
-use crate::{IcebergDataSource, IcebergWorkUnitFeed};
+use crate::{IcebergWorkUnitFeed, LazyIcebergDataSource};
 
-/// Physical plan codec for [`IcebergDataSource`].
+/// Physical plan codec for [`LazyIcebergDataSource`].
 #[derive(Debug, Clone)]
-pub struct IcebergCodec {
+pub struct LazyIcebergCodec {
     storage_factory: Arc<dyn StorageFactory>,
     iceberg_runtime: iceberg::Runtime,
 }
 
-impl IcebergCodec {
+impl LazyIcebergCodec {
     /// Creates a codec using the storage and runtime configured on this process.
     pub fn new(
         storage_factory: Arc<dyn StorageFactory>,
@@ -39,7 +40,7 @@ impl IcebergCodec {
     }
 }
 
-impl Default for IcebergCodec {
+impl Default for LazyIcebergCodec {
     fn default() -> Self {
         Self::new(
             Arc::new(OpenDalResolvingStorageFactory::new()),
@@ -48,7 +49,7 @@ impl Default for IcebergCodec {
     }
 }
 
-impl PhysicalExtensionCodec for IcebergCodec {
+impl PhysicalExtensionCodec for LazyIcebergCodec {
     fn try_decode(
         &self,
         buf: &[u8],
@@ -58,20 +59,21 @@ impl PhysicalExtensionCodec for IcebergCodec {
     ) -> Result<Arc<dyn ExecutionPlan>> {
         if !inputs.is_empty() {
             return internal_err!(
-                "IcebergDataSource should have no children, got {}",
+                "LazyIcebergDataSource should have no children, got {}",
                 inputs.len()
             );
         }
 
-        let proto = pb::IcebergDataSource::decode(buf)
-            .map_err(|error| proto_error(format!("failed to decode IcebergDataSource: {error}")))?;
+        let proto = pb::IcebergDataSource::decode(buf).map_err(|error| {
+            proto_error(format!("failed to decode LazyIcebergDataSource: {error}"))
+        })?;
         let schema = proto
             .schema
-            .ok_or_else(|| proto_error("IcebergDataSource is missing its schema"))?;
+            .ok_or_else(|| proto_error("LazyIcebergDataSource is missing its schema"))?;
         let schema = SchemaRef::new((&schema).try_into()?);
         let feed = proto
             .feed
-            .ok_or_else(|| proto_error("IcebergDataSource is missing its work-unit feed"))?;
+            .ok_or_else(|| proto_error("LazyIcebergDataSource is missing its work-unit feed"))?;
         let feed =
             WorkUnitFeed::<IcebergWorkUnitFeed>::from_proto(WorkUnitFeedProto { id: feed.id })?;
         let decode_ctx = PhysicalPlanDecodeContext::new(ctx, self);
@@ -81,7 +83,7 @@ impl PhysicalExtensionCodec for IcebergCodec {
             &schema,
             proto_converter,
         )?
-        .ok_or_else(|| proto_error("IcebergDataSource is missing its partitioning"))?;
+        .ok_or_else(|| proto_error("LazyIcebergDataSource is missing its partitioning"))?;
         let fetch = proto
             .fetch
             .map(usize::try_from)
@@ -91,15 +93,17 @@ impl PhysicalExtensionCodec for IcebergCodec {
             .with_props(proto.storage_properties)
             .build();
 
-        Ok(DataSourceExec::from_data_source(IcebergDataSource {
-            schema,
-            partitioning,
-            fetch,
-            metrics: Default::default(),
+        Ok(DataSourceExec::from_data_source(LazyIcebergDataSource {
+            scan: ScanConfig {
+                schema,
+                partitioning,
+                fetch,
+                metrics: Default::default(),
+                iceberg_file_io,
+                iceberg_runtime: self.iceberg_runtime.clone(),
+            },
             column_stats: None,
             table_snapshot: None,
-            iceberg_file_io,
-            iceberg_runtime: self.iceberg_runtime.clone(),
             feed,
         }))
     }
@@ -112,31 +116,31 @@ impl PhysicalExtensionCodec for IcebergCodec {
     ) -> Result<()> {
         let Some(exec) = node.downcast_ref::<DataSourceExec>() else {
             return internal_err!(
-                "expected DataSourceExec wrapping IcebergDataSource, got {}",
+                "expected DataSourceExec wrapping LazyIcebergDataSource, got {}",
                 node.name()
             );
         };
-        let Some(source) = exec.data_source().downcast_ref::<IcebergDataSource>() else {
-            return internal_err!("expected DataSourceExec wrapping IcebergDataSource");
+        let Some(source) = exec.data_source().downcast_ref::<LazyIcebergDataSource>() else {
+            return internal_err!("expected DataSourceExec wrapping LazyIcebergDataSource");
         };
 
         let feed = source.feed.to_proto();
         let proto = pb::IcebergDataSource {
             schema: Some(datafusion_proto::protobuf::Schema::try_from(
-                source.schema.as_ref(),
+                source.scan.schema.as_ref(),
             )?),
             feed: Some(pb::WorkUnitFeed { id: feed.id }),
             partitioning: Some(serialize_partitioning(
-                &source.partitioning,
+                &source.scan.partitioning,
                 self,
                 proto_converter,
             )?),
-            fetch: source.fetch.map(|value| value as u64),
-            storage_properties: source.iceberg_file_io.config().props().clone(),
+            fetch: source.scan.fetch.map(|value| value as u64),
+            storage_properties: source.scan.iceberg_file_io.config().props().clone(),
         };
-        proto
-            .encode(buf)
-            .map_err(|error| proto_error(format!("failed to encode IcebergDataSource: {error}")))
+        proto.encode(buf).map_err(|error| {
+            proto_error(format!("failed to encode LazyIcebergDataSource: {error}"))
+        })
     }
 }
 
@@ -162,18 +166,18 @@ mod tests {
         let source = iceberg_source(&source_plan)?;
         let decoded = iceberg_source(&decoded_source_plan)?;
 
-        assert_eq!(source.schema, decoded.schema);
+        assert_eq!(source.scan.schema, decoded.scan.schema);
         assert_eq!(
-            source.partitioning.to_string(),
-            decoded.partitioning.to_string()
+            source.scan.partitioning.to_string(),
+            decoded.scan.partitioning.to_string()
         );
-        assert_eq!(source.fetch, decoded.fetch);
+        assert_eq!(source.scan.fetch, decoded.scan.fetch);
         assert_eq!(source.feed.to_proto(), decoded.feed.to_proto());
         assert_eq!(
-            source.iceberg_file_io.config().props(),
-            decoded.iceberg_file_io.config().props()
+            source.scan.iceberg_file_io.config().props(),
+            decoded.scan.iceberg_file_io.config().props()
         );
-        let properties = decoded.iceberg_file_io.config().props();
+        let properties = decoded.scan.iceberg_file_io.config().props();
         assert_eq!(
             properties.get("fixture.storage").map(String::as_str),
             Some("roundtrip's value")
@@ -184,7 +188,7 @@ mod tests {
         );
         assert_eq!(
             decoded.partition_statistics(None)?.as_ref(),
-            &Statistics::new_unknown(&decoded.schema)
+            &Statistics::new_unknown(&decoded.scan.schema)
         );
         Ok(())
     }
@@ -193,7 +197,7 @@ mod tests {
         if let Some(exec) = plan.downcast_ref::<DataSourceExec>()
             && exec
                 .data_source()
-                .downcast_ref::<IcebergDataSource>()
+                .downcast_ref::<LazyIcebergDataSource>()
                 .is_some()
         {
             return Ok(Arc::clone(plan));
@@ -203,15 +207,15 @@ mod tests {
                 return Ok(plan);
             }
         }
-        internal_err!("fixture query contains no IcebergDataSource")
+        internal_err!("fixture query contains no LazyIcebergDataSource")
     }
 
-    fn iceberg_source(plan: &Arc<dyn ExecutionPlan>) -> Result<&IcebergDataSource> {
+    fn iceberg_source(plan: &Arc<dyn ExecutionPlan>) -> Result<&LazyIcebergDataSource> {
         let Some(exec) = plan.downcast_ref::<DataSourceExec>() else {
             return internal_err!("expected a DataSourceExec");
         };
         exec.data_source()
-            .downcast_ref::<IcebergDataSource>()
-            .ok_or_else(|| proto_error("expected an IcebergDataSource"))
+            .downcast_ref::<LazyIcebergDataSource>()
+            .ok_or_else(|| proto_error("expected an LazyIcebergDataSource"))
     }
 }

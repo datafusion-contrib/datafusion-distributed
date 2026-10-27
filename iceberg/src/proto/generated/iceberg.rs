@@ -18,3 +18,27 @@ pub struct WorkUnitFeed {
     #[prost(bytes = "vec", tag = "1")]
     pub id: ::prost::alloc::vec::Vec<u8>,
 }
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ScanConfig {
+    #[prost(message, optional, tag = "1")]
+    pub schema: Option<::datafusion_proto::protobuf::Schema>,
+    #[prost(message, optional, tag = "2")]
+    pub partitioning: Option<::datafusion_proto::protobuf::Partitioning>,
+    #[prost(uint64, optional, tag = "3")]
+    pub fetch: Option<u64>,
+    #[prost(map = "string, string", tag = "4")]
+    pub storage_properties: ::std::collections::HashMap<String, String>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AssignedScan {
+    #[prost(message, optional, tag = "1")]
+    pub config: Option<ScanConfig>,
+    #[prost(message, repeated, tag = "2")]
+    pub partitions: Vec<FileGroup>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct FileGroup {
+    #[prost(bytes = "vec", repeated, tag = "1")]
+    pub tasks: Vec<Vec<u8>>,
+}

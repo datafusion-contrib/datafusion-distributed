@@ -1,0 +1,15 @@
+---
+source: iceberg/tests/file_groups.rs
+expression: execute_groups(regrouped).await?
+---
+Partition 0: [s3://iceberg-test/warehouse/taxi/data/pickup_date=2024-01-09/data_0.parquet, s3://iceberg-test/warehouse/taxi/data/pickup_date=2024-01-13/data_0.parquet]
+Partition 1: []
+Partition 2: [s3://iceberg-test/warehouse/taxi/data/pickup_date=2024-01-12/data_0.parquet]
+
++-------------+-------+
+| pickup_date | rows  |
++-------------+-------+
+| 2024-01-09  | 25000 |
+| 2024-01-12  | 25000 |
+| 2024-01-13  | 25000 |
++-------------+-------+

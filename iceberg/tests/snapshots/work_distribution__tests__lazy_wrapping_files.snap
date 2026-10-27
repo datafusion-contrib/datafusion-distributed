@@ -1,0 +1,5 @@
+---
+source: iceberg/tests/work_distribution.rs
+expression: scans
+---
+output_rows={0:75.00 K, 1:50.00 K, 2:50.00 K}
