@@ -90,3 +90,10 @@ cargo test -p datafusion-distributed-iceberg --features integration
 Local TPC-H Iceberg benchmarks use the separate
 [`datafusion-distributed-iceberg-benchmarks`](benchmarks/README.md) package. This keeps benchmark
 preparation and execution dependencies out of this read-only integration crate.
+
+Eager source construction and regrouping are independent of distributed scheduling.
+`from_file_groups` accepts native tasks grouped by local partition without discovery;
+`with_file_groups` derives a source using positions in `planned_files()` (retained-file
+order), sharing descriptors and their reservation. Groups may select a subset but
+cannot repeat a position. The scale-up handler chooses the distributed assignment;
+the codec reconstructs it through the same public API on workers.

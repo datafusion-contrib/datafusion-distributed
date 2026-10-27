@@ -1,11 +1,10 @@
 use crate::EagerIcebergDataSource;
 use crate::common::scan_config::ScanConfig;
-use crate::eager::planned_files::PlannedFiles;
 use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::common::{Result, Statistics, exec_datafusion_err, internal_err};
-use datafusion::datasource::source::DataSourceExec;
+use datafusion::common::{Result, exec_datafusion_err, internal_err};
+use datafusion::datasource::source::{DataSource, DataSourceExec};
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::physical_plan::from_proto::parse_protobuf_partitioning;
@@ -87,22 +86,16 @@ impl PhysicalExtensionCodec for EagerIcebergCodec {
                     .collect::<Result<Vec<_>>>()
             })
             .collect::<Result<Vec<_>>>()?;
-        let mut tasks = Vec::new();
-        let partitions = groups
-            .into_iter()
-            .map(|group| {
-                let start = tasks.len();
-                tasks.extend(group);
-                (start..tasks.len()).collect()
-            })
-            .collect::<Vec<_>>();
-        let files = Arc::new(PlannedFiles::from_tasks(tasks, ctx)?);
-        Ok(DataSourceExec::from_data_source(EagerIcebergDataSource {
-            statistics: Arc::new(Statistics::new_unknown(&scan.schema)),
-            scan,
-            files,
-            partitions: partitions.into(),
-        }))
+        Ok(DataSourceExec::from_data_source(
+            EagerIcebergDataSource::from_file_groups(
+                scan.schema,
+                groups,
+                scan.iceberg_file_io,
+                scan.iceberg_runtime,
+                scan.fetch,
+                ctx,
+            )?,
+        ))
     }
 
     fn try_encode(
@@ -120,7 +113,7 @@ impl PhysicalExtensionCodec for EagerIcebergCodec {
         let Some(source) = exec.data_source().downcast_ref::<EagerIcebergDataSource>() else {
             return internal_err!("expected DataSourceExec wrapping EagerIcebergDataSource");
         };
-        let partitions = (0..source.partitions.len())
+        let partitions = (0..source.output_partitioning().partition_count())
             .map(|partition| {
                 let tasks = source
                     .planned_partition_tasks(partition)?
@@ -134,7 +127,7 @@ impl PhysicalExtensionCodec for EagerIcebergCodec {
             })
             .collect::<Result<Vec<_>>>()?;
         let proto = pb::AssignedScan {
-            config: Some(self.encode_config(&source.scan, proto_converter)?),
+            config: Some(self.encode_config(source, proto_converter)?),
             partitions,
         };
         proto.encode(buf).map_err(|error| {
@@ -183,20 +176,20 @@ impl EagerIcebergCodec {
 
     fn encode_config(
         &self,
-        scan: &ScanConfig,
+        source: &EagerIcebergDataSource,
         proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<pb::ScanConfig> {
         Ok(pb::ScanConfig {
             schema: Some(datafusion_proto::protobuf::Schema::try_from(
-                scan.schema.as_ref(),
+                source.schema().as_ref(),
             )?),
             partitioning: Some(serialize_partitioning(
-                &scan.partitioning,
+                &source.output_partitioning(),
                 self,
                 proto_converter,
             )?),
-            fetch: scan.fetch.map(|value| value as u64),
-            storage_properties: scan.iceberg_file_io.config().props().clone(),
+            fetch: source.fetch().map(|value| value as u64),
+            storage_properties: source.file_io().config().props().clone(),
         })
     }
 }
@@ -208,17 +201,20 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_missing_config_and_invalid_assigned_groups() -> Result<()> {
-        let harness = IcebergTestHarness::new().await?;
+        let harness = IcebergTestHarness::builder()
+            .with_eager_file_planning()
+            .build()
+            .await?;
         let plan = harness.scan().await?;
         let exec = plan.downcast_ref::<DataSourceExec>().unwrap();
         let source = exec
             .data_source()
-            .downcast_ref::<crate::LazyIcebergDataSource>()
+            .downcast_ref::<EagerIcebergDataSource>()
             .unwrap();
         let codec = EagerIcebergCodec::default();
         let context = TaskContext::default();
         let proto_converter = datafusion_proto::physical_plan::DefaultPhysicalProtoConverter {};
-        let config = codec.encode_config(&source.scan, &proto_converter)?;
+        let config = codec.encode_config(source, &proto_converter)?;
         let missing = pb::AssignedScan {
             config: None,
             partitions: vec![],
@@ -230,7 +226,7 @@ mod tests {
                 .is_err()
         );
         let mut malformed =
-            vec![pb::FileGroup { tasks: vec![] }; source.scan.partitioning.partition_count()];
+            vec![pb::FileGroup { tasks: vec![] }; source.output_partitioning().partition_count()];
         malformed[0].tasks.push(vec![0xc1]); // Invalid MessagePack descriptor.
         for partitions in [vec![], malformed] {
             let bytes = pb::AssignedScan {
