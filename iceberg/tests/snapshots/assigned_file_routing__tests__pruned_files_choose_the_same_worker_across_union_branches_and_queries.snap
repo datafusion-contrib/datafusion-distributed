@@ -3,35 +3,35 @@ source: iceberg/tests/assigned_file_routing.rs
 expression: output
 ---
 Date: 2024-01-08
-Task 0 -> http://url-1/
-  s3://iceberg-test/warehouse/taxi/data/pickup_date=2024-01-08/data_0.parquet
-Task 1 -> http://url-1/
-  s3://iceberg-test/warehouse/taxi/data/pickup_date=2024-01-08/data_0.parquet
+Task 0 -> http://url-0/
+  pickup_date=2024-01-08/1-00000.parquet
+Task 1 -> http://url-0/
+  pickup_date=2024-01-08/1-00000.parquet
 +------+----------+
 | kind | count(*) |
 +------+----------+
-| a    | 18930    |
-| b    | 10780    |
+| a    | 15364    |
+| b    | 11676    |
 +------+----------+
 Date: 2024-01-09
 Task 0 -> http://url-2/
-  s3://iceberg-test/warehouse/taxi/data/pickup_date=2024-01-09/data_0.parquet
+  pickup_date=2024-01-09/1-00001.parquet
 Task 1 -> http://url-2/
-  s3://iceberg-test/warehouse/taxi/data/pickup_date=2024-01-09/data_0.parquet
+  pickup_date=2024-01-09/1-00001.parquet
 +------+----------+
 | kind | count(*) |
 +------+----------+
-| a    | 18728    |
-| b    | 10261    |
+| a    | 15580    |
+| b    | 11927    |
 +------+----------+
 Date: 2024-01-08
-Task 0 -> http://url-1/
-  s3://iceberg-test/warehouse/taxi/data/pickup_date=2024-01-08/data_0.parquet
-Task 1 -> http://url-1/
-  s3://iceberg-test/warehouse/taxi/data/pickup_date=2024-01-08/data_0.parquet
+Task 0 -> http://url-0/
+  pickup_date=2024-01-08/1-00000.parquet
+Task 1 -> http://url-0/
+  pickup_date=2024-01-08/1-00000.parquet
 +------+----------+
 | kind | count(*) |
 +------+----------+
-| a    | 18930    |
-| b    | 10780    |
+| a    | 15364    |
+| b    | 11676    |
 +------+----------+

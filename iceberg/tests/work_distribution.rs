@@ -1,8 +1,9 @@
-#[cfg(all(test, feature = "integration"))]
+mod common;
+
 mod tests {
+    use crate::common::IcebergTestHarness;
     use datafusion::common::Result;
     use datafusion_distributed::DistributedExt;
-    use datafusion_distributed_iceberg::test_utils::IcebergTestHarness;
 
     #[tokio::test]
     async fn pruned_files_use_distinct_workers_before_local_partitions() -> Result<()> {

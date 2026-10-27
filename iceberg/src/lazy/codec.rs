@@ -148,19 +148,29 @@ impl PhysicalExtensionCodec for LazyIcebergCodec {
 mod tests {
     use datafusion::common::Statistics;
     use datafusion::datasource::source::DataSource;
+    use datafusion::prelude::SessionContext;
+    use datafusion_distributed::DistributedCodec;
+    use datafusion_distributed_iceberg_test_tools::FixtureCatalog;
+    use datafusion_proto::physical_plan::AsExecutionPlan;
+    use datafusion_proto::protobuf::PhysicalPlanNode;
 
     use super::*;
-    use crate::test_utils::IcebergTestHarness;
+    use crate::test_utils::{external, taxi_context};
 
     #[tokio::test]
     async fn roundtrips_data_source_plan() -> Result<()> {
-        let harness = IcebergTestHarness::builder()
-            .with_table_option("fixture.storage", "roundtrip's value")
-            .with_table_option("fixture.region", "test-region")
-            .build()
+        let fixtures = FixtureCatalog::new().await.map_err(external)?;
+        let ctx = taxi_context(
+            &fixtures,
+            "'fixture.storage' 'roundtrip''s value', 'fixture.region' 'test-region'",
+        )
+        .await?;
+        let plan = ctx
+            .sql("SELECT * FROM taxi LIMIT 10")
+            .await?
+            .create_physical_plan()
             .await?;
-        let plan = harness.physical_plan("SELECT * FROM taxi LIMIT 10").await?;
-        let decoded_plan = harness.roundtrip_plan(Arc::clone(&plan))?;
+        let decoded_plan = roundtrip_plan(&ctx, Arc::clone(&plan))?;
         let source_plan = iceberg_plan(&plan)?;
         let decoded_source_plan = iceberg_plan(&decoded_plan)?;
         let source = iceberg_source(&source_plan)?;
@@ -217,5 +227,15 @@ mod tests {
         exec.data_source()
             .downcast_ref::<LazyIcebergDataSource>()
             .ok_or_else(|| proto_error("expected an LazyIcebergDataSource"))
+    }
+
+    fn roundtrip_plan(
+        ctx: &SessionContext,
+        plan: Arc<dyn ExecutionPlan>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let task_ctx = ctx.task_ctx();
+        let codec = DistributedCodec::new_combined_with_user(task_ctx.session_config());
+        let proto = PhysicalPlanNode::try_from_physical_plan(plan, &codec)?;
+        proto.try_into_physical_plan(&task_ctx, &codec)
     }
 }

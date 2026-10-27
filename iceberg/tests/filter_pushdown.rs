@@ -1,7 +1,8 @@
-#[cfg(all(feature = "integration", test))]
+mod common;
+
 mod tests {
+    use crate::common::IcebergTestHarness;
     use datafusion::error::Result;
-    use datafusion_distributed_iceberg::test_utils::IcebergTestHarness;
 
     #[tokio::test]
     async fn pushes_down_compound_predicates() -> Result<()> {
@@ -25,12 +26,12 @@ mod tests {
                   DataSourceExec: format=iceberg, table=default.taxi, projection=[trip_distance, payment_type, pickup_date], predicate=((pickup_date = 2024-01-10) AND ((payment_type = 1) OR (payment_type = 2))) AND (trip_distance >= 2)
         ");
         insta::assert_snapshot!(batches, @r"
-    +-------+
-    | trips |
-    +-------+
-    | 9891  |
-    +-------+
-    ");
+        +-------+
+        | trips |
+        +-------+
+        | 10659 |
+        +-------+
+        ");
 
         Ok(())
     }
@@ -87,12 +88,12 @@ mod tests {
                   DataSourceExec: format=iceberg, table=default.taxi, projection=[passenger_count], predicate=passenger_count IS NULL
         ");
         insta::assert_snapshot!(batches, @r"
-    +-------+
-    | trips |
-    +-------+
-    | 8829  |
-    +-------+
-    ");
+        +-------+
+        | trips |
+        +-------+
+        | 8886  |
+        +-------+
+        ");
 
         Ok(())
     }
@@ -118,12 +119,12 @@ mod tests {
                   DataSourceExec: format=iceberg, table=default.taxi, projection=[trip_distance, pickup_date], predicate=pickup_date = 2024-01-10
         ");
         insta::assert_snapshot!(batches, @r"
-    +-------+
-    | trips |
-    +-------+
-    | 10516 |
-    +-------+
-    ");
+        +-------+
+        | trips |
+        +-------+
+        | 11688 |
+        +-------+
+        ");
 
         Ok(())
     }
@@ -144,12 +145,12 @@ mod tests {
                   DataSourceExec: format=iceberg, table=default.taxi, projection=[trip_distance]
         ");
         insta::assert_snapshot!(batches, @r"
-    +-------+
-    | trips |
-    +-------+
-    | 2757  |
-    +-------+
-    ");
+        +-------+
+        | trips |
+        +-------+
+        | 4462  |
+        +-------+
+        ");
 
         Ok(())
     }

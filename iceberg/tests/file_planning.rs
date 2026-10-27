@@ -1,7 +1,9 @@
-#[cfg(all(feature = "integration", test))]
+mod common;
+
 mod tests {
     use std::sync::Arc;
 
+    use crate::common::IcebergTestHarness;
     use datafusion::common::Result;
     use datafusion::datasource::source::DataSourceExec;
     use datafusion::execution::TaskContext;
@@ -9,7 +11,6 @@ mod tests {
     use datafusion::execution::runtime_env::RuntimeEnvBuilder;
     use datafusion::physical_plan::collect;
     use datafusion_distributed::WorkUnitFeedProvider;
-    use datafusion_distributed_iceberg::test_utils::IcebergTestHarness;
     use datafusion_distributed_iceberg::{IcebergWorkUnitFeed, LazyIcebergDataSource};
     use futures::TryStreamExt;
     use prost::Message;

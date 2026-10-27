@@ -1,7 +1,8 @@
-#[cfg(all(feature = "integration", test))]
+mod common;
+
 mod tests {
+    use crate::common::IcebergTestHarness;
     use datafusion::error::Result;
-    use datafusion_distributed_iceberg::test_utils::IcebergTestHarness;
 
     #[tokio::test]
     async fn applies_sql_limit_to_the_iceberg_scan_output() -> Result<()> {
@@ -23,14 +24,14 @@ mod tests {
               DataSourceExec: format=iceberg, table=default.taxi, projection=[vendor_id, pickup_at, passenger_count, trip_distance, pickup_date], predicate=pickup_date = 2024-01-10
         ");
         insta::assert_snapshot!(batches, @r"
-    +-----------+---------------------+-----------------+---------------+-------------+
-    | vendor_id | pickup_at           | passenger_count | trip_distance | pickup_date |
-    +-----------+---------------------+-----------------+---------------+-------------+
-    | 2         | 2024-01-10T00:00:09 |                 | 0.78          | 2024-01-10  |
-    | 2         | 2024-01-10T00:00:10 | 1               | 0.88          | 2024-01-10  |
-    | 1         | 2024-01-10T00:00:10 | 1               | 3.4           | 2024-01-10  |
-    +-----------+---------------------+-----------------+---------------+-------------+
-    ");
+        +-----------+---------------------+-----------------+---------------+-------------+
+        | vendor_id | pickup_at           | passenger_count | trip_distance | pickup_date |
+        +-----------+---------------------+-----------------+---------------+-------------+
+        | 1         | 2024-01-10T00:00:04 | 1               | 0.68          | 2024-01-10  |
+        | 2         | 2024-01-10T00:00:08 | 1               | 6.18          | 2024-01-10  |
+        | 2         | 2024-01-10T00:00:11 |                 | 3.61          | 2024-01-10  |
+        +-----------+---------------------+-----------------+---------------+-------------+
+        ");
 
         Ok(())
     }
@@ -124,13 +125,13 @@ mod tests {
                   DataSourceExec: format=iceberg, table=default.taxi, projection=[vendor_id, pickup_at, pickup_location_id, pickup_date], predicate=pickup_date = 2024-01-10
         ");
         insta::assert_snapshot!(batches, @r"
-    +-----------+---------------------+
-    | vendor_id | pickup_at           |
-    +-----------+---------------------+
-    | 2         | 2024-01-10T00:00:12 |
-    | 2         | 2024-01-10T00:00:14 |
-    +-----------+---------------------+
-    ");
+        +-----------+---------------------+
+        | vendor_id | pickup_at           |
+        +-----------+---------------------+
+        | 1         | 2024-01-10T00:00:15 |
+        | 2         | 2024-01-10T00:00:18 |
+        +-----------+---------------------+
+        ");
 
         Ok(())
     }

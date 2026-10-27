@@ -1,7 +1,9 @@
-#[cfg(all(test, feature = "integration"))]
+mod common;
+
 mod tests {
     use std::sync::{Arc, Mutex};
 
+    use crate::common::{IcebergTestHarness, data_file_name};
     use async_trait::async_trait;
     use datafusion::common::Result;
     use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
@@ -10,7 +12,6 @@ mod tests {
         DistributedExt, RouteTaskEvent, RouteTaskEventResponse, RouteTaskHandler, ok_or_some_err,
     };
     use datafusion_distributed_iceberg::EagerIcebergDataSource;
-    use datafusion_distributed_iceberg::test_utils::IcebergTestHarness;
 
     #[tokio::test]
     async fn routing_uses_the_files_assigned_to_each_task() -> Result<()> {
@@ -62,7 +63,8 @@ mod tests {
         Ok(())
     }
 
-    /// Example affinity policy: route tasks by their first file URI.
+    /// Example affinity policy: route tasks by their first file, named relative to the
+    /// table so that routing is the same on every run.
     /// Records placement for snapshots; actual worker execution exercises the codec.
     #[derive(Clone, Default)]
     struct FileRoutes(Arc<Mutex<Vec<String>>>);
@@ -87,7 +89,7 @@ mod tests {
                     files.extend(
                         source
                             .planned_files()
-                            .map(|file| file.data_file_path().to_owned()),
+                            .map(|file| data_file_name(file.data_file_path()).to_owned()),
                     );
                 }
                 Ok(TreeNodeRecursion::Continue)

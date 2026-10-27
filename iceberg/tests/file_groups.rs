@@ -1,14 +1,15 @@
-#[cfg(all(test, feature = "integration"))]
+mod common;
+
 mod tests {
     use std::sync::Arc;
 
+    use crate::common::{IcebergTestHarness, data_file_name};
     use datafusion::arrow::util::pretty::pretty_format_batches;
     use datafusion::common::Result;
     use datafusion::datasource::source::{DataSource, DataSourceExec};
     use datafusion::execution::TaskContext;
     use datafusion::physical_plan::collect;
     use datafusion::prelude::SessionContext;
-    use datafusion_distributed_iceberg::test_utils::IcebergTestHarness;
     use datafusion_distributed_iceberg::{EagerIcebergDataSource, iceberg};
 
     #[tokio::test]
@@ -142,7 +143,7 @@ mod tests {
         for partition in 0..source.output_partitioning().partition_count() {
             let files = source
                 .planned_partition_tasks(partition)?
-                .map(|file| file.data_file_path().to_owned())
+                .map(|file| data_file_name(file.data_file_path()).to_owned())
                 .collect::<Vec<_>>();
             lines.push(format!("Partition {partition}: [{}]", files.join(", ")));
         }

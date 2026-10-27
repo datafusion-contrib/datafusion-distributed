@@ -1,0 +1,22 @@
+[package]
+name = "datafusion-distributed-iceberg-test-tools"
+version = "0.1.0"
+edition = "2024"
+description = "Builders for the Iceberg tables used in tests"
+license = "Apache-2.0"
+repository = "https://github.com/datafusion-contrib/datafusion-distributed"
+publish = false
+
+[dependencies]
+# Only for its Arrow and Parquet re-exports, which keep this crate on the
+# versions the rest of the workspace resolves to.
+datafusion = { workspace = true, features = ["parquet"] }
+# Match datafusion-distributed-iceberg's iceberg-rust revision so tables share one type.
+iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "5b82ab99aeaf50bf4f5b3b776ac9cd6380a5f3e3" }
+rand = { version = "0.10", default-features = false, features = ["alloc"] }
+rand_pcg = "0.10"
+tempfile = "3.18"
+
+[dev-dependencies]
+futures = "0.3"
+tokio = { version = "1.48", features = ["macros", "rt-multi-thread"] }

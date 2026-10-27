@@ -196,16 +196,21 @@ impl EagerIcebergCodec {
 
 #[cfg(test)]
 mod tests {
+    use datafusion_distributed_iceberg_test_tools::FixtureCatalog;
+
     use super::*;
-    use crate::test_utils::IcebergTestHarness;
+    use crate::test_utils::{external, taxi_context};
 
     #[tokio::test]
     async fn rejects_missing_config_and_invalid_assigned_groups() -> Result<()> {
-        let harness = IcebergTestHarness::builder()
-            .with_eager_file_planning()
-            .build()
+        let fixtures = FixtureCatalog::new().await.map_err(external)?;
+        let ctx = taxi_context(&fixtures, "").await?;
+        ctx.sql("SET iceberg.eager_file_planning = true").await?;
+        let plan = ctx
+            .table_provider("taxi")
+            .await?
+            .scan(&ctx.state(), None, &[], None)
             .await?;
-        let plan = harness.scan().await?;
         let exec = plan.downcast_ref::<DataSourceExec>().unwrap();
         let source = exec
             .data_source()

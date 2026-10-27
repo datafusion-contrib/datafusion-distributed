@@ -1,35 +1,35 @@
-#[cfg(all(feature = "integration", test))]
+mod common;
+
 mod tests {
     use std::error::Error;
     use std::sync::Arc;
 
+    use crate::common::{IcebergTestHarness, IcebergTestHarnessBuilder, without_snapshots};
     use datafusion::common::stats::Precision;
     use datafusion::common::{ColumnStatistics, Statistics};
-    use datafusion::error::Result;
+    use datafusion::error::{DataFusionError, Result};
     use datafusion::physical_plan::displayable;
     use datafusion::physical_plan::statistics::{StatisticsArgs, StatisticsContext};
     use datafusion::scalar::ScalarValue;
     use datafusion_distributed_iceberg::IcebergExt;
-    use datafusion_distributed_iceberg::test_utils::{
-        FIXTURE_URI, IcebergTestHarness, IcebergTestHarnessBuilder, empty_taxi_metadata_builder,
-        taxi_metadata,
-    };
-    use iceberg::io::{MemoryStorage, Storage};
     use iceberg::spec::{
-        DataContentType, DataFileBuilder, DataFileFormat, Datum, Literal, ManifestListWriter,
-        ManifestWriterBuilder, Operation, Snapshot, Struct, Summary, TableMetadata,
+        DataContentType, DataFileBuilder, DataFileFormat, Datum, Literal, MAIN_BRANCH,
+        ManifestListWriter, ManifestWriterBuilder, Operation, Snapshot, Struct, Summary,
+        TableMetadata,
     };
+    use iceberg::table::Table;
 
-    // Values from the checked-in taxi snapshot summary.
+    // Values from the generated taxi snapshot summary.
     const TAXI_ROWS: usize = 175_000;
-    const TAXI_BYTES: usize = 4_480_382;
+    const TAXI_BYTES: usize = 5_656_412;
     const TAXI_COLUMNS: usize = 13;
 
     #[tokio::test]
     async fn missing_snapshot_summary_statistics_are_absent() -> Result<()> {
         let harness = IcebergTestHarness::builder()
-            .with_table_metadata(metadata_without_summary_statistics())
-            .build()
+            .build_with_table_metadata(async |taxi: &Table| {
+                Ok(metadata_without_summary_statistics(taxi.metadata()))
+            })
             .await?;
         let stats = query_statistics(&harness, "SELECT * FROM taxi").await?;
 
@@ -42,9 +42,10 @@ mod tests {
     async fn planned_file_statistics_use_manifest_totals_when_snapshot_summary_is_missing()
     -> Result<()> {
         let harness = IcebergTestHarness::builder()
-            .with_table_metadata(metadata_without_summary_statistics())
             .configure_iceberg(|config| config.eager_file_planning = true)
-            .build()
+            .build_with_table_metadata(async |taxi: &Table| {
+                Ok(metadata_without_summary_statistics(taxi.metadata()))
+            })
             .await?;
         let stats = query_statistics(&harness, "SELECT * FROM taxi").await?;
         assert_eq!(stats.num_rows, Precision::Exact(TAXI_ROWS));
@@ -62,19 +63,16 @@ mod tests {
 
     #[tokio::test]
     async fn eager_filtered_scan_skips_unused_column_statistics() -> Result<(), Box<dyn Error>> {
-        // The manifest's partition summary excludes this query. Poison its contents
+        // The manifest's partition summary excludes this query. Delete the manifest
         // so a redundant whole-snapshot column-statistics read fails the test.
         let harness = manifest_metrics_builder()
-            .await?
-            .with_file(
-                format!("{FIXTURE_URI}/metadata/column-metrics.avro"),
-                vec![],
-            )
             .configure_iceberg(|config| {
                 config.eager_file_planning = true;
                 config.column_stats_enabled = true;
             })
-            .build()
+            .build_with_table_metadata(async |taxi: &Table| {
+                manifest_metrics_metadata(taxi, true).await
+            })
             .await?;
         let stats = query_statistics(
             &harness,
@@ -108,9 +106,10 @@ mod tests {
     #[tokio::test]
     async fn reports_statistics_for_the_selected_snapshot() -> Result<()> {
         let harness = IcebergTestHarness::builder()
-            .with_table_metadata(historical_taxi_metadata())
             .with_table_option("iceberg.snapshot_id", "42")
-            .build()
+            .build_with_table_metadata(async |taxi: &Table| {
+                Ok(historical_taxi_metadata(taxi.metadata()))
+            })
             .await?;
         let stats = query_statistics(&harness, "SELECT * FROM taxi").await?;
 
@@ -155,9 +154,9 @@ mod tests {
             .set_show_statistics(true)
             .indent(true)
             .to_string();
-        insta::assert_snapshot!(display, @"
-        CooperativeExec, statistics=[Rows=Exact(175000), Bytes=Exact(4480382), [(Col[0]:)]]
-          DataSourceExec: format=iceberg, table=default.taxi, projection=[vendor_id], statistics=[Rows=Exact(175000), Bytes=Exact(4480382), [(Col[0]:)]]
+        insta::assert_snapshot!(display, @r"
+        CooperativeExec, statistics=[Rows=Exact(175000), Bytes=Exact(5656412), [(Col[0]:)]]
+          DataSourceExec: format=iceberg, table=default.taxi, projection=[vendor_id], statistics=[Rows=Exact(175000), Bytes=Exact(5656412), [(Col[0]:)]]
         ");
         Ok(())
     }
@@ -241,8 +240,7 @@ mod tests {
         StatisticsContext::new().compute(plan.as_ref(), &StatisticsArgs::new())
     }
 
-    fn metadata_without_summary_statistics() -> TableMetadata {
-        let metadata = taxi_metadata();
+    fn metadata_without_summary_statistics(metadata: &TableMetadata) -> TableMetadata {
         let current = metadata.current_snapshot().expect("taxi has a snapshot");
         let snapshot = Snapshot::builder()
             .with_snapshot_id(current.snapshot_id())
@@ -256,16 +254,15 @@ mod tests {
                 additional_properties: Default::default(),
             })
             .build();
-        empty_taxi_metadata_builder()
-            .set_branch_snapshot(snapshot, "main")
+        without_snapshots(metadata)
+            .set_branch_snapshot(snapshot, MAIN_BRANCH)
             .expect("taxi snapshot can be added")
             .build()
             .expect("taxi metadata is valid")
             .metadata
     }
 
-    fn historical_taxi_metadata() -> TableMetadata {
-        let metadata = taxi_metadata();
+    fn historical_taxi_metadata(metadata: &TableMetadata) -> TableMetadata {
         let current = metadata.current_snapshot().expect("taxi has a snapshot");
         // The summary totals are synthetic; the manifest still describes the full taxi data.
         // This fixture is for statistics planning, not executing a 42-row scan.
@@ -285,36 +282,60 @@ mod tests {
                 .collect(),
             })
             .build();
-        empty_taxi_metadata_builder()
+        without_snapshots(metadata)
             .add_snapshot(historical)
             .expect("historical snapshot can be added")
-            .set_branch_snapshot(current.as_ref().clone(), "main")
+            .set_branch_snapshot(current.as_ref().clone(), MAIN_BRANCH)
             .expect("taxi snapshot can be added")
             .build()
             .expect("taxi metadata is valid")
             .metadata
     }
 
-    // Planning-only fixture, explicitly selecting the original snapshot. Synthetic data
+    // Planning-only fixture, explicitly selecting the generated snapshot. Synthetic data
     // paths are never opened. Metric IDs 1 and 4 are vendor_id and passenger_count, not
     // schema indexes; trip_distance (ID 5) has no metrics.
-    async fn harness_with_manifest_metrics(
-        enabled: bool,
-    ) -> Result<IcebergTestHarness, Box<dyn Error>> {
-        Ok(manifest_metrics_builder()
-            .await?
+    async fn harness_with_manifest_metrics(enabled: bool) -> Result<IcebergTestHarness> {
+        manifest_metrics_builder()
             .configure_session(|state| Ok(state.with_iceberg_column_stats_enabled(enabled)))?
-            .build()
-            .await?)
+            .build_with_table_metadata(async |taxi: &Table| {
+                manifest_metrics_metadata(taxi, false).await
+            })
+            .await
     }
 
-    async fn manifest_metrics_builder() -> Result<IcebergTestHarnessBuilder, Box<dyn Error>> {
-        let metadata = taxi_metadata();
+    fn manifest_metrics_builder() -> IcebergTestHarnessBuilder {
+        IcebergTestHarness::builder().with_table_option("iceberg.snapshot_id", "1")
+    }
+
+    // Serves the generated metadata after writing the synthetic manifest metrics,
+    // optionally deleting the manifest they're listed in.
+    async fn manifest_metrics_metadata(
+        taxi: &Table,
+        delete_manifest: bool,
+    ) -> Result<TableMetadata> {
+        let manifest = write_manifest_metrics(taxi)
+            .await
+            .map_err(DataFusionError::External)?;
+        if delete_manifest {
+            taxi.file_io()
+                .delete(manifest)
+                .await
+                .map_err(|error| DataFusionError::External(Box::new(error)))?;
+        }
+        Ok(taxi.metadata().clone())
+    }
+
+    // Replaces the generated snapshot's manifest list with one listing a synthetic manifest,
+    // whose path it returns.
+    async fn write_manifest_metrics(taxi: &Table) -> Result<String, Box<dyn Error + Send + Sync>> {
+        let metadata = taxi.metadata();
         let snapshot = metadata.current_snapshot().expect("taxi has a snapshot");
-        let storage = MemoryStorage::new();
-        let uri = format!("{FIXTURE_URI}/metadata/column-metrics.avro");
+        let file_io = taxi.file_io();
+        let location = metadata.location();
+        let manifest_path = format!("{location}/metadata/column-metrics.avro");
         let mut writer = ManifestWriterBuilder::new(
-            storage.new_output(&uri)?,
+            file_io.new_output(&manifest_path)?,
             Some(snapshot.snapshot_id()),
             metadata.current_schema().clone(),
             metadata.default_partition_spec().as_ref().clone(),
@@ -329,7 +350,7 @@ mod tests {
                 "2024-01-10",
             )?)]));
         writer.add_file(
-            file.file_path(format!("{FIXTURE_URI}/data/metrics-first.parquet"))
+            file.file_path(format!("{location}/data/metrics-first.parquet"))
                 .null_value_counts([(1, 2), (4, 4)].into())
                 .column_sizes([(1, 100), (4, 200)].into())
                 .lower_bounds([(1, Datum::int(2)), (4, Datum::long(10))].into())
@@ -338,7 +359,7 @@ mod tests {
             snapshot.sequence_number(),
         )?;
         writer.add_file(
-            file.file_path(format!("{FIXTURE_URI}/data/metrics-second.parquet"))
+            file.file_path(format!("{location}/data/metrics-second.parquet"))
                 .null_value_counts([(1, 3)].into())
                 .column_sizes([(1, 300), (4, 400)].into())
                 .lower_bounds([(1, Datum::int(1)), (4, Datum::long(30))].into())
@@ -348,7 +369,7 @@ mod tests {
         )?;
         let manifest = writer.write_manifest_file().await?;
         let mut list = ManifestListWriter::v2(
-            storage
+            file_io
                 .new_output(snapshot.manifest_list())?
                 .writer()
                 .await?,
@@ -358,13 +379,6 @@ mod tests {
         );
         list.add_manifests([manifest].into_iter())?;
         list.close().await?;
-        Ok(IcebergTestHarness::builder()
-            .with_file(&uri, storage.read(&uri).await?.to_vec())
-            .with_file(
-                snapshot.manifest_list(),
-                storage.read(snapshot.manifest_list()).await?.to_vec(),
-            )
-            .with_table_option("iceberg.snapshot_id", snapshot.snapshot_id().to_string())
-            .with_table_metadata(metadata))
+        Ok(manifest_path)
     }
 }

@@ -1,7 +1,8 @@
-#[cfg(all(feature = "integration", test))]
+mod common;
+
 mod tests {
+    use crate::common::IcebergTestHarness;
     use datafusion::error::Result;
-    use datafusion_distributed_iceberg::test_utils::{FIXTURE_URI, IcebergTestHarness};
 
     #[tokio::test]
     async fn registers_the_fixture_with_the_iceberg_schema() -> Result<()> {
@@ -37,7 +38,8 @@ mod tests {
         let error = harness
             .query(&format!(
                 "CREATE EXTERNAL TABLE invalid (id INT) STORED AS ICEBERG \
-                 LOCATION '{FIXTURE_URI}/metadata/v1.metadata.json'"
+                 LOCATION '{}'",
+                harness.taxi_metadata_location()?
             ))
             .await
             .unwrap_err();
@@ -52,7 +54,7 @@ mod tests {
     #[tokio::test]
     async fn registers_a_table_at_a_specific_snapshot() -> Result<()> {
         let harness = IcebergTestHarness::builder()
-            .with_table_option("iceberg.snapshot_id", "3167948105555765929")
+            .with_table_option("iceberg.snapshot_id", "1")
             .build()
             .await?;
         let (_, batches) = harness.query("SELECT COUNT(*) AS trips FROM taxi").await?;
