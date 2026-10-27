@@ -20,6 +20,11 @@ use std::task::{Context, Poll};
 use tokio_stream::wrappers::WatchStream;
 use tokio_util::sync::CancellationToken;
 
+/// Number of appended entries between two passes that evict the entries every broadcast reader
+/// has already read (see [QueueState]). Each pass scans all readers while holding the queue lock,
+/// so running it on every append would add work proportional to the number of consumer tasks to
+/// every batch. In exchange, an entry that every reader has already read can stay in memory for
+/// up to `RECLAIM_INTERVAL - 1` more appends before being evicted.
 const RECLAIM_INTERVAL: usize = 8;
 
 /// [ExecutionPlan] that scales up partitions for network broadcasting.
@@ -241,13 +246,27 @@ impl ExecutionPlan for BroadcastExec {
     }
 }
 
-/// Represents the queue for a single real partition, which multiple virtual partitions may share.
-/// Assume we have 4 consumer tasks each represented as a reader, this could create a situation as
-/// such:
+/// Buffered output of a single [BroadcastExec] input partition.
+///
+/// [BroadcastExec] executes each input partition only once, but every consumer task reads it
+/// through its own output partition. Each input partition therefore has one queue: the producer
+/// task appends the input partition's batches as entries, and every consumer task gets a reader
+/// that independently reads all entries from the start.
+///
+/// Entries are addressed with cursors: absolute positions in the stream of appended entries.
+/// Cursors only grow and are not reused after entries are evicted:
+/// - `base_cursor`: position of the first entry still retained in `entries`.
+/// - `tail_cursor`: position that the next appended entry will take.
+/// - `next_cursor`: per reader, position of the next entry that reader will read. A reader that
+///   was not claimed yet (`Pending`) counts as being at position 0, as it still needs to read
+///   every entry once its consumer task starts.
+///
+/// Assume we have 4 consumer tasks, each represented as a reader. This could create a situation
+/// such as:
 ///
 /// ```text
 ///
-///              base_sequence             tail_sequence
+///               base_cursor               tail_cursor
 ///                    │                         │
 ///                    ▼                         ▼
 ///            ┌ ─ ─┌────┬────┬────┐     ┌────┬────┐
@@ -262,15 +281,20 @@ impl ExecutionPlan for BroadcastExec {
 ///            └──────────┴──────────┴──────────┴──────────┘
 /// ```
 ///
-/// The `base_sequence` represents the first retained entry while `tail_sequence` indicates the next
-/// append position. In this example, entry `e0` is shown using a dashed line because it has already
-/// been evicted and `base_sequence` now points at `e1`. Every retaining reader has advanced past
-/// `e1`, so `e1` is reclaimable but remains temporarily retained until an append reaches the next
-/// `RECLAIM_INTERVAL` boundary. At that boundary, the queue removes entries before the smallest
-/// `next_sequence` (the most lagging retaining reader, `r0` here) and advances `base_sequence`:
+/// Evicting entries requires scanning every reader to find the most lagging one, so rather than
+/// doing it on every append, the queue does it only when an append moves `tail_cursor` to a
+/// multiple of [RECLAIM_INTERVAL], or when a reader is released. Each of these passes removes the
+/// entries before the smallest `next_cursor` among the readers that are not released, and moves
+/// `base_cursor` up to it.
+///
+/// In this example, entry `e0` is shown using a dashed line because it was already evicted, and
+/// `base_cursor` now points at `e1`. Every reader that is not released has already read `e1`,
+/// so `e1` could be evicted, but it stays in memory until the next eviction pass. Assuming that
+/// the append of `eN+1` triggers that pass, `e1` gets evicted, as `r0` is the most lagging reader
+/// and it only needs `e2` onwards:
 ///
 /// ```text
-///                   base_sequence             tail_sequence
+///                    base_cursor               tail_cursor
 ///                         │                         │
 ///                         ▼                         ▼
 ///            ┌ ─ ─┌ ─ ─┌────┬────┐     ┌────┬────┬────┐
@@ -287,8 +311,8 @@ impl ExecutionPlan for BroadcastExec {
 #[derive(Debug)]
 struct QueueState<T> {
     entries: VecDeque<T>,
-    base_sequence: usize,
-    tail_sequence: usize,
+    base_cursor: usize,
+    tail_cursor: usize,
     readers: Box<[ReaderSlot]>,
     retaining_readers: usize,
     closed: bool,
@@ -297,11 +321,11 @@ struct QueueState<T> {
 #[derive(Debug)]
 enum ReaderSlot {
     Pending,
-    Reading { next_sequence: usize },
+    Reading { next_cursor: usize },
     Released,
 }
 
-/// Shared state and signals for one real input partition.
+/// Shared state and signals for one [BroadcastExec] input partition.
 ///
 /// The producer task owns the input stream and queue handle while every consumer stream shares the
 /// same queue state but has its own reader cursor and notification receiver. There are two flows
@@ -343,26 +367,26 @@ enum ReaderSlot {
 /// ## Cancellation flow:
 ///
 /// ```text
-/// ┌────────────────┐
-/// │                │───────────────────────┐                      ┌─────────────────────────┐
-/// │   Consumer 0   │─────────────┐         │                      │BroadcastShared          │       ┌────────────close ───────┐
-/// │                │◀───────┐    │         │    release reader    │ ┌─────────────────────┐ │       │       (acquires lock)   │
-/// └────────────────┘        │    │         └────(acquires lock)───┼▶│  Mutex(QueueState)  │◀┼───────┘                         │
-///                           │    │                                │ └─────────────────────┘ │             ┌────────────────┐  │
-///                           │    │                                │            │ notify on  │             │                │  │
-/// ┌────────────────┐        │    │                                │            ▼   close    │     ┌──────▶│    Producer    │──┘
-/// │                │        │    │   ┌───────────────┐    notify  │ ┌─────────────────────┐ │     │       │                │
-/// │   Consumer 1   │◀────notify──┼───│ Watch Channel │◀──signals──┼─│       Sender        │ │  cancel     └────────────────┘
-/// │                │     signal  │   └───────────────┘            │ └─────────────────────┘ │  signal
-/// └────────────────┘        │    │                                │ ┌─────────────────────┐ │     │
-///                           │    └────────────cancel──────────────┼▶│  CancellationToken  │─┼─────┘
-///       ...                 │                                     │ └─────────────────────┘ │
-///                           │                                     └─────────────────────────┘
-/// ┌────────────────┐        │
-/// │                │        │
-/// │   Consumer N   │◀───────┘
-/// │                │
-/// └────────────────┘
+///                                                                                                            ┌────────────────┐
+///                                   ┌─────────────────────────┐                      ┌───────────────────────│                │
+/// ┌─────── close ───────────┐       │BroadcastShared          │                      │         ┌─────────────│   Consumer 0   │
+/// │   (acquires lock)       │       │ ┌─────────────────────┐ │    release reader    │         │    ┌───────▶│                │
+/// │                         └───────┼▶│  Mutex(QueueState)  │◀┼───(acquires lock)────┘         │    │        └────────────────┘
+/// │  ┌────────────────┐             │ └─────────────────────┘ │                                │    │
+/// │  │                │             │  notify on │            │                                │    │
+/// └──│    Producer    │◀──────┐     │    close   ▼            │                                │    │        ┌────────────────┐
+///    │                │       │     │ ┌─────────────────────┐ │  notify    ┌───────────────┐   │    │        │                │
+///    └────────────────┘     cancel  │ │       Sender        │─┼──signals──▶│ Watch Channel │───┼──notify────▶│   Consumer 1   │
+///                           signal  │ └─────────────────────┘ │            └───────────────┘   │  signal     │                │
+///                             │     │ ┌─────────────────────┐ │                                │    │        └────────────────┘
+///                             └─────┼─│  CancellationToken  │◀┼──────────────cancel────────────┘    │
+///                                   │ └─────────────────────┘ │                                     │                 ...
+///                                   └─────────────────────────┘                                     │
+///                                                                                                   │        ┌────────────────┐
+///                                                                                                   │        │                │
+///                                                                                                   └───────▶│   Consumer N   │
+///                                                                                                            │                │
+///                                                                                                            └────────────────┘
 /// ```
 ///
 /// In this case, the consumer initiates the action by mutating the queue state to release itself.
@@ -396,8 +420,8 @@ impl<T: Clone> BroadcastQueue<T> {
             shared: Arc::new(BroadcastShared {
                 queue_state: Mutex::new(QueueState {
                     entries: VecDeque::new(),
-                    base_sequence: 0,
-                    tail_sequence: 0,
+                    base_cursor: 0,
+                    tail_cursor: 0,
                     readers: (0..expected_readers).map(|_| ReaderSlot::Pending).collect(),
                     retaining_readers: expected_readers,
                     closed: false,
@@ -414,7 +438,7 @@ impl<T: Clone> BroadcastQueue<T> {
         }
     }
 
-    /// Appends a value to the entry queue and increments `tail_sequence`. Every `RECLAIM_INTERVAL`
+    /// Appends a value to the entry queue and increments `tail_cursor`. Every `RECLAIM_INTERVAL`
     /// calls, this checks for reclaimable entries in the queue.
     ///
     /// This method will not append the value and returns `false` if no retaining readers remain.
@@ -427,8 +451,8 @@ impl<T: Clone> BroadcastQueue<T> {
             }
 
             queue_state.entries.push_back(value);
-            queue_state.tail_sequence += 1;
-            if queue_state.tail_sequence.is_multiple_of(RECLAIM_INTERVAL) {
+            queue_state.tail_cursor += 1;
+            if queue_state.tail_cursor.is_multiple_of(RECLAIM_INTERVAL) {
                 Self::reclaim_processed_entries(&mut queue_state)
             } else {
                 Vec::new()
@@ -441,22 +465,22 @@ impl<T: Clone> BroadcastQueue<T> {
         true
     }
 
-    /// Frees all entries in the queue that have been processed and updates `base_sequence` to point
+    /// Frees all entries in the queue that have been processed and updates `base_cursor` to point
     /// at the first non-freeable position.
     fn reclaim_processed_entries(queue_state: &mut QueueState<T>) -> Vec<T> {
-        let minimum_sequence = queue_state
+        let minimum_cursor = queue_state
             .readers
             .iter()
             .filter_map(|reader| match reader {
                 ReaderSlot::Pending => Some(0),
-                ReaderSlot::Reading { next_sequence } => Some(*next_sequence),
+                ReaderSlot::Reading { next_cursor } => Some(*next_cursor),
                 ReaderSlot::Released => None,
             })
             .min()
-            .unwrap_or(queue_state.tail_sequence);
+            .unwrap_or(queue_state.tail_cursor);
 
-        let reclaim_count = minimum_sequence - queue_state.base_sequence;
-        queue_state.base_sequence = minimum_sequence;
+        let reclaim_count = minimum_cursor - queue_state.base_cursor;
+        queue_state.base_cursor = minimum_cursor;
         queue_state.entries.drain(..reclaim_count).collect()
     }
 }
@@ -473,7 +497,7 @@ impl<T: Clone> Drop for BroadcastQueue<T> {
 
 impl<T: Clone> BroadcastReaders<T> {
     /// Creates a new `BroadcastConsumer` for a given consumer task and claims its reader slot,
-    /// starting at sequence zero.
+    /// starting at cursor zero.
     ///
     /// Returns an error if the consumer task is out of range or if the same reader is claimed more
     /// than once.
@@ -484,7 +508,7 @@ impl<T: Clone> BroadcastReaders<T> {
             return internal_err!("broadcast consumer {consumer_task} is out of range");
         };
         match reader {
-            ReaderSlot::Pending => *reader = ReaderSlot::Reading { next_sequence: 0 },
+            ReaderSlot::Pending => *reader = ReaderSlot::Reading { next_cursor: 0 },
             ReaderSlot::Reading { .. } | ReaderSlot::Released => {
                 return internal_err!("broadcast consumer {consumer_task} cannot execute twice");
             }
@@ -536,22 +560,22 @@ impl<T: Clone> Stream for BroadcastConsumer<T> {
         loop {
             let (value, closed) = {
                 let mut state = self.shared.queue_state.lock().unwrap();
-                let next_sequence = match state.readers[self.consumer_id] {
-                    ReaderSlot::Reading { next_sequence } => next_sequence,
+                let next_cursor = match state.readers[self.consumer_id] {
+                    ReaderSlot::Reading { next_cursor } => next_cursor,
                     ReaderSlot::Released => return Poll::Ready(None),
                     ReaderSlot::Pending => unreachable!("an unclaimed consumer was polled"),
                 };
-                if next_sequence < state.tail_sequence {
-                    let offset = next_sequence
-                        .checked_sub(state.base_sequence)
+                if next_cursor < state.tail_cursor {
+                    let offset = next_cursor
+                        .checked_sub(state.base_cursor)
                         .expect("broadcast consumer fell behind evicted entries");
                     let value = state
                         .entries
                         .get(offset)
-                        .expect("broadcast entry sequence was not retained")
+                        .expect("broadcast entry cursor was not retained")
                         .clone();
                     state.readers[self.consumer_id] = ReaderSlot::Reading {
-                        next_sequence: next_sequence + 1,
+                        next_cursor: next_cursor + 1,
                     };
                     (Some(value), false)
                 } else {
@@ -636,9 +660,9 @@ mod tests {
         queue.shared.queue_state.lock().unwrap().entries.len()
     }
 
-    fn sequence_bounds<T: Clone>(queue: &BroadcastQueue<T>) -> (usize, usize) {
+    fn cursor_bounds<T: Clone>(queue: &BroadcastQueue<T>) -> (usize, usize) {
         let state = queue.shared.queue_state.lock().unwrap();
-        (state.base_sequence, state.tail_sequence)
+        (state.base_cursor, state.tail_cursor)
     }
 
     #[tokio::test]
@@ -654,7 +678,7 @@ mod tests {
         assert_eq!(consumer0.next().await, Some(10));
         assert_eq!(buffered_len(&queue), 2);
         assert_eq!(consumer1.next().await, Some(10));
-        assert_eq!(sequence_bounds(&queue), (0, 2));
+        assert_eq!(cursor_bounds(&queue), (0, 2));
 
         assert_eq!(consumer0.next().await, Some(20));
         assert_eq!(buffered_len(&queue), 2);
@@ -665,7 +689,7 @@ mod tests {
         for value in [30, 40, 50, 60, 70, 80] {
             queue.push(value);
         }
-        assert_eq!(sequence_bounds(&queue), (2, 8));
+        assert_eq!(cursor_bounds(&queue), (2, 8));
         assert_eq!(buffered_len(&queue), 6);
 
         drop(consumer0);
