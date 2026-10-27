@@ -1,11 +1,12 @@
 use crate::common::require_one_child;
 use crate::distributed_planner::ProducerHead;
 use crate::execution_plans::common::{salted_partitioning, scale_partitioning};
+use crate::execution_plans::range_partitioning::{concat_ranges, split_range};
 use crate::stage::{LocalStage, Stage};
 use crate::worker::WorkerConnectionPool;
 use crate::{DistributedTaskContext, MaybeEncoded, NetworkBoundary};
 use datafusion::common::tree_node::TreeNodeRecursion;
-use datafusion::common::{Result, not_impl_err, plan_err};
+use datafusion::common::{Result, internal_datafusion_err, not_impl_err, plan_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::memory_pool::MemoryConsumer;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
@@ -28,7 +29,7 @@ pub const PRODUCER_SALT_DEFAULT: u64 = 0x517cc1b727220a95;
 /// Routing strategy between producer and consumer stages.
 #[derive(Debug, Clone)]
 pub enum ShuffleMode {
-    /// Hash(key, consumer_task_count × consumer_partition_count): consumer reads global partitions
+    /// Consumers read disjoint slices of the producers' global hash or range partitions.
     Direct,
     /// Two-phase: producer hashes (key+salt) into consumer_task_count buckets; each consumer then
     /// re-partitions locally into consumer_partition_count partitions via a RepartitionExec.
@@ -113,6 +114,19 @@ pub enum ShuffleMode {
 /// - When input streams carry an output ordering, each partition sort-merges incoming
 ///   streams from upstream tasks to preserve that ordering across tasks.
 ///
+/// Range shuffles retain the original cuts instead of multiplying a hash modulus. Each
+/// producer routes to the same global layout; each consumer advertises a bounded slice.
+/// For five original partitions and three consumers, an empty slot makes the widths equal:
+///
+/// ```text
+/// Every producer: cuts [B, C, D, E, E] -> six global partitions
+///                       |       |        |
+/// Consumer 0: [-inf,B), [B,C)          bounds [-inf,C)
+/// Consumer 1: [C,D),    [D,E)          bounds [C,E)
+/// Consumer 2: [E,E),    [E,+inf)       bounds [E,+inf)
+///              empty
+/// ```
+///
 /// This node has two variants.
 /// 1. Pending: acts as a placeholder for the distributed optimization step to mark it as ready.
 /// 2. Ready: runs within a distributed stage and queries the next input stage over the network
@@ -121,8 +135,8 @@ pub enum ShuffleMode {
 pub struct NetworkShuffleExec {
     /// the properties we advertise for this execution plan
     pub(crate) properties: Arc<PlanProperties>,
-    /// producer's output partitioning; in TwoPhase mode `properties` advertises UnknownPartitioning
-    /// since the salt breaks hash guarantees, so we stash the original here.
+    /// Hash template or complete global range layout used by every producer. Range consumers
+    /// advertise only their bounded slice; TwoPhase consumers advertise unknown partitioning.
     pub(crate) producer_partitioning: Partitioning,
     pub(crate) input_stage: Stage,
     pub(crate) worker_connections: WorkerConnectionPool,
@@ -130,6 +144,47 @@ pub struct NetworkShuffleExec {
 }
 
 impl NetworkShuffleExec {
+    /// Keep the original range cuts and divide them among consumers. Repeated cuts add empty
+    /// slots so each task has the same width; outer bounds retain the cuts between tasks.
+    pub(crate) fn with_range_consumer_tasks(&self, consumers: usize) -> Result<Self> {
+        let Partitioning::Range(range) = &self.producer_partitioning else {
+            return Ok(self.clone());
+        };
+        let ranges = split_range(range, consumers)?
+            .into_iter()
+            .map(|task| task.partitioning)
+            .collect::<Vec<_>>();
+        let global = concat_ranges(&ranges)?
+            .ok_or_else(|| internal_datafusion_err!("Split shuffle ranges must be adjacent"))?;
+        let mut plan = self.clone();
+        plan.properties = Arc::new(
+            self.properties
+                .as_ref()
+                .clone()
+                .with_partitioning(Partitioning::Range(ranges[0].clone())),
+        );
+        plan.producer_partitioning = Partitioning::Range(global);
+        Ok(plan)
+    }
+
+    pub(crate) fn to_task_specialized(&self, ctx: DistributedTaskContext) -> Result<Self> {
+        let Partitioning::Range(range) = &self.producer_partitioning else {
+            return Ok(self.clone());
+        };
+        let ranges = split_range(range, ctx.task_count)?;
+        let Some(task) = ranges.get(ctx.task_index) else {
+            return plan_err!("Missing shuffle range for task {}", ctx.task_index);
+        };
+        let mut plan = self.clone();
+        plan.properties = Arc::new(
+            self.properties
+                .as_ref()
+                .clone()
+                .with_partitioning(Partitioning::Range(task.partitioning.clone())),
+        );
+        Ok(plan)
+    }
+
     /// Computes the properties advertised by this [NetworkShuffleExec].
     ///
     /// When `input_task_count > 1`, partition-local equivalence constants from individual
@@ -202,8 +257,13 @@ impl NetworkShuffleExec {
         let Some(r_exec) = input.downcast_ref::<RepartitionExec>() else {
             return plan_err!("The input of a NetworkShuffleExec can only be a RepartitionExec");
         };
-        if !matches!(r_exec.partitioning(), Partitioning::Hash(_, _)) {
-            return plan_err!("The input of a NetworkShuffleExec must be hash partitioned");
+        if !matches!(
+            r_exec.partitioning(),
+            Partitioning::Hash(_, _) | Partitioning::Range(_)
+        ) {
+            return plan_err!(
+                "The input of a NetworkShuffleExec must be hash or range partitioned"
+            );
         }
 
         let input_properties = Arc::clone(input.properties());
@@ -239,6 +299,16 @@ impl NetworkBoundary for NetworkShuffleExec {
 
     fn producer_head(&self, consumer_task_count: usize) -> Result<ProducerHead> {
         let partitioning = match &self.mode {
+            ShuffleMode::Direct if matches!(self.producer_partitioning, Partitioning::Range(_)) => {
+                if self.producer_partitioning.partition_count()
+                    != self.properties.partitioning.partition_count() * consumer_task_count
+                {
+                    return plan_err!(
+                        "Range shuffle output does not cover its producer partitions"
+                    );
+                }
+                self.producer_partitioning.clone()
+            }
             ShuffleMode::Direct => {
                 scale_partitioning(&self.producer_partitioning, |n| n * consumer_task_count)?
             }
@@ -262,6 +332,9 @@ impl DisplayAs for NetworkShuffleExec {
             f,
             "[Stage {stage}] => NetworkShuffleExec: output_partitions={partitions}, input_tasks={input_tasks}",
         )?;
+        if let Partitioning::Range(range) = &self.properties.partitioning {
+            write!(f, ", partitioning={range}")?;
+        }
         // Only display sort expressions when multiple input tasks require sort-merging.
         if let Some(ordering) = self.properties.output_ordering()
             && !ordering.is_empty()

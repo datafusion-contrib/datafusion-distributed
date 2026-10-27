@@ -1,4 +1,5 @@
 use crate::common::TreeNodeExt;
+use crate::execution_plans::NetworkShuffleExec;
 use crate::stage::LocalStage;
 use crate::{NetworkBoundaryExt, Stage};
 use datafusion::common::Result;
@@ -18,6 +19,13 @@ pub(crate) fn prepare_network_boundaries(
     let query_id = Uuid::new_v4();
 
     let transformed = plan.transform_up_with_task_count(1, |plan, task_count| {
+        // User-supplied boundaries also need their range layout sized for consumer tasks.
+        let plan: Arc<dyn ExecutionPlan> =
+            if let Some(shuffle) = plan.downcast_ref::<NetworkShuffleExec>() {
+                Arc::new(shuffle.with_range_consumer_tasks(task_count)?)
+            } else {
+                plan
+            };
         let Some(nb) = plan.as_network_boundary() else {
             return Ok(Transformed::no(plan));
         };

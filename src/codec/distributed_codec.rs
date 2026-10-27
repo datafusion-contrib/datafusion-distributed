@@ -120,6 +120,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 two_phase,
                 salt,
                 ordering,
+                output_partitioning,
             }) => {
                 let schema: Schema = schema
                     .as_ref()
@@ -134,6 +135,13 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     proto_converter,
                 )?
                 .ok_or(proto_error("NetworkShuffleExec is missing partitioning"))?;
+
+                let output_partitioning = parse_protobuf_partitioning(
+                    output_partitioning.as_ref(),
+                    &decode_ctx,
+                    &schema,
+                    proto_converter,
+                )?;
 
                 let sort_exprs =
                     parse_physical_sort_exprs(&ordering, &decode_ctx, &schema, proto_converter)?;
@@ -164,12 +172,22 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 } else {
                     ShuffleMode::Direct
                 };
-                Ok(Arc::new(new_network_hash_shuffle_exec(
+                let mut shuffle = new_network_hash_shuffle_exec(
                     partitioning,
                     equivalence_properties,
                     parse_stage_proto(input_stage, inputs, dynamic_filter_anchors)?,
                     mode,
-                )))
+                );
+                if let Some(output_partitioning) = output_partitioning {
+                    shuffle.properties = Arc::new(
+                        shuffle
+                            .properties
+                            .as_ref()
+                            .clone()
+                            .with_partitioning(output_partitioning),
+                    );
+                }
+                Ok(Arc::new(shuffle))
             }
             DistributedExecNode::NetworkCoalesceTasks(NetworkCoalesceExecProto {
                 schema,
@@ -377,6 +395,15 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 .unwrap_or_default();
             let inner = NetworkShuffleExecProto {
                 schema: Some(node.schema().try_into()?),
+                output_partitioning: matches!(node.producer_partitioning, Partitioning::Range(_))
+                    .then(|| {
+                        serialize_partitioning(
+                            node.properties().output_partitioning(),
+                            self,
+                            proto_converter,
+                        )
+                    })
+                    .transpose()?,
                 partitioning: Some(serialize_partitioning(
                     &node.producer_partitioning,
                     self,
@@ -659,6 +686,9 @@ pub struct NetworkShuffleExecProto {
     /// Sort expressions preserved across tasks and used by workers to sort-merge streams.
     #[prost(message, repeated, tag = "7")]
     ordering: Vec<protobuf::PhysicalSortExprNode>,
+    /// A range consumer's bounded slice, distinct from the global producer routing layout.
+    #[prost(message, optional, tag = "8")]
+    output_partitioning: Option<protobuf::Partitioning>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]

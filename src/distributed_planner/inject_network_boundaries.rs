@@ -54,7 +54,7 @@ use uuid::Uuid;
 /// - Starting from the leaves, we climb the plan, asking the [TaskEstimator] for a task count
 ///   at each leaf and merging children's task counts at each inner node.
 /// - We keep going until the current node is one that requires a network boundary **above it**
-///   (e.g. currently a hash `RepartitionExec` (→ shuffle), a `BroadcastExec` (→ broadcast), or any
+///   (e.g. a hash or range `RepartitionExec` (→ shuffle), a `BroadcastExec` (→ broadcast), or any
 ///   other node whose parent is `CoalescePartitionsExec` / `SortPreservingMergeExec` (→ coalesce).
 /// - At that moment, that node and the subtree underneath it form the stage we've just delimited;
 ///   the boundary will be injected above it in Phase 3.
@@ -360,9 +360,12 @@ async fn _inject_network_boundaries(
     }
     task_count.soft = task_count.soft.min(max_tasks as f64);
 
-    // Upon reaching a hash repartition, we need to introduce a network shuffle right above it.
+    // Hash and range repartitions redistribute keys across task boundaries.
     if let Some(r_exec) = plan.downcast_ref::<RepartitionExec>()
-        && matches!(r_exec.partitioning(), Partitioning::Hash(_, _))
+        && matches!(
+            r_exec.partitioning(),
+            Partitioning::Hash(_, _) | Partitioning::Range(_)
+        )
     {
         let input_stage = LocalStage {
             query_id: nb_ctx.query_id,
@@ -506,6 +509,10 @@ impl InjectNetworkBoundaryContext<'_> {
             if let Some(shuffle) = plan.downcast_ref::<NetworkShuffleExec>()
                 && matches!(shuffle.mode, ShuffleMode::Direct)
             {
+                if matches!(shuffle.producer_partitioning, Partitioning::Range(_)) {
+                    let shuffle = shuffle.with_range_consumer_tasks(task_count.as_usize())?;
+                    return Ok(self.plan_with_task_count(Arc::new(shuffle), task_count));
+                }
                 let consumer_partitions = shuffle.producer_partitioning.partition_count();
                 // now that task_count is the final reconciled consumer count,
                 // decide whether TwoPhase mode is warranted.

@@ -52,7 +52,7 @@ pub(super) fn scale_partitioning(
         Partitioning::Hash(hash, p) => Ok(Partitioning::Hash(hash.clone(), f(*p))),
         Partitioning::UnknownPartitioning(p) => Ok(Partitioning::UnknownPartitioning(f(*p))),
         Partitioning::Range(_) => not_impl_err!(
-            "scaling up range partitioned data is not supported. See https://github.com/datafusion-contrib/datafusion-distributed/issues/628"
+            "Range partitioning requires explicit split points and task bounds, not count-only scaling"
         ),
     }
 }

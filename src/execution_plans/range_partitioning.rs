@@ -1,6 +1,6 @@
 use crate::DistributedTaskContext;
 use crate::common::TreeNodeExt;
-use crate::execution_plans::{DistributedLeafExec, NetworkCoalesceExec};
+use crate::execution_plans::{DistributedLeafExec, NetworkCoalesceExec, NetworkShuffleExec};
 use datafusion::common::tree_node::Transformed;
 use datafusion::common::{Result, plan_err};
 use datafusion::physical_expr::{Partitioning, RangePartitioning};
@@ -159,6 +159,11 @@ pub(crate) fn task_ranges(
                             coalesce.to_task_specialized(ctx.task_index)?,
                         )));
                     }
+                    if let Some(shuffle) = plan.downcast_ref::<NetworkShuffleExec>() {
+                        return Ok(Transformed::yes(Arc::new(
+                            shuffle.to_task_specialized(ctx)?,
+                        )));
+                    }
                     Ok(Transformed::no(plan))
                 })?
                 .data;
@@ -168,4 +173,57 @@ pub(crate) fn task_ranges(
             })
         })
         .collect::<Result<Option<Vec<_>>>>()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use datafusion::common::{ScalarValue, SplitPoint};
+    use datafusion::physical_expr::expressions::Column;
+    use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
+
+    #[test]
+    fn coalesce_ranges_with_two_padding_partitions() -> Result<()> {
+        let point = |value| SplitPoint::new(vec![ScalarValue::Int32(Some(value))]);
+        let range = RangePartitioning::try_new(
+            LexOrdering::new([PhysicalSortExpr::new_default(Arc::new(Column::new(
+                "key", 0,
+            )))])
+            .unwrap(),
+            (1..10).map(point).collect(),
+        )?;
+        let tasks = split_range(&range, 5)?
+            .into_iter()
+            .map(|task| task.partitioning)
+            .collect::<Vec<_>>();
+
+        // Coalesce five two-partition producers into groups of three and two tasks.
+        let left = concat_ranges(&tasks[..3])?.unwrap();
+        let right = concat_ranges(&tasks[3..])?.unwrap();
+        let (right, leading) = pad_range(&right, left.partition_count())?;
+        assert_eq!(leading, 2);
+        assert_eq!(right.start_bound(), Some(&point(6)));
+        assert_eq!(
+            right.split_points(),
+            &[point(6), point(6), point(7), point(8), point(9)]
+        );
+
+        let combined = concat_ranges(&[left, right])?.unwrap();
+        assert_eq!(combined.partition_count(), 12);
+        assert_eq!(combined.start_bound(), None);
+        assert_eq!(combined.end_bound(), None);
+        assert_eq!(
+            combined.split_points(),
+            &(1..=6)
+                .chain([6, 6])
+                .chain(7..10)
+                .map(point)
+                .collect::<Vec<_>>()
+        );
+
+        // Overlapping or reversed task ranges cannot be advertised as one range layout.
+        assert!(concat_ranges(&[tasks[1].clone(), tasks[0].clone()])?.is_none());
+        assert!(concat_ranges(&[tasks[0].clone(), tasks[0].clone()])?.is_none());
+        Ok(())
+    }
 }
