@@ -342,6 +342,107 @@ mod tests {
         exact_same_data(local.task_ctx(), local_plan, distributed_plan).await
     }
 
+    #[test_case(false; "static_task_count")]
+    #[test_case(true; "dynamic_task_count")]
+    #[tokio::test]
+    async fn flat_union_preserves_max_and_range_task_counts(
+        dynamic_task_count: bool,
+    ) -> Result<(), Box<dyn Error>> {
+        let (mut distributed, _guard, _) = start_localhost_context(4, DefaultSessionBuilder).await;
+        distributed.set_distributed_dynamic_task_count(dynamic_task_count)?;
+        distributed.set_distributed_desired_task_count_handler(|ev: DesiredTaskCountEvent| {
+            let scan = ev.plan.downcast_ref::<DataSourceExec>()?;
+            let config = scan.data_source().downcast_ref::<FileScanConfig>()?;
+            let column = config.file_source.projection()?.iter().find_map(|expr| {
+                expr.expr
+                    .downcast_ref::<Column>()
+                    .map(|col| col.name().to_string())
+            })?;
+            Some(match column.as_str() {
+                "MinTemp" => Ok(DesiredTaskCountEventResponse::max(NonZeroUsize::MIN, 4.0)),
+                "MaxTemp" => DesiredTaskCountEventResponse::try_range(
+                    NonZeroUsize::new(3).unwrap(),
+                    NonZeroUsize::new(4).unwrap(),
+                    0.5,
+                ),
+                _ => Ok(DesiredTaskCountEventResponse::soft(0.5)),
+            })
+        });
+        let local = SessionContext::default();
+        *local.state_ref().write().config_mut() = distributed.copied_config();
+        register_parquet_tables(&local).await?;
+        register_parquet_tables(&distributed).await?;
+
+        let query = r#"
+            SELECT "MinTemp" AS v FROM weather
+            UNION ALL
+            SELECT "MaxTemp" AS v FROM weather
+            UNION ALL
+            SELECT "Rainfall" AS v FROM weather
+            ORDER BY v
+        "#;
+        let local_plan = local.sql(query).await?.create_physical_plan().await?;
+        let distributed_plan = distributed.sql(query).await?.create_physical_plan().await?;
+        exact_same_data(local.task_ctx(), local_plan, Arc::clone(&distributed_plan)).await?;
+
+        // Render after execution so the dynamic variant shows the stages it actually ran.
+        let distributed_plan_str = display_plan_ascii(distributed_plan.as_ref(), false);
+        if !dynamic_task_count {
+            assert_snapshot!(distributed_plan_str, @"
+            ┌───── DistributedExec
+            │ SortPreservingMergeExec: [v@0 ASC NULLS LAST]
+            │   [Stage 1] => NetworkCoalesceExec: output_partitions=27, input_tasks=3
+            └──────────────────────────────────────────────────
+              ┌───── Stage 1 ── tasks=3, partitions=27
+              │ DistributedUnionExec: t0:[c0, c1(2/3), c2] t1:[c1(0/3)] t2:[c1(1/3)]
+              │   ProjectionExec: expr=[MinTemp@0 as v]
+              │     SortExec: expr=[MinTemp@0 ASC NULLS LAST], preserve_partitioning=[true]
+              │       DistributedLeafExec:
+              │         t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp], file_type=parquet
+              │   ProjectionExec: expr=[MaxTemp@0 as v]
+              │     SortExec: expr=[MaxTemp@0 ASC NULLS LAST], preserve_partitioning=[true]
+              │       DistributedLeafExec:
+              │         t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MaxTemp], file_type=parquet
+              │         t1: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MaxTemp], file_type=parquet
+              │         t2: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MaxTemp], file_type=parquet
+              │   ProjectionExec: expr=[Rainfall@0 as v]
+              │     SortExec: expr=[Rainfall@0 ASC NULLS LAST], preserve_partitioning=[true]
+              │       DistributedLeafExec:
+              │         t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[Rainfall], file_type=parquet
+              └──────────────────────────────────────────────────
+            ");
+        } else {
+            // Dynamic task counts are chosen at runtime, so check the bounds rather than the layout.
+            let union_line = distributed_plan_str
+                .lines()
+                .find(|line| line.contains("DistributedUnionExec:"))
+                .ok_or("missing DistributedUnionExec")?;
+            let contexts: Vec<&str> = union_line
+                .split(|c: char| c.is_whitespace() || matches!(c, '[' | ']' | ','))
+                .filter(|token| token.starts_with('c'))
+                .collect();
+            // MinTemp has max(1): it runs unsplit, exactly once.
+            let c0: Vec<&str> = contexts
+                .iter()
+                .copied()
+                .filter(|c| c.starts_with("c0"))
+                .collect();
+            assert_eq!(c0, ["c0"], "{union_line}");
+            // MaxTemp has range(3, 4): one context per task, all agreeing on a count in 3..=4.
+            let mut c1: Vec<&str> = contexts
+                .iter()
+                .copied()
+                .filter(|c| c.starts_with("c1"))
+                .collect();
+            c1.sort();
+            let n = c1.len();
+            assert!((3..=4).contains(&n), "{union_line}");
+            let expected: Vec<String> = (0..n).map(|i| format!("c1({i}/{n})")).collect();
+            assert_eq!(c1, expected, "{union_line}");
+        }
+        Ok(())
+    }
+
     async fn exact_same_data(
         task_ctx: Arc<TaskContext>,
         one: Arc<dyn ExecutionPlan>,
