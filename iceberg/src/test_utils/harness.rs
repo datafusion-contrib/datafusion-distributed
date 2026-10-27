@@ -147,6 +147,16 @@ impl IcebergTestHarnessBuilder {
         self
     }
 
+    /// Discovers files during planning instead of execution.
+    pub fn with_eager_file_planning(self) -> Self {
+        self.configure_iceberg(|config| config.eager_file_planning = true)
+    }
+
+    /// Enables Iceberg column statistics during planning.
+    pub fn with_column_stats_enabled(self) -> Self {
+        self.configure_iceberg(|config| config.column_stats_enabled = true)
+    }
+
     /// Serves the supplied metadata while reading data files from the taxi fixture.
     pub fn with_table_metadata(mut self, metadata: TableMetadata) -> Self {
         self.metadata = metadata;

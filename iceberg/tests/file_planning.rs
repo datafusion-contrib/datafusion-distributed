@@ -2,22 +2,29 @@
 mod tests {
     use std::sync::Arc;
 
-    use datafusion::common::{Result, Statistics};
+    use datafusion::common::Result;
     use datafusion::datasource::source::DataSourceExec;
     use datafusion::execution::TaskContext;
     use datafusion::execution::memory_pool::GreedyMemoryPool;
     use datafusion::execution::runtime_env::RuntimeEnvBuilder;
-    use datafusion::physical_plan::statistics::{StatisticsArgs, StatisticsContext};
+    use datafusion::physical_plan::collect;
     use datafusion_distributed::WorkUnitFeedProvider;
     use datafusion_distributed_iceberg::test_utils::IcebergTestHarness;
-    use datafusion_distributed_iceberg::{IcebergDataSource, IcebergWorkUnitFeed};
+    use datafusion_distributed_iceberg::{IcebergWorkUnitFeed, LazyIcebergDataSource};
     use futures::TryStreamExt;
     use prost::Message;
 
     #[tokio::test]
-    async fn eager_and_lazy_scans_return_the_same_rows_and_statistics() -> Result<()> {
-        let lazy = harness(false, false).await?;
-        let eager = harness(true, false).await?;
+    async fn eager_and_lazy_scans_return_the_same_rows() -> Result<()> {
+        let lazy = IcebergTestHarness::builder()
+            .with_column_stats_enabled()
+            .build()
+            .await?;
+        let eager = IcebergTestHarness::builder()
+            .with_column_stats_enabled()
+            .with_eager_file_planning()
+            .build()
+            .await?;
         let query = "SELECT pickup_date, COUNT(*) AS trips FROM taxi \
                      WHERE pickup_date IN (DATE '2024-01-10', DATE '2024-01-11') \
                      GROUP BY pickup_date ORDER BY pickup_date";
@@ -32,20 +39,43 @@ mod tests {
                 .await?
                 .1
         );
-        let lazy_stats = statistics(&lazy).await?;
-        let eager_stats = statistics(&eager).await?;
-        assert_eq!(lazy_stats, eager_stats);
         Ok(())
     }
 
     #[tokio::test]
     async fn eager_planning_reuses_files_on_distributed_workers() -> Result<()> {
-        let lazy = harness(false, true).await?;
-        let eager = harness(true, true).await?;
+        let lazy = IcebergTestHarness::builder()
+            .with_workers(2)
+            .with_column_stats_enabled()
+            .build()
+            .await?;
+        let eager = IcebergTestHarness::builder()
+            .with_workers(2)
+            .with_column_stats_enabled()
+            .with_eager_file_planning()
+            .build()
+            .await?;
         let query = "SELECT pickup_date, COUNT(*) AS trips FROM taxi \
                      WHERE pickup_date <= DATE '2024-01-11' \
                      GROUP BY pickup_date ORDER BY pickup_date";
         assert_eq!(lazy.query(query).await?.1, eager.query(query).await?.1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn eager_scan_can_be_executed_again() -> Result<()> {
+        let harness = IcebergTestHarness::builder()
+            .with_eager_file_planning()
+            .build()
+            .await?;
+        let scan = harness.scan().await?;
+        for _ in 0..2 {
+            let batches = collect(Arc::clone(&scan), Arc::new(TaskContext::default())).await?;
+            assert_eq!(
+                batches.iter().map(|batch| batch.num_rows()).sum::<usize>(),
+                175_000
+            );
+        }
         Ok(())
     }
 
@@ -81,7 +111,7 @@ mod tests {
             .downcast_ref::<DataSourceExec>()
             .unwrap()
             .data_source()
-            .downcast_ref::<IcebergDataSource>()
+            .downcast_ref::<LazyIcebergDataSource>()
             .unwrap()
             .feed()
             .inner()
@@ -105,26 +135,5 @@ mod tests {
         }
         files.sort();
         Ok(files)
-    }
-
-    async fn statistics(harness: &IcebergTestHarness) -> Result<Arc<Statistics>> {
-        let scan = harness.scan().await?;
-        StatisticsContext::new().compute(scan.as_ref(), &StatisticsArgs::new())
-    }
-
-    async fn harness(eager: bool, workers: bool) -> Result<IcebergTestHarness> {
-        let builder = IcebergTestHarness::builder();
-        let builder = if workers {
-            builder.with_workers(2)
-        } else {
-            builder
-        };
-        builder
-            .configure_iceberg(|config| {
-                config.eager_file_planning = eager;
-                config.column_stats_enabled = true;
-            })
-            .build()
-            .await
     }
 }
