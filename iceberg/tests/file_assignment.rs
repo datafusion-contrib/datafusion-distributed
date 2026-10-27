@@ -10,7 +10,7 @@ mod tests {
     use datafusion_distributed::{DistributedExt, DistributedLeafExec};
     use datafusion_distributed_iceberg::EagerIcebergDataSource;
     use datafusion_distributed_iceberg::test_utils::{
-        FIXTURE_URI, IcebergTestHarness, taxi_metadata,
+        FIXTURE_URI, IcebergTestHarness, IcebergTestHarnessBuilder, taxi_metadata,
     };
     use iceberg::io::{MemoryStorage, Storage};
     use iceberg::spec::{
@@ -21,8 +21,18 @@ mod tests {
     #[tokio::test]
     async fn largest_files_balance_tasks_independently_of_manifest_order()
     -> Result<(), Box<dyn Error>> {
-        for reverse in [false, true] {
-            let harness = file_harness(&[100, 90, 10, 5, 4, 3], reverse, true).await?;
+        let files: Vec<_> = [100, 90, 10, 5, 4, 3].into_iter().enumerate().collect();
+        for order in [files.clone(), files.into_iter().rev().collect()] {
+            let harness = file_fixture(order)
+                .await?
+                .with_eager_file_planning()
+                .with_workers(2)
+                .with_target_partitions(2)
+                .configure_session(|state| {
+                    state.with_distributed_file_scan_config_bytes_per_partition(1)
+                })?
+                .build()
+                .await?;
             let plan = harness.physical_plan("SELECT * FROM taxi").await?;
             insta::assert_snapshot!("distributed_skew", assignments(&plan)?);
         }
@@ -31,8 +41,18 @@ mod tests {
 
     #[tokio::test]
     async fn equal_size_files_have_stable_assignments() -> Result<(), Box<dyn Error>> {
-        for reverse in [false, true] {
-            let harness = file_harness(&[10; 4], reverse, true).await?;
+        let files: Vec<_> = [10; 4].into_iter().enumerate().collect();
+        for order in [files.clone(), files.into_iter().rev().collect()] {
+            let harness = file_fixture(order)
+                .await?
+                .with_eager_file_planning()
+                .with_workers(2)
+                .with_target_partitions(2)
+                .configure_session(|state| {
+                    state.with_distributed_file_scan_config_bytes_per_partition(1)
+                })?
+                .build()
+                .await?;
             let plan = harness.physical_plan("SELECT * FROM taxi").await?;
             insta::assert_snapshot!("equal_size_files", assignments(&plan)?);
         }
@@ -40,12 +60,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_assignment_uses_the_same_file_order_and_keeps_empty_partitions()
-    -> Result<(), Box<dyn Error>> {
-        let harness = file_harness(&[100, 90, 10, 5, 4, 3], true, false).await?;
+    async fn local_assignment_cycles_partitions_in_size_order() -> Result<(), Box<dyn Error>> {
+        let harness = file_fixture([100, 90, 10, 5, 4, 3].into_iter().enumerate().rev())
+            .await?
+            .with_eager_file_planning()
+            .with_target_partitions(2)
+            .build()
+            .await?;
         insta::assert_snapshot!("local_skew", assignments(&harness.scan().await?)?);
-        let empty = file_harness(&[], false, false).await?;
-        insta::assert_snapshot!("empty_files", assignments(&empty.scan().await?)?);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn empty_scan_keeps_local_partitions() -> Result<(), Box<dyn Error>> {
+        let harness = file_fixture([])
+            .await?
+            .with_eager_file_planning()
+            .with_target_partitions(2)
+            .build()
+            .await?;
+        insta::assert_snapshot!("empty_files", assignments(&harness.scan().await?)?);
         Ok(())
     }
 
@@ -71,6 +105,8 @@ mod tests {
                 .data_source()
                 .downcast_ref::<EagerIcebergDataSource>()
                 .unwrap();
+            let bytes: u64 = source.planned_files().map(|file| file.length()).sum();
+            writeln!(output, "task {task}: {bytes} bytes")?;
             for partition in 0..source.output_partitioning().partition_count() {
                 let files = source
                     .planned_partition_tasks(partition)?
@@ -83,17 +119,16 @@ mod tests {
                     })
                     .collect::<Vec<_>>()
                     .join(", ");
-                writeln!(output, "task {task}, partition {partition}: [{files}]")?;
+                writeln!(output, "  partition {partition}: [{files}]")?;
             }
         }
         Ok(output)
     }
 
-    async fn file_harness(
-        sizes: &[u64],
-        reverse: bool,
-        distributed: bool,
-    ) -> Result<IcebergTestHarness, Box<dyn Error>> {
+    // Only manifest metadata is needed: these synthetic data files are never opened.
+    async fn file_fixture(
+        files: impl IntoIterator<Item = (usize, u64)>,
+    ) -> Result<IcebergTestHarnessBuilder, Box<dyn Error>> {
         let metadata = taxi_metadata();
         let snapshot = metadata.current_snapshot().unwrap();
         let storage = MemoryStorage::new();
@@ -105,10 +140,6 @@ mod tests {
             metadata.default_partition_spec().as_ref().clone(),
         )
         .build_v2_data();
-        let mut files: Vec<_> = sizes.iter().copied().enumerate().collect();
-        if reverse {
-            files.reverse();
-        }
         for (index, bytes) in files {
             writer.add_file(
                 DataFileBuilder::default()
@@ -136,29 +167,12 @@ mod tests {
         );
         list.add_manifests([manifest].into_iter())?;
         list.close().await?;
-        let harness = IcebergTestHarness::builder()
+        Ok(IcebergTestHarness::builder()
             .with_file(&uri, storage.read(&uri).await?.to_vec())
             .with_file(
                 snapshot.manifest_list(),
                 storage.read(snapshot.manifest_list()).await?.to_vec(),
             )
-            .with_table_metadata(metadata)
-            .configure_iceberg(|config| config.eager_file_planning = true)
-            .configure_session(|mut state| {
-                state
-                    .config()
-                    .get_or_insert_default()
-                    .options_mut()
-                    .execution
-                    .target_partitions = 2;
-                state.with_distributed_file_scan_config_bytes_per_partition(1)
-            })?;
-        let harness = if distributed {
-            harness.with_workers(2)
-        } else {
-            harness
-        };
-        let harness = harness.build().await?;
-        Ok(harness)
+            .with_table_metadata(metadata))
     }
 }

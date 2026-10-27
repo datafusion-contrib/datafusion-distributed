@@ -2,7 +2,9 @@
 source: iceberg/tests/file_assignment.rs
 expression: assignments(&plan)?
 ---
-task 0, partition 0: [file-0.parquet (100 bytes)]
-task 0, partition 1: [file-3.parquet (5 bytes)]
-task 1, partition 0: [file-1.parquet (90 bytes), file-4.parquet (4 bytes)]
-task 1, partition 1: [file-2.parquet (10 bytes), file-5.parquet (3 bytes)]
+task 0: 105 bytes
+  partition 0: [file-0.parquet (100 bytes)]
+  partition 1: [file-3.parquet (5 bytes)]
+task 1: 107 bytes
+  partition 0: [file-1.parquet (90 bytes), file-4.parquet (4 bytes)]
+  partition 1: [file-2.parquet (10 bytes), file-5.parquet (3 bytes)]
