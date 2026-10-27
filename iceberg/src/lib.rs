@@ -35,6 +35,3 @@ pub use table_provider::IcebergTableProviderFactory;
 
 // re-export of iceberg-rust.
 pub use iceberg;
-
-// Preserve the existing names for lazy scans and their codec.
-pub use lazy::{LazyIcebergCodec as IcebergCodec, LazyIcebergDataSource as IcebergDataSource};
