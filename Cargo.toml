@@ -116,3 +116,42 @@ test-case = "3.3.1"
 [workspace.lints.clippy]
 disallowed_types = "deny"
 disallowed-methods = "deny"
+
+[patch.crates-io]
+# Temporary DataFusion 55 backport of apache/datafusion#26593.
+datafusion = { git = "file:///home/bits/datafusion", rev = "d83d594a0078c55190aa5a914f79bbf74a4e9d1d" }
+datafusion-catalog = { git = "file:///home/bits/datafusion", rev = "d83d594a0078c55190aa5a914f79bbf74a4e9d1d" }
+datafusion-catalog-listing = { git = "file:///home/bits/datafusion", rev = "d83d594a0078c55190aa5a914f79bbf74a4e9d1d" }
+datafusion-cli = { git = "file:///home/bits/datafusion", rev = "d83d594a0078c55190aa5a914f79bbf74a4e9d1d" }
+datafusion-common = { git = "file:///home/bits/datafusion", rev = "d83d594a0078c55190aa5a914f79bbf74a4e9d1d" }
+datafusion-common-runtime = { git = "file:///home/bits/datafusion", rev = "d83d594a0078c55190aa5a914f79bbf74a4e9d1d" }
+datafusion-datasource = { git = "file:///home/bits/datafusion", rev = "d83d594a0078c55190aa5a914f79bbf74a4e9d1d" }
+datafusion-datasource-arrow = { git = "file:///home/bits/datafusion", rev = "d83d594a0078c55190aa5a914f79bbf74a4e9d1d" }
+datafusion-datasource-avro = { git = "file:///home/bits/datafusion", rev = "d83d594a0078c55190aa5a914f79bbf74a4e9d1d" }
+datafusion-datasource-csv = { git = "file:///home/bits/datafusion", rev = "d83d594a0078c55190aa5a914f79bbf74a4e9d1d" }
+datafusion-datasource-json = { git = "file:///home/bits/datafusion", rev = "d83d594a0078c55190aa5a914f79bbf74a4e9d1d" }
+datafusion-datasource-parquet = { git = "file:///home/bits/datafusion", rev = "d83d594a0078c55190aa5a914f79bbf74a4e9d1d" }
+datafusion-doc = { git = "file:///home/bits/datafusion", rev = "d83d594a0078c55190aa5a914f79bbf74a4e9d1d" }
+datafusion-execution = { git = "file:///home/bits/datafusion", rev = "d83d594a0078c55190aa5a914f79bbf74a4e9d1d" }
+datafusion-expr = { git = "file:///home/bits/datafusion", rev = "d83d594a0078c55190aa5a914f79bbf74a4e9d1d" }
+datafusion-expr-common = { git = "file:///home/bits/datafusion", rev = "d83d594a0078c55190aa5a914f79bbf74a4e9d1d" }
+datafusion-functions = { git = "file:///home/bits/datafusion", rev = "d83d594a0078c55190aa5a914f79bbf74a4e9d1d" }
+datafusion-functions-aggregate = { git = "file:///home/bits/datafusion", rev = "d83d594a0078c55190aa5a914f79bbf74a4e9d1d" }
+datafusion-functions-aggregate-common = { git = "file:///home/bits/datafusion", rev = "d83d594a0078c55190aa5a914f79bbf74a4e9d1d" }
+datafusion-functions-nested = { git = "file:///home/bits/datafusion", rev = "d83d594a0078c55190aa5a914f79bbf74a4e9d1d" }
+datafusion-functions-table = { git = "file:///home/bits/datafusion", rev = "d83d594a0078c55190aa5a914f79bbf74a4e9d1d" }
+datafusion-functions-window = { git = "file:///home/bits/datafusion", rev = "d83d594a0078c55190aa5a914f79bbf74a4e9d1d" }
+datafusion-functions-window-common = { git = "file:///home/bits/datafusion", rev = "d83d594a0078c55190aa5a914f79bbf74a4e9d1d" }
+datafusion-macros = { git = "file:///home/bits/datafusion", rev = "d83d594a0078c55190aa5a914f79bbf74a4e9d1d" }
+datafusion-optimizer = { git = "file:///home/bits/datafusion", rev = "d83d594a0078c55190aa5a914f79bbf74a4e9d1d" }
+datafusion-physical-expr = { git = "file:///home/bits/datafusion", rev = "d83d594a0078c55190aa5a914f79bbf74a4e9d1d" }
+datafusion-physical-expr-adapter = { git = "file:///home/bits/datafusion", rev = "d83d594a0078c55190aa5a914f79bbf74a4e9d1d" }
+datafusion-physical-expr-common = { git = "file:///home/bits/datafusion", rev = "d83d594a0078c55190aa5a914f79bbf74a4e9d1d" }
+datafusion-physical-optimizer = { git = "file:///home/bits/datafusion", rev = "d83d594a0078c55190aa5a914f79bbf74a4e9d1d" }
+datafusion-physical-plan = { git = "file:///home/bits/datafusion", rev = "d83d594a0078c55190aa5a914f79bbf74a4e9d1d" }
+datafusion-proto = { git = "file:///home/bits/datafusion", rev = "d83d594a0078c55190aa5a914f79bbf74a4e9d1d" }
+datafusion-proto-common = { git = "file:///home/bits/datafusion", rev = "d83d594a0078c55190aa5a914f79bbf74a4e9d1d" }
+datafusion-proto-models = { git = "file:///home/bits/datafusion", rev = "d83d594a0078c55190aa5a914f79bbf74a4e9d1d" }
+datafusion-pruning = { git = "file:///home/bits/datafusion", rev = "d83d594a0078c55190aa5a914f79bbf74a4e9d1d" }
+datafusion-session = { git = "file:///home/bits/datafusion", rev = "d83d594a0078c55190aa5a914f79bbf74a4e9d1d" }
+datafusion-sql = { git = "file:///home/bits/datafusion", rev = "d83d594a0078c55190aa5a914f79bbf74a4e9d1d" }
