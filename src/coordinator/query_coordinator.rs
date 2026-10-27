@@ -13,7 +13,7 @@ use crate::dynamic_filtering::{
 use crate::events::{
     RouteTaskEvent, RouteTaskEventResponse, RouteTaskHandlers, new_coordinator_to_worker_dialer,
 };
-use crate::execution_plans::{ChildrenIsolatorUnionExec, DistributedLeafExec};
+use crate::execution_plans::{ChildrenIsolatorUnionExec, DistributedLeafExec, NetworkCoalesceExec};
 use crate::passthrough_headers::get_passthrough_headers;
 use crate::stage::LocalStage;
 use crate::work_unit_feed::WorkUnitFeedRegistry;
@@ -496,6 +496,12 @@ impl<'a> StageCoordinator<'a> {
             if let Some(dle) = plan.downcast_ref::<DistributedLeafExec>() {
                 let specialized = dle.to_task_specialized(d_ctx.task_index);
                 return Ok(Transformed::yes(specialized));
+            }
+
+            if let Some(coalesce) = plan.downcast_ref::<NetworkCoalesceExec>() {
+                return Ok(Transformed::yes(Arc::new(
+                    coalesce.to_task_specialized(d_ctx.task_index)?,
+                )));
             }
 
             // Rebuild each RepartitionExec so every task gets its own instance with

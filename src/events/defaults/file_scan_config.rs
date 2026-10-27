@@ -3,6 +3,7 @@ use crate::events::{
     ScaleUpLeafNodeEventResponse,
 };
 use crate::execution_plans::DistributedLeafExec;
+use crate::execution_plans::range_partitioning::split_range;
 use crate::{DistributedConfig, ok_or_some_err};
 use datafusion::catalog::memory::DataSourceExec;
 use datafusion::common::plan_err;
@@ -21,6 +22,14 @@ pub(crate) fn file_scan_config_desired_task_count(
     let file_scan: &FileScanConfig = dse.data_source().downcast_ref()?;
 
     let d_cfg = DistributedConfig::from_session_config(cfg).ok()?;
+
+    if matches!(
+        file_scan.output_partitioning,
+        Some(Partitioning::Range(_) | Partitioning::Hash(_, _))
+    ) {
+        let tasks = file_scan.file_groups.len() as f64 / cfg.target_partitions().max(1) as f64;
+        return Some(Ok(DesiredTaskCountEventResponse::soft(tasks)));
+    }
 
     let mut total_bytes = 0;
     for file_group in &file_scan.file_groups {
@@ -45,9 +54,9 @@ pub(crate) fn file_scan_config_scale_up_leaf_node(
     let partition_count = ev.plan.output_partitioning().partition_count();
 
     let is_sorted = file_scan.eq_properties().output_ordering().is_some();
-    let is_pre_partitioned = !matches!(
-        file_scan.output_partitioning(),
-        Partitioning::UnknownPartitioning(_) | Partitioning::RoundRobinBatch(_)
+    let is_pre_partitioned = matches!(
+        file_scan.output_partitioning,
+        Some(Partitioning::Range(_) | Partitioning::Hash(_, _))
     );
     let supports_byte_range_partitioning = !file_scan.file_compression_type.is_compressed()
         && file_scan.file_source.supports_repartitioning();
@@ -67,6 +76,39 @@ pub(crate) fn file_scan_config_scale_up_leaf_node(
     let mut file_scans = vec![file_scan_template; ev.task_count];
 
     match (is_sorted, supports_repartitioning) {
+        (_, false) if is_pre_partitioned => {
+            match &file_scan.output_partitioning {
+                Some(Partitioning::Range(range)) => {
+                    // FileScanConfig stores partitioning before projection, unlike DataSourceExec.
+                    let range_tasks = ok_or_some_err!(split_range(range, ev.task_count));
+                    for (scan, task) in file_scans.iter_mut().zip(range_tasks) {
+                        scan.file_groups =
+                            vec![FileGroup::default(); task.partitioning.partition_count()];
+                        scan.file_groups
+                            [task.leading_padding..task.leading_padding + task.input.len()]
+                            .clone_from_slice(&file_scan.file_groups[task.input]);
+                        scan.output_partitioning = Some(Partitioning::Range(task.partitioning));
+                    }
+                }
+                Some(Partitioning::Hash(_, _)) => {
+                    // Hash partition IDs are modulo the original count; keep those slots intact.
+                    let base = partition_count / ev.task_count;
+                    let extra = partition_count % ev.task_count;
+                    for (task, scan) in file_scans.iter_mut().enumerate() {
+                        let start = task * base + task.min(extra);
+                        let end = start + base + usize::from(task < extra);
+                        scan.file_groups = vec![FileGroup::default(); partition_count];
+                        scan.file_groups[start..end]
+                            .clone_from_slice(&file_scan.file_groups[start..end]);
+                    }
+                }
+                _ => {
+                    return Some(plan_err!(
+                        "Expected hash or range partitioning on a pre-partitioned scan"
+                    ));
+                }
+            }
+        }
         // does not support repartitioning
         (_, false) => {
             let all_partitioned_files = file_scan

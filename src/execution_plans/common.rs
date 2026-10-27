@@ -8,9 +8,16 @@ pub(super) fn scale_partitioning_props(
     props: &Arc<PlanProperties>,
     f: impl FnOnce(usize) -> usize,
 ) -> Result<Arc<PlanProperties>> {
+    let partitions = f(props.partitioning.partition_count());
+    let partitioning = if partitions == props.partitioning.partition_count() {
+        props.partitioning.clone()
+    } else {
+        // Concatenating task partitions does not rehash rows or create new range boundaries.
+        Partitioning::UnknownPartitioning(partitions)
+    };
     Ok(Arc::new(PlanProperties::new(
         props.eq_properties.clone(),
-        scale_partitioning(&props.partitioning, f)?,
+        partitioning,
         props.emission_type,
         props.boundedness,
     )))

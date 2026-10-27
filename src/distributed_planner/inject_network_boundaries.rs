@@ -5,6 +5,7 @@ use crate::events::{
 };
 use crate::execution_plans::ChildrenIsolatorUnionExec;
 use crate::execution_plans::ShuffleMode;
+use crate::execution_plans::range_partitioning::task_ranges;
 use crate::stage::LocalStage;
 use crate::worker_resolver::WorkerResolverExtension;
 use crate::{
@@ -14,7 +15,7 @@ use crate::{
 use async_trait::async_trait;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::common::{HashMap, JoinType, Result, internal_err, plan_err};
-use datafusion::physical_expr::Partitioning;
+use datafusion::physical_expr::{Partitioning, RangePartitioning};
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::execution_plan::CardinalityEffect;
 use datafusion::physical_plan::joins::{
@@ -425,6 +426,7 @@ async fn _inject_network_boundaries(
         let nb = Arc::new(NetworkCoalesceExec::try_from_stage(
             result.input_stage,
             result.input_properties,
+            result.input_ranges,
             1,
         )?);
         Ok(nb_ctx.plan_with_task_count(nb, result.consumer_task_count))
@@ -603,6 +605,7 @@ pub(crate) struct NetworkBoundaryBuilderResult {
     /// actually execute. This information might not be present in the `input_stage` field, as it
     /// might be in [Stage::Remote] state because it was already sent for execution.
     pub(crate) input_properties: Arc<PlanProperties>,
+    pub(crate) input_ranges: Option<Vec<RangePartitioning>>,
 }
 
 #[async_trait]
@@ -682,12 +685,14 @@ impl NetworkBoundaryBuilder for CardinalityBasedNetworkBoundaryBuilder {
         input_stage.plan =
             nb_ctx.propagate_task_count_until_network_boundaries(&input_stage.plan, tc)?;
         let input_properties = Arc::clone(input_stage.plan.properties());
+        let input_ranges = task_ranges(&input_stage.plan, input_stage.tasks)?;
 
         if nb_type == TypeId::of::<NetworkCoalesceExec>() {
             return Ok(NetworkBoundaryBuilderResult {
                 consumer_task_count: TaskCountAnnotation::exact(NonZeroUsize::MIN, tc.soft),
                 input_stage: Stage::Local(input_stage),
                 input_properties,
+                input_ranges,
             });
         }
 
@@ -718,6 +723,7 @@ impl NetworkBoundaryBuilder for CardinalityBasedNetworkBoundaryBuilder {
             consumer_task_count: TaskCountAnnotation::soft(input_stage.tasks as f64 * f),
             input_stage: Stage::Local(input_stage),
             input_properties,
+            input_ranges,
         })
     }
 }
