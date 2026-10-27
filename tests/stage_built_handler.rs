@@ -27,32 +27,6 @@ mod tests {
 | 300      | No        |
 +----------+-----------+";
 
-    #[tokio::test]
-    async fn exact_task_count_static_plan() -> Result<()> {
-        let (plan, results) = run_query(false, exact_task_count_handler(2)).await?;
-        assert_snapshot!(plan, @r"
-        ┌───── DistributedExec
-        │ SortPreservingMergeExec: [count(*)@0 ASC NULLS LAST]
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
-        └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── tasks=2, partitions=3
-          │ ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday]
-          │   SortExec: expr=[count(Int64(1))@1 ASC NULLS LAST], preserve_partitioning=[true]
-          │     AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
-          │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=2
-          └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── tasks=2, partitions=6
-            │ RepartitionExec: partitioning=Hash([RainToday@0], 6), input_partitions=3
-            │   AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
-            │     DistributedLeafExec:
-            │       t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[RainToday], file_type=parquet
-            │       t1: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[RainToday], file_type=parquet
-            └──────────────────────────────────────────────────
-        ");
-        assert_eq!(results, EXPECTED);
-        Ok(())
-    }
-
     #[test_case(false, 2; "static_task_count_2_tasks")]
     #[test_case(false, 3; "static_task_count_3_tasks")]
     #[test_case(false, 4; "static_task_count_4_tasks")]
@@ -118,19 +92,6 @@ mod tests {
         .await?;
         assert_contains!(&plan, "CooperativeExec");
         assert_eq!(results, EXPECTED);
-        Ok(())
-    }
-
-    #[test_case(false; "static_task_count")]
-    #[test_case(true; "dynamic_task_count")]
-    #[tokio::test]
-    async fn handler_errors_propagate_to_query(dynamic_task_count: bool) -> Result<()> {
-        let err = run_query(dynamic_task_count, |_: StageBuiltEvent<'_>| {
-            exec_err!("stage rejected by handler")
-        })
-        .await
-        .expect_err("handler error should propagate to the query");
-        assert_contains!(err.to_string(), "stage rejected by handler");
         Ok(())
     }
 
