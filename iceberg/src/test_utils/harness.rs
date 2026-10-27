@@ -23,10 +23,13 @@ use datafusion_proto::physical_plan::AsExecutionPlan;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use iceberg::io::{
-    FileMetadata, FileRead, FileWrite, InputFile, LocalFsStorage, OutputFile, Storage,
-    StorageConfig, StorageFactory,
+    FileMetadata, FileRead, FileWrite, InputFile, LocalFsStorage, MemoryStorage, OutputFile,
+    Storage, StorageConfig, StorageFactory,
 };
-use iceberg::spec::TableMetadata;
+use iceberg::spec::{
+    DataFile, ManifestListWriter, ManifestWriterBuilder, Operation, Snapshot, Summary,
+    TableMetadata,
+};
 use iceberg::{Error, ErrorKind, Result as IcebergResult};
 use serde::{Deserialize, Serialize};
 
@@ -174,6 +177,71 @@ impl IcebergTestHarnessBuilder {
     pub fn with_file(mut self, uri: impl Into<String>, bytes: impl Into<Vec<u8>>) -> Self {
         self.files.insert(uri.into(), bytes.into());
         self
+    }
+
+    /// Replaces the current snapshot's manifest with synthetic file entries, creating
+    /// a snapshot if needed. Data files are not written and existing snapshot summary
+    /// totals are preserved, so tests can distinguish them from selected-file metrics.
+    pub async fn with_data_files(
+        mut self,
+        manifest_uri: &str,
+        files: impl IntoIterator<Item = DataFile>,
+    ) -> IcebergResult<Self> {
+        if self.metadata.current_snapshot().is_none() {
+            let snapshot = Snapshot::builder()
+                .with_snapshot_id(1)
+                .with_sequence_number(1)
+                .with_timestamp_ms(self.metadata.last_updated_ms() + 1)
+                .with_manifest_list(format!("{FIXTURE_URI}/metadata/test-manifest-list.avro"))
+                .with_schema_id(self.metadata.current_schema_id())
+                .with_summary(Summary {
+                    operation: Operation::Append,
+                    additional_properties: Default::default(),
+                })
+                .build();
+            self.metadata = self
+                .metadata
+                .into_builder(None)
+                .set_branch_snapshot(snapshot, "main")?
+                .build()?
+                .metadata;
+        }
+        let snapshot = self
+            .metadata
+            .current_snapshot()
+            .expect("snapshot initialized above");
+        let storage = MemoryStorage::new();
+        let mut writer = ManifestWriterBuilder::new(
+            storage.new_output(manifest_uri)?,
+            Some(snapshot.snapshot_id()),
+            Arc::clone(self.metadata.current_schema()),
+            self.metadata.default_partition_spec().as_ref().clone(),
+        )
+        .build_v2_data();
+        for file in files {
+            writer.add_file(file, snapshot.sequence_number())?;
+        }
+        let manifest = writer.write_manifest_file().await?;
+        let mut list = ManifestListWriter::v2(
+            storage
+                .new_output(snapshot.manifest_list())?
+                .writer()
+                .await?,
+            snapshot.snapshot_id(),
+            snapshot.parent_snapshot_id(),
+            snapshot.sequence_number(),
+        );
+        list.add_manifests([manifest].into_iter())?;
+        list.close().await?;
+        self.files.insert(
+            manifest_uri.to_owned(),
+            storage.read(manifest_uri).await?.to_vec(),
+        );
+        self.files.insert(
+            snapshot.manifest_list().to_owned(),
+            storage.read(snapshot.manifest_list()).await?.to_vec(),
+        );
+        Ok(self)
     }
 
     /// Enables distributed planning with logical workers backed by in-memory gRPC.

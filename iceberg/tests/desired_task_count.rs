@@ -151,6 +151,7 @@ mod tests {
     ) -> Result<()> {
         let mut builder = IcebergTestHarness::builder()
             .with_table_metadata(metadata)
+            .with_column_stats_enabled()
             .configure_session(|mut state| {
                 let config = state.config().get_or_insert_default();
                 config.options_mut().execution.target_partitions = 2;

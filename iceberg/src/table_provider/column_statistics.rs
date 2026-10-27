@@ -1,16 +1,143 @@
-use crate::common::df_err;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+
 use datafusion::common::stats::Precision;
-use datafusion::common::{ColumnStatistics, Result};
+use datafusion::common::{ColumnStatistics, Result, exec_err};
 use datafusion::error::DataFusionError;
 use datafusion::scalar::ScalarValue;
 use iceberg::puffin::APACHE_DATASKETCHES_THETA_V1;
 use iceberg::spec::{
-    DataFile, Datum, ManifestContentType, ManifestList, PrimitiveLiteral, PrimitiveType,
-    SnapshotRef,
+    DataFile, Datum, ManifestContentType, ManifestList, NestedFieldRef, PrimitiveLiteral,
+    PrimitiveType, SnapshotRef, Type,
 };
 use iceberg::table::Table;
-use std::collections::HashMap;
-use std::sync::Arc;
+
+use crate::common::df_err;
+use iceberg::scan::FileScanTask;
+
+/// Selected-file metrics, with snapshot NDV retained only as an inexact fallback.
+/// FileScanTask does not retain manifest metrics, so this requires a metadata-only
+/// second pass. Stop as soon as all selected files have been found.
+pub(crate) async fn selected_column_statistics(
+    table: &Table,
+    snapshot: &SnapshotRef,
+    fields: &[NestedFieldRef],
+    files: &[FileScanTask],
+    may_filter_rows: bool,
+) -> Result<Vec<ColumnStatistics>> {
+    if files.is_empty() || fields.is_empty() {
+        return Ok(vec![
+            ColumnStatistics {
+                null_count: Precision::Exact(0),
+                distinct_count: Precision::Exact(0),
+                byte_size: Precision::Inexact(0),
+                ..ColumnStatistics::new_unknown()
+            };
+            fields.len()
+        ]);
+    }
+    if files
+        .iter()
+        .any(|task| task.start() != 0 || task.length() != task.file_size_in_bytes())
+    {
+        // Full-file metrics cannot describe a byte-range task.
+        return Ok(vec![ColumnStatistics::new_unknown(); fields.len()]);
+    }
+    let mut remaining: HashSet<_> = files.iter().map(|task| task.data_file_path()).collect();
+    if remaining.len() != files.len() {
+        return exec_err!("Duplicate whole-file tasks in Iceberg column statistics lookup");
+    }
+    let field_ids: Vec<_> = fields
+        .iter()
+        .map(|field| {
+            let mut ids = vec![];
+            leaf_ids(field, &mut ids);
+            ids
+        })
+        .collect();
+    let mut statistics = vec![None; fields.len()];
+    let manifests = table
+        .manifest_list_reader(snapshot)
+        .load()
+        .await
+        .map_err(df_err)?;
+    for manifest in manifests
+        .entries()
+        .iter()
+        .filter(|manifest| manifest.content == ManifestContentType::Data)
+    {
+        let manifest = table
+            .manifest_reader()
+            .read(manifest)
+            .await
+            .map_err(df_err)?;
+        for entry in manifest.entries().iter().filter(|entry| entry.is_alive()) {
+            let file = entry.data_file();
+            if !remaining.remove(file.file_path()) {
+                continue;
+            }
+            for ((acc, field), ids) in statistics.iter_mut().zip(fields).zip(&field_ids) {
+                // Leaf metrics cannot describe a parent struct/list/map's value or null count.
+                let mut next = if matches!(field.field_type.as_ref(), Type::Primitive(_)) {
+                    data_file_col_stats(file, field.id)
+                } else {
+                    ColumnStatistics::new_unknown()
+                };
+                next.byte_size = ids
+                    .iter()
+                    .try_fold(0_usize, |total, id| {
+                        let size = usize::try_from(*file.column_sizes().get(id)?).ok()?;
+                        total.checked_add(size)
+                    })
+                    .map(Precision::Inexact)
+                    .unwrap_or(Precision::Absent);
+                *acc = Some(merge_col_stats(acc.take(), next));
+            }
+        }
+        if remaining.is_empty() {
+            break;
+        }
+    }
+    if !remaining.is_empty() {
+        return exec_err!("Planned Iceberg files missing from snapshot manifests");
+    }
+    let rows = files.iter().try_fold(0_usize, |rows, task| {
+        rows.checked_add(usize::try_from(task.record_count()?).ok()?)
+    });
+    let ndvs = ndv_from_metadata(table, snapshot.snapshot_id());
+    Ok(statistics
+        .into_iter()
+        .zip(fields)
+        .map(|(stats, field)| {
+            let mut stats = stats.unwrap_or_else(ColumnStatistics::new_unknown);
+            if may_filter_rows {
+                stats.null_count = stats.null_count.to_inexact();
+            }
+            // Snapshot sketches cannot be restricted to selected files. Retain their
+            // estimate, capped by the selected rows, without claiming exactness.
+            if let Some(&ndv) = ndvs.get(&field.id) {
+                stats.distinct_count = Precision::Inexact(rows.map_or(ndv, |rows| ndv.min(rows)));
+            }
+            stats
+        })
+        .collect())
+}
+
+fn leaf_ids(field: &NestedFieldRef, ids: &mut Vec<i32>) {
+    match field.field_type.as_ref() {
+        Type::Primitive(_) | Type::Variant(_) => ids.push(field.id),
+        Type::Struct(fields) => {
+            for field in fields.fields() {
+                leaf_ids(field, ids);
+            }
+        }
+        Type::List(list) => leaf_ids(&list.element_field, ids),
+        Type::Map(map) => {
+            leaf_ids(&map.key_field, ids);
+            leaf_ids(&map.value_field, ids);
+        }
+    }
+}
 
 /// Getting number of distinct values for columns in a table
 ///
@@ -139,7 +266,13 @@ fn merge_col_stats(acc: Option<ColumnStatistics>, next: ColumnStatistics) -> Col
             null_count: acc.null_count.add(&next.null_count),
             min_value: acc.min_value.min(&next.min_value),
             max_value: acc.max_value.max(&next.max_value),
-            byte_size: acc.byte_size.add(&next.byte_size),
+            byte_size: acc
+                .byte_size
+                .get_value()
+                .zip(next.byte_size.get_value())
+                .and_then(|(a, b)| a.checked_add(*b))
+                .map(Precision::Inexact)
+                .unwrap_or(Precision::Absent),
             sum_value: Precision::Absent,
             distinct_count: Precision::Absent,
         },
