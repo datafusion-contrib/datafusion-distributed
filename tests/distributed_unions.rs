@@ -2,6 +2,7 @@
 mod tests {
     use datafusion::arrow::util::pretty::pretty_format_batches;
     use datafusion::catalog::memory::DataSourceExec;
+    use datafusion::common::Result;
     use datafusion::datasource::physical_plan::FileScanConfig;
     use datafusion::execution::TaskContext;
     use datafusion::physical_expr::expressions::Column;
@@ -14,6 +15,7 @@ mod tests {
         DistributedExt, assert_snapshot, display_plan_ascii,
     };
     use futures::TryStreamExt;
+    use insta::allow_duplicates;
     use std::error::Error;
     use std::num::NonZeroUsize;
     use std::sync::Arc;
@@ -387,7 +389,7 @@ mod tests {
 
         // Render after execution so the dynamic variant shows the stages it actually ran.
         let distributed_plan_str = display_plan_ascii(distributed_plan.as_ref(), false);
-        if !dynamic_task_count {
+        allow_duplicates! {
             assert_snapshot!(distributed_plan_str, @"
             ┌───── DistributedExec
             │ SortPreservingMergeExec: [v@0 ASC NULLS LAST]
@@ -411,34 +413,6 @@ mod tests {
               │         t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[Rainfall], file_type=parquet
               └──────────────────────────────────────────────────
             ");
-        } else {
-            // Dynamic task counts are chosen at runtime, so check the bounds rather than the layout.
-            let union_line = distributed_plan_str
-                .lines()
-                .find(|line| line.contains("DistributedUnionExec:"))
-                .ok_or("missing DistributedUnionExec")?;
-            let contexts: Vec<&str> = union_line
-                .split(|c: char| c.is_whitespace() || matches!(c, '[' | ']' | ','))
-                .filter(|token| token.starts_with('c'))
-                .collect();
-            // MinTemp has max(1): it runs unsplit, exactly once.
-            let c0: Vec<&str> = contexts
-                .iter()
-                .copied()
-                .filter(|c| c.starts_with("c0"))
-                .collect();
-            assert_eq!(c0, ["c0"], "{union_line}");
-            // MaxTemp has range(3, 4): one context per task, all agreeing on a count in 3..=4.
-            let mut c1: Vec<&str> = contexts
-                .iter()
-                .copied()
-                .filter(|c| c.starts_with("c1"))
-                .collect();
-            c1.sort();
-            let n = c1.len();
-            assert!((3..=4).contains(&n), "{union_line}");
-            let expected: Vec<String> = (0..n).map(|i| format!("c1({i}/{n})")).collect();
-            assert_eq!(c1, expected, "{union_line}");
         }
         Ok(())
     }
