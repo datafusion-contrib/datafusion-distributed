@@ -134,7 +134,6 @@ pub struct IcebergDataSource {
     pub(crate) schema: SchemaRef,
     pub(crate) partitioning: Partitioning,
     pub(crate) fetch: Option<usize>,
-    pub(crate) metrics: ExecutionPlanMetricsSet,
     pub(crate) column_stats: Option<Vec<ColumnStatistics>>,
     pub(crate) table_snapshot: Option<SnapshotRef>,
     pub(crate) iceberg_file_io: FileIO,
@@ -182,7 +181,6 @@ impl IcebergDataSource {
             iceberg_file_io: table.file_io().clone(),
             partitioning: partitioning.clone(),
             fetch: opts.fetch,
-            metrics: ExecutionPlanMetricsSet::new(),
             iceberg_runtime: opts
                 .iceberg_runtime
                 .unwrap_or_else(iceberg::Runtime::current),
@@ -192,6 +190,7 @@ impl IcebergDataSource {
                 projection,
                 predicates,
                 partitioning,
+                metrics: ExecutionPlanMetricsSet::new(),
                 sync_manager: Default::default(),
             }),
             table_snapshot,
@@ -273,7 +272,7 @@ impl DataSource for IcebergDataSource {
             stream,
         )) as SendableRecordBatchStream;
 
-        let metrics = BaselineMetrics::new(&self.metrics, partition);
+        let metrics = BaselineMetrics::new(&self.metrics(), partition);
 
         Ok(Box::pin(LimitStream::new(stream, 0, self.fetch, metrics)))
     }
@@ -335,7 +334,7 @@ impl DataSource for IcebergDataSource {
     }
 
     fn metrics(&self) -> ExecutionPlanMetricsSet {
-        self.metrics.clone()
+        self.feed.metrics()
     }
 
     fn try_pushdown_filters(
