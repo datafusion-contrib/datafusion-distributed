@@ -22,13 +22,13 @@ use iceberg::writer::file_writer::rolling_writer::RollingFileWriterBuilder;
 use iceberg::writer::{IcebergWriter, IcebergWriterBuilder};
 
 use crate::error::df_err;
-use crate::{DescribedFile, FixtureTable};
+use crate::{FixtureTable, PhantomFile};
 
 /// One commit that adds data files, started by [`FixtureTable::append`].
 ///
 /// Each [`Append::file`] becomes exactly one Parquet data file, so tests
 /// control how rows are laid out across files, and each
-/// [`Append::described_file`] is listed with exactly the metrics it was given
+/// [`Append::phantom_file`] is listed with exactly the metrics it was given
 /// but never written. [`Append::commit`] adds them
 /// all in one snapshot on top of the current one. Snapshots are numbered 1,
 /// 2, 3, ..., unlike iceberg-rust's `fast_append`, which picks random ids, so
@@ -43,7 +43,7 @@ pub struct Append<'a> {
 /// A data file of an [`Append`], in the order it was added.
 enum PendingFile {
     Written(RecordBatch),
-    Described(DescribedFile),
+    Phantom(PhantomFile),
 }
 
 impl<'a> Append<'a> {
@@ -72,8 +72,8 @@ impl<'a> Append<'a> {
     }
 
     /// Lists `file` in the manifest without writing it.
-    pub fn described_file(mut self, file: DescribedFile) -> Self {
-        self.files.push(PendingFile::Described(file));
+    pub fn phantom_file(mut self, file: PhantomFile) -> Self {
+        self.files.push(PendingFile::Phantom(file));
         self
     }
 
@@ -121,7 +121,7 @@ impl<'a> Append<'a> {
         for file in self.files {
             let batch = match file {
                 PendingFile::Written(batch) => conform(&batch, &arrow_schema)?,
-                PendingFile::Described(file) => {
+                PendingFile::Phantom(file) => {
                     data_files.push(file.into_data_file(metadata)?);
                     continue;
                 }
@@ -306,7 +306,7 @@ mod tests {
     use iceberg::spec::{Datum, Literal, NestedField, PrimitiveType, Schema, Transform, Type};
 
     use crate::error::df_err;
-    use crate::{ColumnMetrics, DescribedFile, FixtureCatalog, FixtureTable};
+    use crate::{ColumnMetrics, FixtureCatalog, FixtureTable, PhantomFile};
 
     async fn create_table(fixtures: &FixtureCatalog) -> Result<FixtureTable> {
         let schema = Schema::builder()
@@ -449,14 +449,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lists_described_files_without_writing_them() -> Result<()> {
+    async fn lists_phantom_files_without_writing_them() -> Result<()> {
         let fixtures = FixtureCatalog::try_new().await?;
         let mut table = create_table(&fixtures).await?;
         let files = table
             .append()
             .file(batch(vec![1], vec!["a"]))
-            .described_file(
-                DescribedFile::new("described.parquet", 10, 1_000)
+            .phantom_file(
+                PhantomFile::new("phantom.parquet", 10, 1_000)
                     .partition([Literal::string("b")])
                     .column(
                         "id",
@@ -468,20 +468,17 @@ mod tests {
             .commit()
             .await?;
 
-        let described = &files[1];
-        assert!(described.file_path().ends_with("/data/described.parquet"));
-        let local_path = described.file_path().strip_prefix("file://").unwrap();
+        let phantom = &files[1];
+        assert!(phantom.file_path().ends_with("/data/phantom.parquet"));
+        let local_path = phantom.file_path().strip_prefix("file://").unwrap();
         assert!(!Path::new(local_path).exists());
-        assert_eq!(described.record_count(), 10);
-        assert_eq!(described.file_size_in_bytes(), 1_000);
-        assert!(described.null_value_counts().is_empty());
-        assert_eq!(described.column_sizes(), &HashMap::from([(1, 40)]));
+        assert_eq!(phantom.record_count(), 10);
+        assert_eq!(phantom.file_size_in_bytes(), 1_000);
+        assert!(phantom.null_value_counts().is_empty());
+        assert_eq!(phantom.column_sizes(), &HashMap::from([(1, 40)]));
+        assert_eq!(phantom.lower_bounds(), &HashMap::from([(1, Datum::int(2))]));
         assert_eq!(
-            described.lower_bounds(),
-            &HashMap::from([(1, Datum::int(2))])
-        );
-        assert_eq!(
-            described.upper_bounds(),
+            phantom.upper_bounds(),
             &HashMap::from([(1, Datum::int(11))])
         );
         let summary = &table
@@ -514,22 +511,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_invalid_described_files() -> Result<()> {
+    async fn rejects_invalid_phantom_files() -> Result<()> {
         let fixtures = FixtureCatalog::try_new().await?;
         let mut table = create_table(&fixtures).await?;
         let invalid = [
             (
-                DescribedFile::new("f.parquet", 1, 1),
+                PhantomFile::new("f.parquet", 1, 1),
                 "has 0 partition values, but the table is partitioned by 1 fields",
             ),
             (
-                DescribedFile::new("f.parquet", 1, 1)
+                PhantomFile::new("f.parquet", 1, 1)
                     .partition([Literal::string("a")])
                     .column("nope", ColumnMetrics::default().null_count(0)),
                 "the table has no column nope",
             ),
             (
-                DescribedFile::new("f.parquet", 1, 1)
+                PhantomFile::new("f.parquet", 1, 1)
                     .partition([Literal::string("a")])
                     .column(
                         "id",
@@ -541,7 +538,7 @@ mod tests {
         for (file, message) in invalid {
             let error = table
                 .append()
-                .described_file(file)
+                .phantom_file(file)
                 .commit()
                 .await
                 .unwrap_err();

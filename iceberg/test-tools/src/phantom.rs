@@ -7,14 +7,14 @@ use iceberg::spec::{
     TableMetadata,
 };
 
-/// A data file that [`Append::described_file`](crate::Append::described_file)
+/// A data file that [`Append::phantom_file`](crate::Append::phantom_file)
 /// lists in a manifest without writing it.
 ///
 /// Its record count, size, partition and column metrics are exactly the ones
 /// given, so tests can plan against metrics that real files wouldn't have,
 /// such as a missing null count. Scans that open it fail, since the file
 /// doesn't exist.
-pub struct DescribedFile {
+pub struct PhantomFile {
     name: String,
     record_count: u64,
     file_size_in_bytes: u64,
@@ -22,7 +22,7 @@ pub struct DescribedFile {
     columns: Vec<(String, ColumnMetrics)>,
 }
 
-impl DescribedFile {
+impl PhantomFile {
     /// Describes file `name` in the table's `data` directory, holding
     /// `record_count` rows in `file_size_in_bytes` bytes.
     pub fn new(name: impl Into<String>, record_count: u64, file_size_in_bytes: u64) -> Self {
@@ -56,7 +56,7 @@ impl DescribedFile {
         let partition_spec = metadata.default_partition_spec();
         if self.partition.len() != partition_spec.fields().len() {
             return exec_err!(
-                "described file {} has {} partition values, but the table is partitioned by {} fields",
+                "phantom file {} has {} partition values, but the table is partitioned by {} fields",
                 self.name,
                 self.partition.len(),
                 partition_spec.fields().len()
@@ -102,11 +102,11 @@ impl DescribedFile {
             .lower_bounds(lower_bounds)
             .upper_bounds(upper_bounds)
             .build()
-            .map_err(|error| internal_datafusion_err!("invalid described file: {error}"))
+            .map_err(|error| internal_datafusion_err!("invalid phantom file: {error}"))
     }
 }
 
-/// The manifest metrics of one column of a [`DescribedFile`]. Metrics that
+/// The manifest metrics of one column of a [`PhantomFile`]. Metrics that
 /// aren't set are left out of the manifest.
 #[derive(Clone, Debug, Default)]
 pub struct ColumnMetrics {

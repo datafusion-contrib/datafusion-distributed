@@ -16,7 +16,7 @@ mod tests {
     use datafusion::physical_plan::displayable;
     use datafusion::physical_plan::statistics::{StatisticsArgs, StatisticsContext};
     use datafusion::scalar::ScalarValue;
-    use datafusion_distributed_iceberg_test_tools::{ColumnMetrics, DescribedFile};
+    use datafusion_distributed_iceberg_test_tools::{ColumnMetrics, PhantomFile};
     use iceberg::TableIdent;
     use iceberg::spec::Transform;
     use iceberg::spec::{Datum, Literal, MAIN_BRANCH, Operation, Snapshot, Summary, TableMetadata};
@@ -25,7 +25,7 @@ mod tests {
     const TAXI_ROWS: usize = 175_000;
     const TAXI_BYTES: usize = 5_656_412;
     const TAXI_COLUMNS: usize = 13;
-    // The size of each of the two described files in the manifest-metrics tests.
+    // The size of each of the two phantom files in the manifest-metrics tests.
     const METRICS_FILE_ROWS: u64 = 87_500;
     const METRICS_FILE_BYTES: u64 = 2_240_191;
 
@@ -78,8 +78,8 @@ mod tests {
             .await?;
         table
             .append()
-            .described_file(first_metrics_file())
-            .described_file(second_metrics_file())
+            .phantom_file(first_metrics_file())
+            .phantom_file(second_metrics_file())
             .commit()
             .await?;
         let harness = IcebergTestHarness::builder()
@@ -119,8 +119,8 @@ mod tests {
             .await?;
         table
             .append()
-            .described_file(first_metrics_file())
-            .described_file(second_metrics_file())
+            .phantom_file(first_metrics_file())
+            .phantom_file(second_metrics_file())
             .commit()
             .await?;
         let harness = IcebergTestHarness::builder()
@@ -156,8 +156,8 @@ mod tests {
             .await?;
         table
             .append()
-            .described_file(first_metrics_file())
-            .described_file(second_metrics_file())
+            .phantom_file(first_metrics_file())
+            .phantom_file(second_metrics_file())
             .commit()
             .await?;
         let harness = IcebergTestHarness::builder()
@@ -209,8 +209,8 @@ mod tests {
             .await?;
         table
             .append()
-            .described_file(first_metrics_file())
-            .described_file(second_metrics_file())
+            .phantom_file(first_metrics_file())
+            .phantom_file(second_metrics_file())
             .commit()
             .await?;
         let harness = IcebergTestHarness::builder()
@@ -246,8 +246,8 @@ mod tests {
             .await?;
         table
             .append()
-            .described_file(first_metrics_file())
-            .described_file(second_metrics_file())
+            .phantom_file(first_metrics_file())
+            .phantom_file(second_metrics_file())
             .commit()
             .await?;
         let harness = IcebergTestHarness::builder()
@@ -461,9 +461,9 @@ mod tests {
             .metadata
     }
 
-    // The first of the two described files on 2024-01-10.
-    fn first_metrics_file() -> DescribedFile {
-        DescribedFile::new(
+    // The first of the two phantom files on 2024-01-10.
+    fn first_metrics_file() -> PhantomFile {
+        PhantomFile::new(
             "metrics-first.parquet",
             METRICS_FILE_ROWS,
             METRICS_FILE_BYTES,
@@ -485,10 +485,10 @@ mod tests {
         )
     }
 
-    // The second of the two described files on 2024-01-10, without a null count for
+    // The second of the two phantom files on 2024-01-10, without a null count for
     // passenger_count.
-    fn second_metrics_file() -> DescribedFile {
-        DescribedFile::new(
+    fn second_metrics_file() -> PhantomFile {
+        PhantomFile::new(
             "metrics-second.parquet",
             METRICS_FILE_ROWS,
             METRICS_FILE_BYTES,
