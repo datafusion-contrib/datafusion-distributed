@@ -25,8 +25,6 @@ tokio = { version = "1.48", features = ["full"] }
 tokio-stream = "0.1"
 
 [dev-dependencies]
-# The in-memory worker resolver the test harness uses for distributed queries.
-datafusion-distributed = { path = "..", features = ["integration"] }
 datafusion-distributed-iceberg-test-tools = { path = "test-tools" }
 tempfile = "3"
 insta = "1"

@@ -29,11 +29,15 @@ mod append;
 mod catalog;
 mod described;
 mod error;
+mod harness;
 mod table;
 mod taxi;
 
 pub use append::Append;
 pub use catalog::FixtureCatalog;
 pub use described::{ColumnMetrics, DescribedFile};
+pub use harness::{
+    IcebergTestHarness, IcebergTestHarnessBuilder, data_file_name, without_snapshots,
+};
 pub use table::{FixtureTable, TableBuilder};
 pub use taxi::*;

@@ -10,7 +10,10 @@ publish = false
 [dependencies]
 # Only for its Arrow and Parquet re-exports, which keep this crate on the
 # versions the rest of the workspace resolves to.
-datafusion = { workspace = true, features = ["parquet"] }
+datafusion = { workspace = true, features = ["parquet", "sql"] }
+# The test harness runs distributed queries on in-memory workers.
+datafusion-distributed = { path = "../..", features = ["integration"] }
+datafusion-proto = { workspace = true }
 # Match datafusion-distributed-iceberg's iceberg-rust revision so tables share one type.
 iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "5b82ab99aeaf50bf4f5b3b776ac9cd6380a5f3e3" }
 rand = { version = "0.10", default-features = false, features = ["alloc"] }

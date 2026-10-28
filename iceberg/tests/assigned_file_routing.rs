@@ -1,9 +1,9 @@
-mod common;
-
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use crate::common::{IcebergTestHarness, data_file_name};
+    use datafusion_distributed_iceberg_test_tools::{IcebergTestHarness, data_file_name};
+
+    use datafusion_distributed_iceberg::IcebergExt;
 
     use async_trait::async_trait;
     use datafusion::common::Result;
@@ -18,18 +18,16 @@ mod tests {
     #[tokio::test]
     async fn routing_uses_the_files_assigned_to_each_task() -> Result<()> {
         let routes = FileRoutes::default();
-        let harness = IcebergTestHarness::builder()
+        let (plan, rows) = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
             .with_table(create_taxi_table().await?)
             .with_workers(3)
-            .with_eager_file_planning()
+            .with_config_option("iceberg.eager_file_planning", true)
             .configure_session(|state| {
                 state
                     .with_distributed_route_task_handler(routes.clone())
                     .with_distributed_file_scan_config_bytes_per_partition(1)
             })?
-            .build()
-            .await?;
-        let (plan, rows) = harness
             .query(
                 "SELECT pickup_date, COUNT(*) FROM taxi GROUP BY pickup_date ORDER BY pickup_date",
             )
@@ -41,20 +39,18 @@ mod tests {
     #[tokio::test]
     async fn pruned_files_choose_the_same_worker_across_union_branches_and_queries() -> Result<()> {
         let routes = FileRoutes::default();
-        let harness = IcebergTestHarness::builder()
+        let mut output = String::new();
+        for day in ["2024-01-08", "2024-01-09", "2024-01-08"] {
+            let (_, rows) = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
             .with_table(create_taxi_table().await?)
             .with_workers(3)
-            .with_eager_file_planning()
+            .with_config_option("iceberg.eager_file_planning", true)
             .configure_session(|state| {
                 state
                     .with_distributed_route_task_handler(routes.clone())
                     .with_distributed_file_scan_config_bytes_per_partition(1)
-            })?
-            .build()
-            .await?;
-        let mut output = String::new();
-        for day in ["2024-01-08", "2024-01-09", "2024-01-08"] {
-            let (_, rows) = harness.query(&format!(
+            })?.query(&format!(
                 "SELECT kind, COUNT(*) FROM (
                     SELECT 'a' AS kind FROM taxi WHERE pickup_date = DATE '{day}' AND trip_distance > 1
                     UNION ALL

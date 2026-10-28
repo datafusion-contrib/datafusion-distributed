@@ -2,11 +2,14 @@
 
 ## Tests
 
-- Reuse `IcebergTestHarness` from `tests/common/mod.rs` as much as possible.
-  Each test builds its table with the test tools, e.g.
-  `create_taxi_table()`, and hands it to the builder with
-  `with_table(..)`; without one, the harness has no table. Use `with_metadata`
-  to serve customized metadata for that table.
+- Reuse `IcebergTestHarness` from `datafusion-distributed-iceberg-test-tools`
+  as much as possible. It doesn't depend on this crate, so each test installs
+  the integration with
+  `with_session_extension(|state| state.with_iceberg_integration(..))`, sets
+  Iceberg options by name with `with_config_option("iceberg.*", ..)`, builds
+  its table with the test tools, e.g. `create_taxi_table()`, and hands it over
+  with `with_table(..)`; without one, the harness has no table. Use
+  `with_metadata` to serve customized metadata for that table.
 - Build any other table with `datafusion-distributed-iceberg-test-tools`
   (`test-tools/`) rather than by hand or by committing data files. A
   `FixtureCatalog` is an in-memory catalog over a temp dir.

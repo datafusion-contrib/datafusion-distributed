@@ -1,17 +1,16 @@
-mod common;
-
 mod tests {
-    use crate::common::IcebergTestHarness;
     use datafusion::error::Result;
+    use datafusion_distributed_iceberg::IcebergExt;
+    use datafusion_distributed_iceberg_test_tools::IcebergTestHarness;
     use datafusion_distributed_iceberg_test_tools::create_taxi_table;
 
     #[tokio::test]
     async fn registers_the_fixture_with_the_iceberg_schema() -> Result<()> {
-        let harness = IcebergTestHarness::builder()
+        let (_, batches) = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
             .with_table(create_taxi_table().await?)
-            .build()
+            .query("DESCRIBE taxi")
             .await?;
-        let (_, batches) = harness.query("DESCRIBE taxi").await?;
 
         insta::assert_snapshot!(batches, @r"
     +---------------------+---------------+-------------+
@@ -39,6 +38,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_schema_definitions_for_existing_iceberg_tables() -> Result<()> {
         let harness = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
             .with_table(create_taxi_table().await?)
             .build()
             .await?;
@@ -46,10 +46,7 @@ mod tests {
             .query(&format!(
                 "CREATE EXTERNAL TABLE invalid (id INT) STORED AS ICEBERG \
                  LOCATION '{}'",
-                harness
-                    .table()
-                    .expect("the harness has a table")
-                    .metadata_location()?
+                harness.table().metadata_location()?
             ))
             .await
             .unwrap_err();
@@ -63,12 +60,12 @@ mod tests {
 
     #[tokio::test]
     async fn registers_a_table_at_a_specific_snapshot() -> Result<()> {
-        let harness = IcebergTestHarness::builder()
+        let (_, batches) = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
             .with_table(create_taxi_table().await?)
             .with_table_option("iceberg.snapshot_id", "1")
-            .build()
+            .query("SELECT COUNT(*) AS trips FROM taxi")
             .await?;
-        let (_, batches) = harness.query("SELECT COUNT(*) AS trips FROM taxi").await?;
 
         insta::assert_snapshot!(batches, @r"
     +--------+
@@ -84,6 +81,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_an_invalid_snapshot_id() -> Result<()> {
         let error = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
             .with_table(create_taxi_table().await?)
             .with_table_option("iceberg.snapshot_id", "not-a-snapshot-id")
             .build()

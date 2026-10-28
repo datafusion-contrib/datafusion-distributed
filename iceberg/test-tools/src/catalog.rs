@@ -25,7 +25,8 @@ pub struct FixtureCatalog {
 }
 
 impl FixtureCatalog {
-    /// Creates an empty catalog in a new temporary directory.
+    /// Creates an empty catalog in a new temporary directory. Its tables' paths
+    /// are `file://` URLs, so any storage that reads local files can read them.
     pub async fn try_new() -> Result<Self> {
         let directory = TempDir::new()?;
         let catalog = MemoryCatalogBuilder::default()
@@ -34,7 +35,7 @@ impl FixtureCatalog {
                 "fixture",
                 HashMap::from([(
                     MEMORY_CATALOG_WAREHOUSE.to_string(),
-                    directory.path().display().to_string(),
+                    format!("file://{}", directory.path().display()),
                 )]),
             )
             .await

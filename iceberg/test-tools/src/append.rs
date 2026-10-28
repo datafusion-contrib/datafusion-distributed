@@ -470,7 +470,8 @@ mod tests {
 
         let described = &files[1];
         assert!(described.file_path().ends_with("/data/described.parquet"));
-        assert!(!Path::new(described.file_path()).exists());
+        let local_path = described.file_path().strip_prefix("file://").unwrap();
+        assert!(!Path::new(local_path).exists());
         assert_eq!(described.record_count(), 10);
         assert_eq!(described.file_size_in_bytes(), 1_000);
         assert!(described.null_value_counts().is_empty());

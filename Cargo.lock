@@ -2526,6 +2526,8 @@ name = "datafusion-distributed-iceberg-test-tools"
 version = "0.1.0"
 dependencies = [
  "datafusion",
+ "datafusion-distributed",
+ "datafusion-proto",
  "futures",
  "iceberg",
  "rand 0.10.2",

@@ -1,17 +1,14 @@
-mod common;
-
 mod tests {
-    use crate::common::IcebergTestHarness;
     use datafusion::error::Result;
+    use datafusion_distributed_iceberg::IcebergExt;
+    use datafusion_distributed_iceberg_test_tools::IcebergTestHarness;
     use datafusion_distributed_iceberg_test_tools::create_taxi_table;
 
     #[tokio::test]
     async fn pushes_down_compound_predicates() -> Result<()> {
-        let harness = IcebergTestHarness::builder()
+        let (plan, batches) = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
             .with_table(create_taxi_table().await?)
-            .build()
-            .await?;
-        let (plan, batches) = harness
             .query(
                 r"SELECT COUNT(*) AS trips
                FROM taxi
@@ -42,11 +39,9 @@ mod tests {
 
     #[tokio::test]
     async fn pushes_down_disjunctions() -> Result<()> {
-        let harness = IcebergTestHarness::builder()
+        let (plan, batches) = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
             .with_table(create_taxi_table().await?)
-            .build()
-            .await?;
-        let (plan, batches) = harness
             .query(
                 r"SELECT pickup_date, COUNT(*) AS trips
                    FROM taxi
@@ -81,11 +76,9 @@ mod tests {
 
     #[tokio::test]
     async fn pushes_down_null_predicates() -> Result<()> {
-        let harness = IcebergTestHarness::builder()
+        let (plan, batches) = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
             .with_table(create_taxi_table().await?)
-            .build()
-            .await?;
-        let (plan, batches) = harness
             .query("SELECT COUNT(*) AS trips FROM taxi WHERE passenger_count IS NULL")
             .await?;
 
@@ -110,11 +103,9 @@ mod tests {
 
     #[tokio::test]
     async fn retains_unsupported_filter_after_safe_pushdown() -> Result<()> {
-        let harness = IcebergTestHarness::builder()
+        let (plan, batches) = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
             .with_table(create_taxi_table().await?)
-            .build()
-            .await?;
-        let (plan, batches) = harness
             .query(
                 r"SELECT COUNT(*) AS trips
                    FROM taxi
@@ -144,11 +135,9 @@ mod tests {
 
     #[tokio::test]
     async fn executes_wholly_unsupported_filters_without_pushdown() -> Result<()> {
-        let harness = IcebergTestHarness::builder()
+        let (plan, batches) = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
             .with_table(create_taxi_table().await?)
-            .build()
-            .await?;
-        let (plan, batches) = harness
             .query("SELECT COUNT(*) AS trips FROM taxi WHERE trip_distance + 1.0 > 20.0")
             .await?;
 

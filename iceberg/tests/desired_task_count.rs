@@ -1,19 +1,22 @@
-mod common;
-
 mod tests {
-    use crate::common::{IcebergTestHarness, without_snapshots};
     use datafusion::common::Result;
     use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
     use datafusion::datasource::source::DataSourceExec;
+    use datafusion_distributed::DesiredTaskCountEvent;
     use datafusion_distributed::DistributedExt;
     use datafusion_distributed_iceberg::EagerIcebergDataSource;
+    use datafusion_distributed_iceberg::IcebergExt;
+    use datafusion_distributed_iceberg::iceberg_desired_task_count;
     use datafusion_distributed_iceberg_test_tools::create_taxi_table;
+    use datafusion_distributed_iceberg_test_tools::{IcebergTestHarness, without_snapshots};
     use iceberg::spec::{MAIN_BRANCH, Snapshot, TableMetadata};
 
     #[tokio::test]
     async fn executes_with_estimated_scan_tasks() -> Result<()> {
         // 5,656,412 bytes / 1 MB / 2 partitions rounds up to 3 tasks, not all 4 workers.
-        let harness = IcebergTestHarness::builder()
+        // Grouping prevents COUNT(*) from being answered from snapshot metadata alone.
+        let (plan, results) = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
             .with_table(create_taxi_table().await?)
             .with_workers(4)
             .configure_session(|mut state| {
@@ -21,10 +24,6 @@ mod tests {
                 config.options_mut().execution.target_partitions = 2;
                 state.with_distributed_file_scan_config_bytes_per_partition(1_000_000)
             })?
-            .build()
-            .await?;
-        // Grouping prevents COUNT(*) from being answered from snapshot metadata alone.
-        let (plan, results) = harness
             .query(
                 "SELECT pickup_date, COUNT(*) AS trips FROM taxi \
              GROUP BY pickup_date ORDER BY pickup_date",
@@ -64,8 +63,9 @@ mod tests {
     #[tokio::test]
     async fn planned_scan_tasks_are_bounded_by_selected_file_work() -> Result<()> {
         let harness = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
             .with_table(create_taxi_table().await?)
-            .configure_iceberg(|config| config.eager_file_planning = true)
+            .with_config_option("iceberg.eager_file_planning", true)
             .configure_session(|mut state| {
                 let session = state.config().get_or_insert_default();
                 session.options_mut().execution.target_partitions = 2;
@@ -74,7 +74,12 @@ mod tests {
             .build()
             .await?;
         assert_eq!(
-            harness.estimate_task_count(&harness.scan().await?)?,
+            iceberg_desired_task_count(DesiredTaskCountEvent {
+                plan: &harness.scan().await?,
+                session_config: harness.state().config()
+            })
+            .transpose()?
+            .map(|response| response.task_count.as_usize()),
             Some(7)
         );
         let plan = harness
@@ -85,7 +90,14 @@ mod tests {
             if let Some(exec) = node.downcast_ref::<DataSourceExec>()
                 && exec.data_source().is::<EagerIcebergDataSource>()
             {
-                estimates.push(harness.estimate_task_count(node)?);
+                estimates.push(
+                    iceberg_desired_task_count(DesiredTaskCountEvent {
+                        plan: node,
+                        session_config: harness.state().config(),
+                    })
+                    .transpose()?
+                    .map(|response| response.task_count.as_usize()),
+                );
             }
             Ok(TreeNodeRecursion::Continue)
         })?;
@@ -162,11 +174,20 @@ mod tests {
     #[tokio::test]
     async fn remote_feed_does_not_estimate_again() -> Result<()> {
         let harness = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
             .with_table(create_taxi_table().await?)
             .build()
             .await?;
         let plan = harness.roundtrip_plan(harness.scan().await?)?;
-        assert_eq!(harness.estimate_task_count(&plan)?, None);
+        assert_eq!(
+            iceberg_desired_task_count(DesiredTaskCountEvent {
+                plan: &plan,
+                session_config: harness.state().config()
+            })
+            .transpose()?
+            .map(|response| response.task_count.as_usize()),
+            None
+        );
         Ok(())
     }
 
@@ -176,6 +197,7 @@ mod tests {
         expected: Option<usize>,
     ) -> Result<()> {
         let mut builder = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
             .with_table(create_taxi_table().await?)
             .configure_session(|mut state| {
                 let config = state.config().get_or_insert_default();
@@ -187,7 +209,12 @@ mod tests {
         }
         let harness = builder.with_metadata(metadata).build().await?;
         assert_eq!(
-            harness.estimate_task_count(&harness.scan().await?)?,
+            iceberg_desired_task_count(DesiredTaskCountEvent {
+                plan: &harness.scan().await?,
+                session_config: harness.state().config()
+            })
+            .transpose()?
+            .map(|response| response.task_count.as_usize()),
             expected
         );
         Ok(())

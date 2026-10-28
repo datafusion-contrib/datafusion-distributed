@@ -1,10 +1,10 @@
-mod common;
-
 mod tests {
     use std::error::Error;
     use std::sync::Arc;
 
-    use crate::common::{IcebergTestHarness, without_snapshots};
+    use datafusion_distributed_iceberg_test_tools::{IcebergTestHarness, without_snapshots};
+
+    use datafusion_distributed_iceberg::IcebergExt;
 
     use datafusion_distributed_iceberg_test_tools::{
         FixtureCatalog, create_taxi_table, taxi_schema,
@@ -32,6 +32,7 @@ mod tests {
     #[tokio::test]
     async fn missing_snapshot_summary_statistics_are_absent() -> Result<()> {
         let harness = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
             .with_table(create_taxi_table().await?)
             .with_metadata(metadata_without_summary_statistics)
             .build()
@@ -47,8 +48,9 @@ mod tests {
     async fn planned_file_statistics_use_manifest_totals_when_snapshot_summary_is_missing()
     -> Result<()> {
         let harness = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
             .with_table(create_taxi_table().await?)
-            .configure_iceberg(|config| config.eager_file_planning = true)
+            .with_config_option("iceberg.eager_file_planning", true)
             .with_metadata(metadata_without_summary_statistics)
             .build()
             .await?;
@@ -123,15 +125,16 @@ mod tests {
             .commit()
             .await?;
         let harness = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
             .with_table(table)
             .with_table_option("iceberg.snapshot_id", "1")
-            .with_eager_file_planning()
-            .with_column_stats_enabled()
+            .with_config_option("iceberg.eager_file_planning", true)
+            .with_config_option("iceberg.column_stats_enabled", true)
             .build()
             .await?;
         // The manifest's partition summary excludes this query. Delete the manifest
         // so a redundant whole-snapshot column-statistics read fails the test.
-        let table = harness.table().expect("the harness has a table").table();
+        let table = harness.table().table();
         let snapshot = table
             .metadata()
             .current_snapshot()
@@ -205,6 +208,7 @@ mod tests {
             .commit()
             .await?;
         let harness = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
             .with_table(table)
             .with_table_option("iceberg.snapshot_id", "1")
             .build()
@@ -283,9 +287,10 @@ mod tests {
             .commit()
             .await?;
         let harness = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
             .with_table(table)
             .with_table_option("iceberg.snapshot_id", "1")
-            .with_column_stats_enabled()
+            .with_config_option("iceberg.column_stats_enabled", true)
             .build()
             .await?;
         let stats = query_statistics(&harness, "SELECT * FROM taxi").await?;
@@ -377,6 +382,7 @@ mod tests {
             .commit()
             .await?;
         let harness = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
             .with_table(table)
             .with_table_option("iceberg.snapshot_id", "1")
             .build()
@@ -455,9 +461,10 @@ mod tests {
             .commit()
             .await?;
         let harness = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
             .with_table(table)
             .with_table_option("iceberg.snapshot_id", "1")
-            .with_column_stats_enabled()
+            .with_config_option("iceberg.column_stats_enabled", true)
             .build()
             .await?;
         let stats = query_statistics(
@@ -493,6 +500,7 @@ mod tests {
     #[tokio::test]
     async fn reports_statistics_for_the_selected_snapshot() -> Result<()> {
         let harness = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
             .with_table(create_taxi_table().await?)
             .with_table_option("iceberg.snapshot_id", "42")
             .with_metadata(historical_taxi_metadata)
@@ -508,6 +516,7 @@ mod tests {
     #[tokio::test]
     async fn statistics_propagate_through_filter() -> Result<()> {
         let harness = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
             .with_table(create_taxi_table().await?)
             .build()
             .await?;
@@ -525,6 +534,7 @@ mod tests {
     #[tokio::test]
     async fn statistics_propagate_through_projection_and_sort() -> Result<()> {
         let harness = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
             .with_table(create_taxi_table().await?)
             .build()
             .await?;
@@ -542,6 +552,7 @@ mod tests {
     #[tokio::test]
     async fn explain_shows_statistics_on_the_iceberg_source() -> Result<()> {
         let harness = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
             .with_table(create_taxi_table().await?)
             .build()
             .await?;
@@ -559,11 +570,11 @@ mod tests {
 
     #[tokio::test]
     async fn count_star_skips_scan_without_column_stats() -> Result<()> {
-        let harness = IcebergTestHarness::builder()
+        let (plan, batches) = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
             .with_table(create_taxi_table().await?)
-            .build()
+            .query("SELECT count(*) FROM taxi")
             .await?;
-        let (plan, batches) = harness.query("SELECT count(*) FROM taxi").await?;
 
         insta::assert_snapshot!(plan, @"
         ProjectionExec: expr=[175000 as count(*)]
@@ -581,12 +592,12 @@ mod tests {
 
     #[tokio::test]
     async fn count_star_skips_scan_with_column_stats() -> Result<()> {
-        let harness = IcebergTestHarness::builder()
+        let (plan, batches) = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
             .with_table(create_taxi_table().await?)
-            .with_column_stats_enabled()
-            .build()
+            .with_config_option("iceberg.column_stats_enabled", true)
+            .query("SELECT count(*) FROM taxi")
             .await?;
-        let (plan, batches) = harness.query("SELECT count(*) FROM taxi").await?;
 
         insta::assert_snapshot!(plan, @"
         ProjectionExec: expr=[175000 as count(*)]

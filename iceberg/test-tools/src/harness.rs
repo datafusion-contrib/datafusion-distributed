@@ -1,38 +1,36 @@
-// Each test binary compiles this module and uses only part of it.
-#![allow(dead_code)]
-
 use std::collections::BTreeMap;
+use std::fmt::Display;
 use std::str::FromStr;
 use std::sync::Arc;
 
 use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::common::exec_err;
-use datafusion::error::{DataFusionError, Result};
-use datafusion::execution::SessionStateBuilder;
+use datafusion::error::Result;
+use datafusion::execution::{SessionState, SessionStateBuilder};
 use datafusion::physical_plan::{ExecutionPlan, collect};
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_distributed::test_utils::in_memory_channel_resolver::{
     InMemoryChannelResolver, InMemoryWorkerResolver,
 };
 use datafusion_distributed::{
-    DesiredTaskCountEvent, DistributedCodec, DistributedConfig, DistributedExt,
-    DistributedMetricsFormat, SessionStateBuilderExt, WorkerQueryContext, display_plan_ascii,
+    DistributedCodec, DistributedConfig, DistributedExt, DistributedMetricsFormat,
+    SessionStateBuilderExt, WorkerQueryContext, display_plan_ascii,
     rewrite_distributed_plan_with_metrics,
 };
-use datafusion_distributed_iceberg::{
-    IcebergConfig, IcebergExt, IcebergIntegrationOptions, iceberg_desired_task_count,
-};
-use datafusion_distributed_iceberg_test_tools::FixtureTable;
 use datafusion_proto::physical_plan::AsExecutionPlan;
+use datafusion_proto::protobuf::PhysicalPlanNode;
 use iceberg::MetadataLocation;
-use iceberg::io::LocalFsStorageFactory;
 use iceberg::spec::{MAIN_BRANCH, TableMetadata, TableMetadataBuilder};
+
+use crate::FixtureTable;
+use crate::error::df_err;
 
 /// A DataFusion session for integration tests, over the table given to its builder, if any.
 ///
 /// The table is registered under its name, e.g. `taxi` for `default.taxi`, with
-/// `CREATE EXTERNAL TABLE ... STORED AS ICEBERG`. The harness owns the table, so its
-/// files live as long as the harness.
+/// `CREATE EXTERNAL TABLE ... STORED AS ICEBERG`, so a session extension must register
+/// an `ICEBERG` table factory. The harness owns the table, so its files live as long as
+/// the harness.
 pub struct IcebergTestHarness {
     ctx: SessionContext,
     table: Option<FixtureTable>,
@@ -44,8 +42,13 @@ impl IcebergTestHarness {
     }
 
     /// The registered table, e.g. to inspect its files.
-    pub fn table(&self) -> Option<&FixtureTable> {
-        self.table.as_ref()
+    pub fn table(&self) -> &FixtureTable {
+        self.table.as_ref().expect("the harness has a table")
+    }
+
+    /// The session's state, e.g. to read its configuration.
+    pub fn state(&self) -> SessionState {
+        self.ctx.state()
     }
 
     pub async fn query(&self, sql: &str) -> Result<(String, String)> {
@@ -85,21 +88,11 @@ impl IcebergTestHarness {
             .await
     }
 
-    /// Estimates Iceberg scan tasks using this harness's session configuration.
-    pub fn estimate_task_count(&self, plan: &Arc<dyn ExecutionPlan>) -> Result<Option<usize>> {
-        iceberg_desired_task_count(DesiredTaskCountEvent {
-            plan,
-            session_config: self.ctx.state().config(),
-        })
-        .transpose()
-        .map(|response| response.map(|response| response.task_count.as_usize()))
-    }
-
+    /// Encodes `plan` with the session's codecs and decodes it back, as for a worker.
     pub fn roundtrip_plan(&self, plan: Arc<dyn ExecutionPlan>) -> Result<Arc<dyn ExecutionPlan>> {
         let task_ctx = self.ctx.task_ctx();
         let codec = DistributedCodec::new_combined_with_user(task_ctx.session_config());
-        let proto =
-            datafusion_proto::protobuf::PhysicalPlanNode::try_from_physical_plan(plan, &codec)?;
+        let proto = PhysicalPlanNode::try_from_physical_plan(plan, &codec)?;
         proto.try_into_physical_plan(&task_ctx, &codec)
     }
 }
@@ -107,8 +100,13 @@ impl IcebergTestHarness {
 /// Derives the metadata to register a table from, given its own.
 type MetadataTransform = Box<dyn FnOnce(&TableMetadata) -> TableMetadata>;
 
+/// Extends the coordinator's and every worker's session, e.g. with a table factory.
+type SessionExtension = Arc<dyn Fn(SessionStateBuilder) -> SessionStateBuilder + Send + Sync>;
+
 pub struct IcebergTestHarnessBuilder {
     session_builder: SessionStateBuilder,
+    session_extensions: Vec<SessionExtension>,
+    config_options: BTreeMap<String, String>,
     table_options: BTreeMap<String, String>,
     table: Option<FixtureTable>,
     metadata: Option<MetadataTransform>,
@@ -122,6 +120,8 @@ impl Default for IcebergTestHarnessBuilder {
                 .with_default_features()
                 .with_config(SessionConfig::new().with_target_partitions(4))
                 .with_distributed_option_extension(DistributedConfig::default()),
+            session_extensions: Vec::new(),
+            config_options: BTreeMap::new(),
             table_options: BTreeMap::new(),
             table: None,
             metadata: None,
@@ -131,8 +131,9 @@ impl Default for IcebergTestHarnessBuilder {
 }
 
 impl IcebergTestHarnessBuilder {
-    /// Customizes the existing session builder, retaining defaults unless explicitly replaced.
-    /// Fixture integration and optional worker wiring are installed during [`Self::build`].
+    /// Customizes the coordinator's session builder, retaining defaults unless explicitly
+    /// replaced. Session extensions and optional worker wiring are installed during
+    /// [`Self::build`].
     pub fn configure_session(
         mut self,
         configure: impl FnOnce(SessionStateBuilder) -> Result<SessionStateBuilder>,
@@ -141,23 +142,23 @@ impl IcebergTestHarnessBuilder {
         Ok(self)
     }
 
-    /// Customizes Iceberg settings while preserving other session options.
-    pub fn configure_iceberg(mut self, configure: impl FnOnce(&mut IcebergConfig)) -> Self {
-        let session = self.session_builder.config().get_or_insert_default();
-        let mut config = IcebergConfig::from_config_options(session.options());
-        configure(&mut config);
-        session.set_distributed_option_extension(config);
+    /// Extends the coordinator's session, and every worker's, with `extension`, e.g. to
+    /// register the `ICEBERG` table factory. Extensions run in the order they were added.
+    pub fn with_session_extension(
+        mut self,
+        extension: impl Fn(SessionStateBuilder) -> SessionStateBuilder + Send + Sync + 'static,
+    ) -> Self {
+        self.session_extensions.push(Arc::new(extension));
         self
     }
 
-    /// Discovers files during planning instead of execution.
-    pub fn with_eager_file_planning(self) -> Self {
-        self.configure_iceberg(|config| config.eager_file_planning = true)
-    }
-
-    /// Enables Iceberg column statistics during planning.
-    pub fn with_column_stats_enabled(self) -> Self {
-        self.configure_iceberg(|config| config.column_stats_enabled = true)
+    /// Sets the coordinator's session option `key`, e.g. `iceberg.eager_file_planning`, to
+    /// `value`, e.g. `true`. Options are set after the session extensions run, so they can
+    /// belong to a config extension one of them registers. Later values replace earlier
+    /// ones for the same key.
+    pub fn with_config_option(mut self, key: impl Into<String>, value: impl Display) -> Self {
+        self.config_options.insert(key.into(), value.to_string());
+        self
     }
 
     /// Registers `table` under its name.
@@ -189,6 +190,19 @@ impl IcebergTestHarnessBuilder {
         self
     }
 
+    /// Builds the harness and runs `sql` on it, returning its plan and formatted rows.
+    pub async fn query(self, sql: &str) -> Result<(String, String)> {
+        let harness = self.build().await?;
+        harness.query(sql).await
+    }
+
+    /// Builds the harness and runs `sql` on it, returning its plan with per-task metrics and
+    /// its formatted rows.
+    pub async fn query_with_metrics(self, sql: &str) -> Result<(String, String)> {
+        let harness = self.build().await?;
+        harness.query_with_metrics(sql).await
+    }
+
     /// Registers the table, if any, from customized metadata if [`Self::with_metadata`] was
     /// given.
     pub async fn build(mut self) -> Result<IcebergTestHarness> {
@@ -204,29 +218,31 @@ impl IcebergTestHarnessBuilder {
             (Some(table), Some(metadata)) => {
                 let metadata = metadata(table.table().metadata());
                 let location = MetadataLocation::from_str(table.metadata_location()?)
-                    .map_err(external)?
+                    .map_err(df_err)?
                     .with_next_version();
                 metadata
                     .write_to(table.table().file_io(), &location)
                     .await
-                    .map_err(external)?;
+                    .map_err(df_err)?;
                 Some((table, location.to_string()))
             }
         };
 
-        let options = IcebergIntegrationOptions {
-            storage_factory: Arc::new(LocalFsStorageFactory),
-            iceberg_runtime: iceberg::Runtime::current(),
-        };
-        let state = self
-            .session_builder
-            .with_iceberg_integration(options.clone());
+        let mut state = self.session_builder;
+        for extension in &self.session_extensions {
+            state = extension(state);
+        }
+        let options = state.config().get_or_insert_default().options_mut();
+        for (key, value) in &self.config_options {
+            options.set(key, value)?;
+        }
         let state = if let Some(workers) = self.workers {
+            let extensions = self.session_extensions;
             let resolver =
                 InMemoryChannelResolver::from_session_builder(move |ctx: WorkerQueryContext| {
-                    let state = ctx
-                        .builder
-                        .with_iceberg_integration(options.clone())
+                    let state = extensions
+                        .iter()
+                        .fold(ctx.builder, |state, extension| extension(state))
                         .build();
                     async move { Ok(state) }
                 });
@@ -268,8 +284,8 @@ impl IcebergTestHarnessBuilder {
     }
 }
 
-/// Returns a data file's path relative to its table's `data/` directory, which,
-/// unlike the temp dir the table lives in, is the same on every run.
+/// Returns a data file's path relative to its table's `data/` directory, which, unlike
+/// the temp dir the table lives in, is the same on every run.
 pub fn data_file_name(path: &str) -> &str {
     path.rsplit_once("/data/").map_or(path, |(_, name)| name)
 }
@@ -282,9 +298,4 @@ pub fn without_snapshots(metadata: &TableMetadata) -> TableMetadataBuilder {
         .into_builder(None)
         .remove_ref(MAIN_BRANCH)
         .remove_snapshots(&snapshot_ids)
-}
-
-/// Converts an error from iceberg-rust into a DataFusion error.
-pub fn external(error: iceberg::Error) -> DataFusionError {
-    DataFusionError::External(Box::new(error))
 }

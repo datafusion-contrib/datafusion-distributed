@@ -1,17 +1,16 @@
-mod common;
-
 mod tests {
-    use crate::common::IcebergTestHarness;
     use datafusion::error::Result;
+    use datafusion::physical_plan::collect;
+    use datafusion_distributed::display_plan_ascii;
+    use datafusion_distributed_iceberg::IcebergExt;
+    use datafusion_distributed_iceberg_test_tools::IcebergTestHarness;
     use datafusion_distributed_iceberg_test_tools::create_taxi_table;
 
     #[tokio::test]
     async fn applies_sql_limit_to_the_iceberg_scan_output() -> Result<()> {
-        let harness = IcebergTestHarness::builder()
+        let (plan, batches) = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
             .with_table(create_taxi_table().await?)
-            .build()
-            .await?;
-        let (plan, batches) = harness
             .query(
                 r"SELECT vendor_id, pickup_at, passenger_count, trip_distance, pickup_date
                FROM taxi
@@ -42,11 +41,9 @@ mod tests {
 
     #[tokio::test]
     async fn keeps_unordered_limits_above_the_iceberg_source() -> Result<()> {
-        let harness = IcebergTestHarness::builder()
+        let (plan, batches) = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
             .with_table(create_taxi_table().await?)
-            .build()
-            .await?;
-        let (plan, batches) = harness
             .query("SELECT pickup_date FROM taxi WHERE pickup_date = DATE '2024-01-10' LIMIT 3")
             .await?;
 
@@ -71,37 +68,34 @@ mod tests {
     #[tokio::test]
     async fn passes_the_scan_limit_to_the_iceberg_source() -> Result<()> {
         let harness = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
             .with_table(create_taxi_table().await?)
             .build()
             .await?;
-        let (plan, batches) = harness
-            .query("SELECT pickup_date FROM taxi LIMIT 3")
+        let plan = harness
+            .physical_plan("SELECT pickup_date FROM taxi LIMIT 3")
             .await?;
 
-        insta::assert_snapshot!(plan, @"
+        insta::assert_snapshot!(display_plan_ascii(plan.as_ref(), false), @"
         CoalescePartitionsExec: fetch=3
           DataSourceExec: format=iceberg, table=default.taxi, projection=[pickup_date], fetch=3
         ");
-        insta::assert_snapshot!(batches, @r"
-    +-------------+
-    | pickup_date |
-    +-------------+
-    | 2024-01-08  |
-    | 2024-01-08  |
-    | 2024-01-08  |
-    +-------------+
-    ");
+        // Without an ORDER BY, any three rows are correct: which file's rows arrive first
+        // depends on how the parallel reads are scheduled.
+        let batches = collect(plan, harness.state().task_ctx()).await?;
+        assert_eq!(
+            batches.iter().map(|batch| batch.num_rows()).sum::<usize>(),
+            3
+        );
 
         Ok(())
     }
 
     #[tokio::test]
     async fn avoids_scanning_for_limit_zero() -> Result<()> {
-        let harness = IcebergTestHarness::builder()
+        let (plan, batches) = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
             .with_table(create_taxi_table().await?)
-            .build()
-            .await?;
-        let (plan, batches) = harness
             .query("SELECT vendor_id FROM taxi WHERE pickup_date = DATE '2024-01-10' LIMIT 0")
             .await?;
 
@@ -118,11 +112,9 @@ mod tests {
 
     #[tokio::test]
     async fn applies_offset_before_limit() -> Result<()> {
-        let harness = IcebergTestHarness::builder()
+        let (plan, batches) = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
             .with_table(create_taxi_table().await?)
-            .build()
-            .await?;
-        let (plan, batches) = harness
             .query(
                 r"SELECT vendor_id, pickup_at
                    FROM taxi

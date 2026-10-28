@@ -1,17 +1,14 @@
-mod common;
-
 mod tests {
-    use crate::common::IcebergTestHarness;
     use datafusion::error::Result;
+    use datafusion_distributed_iceberg::IcebergExt;
+    use datafusion_distributed_iceberg_test_tools::IcebergTestHarness;
     use datafusion_distributed_iceberg_test_tools::create_taxi_table;
 
     #[tokio::test]
     async fn projects_only_columns_required_by_the_query() -> Result<()> {
-        let harness = IcebergTestHarness::builder()
+        let (plan, batches) = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
             .with_table(create_taxi_table().await?)
-            .build()
-            .await?;
-        let (plan, batches) = harness
             .query(
                 r"SELECT pickup_date, COUNT(*) AS trips
                FROM taxi
@@ -48,11 +45,9 @@ mod tests {
 
     #[tokio::test]
     async fn includes_filter_columns_that_are_not_in_the_output() -> Result<()> {
-        let harness = IcebergTestHarness::builder()
+        let (plan, batches) = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
             .with_table(create_taxi_table().await?)
-            .build()
-            .await?;
-        let (plan, batches) = harness
             .query(
                 r"SELECT vendor_id, pickup_location_id
                    FROM taxi
@@ -84,11 +79,9 @@ mod tests {
 
     #[tokio::test]
     async fn projects_source_columns_for_computed_expressions() -> Result<()> {
-        let harness = IcebergTestHarness::builder()
+        let (plan, batches) = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
             .with_table(create_taxi_table().await?)
-            .build()
-            .await?;
-        let (plan, batches) = harness
             .query(
                 r"SELECT MAX(trip_distance * fare_amount) AS max_weighted_fare
                    FROM taxi
@@ -117,11 +110,9 @@ mod tests {
 
     #[tokio::test]
     async fn reads_all_columns_when_selecting_star() -> Result<()> {
-        let harness = IcebergTestHarness::builder()
+        let (plan, batches) = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
             .with_table(create_taxi_table().await?)
-            .build()
-            .await?;
-        let (plan, batches) = harness
             .query(
                 r"SELECT *
                    FROM taxi
