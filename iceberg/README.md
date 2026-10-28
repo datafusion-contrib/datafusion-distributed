@@ -67,8 +67,12 @@ fn assigned_paths(source: &EagerIcebergDataSource) -> Vec<&str> {
 ```
 
 Use `planned_partition_tasks(partition)` to inspect a particular local partition.
-Assignment visits distributed tasks first, then their local partitions. Task-local
-sources share descriptor storage and its memory reservation on the coordinator.
+Eager assignment considers largest files first and places each on the task with
+the fewest assigned bytes, cycling that task's local partitions. File identity
+breaks equal-size ties; task file count and task index break equal-load ties.
+This is the eager policy, with no separate configuration flag. File bytes are
+scheduling estimates; assignment neither splits files nor chooses workers.
+Task-local sources share descriptor storage and its memory reservation on the coordinator.
 The codec sends only each task's assigned groups in its plan; workers restore
 those groups without discovering or reassigning files.
 
@@ -82,8 +86,8 @@ Eager scans derive row counts and bytes from selected files and cap task estimat
 by the number of selected files. Predicates or deletes make row counts inexact;
 empty selections have exactly zero rows. Whole-snapshot column statistics are
 skipped when they would describe a different row set. Lazy scans retain snapshot
-statistics and task-size estimates. Greedy assignment and selected-file column
-statistics are separate changes. Task-local eager variants and decoded plans report unknown
+statistics and task-size estimates. Selected-file column statistics remain a
+separate change. Task-local eager variants and decoded plans report unknown
 statistics rather than applying whole-snapshot aggregates to a subset.
 
 ```bash

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use datafusion::common::{Result, exec_err};
+use datafusion::common::Result;
 use datafusion::datasource::source::{DataSource, DataSourceExec};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_distributed::{
@@ -8,7 +8,7 @@ use datafusion_distributed::{
 };
 
 use crate::EagerIcebergDataSource;
-use crate::common::file_partition;
+use crate::eager::assign_files;
 
 /// Like DFD's FileScanConfig scale-up handler, build one scan variant per task
 /// before routing. This handler chooses task assignments; each source retains
@@ -25,19 +25,7 @@ pub(crate) fn iceberg_scale_up(
     }
     Some((|| {
         let partitions_per_task = source.output_partitioning().partition_count();
-        if ev
-            .task_count
-            .checked_mul(partitions_per_task)
-            .is_none_or(|n| n == 0)
-        {
-            return exec_err!("Invalid Iceberg assignment partition count");
-        }
-        let mut assignments = vec![vec![Vec::new(); partitions_per_task]; ev.task_count];
-        for position in 0..source.planned_files().len() {
-            let partition = file_partition(position, ev.task_count, partitions_per_task);
-            assignments[partition / partitions_per_task][partition % partitions_per_task]
-                .push(position);
-        }
+        let assignments = assign_files(source.planned_files(), ev.task_count, partitions_per_task)?;
         let sources = assignments
             .into_iter()
             .map(|groups| source.with_file_groups(groups))
