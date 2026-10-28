@@ -12,7 +12,7 @@ What counts as evidence for a performance claim is defined in
 
 ```shell
 cargo build -p datafusion-distributed-benchmarks --release
-target/release/dfbench run --dataset tpch/sf10 --workers 8 --threads 2 -i 5
+target/release/dfbench run --dataset tpch/sf10 --workers 8 -i 5
 ```
 
 `dfbench run --help` lists all options.
@@ -25,7 +25,7 @@ same `run` options:
 ```shell
 cargo build -p datafusion-distributed-iceberg-benchmarks --release
 target/release/dfbench-iceberg prepare --input testdata/tpch/sf10   # writes testdata/tpch/sf10_iceberg
-target/release/dfbench-iceberg run --dataset tpch/sf10_iceberg --workers 8 --threads 2 -i 5
+target/release/dfbench-iceberg run --dataset tpch/sf10_iceberg --workers 8 -i 5
 target/release/dfbench compare tpch/sf10 tpch/sf10_iceberg          # Parquet vs Iceberg results
 ```
 

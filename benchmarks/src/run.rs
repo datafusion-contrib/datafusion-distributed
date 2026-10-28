@@ -74,11 +74,6 @@ pub struct RunOpt {
     #[structopt(long, default_value = "0")]
     workers: usize,
 
-    /// Number of physical threads per worker. The runner and the workers share one Tokio
-    /// runtime with --threads × (workers + 1) threads, capped at the available parallelism.
-    #[structopt(long)]
-    threads: Option<usize>,
-
     /// Number of bytes each partition is expected to scan from parquet files. Lower values
     /// produce more partitions/tasks. Defaults to the engine default when unset.
     #[structopt(long)]
@@ -108,8 +103,7 @@ pub struct RunOpt {
     #[structopt(short = "i", long = "iterations", default_value = "5")]
     iterations: usize,
 
-    /// Number of partitions to process in parallel. Defaults to number of available cores.
-    /// Should typically be less or equal than --threads.
+    /// Number of partitions to process in parallel. Defaults to the number of available cores.
     #[structopt(short = "n", long = "partitions")]
     partitions: Option<usize>,
 
@@ -183,7 +177,7 @@ impl RunOpt {
             if let Some(batch_size) = self.batch_size {
                 config = config.with_batch_size(batch_size);
             }
-            config.with_target_partitions(self.partitions())
+            config.with_target_partitions(self.partitions.unwrap_or_else(get_available_parallelism))
         })
     }
 
@@ -254,11 +248,7 @@ impl RunOpt {
         };
 
         println!("Running benchmarks with the following options: {self:?}");
-        let mut benchmark_run = BenchmarkRun::new(
-            self.dataset.clone(),
-            ports.len(),
-            self.threads.unwrap_or(get_available_parallelism()),
-        );
+        let mut benchmark_run = BenchmarkRun::new(self.dataset.clone(), ports.len());
 
         for (id, sql) in queries_for_dataset(dataset_suite)? {
             if !self.query.is_empty() && !self.query.contains(&id.to_string()) {
@@ -399,15 +389,5 @@ impl RunOpt {
             return exec_err!("Dataset {} is empty", self.dataset);
         }
         Ok(data_path)
-    }
-
-    fn partitions(&self) -> usize {
-        if let Some(partitions) = self.partitions {
-            return partitions;
-        }
-        if let Some(threads) = self.threads {
-            return threads;
-        }
-        get_available_parallelism()
     }
 }

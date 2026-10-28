@@ -10,7 +10,7 @@ From the repository root:
 cargo run -p datafusion-distributed-iceberg-benchmarks --release -- prepare \
   --input testdata/tpch/sf1
 cargo run -p datafusion-distributed-iceberg-benchmarks --release -- run \
-  --workers 2 --dataset tpch/sf1_iceberg --threads 2 --partitions 2
+  --workers 2 --dataset tpch/sf1_iceberg --partitions 2
 ```
 
 Preparation writes an immutable sibling dataset named `<input>_iceberg` by default.
