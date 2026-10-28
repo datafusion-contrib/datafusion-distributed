@@ -5,6 +5,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use datafusion::arrow::array::{RecordBatch, new_null_array};
 use datafusion::arrow::compute::cast;
 use datafusion::arrow::datatypes::SchemaRef as ArrowSchemaRef;
+use datafusion::common::{exec_err, not_impl_err};
+use datafusion::error::Result;
 use datafusion::parquet::file::properties::WriterProperties;
 use iceberg::arrow::{RecordBatchPartitionSplitter, schema_to_arrow_schema};
 use iceberg::spec::{
@@ -18,9 +20,9 @@ use iceberg::writer::file_writer::location_generator::{
 };
 use iceberg::writer::file_writer::rolling_writer::RollingFileWriterBuilder;
 use iceberg::writer::{IcebergWriter, IcebergWriterBuilder};
-use iceberg::{Error, ErrorKind, Result};
 
 use crate::FixtureTable;
+use crate::error::df_err;
 
 /// One commit that adds data files, started by [`FixtureTable::append`].
 ///
@@ -67,15 +69,12 @@ impl<'a> Append<'a> {
         let table = self.table.table();
         let metadata = table.metadata();
         if metadata.format_version() != FormatVersion::V2 {
-            return Err(Error::new(
-                ErrorKind::FeatureUnsupported,
-                "fixtures only append to format version 2 tables",
-            ));
+            return not_impl_err!("fixtures only append to format version 2 tables");
         }
         let file_io = table.file_io();
         let schema = metadata.current_schema().clone();
         let partition_spec = metadata.default_partition_spec().clone();
-        let arrow_schema = Arc::new(schema_to_arrow_schema(&schema)?);
+        let arrow_schema = Arc::new(schema_to_arrow_schema(&schema).map_err(df_err)?);
         let parent_snapshot_id = metadata.current_snapshot_id();
         let snapshot_id = metadata
             .snapshots()
@@ -88,17 +87,20 @@ impl<'a> Append<'a> {
         let splitter = if partition_spec.is_unpartitioned() {
             None
         } else {
-            Some(RecordBatchPartitionSplitter::try_new_with_computed_values(
-                schema.clone(),
-                partition_spec.clone(),
-            )?)
+            Some(
+                RecordBatchPartitionSplitter::try_new_with_computed_values(
+                    schema.clone(),
+                    partition_spec.clone(),
+                )
+                .map_err(df_err)?,
+            )
         };
         let writer_builder = DataFileWriterBuilder::new(RollingFileWriterBuilder::new(
             ParquetWriterBuilder::new(self.writer_properties, schema.clone()),
             // Never roll over, so that each batch is written to one file.
             usize::MAX,
             file_io.clone(),
-            DefaultLocationGenerator::new(metadata)?,
+            DefaultLocationGenerator::new(metadata).map_err(df_err)?,
             DefaultFileNameGenerator::new(format!("{snapshot_id}"), None, DataFileFormat::Parquet),
         ));
         let mut data_files = Vec::with_capacity(self.files.len());
@@ -107,30 +109,29 @@ impl<'a> Append<'a> {
             let partition_key = match &splitter {
                 None => None,
                 Some(splitter) => {
-                    let mut partitions = splitter.split(&batch)?;
+                    let mut partitions = splitter.split(&batch).map_err(df_err)?;
                     if partitions.len() != 1 {
-                        return Err(Error::new(
-                            ErrorKind::DataInvalid,
-                            format!(
-                                "the rows of a data file must belong to one partition, \
-                                 but they belong to {}",
-                                partitions.len()
-                            ),
-                        ));
+                        return exec_err!(
+                            "the rows of a data file must belong to one partition, \
+                             but they belong to {}",
+                            partitions.len()
+                        );
                     }
                     Some(partitions.remove(0).0)
                 }
             };
-            let mut writer = writer_builder.build(partition_key).await?;
-            writer.write(batch).await?;
-            data_files.extend(writer.close().await?);
+            let mut writer = writer_builder.build(partition_key).await.map_err(df_err)?;
+            writer.write(batch).await.map_err(df_err)?;
+            data_files.extend(writer.close().await.map_err(df_err)?);
         }
 
         let mut manifest_writer = ManifestWriterBuilder::new(
-            file_io.new_output(format!(
-                "{}/metadata/snap-{snapshot_id}-m0.avro",
-                metadata.location()
-            ))?,
+            file_io
+                .new_output(format!(
+                    "{}/metadata/snap-{snapshot_id}-m0.avro",
+                    metadata.location()
+                ))
+                .map_err(df_err)?,
             Some(snapshot_id),
             schema.clone(),
             partition_spec.as_ref().clone(),
@@ -138,24 +139,42 @@ impl<'a> Append<'a> {
         .build_v2_data();
         let mut summary = SnapshotSummaryCollector::default();
         for data_file in &data_files {
-            manifest_writer.add_file(data_file.clone(), sequence_number)?;
+            manifest_writer
+                .add_file(data_file.clone(), sequence_number)
+                .map_err(df_err)?;
             summary.add_file(data_file, schema.clone(), partition_spec.clone());
         }
-        let mut manifests = vec![manifest_writer.write_manifest_file().await?];
+        let mut manifests = vec![
+            manifest_writer
+                .write_manifest_file()
+                .await
+                .map_err(df_err)?,
+        ];
         if let Some(parent) = metadata.current_snapshot() {
-            let parent_manifests = table.manifest_list_reader(parent).load().await?;
+            let parent_manifests = table
+                .manifest_list_reader(parent)
+                .load()
+                .await
+                .map_err(df_err)?;
             manifests.extend(parent_manifests.consume_entries());
         }
 
         let manifest_list = format!("{}/metadata/snap-{snapshot_id}.avro", metadata.location());
         let mut manifest_list_writer = ManifestListWriter::v2(
-            file_io.new_output(&manifest_list)?.writer().await?,
+            file_io
+                .new_output(&manifest_list)
+                .map_err(df_err)?
+                .writer()
+                .await
+                .map_err(df_err)?,
             snapshot_id,
             parent_snapshot_id,
             sequence_number,
         );
-        manifest_list_writer.add_manifests(manifests.into_iter())?;
-        manifest_list_writer.close().await?;
+        manifest_list_writer
+            .add_manifests(manifests.into_iter())
+            .map_err(df_err)?;
+        manifest_list_writer.close().await.map_err(df_err)?;
 
         let snapshot = Snapshot::builder()
             .with_snapshot_id(snapshot_id)
@@ -175,8 +194,10 @@ impl<'a> Append<'a> {
         let metadata = metadata
             .clone()
             .into_builder(Some(self.table.metadata_location()?.to_string()))
-            .set_branch_snapshot(snapshot, MAIN_BRANCH)?
-            .build()?
+            .set_branch_snapshot(snapshot, MAIN_BRANCH)
+            .map_err(df_err)?
+            .build()
+            .map_err(df_err)?
             .metadata;
         self.table.commit(metadata).await?;
         Ok(data_files)
@@ -197,10 +218,7 @@ fn conform(batch: &RecordBatch, schema: &ArrowSchemaRef) -> Result<RecordBatch> 
         .iter()
         .find(|field| schema.field_with_name(field.name()).is_err())
     {
-        return Err(Error::new(
-            ErrorKind::DataInvalid,
-            format!("the table has no column {}", extra.name()),
-        ));
+        return exec_err!("the table has no column {}", extra.name());
     }
     let columns = schema
         .fields()
@@ -260,10 +278,12 @@ mod tests {
 
     use datafusion::arrow::array::{AsArray, Int32Array, RecordBatch, StringArray};
     use datafusion::arrow::datatypes::{DataType, Field, Int32Type, Schema as ArrowSchema};
+    use datafusion::error::{DataFusionError, Result};
     use futures::TryStreamExt;
+    use iceberg::TableIdent;
     use iceberg::spec::{NestedField, PrimitiveType, Schema, Transform, Type};
-    use iceberg::{ErrorKind, Result, TableIdent};
 
+    use crate::error::df_err;
     use crate::{FixtureCatalog, FixtureTable};
 
     async fn create_table(fixtures: &FixtureCatalog) -> Result<FixtureTable> {
@@ -272,9 +292,10 @@ mod tests {
                 NestedField::required(1, "id", Type::Primitive(PrimitiveType::Int)).into(),
                 NestedField::optional(2, "category", Type::Primitive(PrimitiveType::String)).into(),
             ])
-            .build()?;
+            .build()
+            .map_err(df_err)?;
         fixtures
-            .table(TableIdent::from_strs(["ns", "t"])?, schema)
+            .table(TableIdent::from_strs(["ns", "t"]).map_err(df_err)?, schema)
             .partition_by("category", Transform::Identity)
             .create()
             .await
@@ -300,11 +321,14 @@ mod tests {
             .table()
             .scan()
             .select(["id"])
-            .build()?
+            .build()
+            .map_err(df_err)?
             .to_arrow()
-            .await?
+            .await
+            .map_err(df_err)?
             .try_collect()
-            .await?;
+            .await
+            .map_err(df_err)?;
         let mut ids: Vec<_> = batches
             .iter()
             .flat_map(|batch| {
@@ -321,7 +345,7 @@ mod tests {
 
     #[tokio::test]
     async fn numbers_snapshots_and_keeps_earlier_files() -> Result<()> {
-        let fixtures = FixtureCatalog::new().await?;
+        let fixtures = FixtureCatalog::try_new().await?;
         let mut table = create_table(&fixtures).await?;
         let files = table
             .append()
@@ -353,14 +377,18 @@ mod tests {
         assert_eq!(summary["total-data-files"], "3");
 
         // The catalog serves the committed table.
-        let loaded = fixtures.catalog().load_table(table.ident()).await?;
+        let loaded = fixtures
+            .catalog()
+            .load_table(table.ident())
+            .await
+            .map_err(df_err)?;
         assert_eq!(loaded.metadata_location(), Some(table.metadata_location()?));
         Ok(())
     }
 
     #[tokio::test]
     async fn rejects_a_file_spanning_partitions() -> Result<()> {
-        let fixtures = FixtureCatalog::new().await?;
+        let fixtures = FixtureCatalog::try_new().await?;
         let mut table = create_table(&fixtures).await?;
         let error = table
             .append()
@@ -368,14 +396,14 @@ mod tests {
             .commit()
             .await
             .unwrap_err();
-        assert_eq!(error.kind(), ErrorKind::DataInvalid);
+        assert!(matches!(error, DataFusionError::Execution(_)), "{error}");
         assert!(table.table().metadata().current_snapshot().is_none());
         Ok(())
     }
 
     #[tokio::test]
     async fn matches_columns_by_name() -> Result<()> {
-        let fixtures = FixtureCatalog::new().await?;
+        let fixtures = FixtureCatalog::try_new().await?;
         let mut table = create_table(&fixtures).await?;
         let unknown =
             RecordBatch::try_from_iter([("nope", Arc::new(Int32Array::from(vec![1])) as _)])?;

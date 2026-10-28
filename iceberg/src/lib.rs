@@ -15,8 +15,6 @@ mod iceberg_ext;
 mod lazy;
 mod proto;
 mod table_provider;
-#[cfg(test)]
-mod test_utils;
 
 pub use config::IcebergConfig;
 pub use distributed_desired_task_count_handler::iceberg_desired_task_count;

@@ -12,9 +12,10 @@ use datafusion::arrow::array::{
     Date32Array, Float64Array, Int32Array, Int64Array, RecordBatch, TimestampMicrosecondArray,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema as ArrowSchema, TimeUnit};
+use datafusion::error::Result;
 use datafusion::parquet::file::properties::{EnabledStatistics, WriterProperties};
+use iceberg::TableIdent;
 use iceberg::spec::{NestedField, PrimitiveType, Schema, Transform, Type};
-use iceberg::{Result, TableIdent};
 use rand::distr::Distribution;
 use rand::distr::weighted::WeightedIndex;
 use rand::{RngExt, SeedableRng};

@@ -148,33 +148,54 @@ impl PhysicalExtensionCodec for LazyIcebergCodec {
 mod tests {
     use datafusion::common::Statistics;
     use datafusion::datasource::source::DataSource;
-    use datafusion::prelude::SessionContext;
-    use datafusion_distributed::DistributedCodec;
-    use datafusion_distributed_iceberg_test_tools::FixtureCatalog;
-    use datafusion_proto::physical_plan::AsExecutionPlan;
-    use datafusion_proto::protobuf::PhysicalPlanNode;
+    use datafusion_distributed_iceberg_test_tools::{FixtureCatalog, create_taxi_table};
+    use datafusion_proto::physical_plan::DefaultPhysicalProtoConverter;
+    use iceberg::TableIdent;
+    use iceberg::io::LocalFsStorageFactory;
+    use iceberg::table::Table;
 
     use super::*;
-    use crate::test_utils::{external, taxi_context};
+    use crate::common::df_err;
+    use crate::table_provider::scan::{IcebergDataSourceOptions, plan_scan};
 
     #[tokio::test]
     async fn roundtrips_data_source_plan() -> Result<()> {
-        let fixtures = FixtureCatalog::new().await.map_err(external)?;
-        let ctx = taxi_context(
-            &fixtures,
-            "'fixture.storage' 'roundtrip''s value', 'fixture.region' 'test-region'",
+        let fixtures = FixtureCatalog::try_new().await?;
+        let ident = TableIdent::from_strs(["default", "taxi"]).map_err(df_err)?;
+        let taxi = create_taxi_table(&fixtures, ident).await?;
+        let file_io = FileIOBuilder::new(Arc::new(LocalFsStorageFactory))
+            .with_props([
+                ("fixture.storage", "roundtrip's value"),
+                ("fixture.region", "test-region"),
+            ])
+            .build();
+        let table = Table::builder()
+            .metadata(taxi.table().metadata_ref())
+            .identifier(taxi.ident().clone())
+            .file_io(file_io)
+            .runtime(iceberg::Runtime::current())
+            .build()
+            .map_err(df_err)?;
+        let options = IcebergDataSourceOptions {
+            fetch: Some(10),
+            ..Default::default()
+        };
+        let plan = plan_scan(
+            table,
+            taxi.schema()?,
+            options,
+            Arc::new(TaskContext::default()),
         )
         .await?;
-        let plan = ctx
-            .sql("SELECT * FROM taxi LIMIT 10")
-            .await?
-            .create_physical_plan()
-            .await?;
-        let decoded_plan = roundtrip_plan(&ctx, Arc::clone(&plan))?;
-        let source_plan = iceberg_plan(&plan)?;
-        let decoded_source_plan = iceberg_plan(&decoded_plan)?;
-        let source = iceberg_source(&source_plan)?;
-        let decoded = iceberg_source(&decoded_source_plan)?;
+        let codec =
+            LazyIcebergCodec::new(Arc::new(LocalFsStorageFactory), iceberg::Runtime::current());
+        let proto_converter = DefaultPhysicalProtoConverter {};
+        let mut buf = Vec::new();
+        codec.try_encode(Arc::clone(&plan), &mut buf, &proto_converter)?;
+        let decoded_plan =
+            codec.try_decode(&buf, &[], &TaskContext::default(), &proto_converter)?;
+        let source = iceberg_source(&plan)?;
+        let decoded = iceberg_source(&decoded_plan)?;
 
         assert_eq!(source.scan.schema, decoded.scan.schema);
         assert_eq!(
@@ -203,23 +224,6 @@ mod tests {
         Ok(())
     }
 
-    fn iceberg_plan(plan: &Arc<dyn ExecutionPlan>) -> Result<Arc<dyn ExecutionPlan>> {
-        if let Some(exec) = plan.downcast_ref::<DataSourceExec>()
-            && exec
-                .data_source()
-                .downcast_ref::<LazyIcebergDataSource>()
-                .is_some()
-        {
-            return Ok(Arc::clone(plan));
-        }
-        for child in plan.children() {
-            if let Ok(plan) = iceberg_plan(child) {
-                return Ok(plan);
-            }
-        }
-        internal_err!("fixture query contains no LazyIcebergDataSource")
-    }
-
     fn iceberg_source(plan: &Arc<dyn ExecutionPlan>) -> Result<&LazyIcebergDataSource> {
         let Some(exec) = plan.downcast_ref::<DataSourceExec>() else {
             return internal_err!("expected a DataSourceExec");
@@ -227,15 +231,5 @@ mod tests {
         exec.data_source()
             .downcast_ref::<LazyIcebergDataSource>()
             .ok_or_else(|| proto_error("expected an LazyIcebergDataSource"))
-    }
-
-    fn roundtrip_plan(
-        ctx: &SessionContext,
-        plan: Arc<dyn ExecutionPlan>,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
-        let task_ctx = ctx.task_ctx();
-        let codec = DistributedCodec::new_combined_with_user(task_ctx.session_config());
-        let proto = PhysicalPlanNode::try_from_physical_plan(plan, &codec)?;
-        proto.try_into_physical_plan(&task_ctx, &codec)
     }
 }

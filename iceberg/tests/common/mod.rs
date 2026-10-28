@@ -55,7 +55,7 @@ impl IcebergTestHarness {
 
     /// The current metadata file of the generated taxi table.
     pub fn taxi_metadata_location(&self) -> Result<&str> {
-        self.taxi.metadata_location().map_err(external)
+        self.taxi.metadata_location()
     }
 
     pub async fn query(&self, sql: &str) -> Result<(String, String)> {
@@ -174,7 +174,7 @@ impl IcebergTestHarnessBuilder {
     /// Generates the taxi table and registers it as `taxi`.
     pub async fn build(self) -> Result<IcebergTestHarness> {
         let (fixtures, taxi) = generate_taxi_table().await?;
-        let location = taxi.metadata_location().map_err(external)?.to_string();
+        let location = taxi.metadata_location()?.to_string();
         self.register(fixtures, taxi, location).await
     }
 
@@ -188,7 +188,7 @@ impl IcebergTestHarnessBuilder {
     ) -> Result<IcebergTestHarness> {
         let (fixtures, taxi) = generate_taxi_table().await?;
         let metadata = metadata(taxi.table()).await?;
-        let location = MetadataLocation::from_str(taxi.metadata_location().map_err(external)?)
+        let location = MetadataLocation::from_str(taxi.metadata_location()?)
             .map_err(external)?
             .with_next_version();
         metadata
@@ -273,11 +273,9 @@ pub fn without_snapshots(metadata: &TableMetadata) -> TableMetadataBuilder {
 }
 
 async fn generate_taxi_table() -> Result<(FixtureCatalog, FixtureTable)> {
-    let fixtures = FixtureCatalog::new().await.map_err(external)?;
+    let fixtures = FixtureCatalog::try_new().await?;
     let ident = TableIdent::from_strs(["default", "taxi"]).map_err(external)?;
-    let taxi = create_taxi_table(&fixtures, ident)
-        .await
-        .map_err(external)?;
+    let taxi = create_taxi_table(&fixtures, ident).await?;
     Ok((fixtures, taxi))
 }
 
