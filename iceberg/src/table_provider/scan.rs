@@ -1,6 +1,6 @@
-use crate::common::assign_files;
 use crate::common::df_err;
 use crate::common::scan_config::ScanConfig;
+use crate::eager::assign_files;
 use crate::eager::planned_files::PlannedFiles;
 use crate::table_provider::column_statistics::compute_column_stats;
 use crate::{EagerIcebergDataSource, IcebergConfig, IcebergWorkUnitFeed, LazyIcebergDataSource};

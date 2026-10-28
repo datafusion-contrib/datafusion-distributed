@@ -19,51 +19,113 @@ mod tests {
     };
 
     #[tokio::test]
-    async fn largest_files_balance_tasks_independently_of_manifest_order()
-    -> Result<(), Box<dyn Error>> {
-        let files: Vec<_> = [100, 90, 10, 5, 4, 3].into_iter().enumerate().collect();
-        for order in [files.clone(), files.into_iter().rev().collect()] {
-            let harness = file_fixture(order)
-                .await?
-                .with_eager_file_planning()
-                .with_workers(2)
-                .configure_session(|mut state| {
-                    let session = state.config().get_or_insert_default();
-                    session.options_mut().execution.target_partitions = 2;
-                    state.with_distributed_file_scan_config_bytes_per_partition(1)
-                })?
-                .build()
-                .await?;
-            let plan = harness.physical_plan("SELECT * FROM taxi").await?;
-            insta::assert_snapshot!("distributed_skew", assignments(&plan)?);
-        }
+    async fn largest_files_balance_tasks() -> Result<(), Box<dyn Error>> {
+        // Each pair is (file ID, byte size), in manifest order.
+        let harness = file_fixture([(0, 100), (1, 90), (2, 10), (3, 5), (4, 4), (5, 3)])
+            .await?
+            .with_eager_file_planning()
+            .with_workers(2)
+            .configure_session(|mut state| {
+                let session = state.config().get_or_insert_default();
+                session.options_mut().execution.target_partitions = 2;
+                state.with_distributed_file_scan_config_bytes_per_partition(1)
+            })?
+            .build()
+            .await?;
+        let plan = harness.physical_plan("SELECT * FROM taxi").await?;
+        insta::assert_snapshot!(assignments(&plan)?, @"
+        task 0: 105 bytes
+          partition 0: [file-0.parquet (100 bytes)]
+          partition 1: [file-3.parquet (5 bytes)]
+        task 1: 107 bytes
+          partition 0: [file-1.parquet (90 bytes), file-4.parquet (4 bytes)]
+          partition 1: [file-2.parquet (10 bytes), file-5.parquet (3 bytes)]
+        ");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reversed_manifest_order_preserves_task_balance() -> Result<(), Box<dyn Error>> {
+        // Each pair is (file ID, byte size), in manifest order.
+        let harness = file_fixture([(5, 3), (4, 4), (3, 5), (2, 10), (1, 90), (0, 100)])
+            .await?
+            .with_eager_file_planning()
+            .with_workers(2)
+            .configure_session(|mut state| {
+                let session = state.config().get_or_insert_default();
+                session.options_mut().execution.target_partitions = 2;
+                state.with_distributed_file_scan_config_bytes_per_partition(1)
+            })?
+            .build()
+            .await?;
+        let plan = harness.physical_plan("SELECT * FROM taxi").await?;
+        insta::assert_snapshot!(assignments(&plan)?, @"
+        task 0: 105 bytes
+          partition 0: [file-0.parquet (100 bytes)]
+          partition 1: [file-3.parquet (5 bytes)]
+        task 1: 107 bytes
+          partition 0: [file-1.parquet (90 bytes), file-4.parquet (4 bytes)]
+          partition 1: [file-2.parquet (10 bytes), file-5.parquet (3 bytes)]
+        ");
         Ok(())
     }
 
     #[tokio::test]
     async fn equal_size_files_have_stable_assignments() -> Result<(), Box<dyn Error>> {
-        let files: Vec<_> = [10; 4].into_iter().enumerate().collect();
-        for order in [files.clone(), files.into_iter().rev().collect()] {
-            let harness = file_fixture(order)
-                .await?
-                .with_eager_file_planning()
-                .with_workers(2)
-                .configure_session(|mut state| {
-                    let session = state.config().get_or_insert_default();
-                    session.options_mut().execution.target_partitions = 2;
-                    state.with_distributed_file_scan_config_bytes_per_partition(1)
-                })?
-                .build()
-                .await?;
-            let plan = harness.physical_plan("SELECT * FROM taxi").await?;
-            insta::assert_snapshot!("equal_size_files", assignments(&plan)?);
-        }
+        // Each pair is (file ID, byte size), in manifest order.
+        let harness = file_fixture([(0, 10), (1, 10), (2, 10), (3, 10)])
+            .await?
+            .with_eager_file_planning()
+            .with_workers(2)
+            .configure_session(|mut state| {
+                let session = state.config().get_or_insert_default();
+                session.options_mut().execution.target_partitions = 2;
+                state.with_distributed_file_scan_config_bytes_per_partition(1)
+            })?
+            .build()
+            .await?;
+        let plan = harness.physical_plan("SELECT * FROM taxi").await?;
+        insta::assert_snapshot!(assignments(&plan)?, @"
+        task 0: 20 bytes
+          partition 0: [file-0.parquet (10 bytes)]
+          partition 1: [file-2.parquet (10 bytes)]
+        task 1: 20 bytes
+          partition 0: [file-1.parquet (10 bytes)]
+          partition 1: [file-3.parquet (10 bytes)]
+        ");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reversed_equal_size_files_keep_the_same_assignments() -> Result<(), Box<dyn Error>> {
+        // Each pair is (file ID, byte size), in manifest order.
+        let harness = file_fixture([(3, 10), (2, 10), (1, 10), (0, 10)])
+            .await?
+            .with_eager_file_planning()
+            .with_workers(2)
+            .configure_session(|mut state| {
+                let session = state.config().get_or_insert_default();
+                session.options_mut().execution.target_partitions = 2;
+                state.with_distributed_file_scan_config_bytes_per_partition(1)
+            })?
+            .build()
+            .await?;
+        let plan = harness.physical_plan("SELECT * FROM taxi").await?;
+        insta::assert_snapshot!(assignments(&plan)?, @"
+        task 0: 20 bytes
+          partition 0: [file-0.parquet (10 bytes)]
+          partition 1: [file-2.parquet (10 bytes)]
+        task 1: 20 bytes
+          partition 0: [file-1.parquet (10 bytes)]
+          partition 1: [file-3.parquet (10 bytes)]
+        ");
         Ok(())
     }
 
     #[tokio::test]
     async fn local_assignment_cycles_partitions_in_size_order() -> Result<(), Box<dyn Error>> {
-        let harness = file_fixture([100, 90, 10, 5, 4, 3].into_iter().enumerate().rev())
+        // Each pair is (file ID, byte size), in manifest order.
+        let harness = file_fixture([(5, 3), (4, 4), (3, 5), (2, 10), (1, 90), (0, 100)])
             .await?
             .with_eager_file_planning()
             .configure_session(|mut state| {
@@ -73,12 +135,18 @@ mod tests {
             })?
             .build()
             .await?;
-        insta::assert_snapshot!("local_skew", assignments(&harness.scan().await?)?);
+        let plan = harness.scan().await?;
+        insta::assert_snapshot!(assignments(&plan)?, @"
+        task 0: 212 bytes
+          partition 0: [file-0.parquet (100 bytes), file-2.parquet (10 bytes), file-4.parquet (4 bytes)]
+          partition 1: [file-1.parquet (90 bytes), file-3.parquet (5 bytes), file-5.parquet (3 bytes)]
+        ");
         Ok(())
     }
 
     #[tokio::test]
     async fn empty_scan_keeps_local_partitions() -> Result<(), Box<dyn Error>> {
+        // Each pair is (file ID, byte size), in manifest order.
         let harness = file_fixture([])
             .await?
             .with_eager_file_planning()
@@ -89,7 +157,12 @@ mod tests {
             })?
             .build()
             .await?;
-        insta::assert_snapshot!("empty_files", assignments(&harness.scan().await?)?);
+        let plan = harness.scan().await?;
+        insta::assert_snapshot!(assignments(&plan)?, @"
+        task 0: 0 bytes
+          partition 0: []
+          partition 1: []
+        ");
         Ok(())
     }
 

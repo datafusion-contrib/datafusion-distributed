@@ -1,7 +1,0 @@
----
-source: iceberg/tests/file_assignment.rs
-expression: assignments(&harness.scan().await?)?
----
-task 0: 212 bytes
-  partition 0: [file-0.parquet (100 bytes), file-2.parquet (10 bytes), file-4.parquet (4 bytes)]
-  partition 1: [file-1.parquet (90 bytes), file-3.parquet (5 bytes), file-5.parquet (3 bytes)]

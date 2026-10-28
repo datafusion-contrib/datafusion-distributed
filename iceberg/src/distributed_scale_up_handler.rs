@@ -8,7 +8,7 @@ use datafusion_distributed::{
 };
 
 use crate::EagerIcebergDataSource;
-use crate::common::assign_files;
+use crate::eager::assign_files;
 
 /// Like DFD's FileScanConfig scale-up handler, build one scan variant per task
 /// before routing. This handler chooses task assignments; each source retains

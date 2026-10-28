@@ -1,7 +1,0 @@
----
-source: iceberg/tests/file_assignment.rs
-expression: assignments(&harness.scan().await?)?
----
-task 0: 0 bytes
-  partition 0: []
-  partition 1: []
