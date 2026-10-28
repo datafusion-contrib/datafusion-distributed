@@ -105,14 +105,14 @@ impl PhysicalExtensionCodec for LazyIcebergCodec {
         )?;
 
         Ok(DataSourceExec::from_data_source(LazyIcebergDataSource {
-            scan: ScanConfig {
+            scan: ScanConfig::new(
                 schema,
                 partitioning,
                 fetch,
-                metrics: Default::default(),
                 iceberg_file_io,
-                iceberg_runtime: self.iceberg_runtime.clone(),
-            },
+                self.iceberg_runtime.clone(),
+                ctx,
+            ),
             column_stats: None,
             table_snapshot: None,
             feed,

@@ -29,6 +29,7 @@ impl EagerIcebergDataSource {
     /// Construct a scan from already selected files grouped by local output partition.
     /// Preserves group order without discovering, pruning, or assigning files.
     /// Descriptors are charged to `context`'s memory pool; statistics are unknown.
+    /// Reader settings are captured from `context` and shared across local partitions.
     ///
     /// # Errors
     /// Returns an error if there are no partition groups or memory reservation fails.
@@ -53,14 +54,14 @@ impl EagerIcebergDataSource {
         }
         Ok(Self {
             statistics: Arc::new(Statistics::new_unknown(&schema)),
-            scan: ScanConfig {
+            scan: ScanConfig::new(
                 schema,
-                partitioning: Partitioning::UnknownPartitioning(partitions.len()),
+                Partitioning::UnknownPartitioning(partitions.len()),
                 fetch,
-                metrics: Default::default(),
-                iceberg_file_io: file_io,
-                iceberg_runtime: runtime,
-            },
+                file_io,
+                runtime,
+                context,
+            ),
             files: Arc::new(PlannedFiles::from_tasks(tasks, context)?),
             partitions: partitions.into(),
         })
@@ -150,7 +151,7 @@ impl DataSource for EagerIcebergDataSource {
     fn open(
         &self,
         partition: usize,
-        context: Arc<TaskContext>,
+        _context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
         let count = self.planned_partition_tasks(partition)?.len();
         let source = self.clone();
@@ -159,7 +160,7 @@ impl DataSource for EagerIcebergDataSource {
                 Ok(source.files.tasks()[source.partitions[partition][offset]].clone())
             })
             .boxed();
-        self.scan.open(tasks, partition, context)
+        self.scan.open(tasks, partition)
     }
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(
