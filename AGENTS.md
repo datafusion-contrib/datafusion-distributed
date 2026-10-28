@@ -86,6 +86,83 @@ Read the relevant contributor guide before starting work in these areas:
 - Performance and benchmark changes:
   `docs/source/contributor-guide/04-benchmarks.md`
 
+## Test design and review
+
+Tests are executable documentation. A reviewer should understand the scenario,
+configuration, operation, and expected behavior by reading the test itself.
+Optimize for that understanding, not for the fewest lines.
+
+### Make each scenario readable in place
+
+- Give each behavioral scenario a named, directly runnable test. Do not use
+  generated test macros or loops to hide distinct integration-test cases.
+  Loops are fine for fixture construction or checking one coherent invariant.
+- Keep scenario-defining configuration visible in one harness builder chain:
+  execution mode, workers, partitions, enabled features, and relevant limits.
+  Configure it before building the harness.
+- Do not introduce helpers such as `harness(true, false)` or
+  `assert_case(config, expected)` that hide the scenario, execution, and
+  assertions together. Modest repetition between named tests is preferable.
+- Prefer inline `insta` snapshots for readable plans, results, assignments,
+  metrics, and errors. Keep compact expectations beside the operation being
+  tested. Use external snapshots only when their size makes inline expectations
+  materially harder to read.
+- Use ordinary assertions for simple typed values. Do not manually reproduce
+  snapshot testing with many string comparisons or substring checks.
+
+### Share infrastructure without hiding intent
+
+- Reuse the existing harness and fixture builders. Put session construction,
+  codec wiring, worker startup, and reusable fixture mechanics in test tooling.
+  Tests select the configuration explicitly through that tooling.
+- Prefer existing builder methods and configuration hooks. Do not add a new
+  harness method merely to abbreviate an existing setting. Add an abstraction
+  when it encapsulates reusable setup or a meaningful domain operation.
+- Keep fixture helpers focused on constructing data or metadata. They must not
+  silently choose execution mode, worker count, planner settings, or assertions.
+  Make relevant fixture contents and properties apparent at the call site.
+- Prefer composable fixture builders over constructor combinations such as
+  `with_x_and_y`. Reuse existing data where it fits; use generated fixtures when
+  the scenario requires a different shape. Avoid extensive ad hoc patching of a
+  fixed dataset.
+- Put helper implementations below the tests. Moving boilerplate into a helper
+  is useful only if the test remains understandable without opening that helper.
+
+### Exercise the real contract
+
+- Prefer integration tests through public APIs and the normal planning and
+  execution path. Do not expose private fields or add production APIs solely
+  to make tests inspect implementation details.
+- Integration tests should resemble application usage. Do not insert manual
+  codec roundtrips, private-state reconstruction, or synthetic routing behavior
+  into unrelated tests. Exercise transport through the harness; test codec
+  encoding, decoding, and invalid messages directly when those are the subject.
+- Assert the contract the feature promises. Equal query results do not imply
+  equal plans, statistics, assignments, or internal representations.
+- Make assertions demonstrate the intended behavior: show selected values as
+  well as counts when selection matters; show task loads when balancing matters;
+  inspect runtime placement when runtime separation is the feature.
+- Inspect assignments through supported plan/source APIs or observable metrics.
+  Do not treat private feed emission order as a public contract. When assignment
+  policy is the subject, present it as a readable behavioral snapshot.
+
+### Keep coverage focused
+
+- Use one integration-test file per feature. Keep small unit tests next to their
+  implementation for isolated logic or edge cases that are impractical to
+  express through realistic integration scenarios.
+- Every new test should identify a distinct failure it catches. Avoid overlapping
+  coverage across unit, integration, and SQL tests without a concrete reason.
+- Do not add tests solely to prove that a test helper or fixture works when
+  feature tests already exercise it. Do not add redundant tests around benchmark
+  scaffolding that is exercised by running the benchmark.
+- For a regression test, verify that it detects the original failure. Passing
+  after the change is not sufficient evidence that it covers the bug.
+
+Before submitting, read each changed test without following helper definitions
+or opening snapshot files. If the setup or expected behavior is unclear, revise
+that test before considering it ready for review.
+
 ## Validation
 
 Run the narrowest relevant check first. Use the repository's standard format,
