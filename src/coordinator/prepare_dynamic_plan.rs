@@ -134,12 +134,8 @@ pub(super) async fn prepare_dynamic_plan(
                     (Some(Arc::new(stats)), TaskCountAnnotation::soft(0.0))
                 };
 
-                // Capture the output partitioning of the (rescaled, sampler-wrapped) input plan
-                // before it's moved: the returned stage is remote and carries no plan to read it
-                // back from.
-                let input_properties = Arc::clone(input_stage.plan.properties());
-                let input_ranges =
-                    NetworkCoalesceExec::input_ranges(&input_stage.plan, input_stage.tasks)?;
+                // Capture each task's properties before the remote stage replaces its plan.
+                let input_properties = input_stage.task_properties()?;
                 plans_for_viz.insert(input_stage.num, input_stage.plan, metrics);
                 Ok(NetworkBoundaryBuilderResult {
                     consumer_task_count: consumer_tc,
@@ -151,7 +147,6 @@ pub(super) async fn prepare_dynamic_plan(
                         dynamic_filter_anchors,
                     }),
                     input_properties,
-                    input_ranges,
                 })
             })
         },

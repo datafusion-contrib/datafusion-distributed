@@ -14,7 +14,7 @@ use crate::{
 use async_trait::async_trait;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::common::{HashMap, JoinType, Result, internal_err, plan_err};
-use datafusion::physical_expr::{Partitioning, RangePartitioning};
+use datafusion::physical_expr::Partitioning;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::execution_plan::CardinalityEffect;
 use datafusion::physical_plan::joins::{
@@ -374,10 +374,10 @@ async fn _inject_network_boundaries(
             .nb_builder
             .build(input_stage, TypeId::of::<NetworkShuffleExec>(), nb_ctx)
             .await?;
-        let shuffle = Arc::new(NetworkShuffleExec::from_stage(
+        let shuffle = Arc::new(NetworkShuffleExec::try_from_stage(
             result.input_stage,
             result.input_properties,
-        ));
+        )?);
         Ok(nb_ctx.plan_with_task_count(shuffle, result.consumer_task_count))
     }
     // Upon reaching a broadcast, we need to introduce a network broadcast right above it.
@@ -393,10 +393,10 @@ async fn _inject_network_boundaries(
             .nb_builder
             .build(input_stage, TypeId::of::<NetworkBroadcastExec>(), nb_ctx)
             .await?;
-        let nb = Arc::new(NetworkBroadcastExec::from_stage(
+        let nb = Arc::new(NetworkBroadcastExec::try_from_stage(
             result.input_stage,
             result.input_properties,
-        ));
+        )?);
         Ok(nb_ctx.plan_with_task_count(nb, result.consumer_task_count))
     }
     // If the parent of the current node is either a `CoalescePartitionsExec` or a
@@ -425,7 +425,6 @@ async fn _inject_network_boundaries(
         let nb = Arc::new(NetworkCoalesceExec::try_from_stage(
             result.input_stage,
             result.input_properties,
-            result.input_ranges,
             1,
         )?);
         Ok(nb_ctx.plan_with_task_count(nb, result.consumer_task_count))
@@ -600,11 +599,9 @@ pub(crate) struct NetworkBoundaryBuilderResult {
     /// The input [Stage] that will be attached to the [crate::NetworkBoundary] belonging to the
     /// stage above.
     pub(crate) input_stage: Stage,
-    /// Properties (most importantly, the output partitioning) of the input stage as it will
-    /// actually execute. This information might not be present in the `input_stage` field, as it
-    /// might be in [Stage::Remote] state because it was already sent for execution.
-    pub(crate) input_properties: Arc<PlanProperties>,
-    pub(crate) input_ranges: Option<Vec<RangePartitioning>>,
+    /// Properties of each input task's specialized stage-root plan, indexed by task number.
+    /// These are captured before [Stage::Remote] replaces the input plan.
+    pub(crate) input_properties: Vec<Arc<PlanProperties>>,
 }
 
 #[async_trait]
@@ -683,15 +680,13 @@ impl NetworkBoundaryBuilder for CardinalityBasedNetworkBoundaryBuilder {
         let tc = nb_ctx.task_count(&input_stage.plan)?;
         input_stage.plan =
             nb_ctx.propagate_task_count_until_network_boundaries(&input_stage.plan, tc)?;
-        let input_properties = Arc::clone(input_stage.plan.properties());
-        let input_ranges = NetworkCoalesceExec::input_ranges(&input_stage.plan, input_stage.tasks)?;
+        let input_properties = input_stage.task_properties()?;
 
         if nb_type == TypeId::of::<NetworkCoalesceExec>() {
             return Ok(NetworkBoundaryBuilderResult {
                 consumer_task_count: TaskCountAnnotation::exact(NonZeroUsize::MIN, tc.soft),
                 input_stage: Stage::Local(input_stage),
                 input_properties,
-                input_ranges,
             });
         }
 
@@ -722,7 +717,6 @@ impl NetworkBoundaryBuilder for CardinalityBasedNetworkBoundaryBuilder {
             consumer_task_count: TaskCountAnnotation::soft(input_stage.tasks as f64 * f),
             input_stage: Stage::Local(input_stage),
             input_properties,
-            input_ranges,
         })
     }
 }

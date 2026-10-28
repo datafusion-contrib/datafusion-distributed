@@ -1,6 +1,8 @@
+use crate::common::TreeNodeExt;
 use crate::coordinator::DistributedExec;
 use crate::execution_plans::{DistributedLeafExec, NetworkCoalesceExec};
 use crate::metrics::DISTRIBUTED_DATAFUSION_TASK_ID_LABEL;
+use datafusion::common::tree_node::Transformed;
 use datafusion::common::{HashMap, Statistics, config_err};
 use datafusion::common::{exec_err, plan_err};
 use datafusion::error::Result;
@@ -9,8 +11,8 @@ use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::metrics::{Label, Metric, MetricsSet};
 use datafusion::physical_plan::{
-    ColumnStatistics, ExecutionPlan, ExecutionPlanProperties, StatisticsArgs, StatisticsContext,
-    displayable,
+    ColumnStatistics, ExecutionPlan, ExecutionPlanProperties, PlanProperties, StatisticsArgs,
+    StatisticsContext, displayable,
 };
 use itertools::Either;
 use std::collections::VecDeque;
@@ -93,6 +95,33 @@ pub struct LocalStage {
 }
 
 impl LocalStage {
+    /// Read each task's stage-root properties before its plan is moved to the workers.
+    pub(crate) fn task_properties(&self) -> Result<Vec<Arc<PlanProperties>>> {
+        (0..self.tasks)
+            .map(|task_index| {
+                let ctx = DistributedTaskContext {
+                    task_index,
+                    task_count: self.tasks,
+                };
+                // Keep union children intact: empty placeholders would erase shared ordering.
+                let plan = Arc::clone(&self.plan)
+                    .transform_down_with_dt_ctx(ctx, |plan, ctx| {
+                        if let Some(leaf) = plan.downcast_ref::<DistributedLeafExec>() {
+                            return Ok(Transformed::yes(leaf.to_task_specialized(ctx.task_index)));
+                        }
+                        if let Some(coalesce) = plan.downcast_ref::<NetworkCoalesceExec>() {
+                            return Ok(Transformed::yes(Arc::new(
+                                coalesce.to_task_specialized(ctx.task_index)?,
+                            )));
+                        }
+                        Ok(Transformed::no(plan))
+                    })?
+                    .data;
+                Ok(Arc::clone(plan.properties()))
+            })
+            .collect()
+    }
+
     pub fn execute(
         &self,
         partition: usize,

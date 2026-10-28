@@ -16,19 +16,25 @@ mod tests {
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::routing::UrlEmitterRouteTaskHandler;
     use datafusion_distributed::{
-        DefaultSessionBuilder, DistributedExt, MappedWorkerSessionBuilderExt,
+        DefaultSessionBuilder, DistributedExt, MappedWorkerSessionBuilderExt, NetworkCoalesceExec,
         WorkerPlanRewriteEvent, WorkerPlanRewriteEventResponse, assert_snapshot,
         display_plan_ascii,
     };
+    use insta::allow_duplicates;
     use std::sync::Arc;
     use test_case::test_case;
 
-    #[test_case(&["A", "B", "C", "D"], Some(2); "even")]
-    #[test_case(&["A", "B", "C", "D", "E"], None; "padding")]
-    #[test_case(&["A", "B", "C", "D"], Some(5); "empty_task")]
-    #[test_case(&["A", "B", "C", "D"], Some(1); "single_task")]
+    #[test_case(&["A", "B", "C", "D"], Some(2), false; "even")]
+    #[test_case(&["A", "B", "C", "D", "E"], None, false; "padding")]
+    #[test_case(&["A", "B", "C", "D", "E"], None, true; "adaptive_padding")]
+    #[test_case(&["A", "B", "C", "D"], Some(5), false; "empty_task")]
+    #[test_case(&["A", "B", "C", "D"], Some(1), false; "single_task")]
     #[tokio::test]
-    async fn copartitioned_scans(keys: &[&str], tasks: Option<usize>) -> Result<()> {
+    async fn copartitioned_scans(
+        keys: &[&str],
+        tasks: Option<usize>,
+        adaptive: bool,
+    ) -> Result<()> {
         let sql = r#"
             SELECT f.f_dkey, COUNT(*) AS n
             FROM dim d JOIN fact f ON d.d_dkey = f.f_dkey
@@ -43,6 +49,7 @@ mod tests {
         let (mut distributed, _guard, _) =
             start_localhost_context(tasks.unwrap_or(4), session_builder).await;
         configure(&mut distributed, tasks);
+        distributed.set_distributed_dynamic_task_count(adaptive)?;
         for ctx in [&baseline, &distributed] {
             ctx.sql("SET datafusion.optimizer.enable_dynamic_filter_pushdown = false")
                 .await?;
@@ -50,8 +57,8 @@ mod tests {
         }
         let expected = baseline.sql(sql).await?.collect().await?;
         let plan = distributed.sql(sql).await?.create_physical_plan().await?;
+        let actual = collect(Arc::clone(&plan), distributed.task_ctx()).await?;
         let display = display_plan_ascii(plan.as_ref(), false);
-        let actual = collect(plan, distributed.task_ctx()).await?;
         assert_eq!(
             pretty_format_batches(&actual)?.to_string(),
             pretty_format_batches(&expected)?.to_string()
@@ -76,7 +83,8 @@ mod tests {
               │           t1: DataSourceExec: file_groups={2 groups: [[/testdata/join/parquet_multiple_files/fact/f_dkey=C/C0.parquet, /testdata/join/parquet_multiple_files/fact/f_dkey=C/C1.parquet, /testdata/join/parquet_multiple_files/fact/f_dkey=C/C2.parquet], [/testdata/join/parquet_multiple_files/fact/f_dkey=D/D0.parquet, /testdata/join/parquet_multiple_files/fact/f_dkey=D/D1.parquet, /testdata/join/parquet_multiple_files/fact/f_dkey=D/D2.parquet]]}, projection=[f_dkey], output_partitioning=Range([f_dkey@0 ASC NULLS LAST], [(D)], 2, start=(C)), file_type=parquet
               └──────────────────────────────────────────────────
             "),
-            None => assert_snapshot!(display, @r"
+            None => allow_duplicates! {
+                assert_snapshot!(display, @r"
             ┌───── DistributedExec
             │ SortPreservingMergeExec: [f_dkey@0 ASC NULLS LAST]
             │   [Stage 1] => NetworkCoalesceExec: output_partitions=6, input_tasks=3, partitioning=Range([f_dkey@0 ASC NULLS LAST], [(B), (C), (D), (E), (E)], 6)
@@ -95,7 +103,8 @@ mod tests {
               │           t1: DataSourceExec: file_groups={2 groups: [[/testdata/join/parquet_multiple_files/fact/f_dkey=C/C0.parquet, /testdata/join/parquet_multiple_files/fact/f_dkey=C/C1.parquet, /testdata/join/parquet_multiple_files/fact/f_dkey=C/C2.parquet], [/testdata/join/parquet_multiple_files/fact/f_dkey=D/D0.parquet, /testdata/join/parquet_multiple_files/fact/f_dkey=D/D1.parquet, /testdata/join/parquet_multiple_files/fact/f_dkey=D/D2.parquet]]}, projection=[f_dkey], output_partitioning=Range([f_dkey@0 ASC NULLS LAST], [(D)], 2, start=(C), end=(E)), file_type=parquet
               │           t2: DataSourceExec: file_groups={2 groups: [[], [/testdata/join/parquet_multiple_files/fact/f_dkey=E/E0.parquet, /testdata/join/parquet_multiple_files/fact/f_dkey=E/E1.parquet, /testdata/join/parquet_multiple_files/fact/f_dkey=E/E2.parquet]]}, projection=[f_dkey], output_partitioning=Range([f_dkey@0 ASC NULLS LAST], [(E)], 2, start=(E)), file_type=parquet
               └──────────────────────────────────────────────────
-            "),
+            ");
+            },
             Some(5) => assert_snapshot!(display, @r"
             ┌───── DistributedExec
             │ SortPreservingMergeExec: [f_dkey@0 ASC NULLS LAST]
@@ -131,6 +140,21 @@ mod tests {
             "),
             _ => unreachable!(),
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn coalesce_rejects_overlapping_task_ranges() -> Result<()> {
+        let ctx = SessionContext::new();
+        register_tables(&ctx, &["A", "B", "C", "D"]).await?;
+        let plan = ctx
+            .sql("SELECT d_dkey FROM dim")
+            .await?
+            .create_physical_plan()
+            .await?;
+        // Both tasks advertise the full range instead of adjacent slices.
+        let error = NetworkCoalesceExec::try_new(plan, 2, 1).unwrap_err();
+        assert_snapshot!(error.to_string(), @"Error during planning: Cannot coalesce noncontiguous ranges: previous end None, next start None");
         Ok(())
     }
 
