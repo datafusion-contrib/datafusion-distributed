@@ -228,6 +228,9 @@ mod tests {
     impl ChaosAction {
         fn random(rng: &mut impl Rng) -> Self {
             let duration = Duration::from_millis(10 + u64::from(rng.random::<u8>() % 90));
+            // Odds of an error are 5 in 256. The odds of a query failing are (5/256)^num_retries.
+            // Make sure the max_coordinator_channel_retries in the DistributedConfig is large enough
+            // to avoid errors.
             match rng.random::<u8>() {
                 0..=4 => Self::Delay(duration),
                 5..=7 => Self::Timeout(duration),
