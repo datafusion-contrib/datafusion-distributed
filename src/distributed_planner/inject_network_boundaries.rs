@@ -666,8 +666,9 @@ where
 /// ```
 ///
 /// With `cardinality_task_count_factor = 1.5`, the example above yields `sf ≈ 0.44`. The
-/// boundary records `T_producer × sf` as a fractional hint and rounds it only when resolving a
-/// concrete stage task count.
+/// boundary records `L_producer × sf` as a fractional hint, where `L_producer` is the producer's
+/// soft load capped by its task count, and rounds it only when resolving a concrete stage task
+/// count.
 pub(crate) struct CardinalityBasedNetworkBoundaryBuilder;
 
 #[async_trait]
@@ -713,9 +714,12 @@ impl NetworkBoundaryBuilder for CardinalityBasedNetworkBoundaryBuilder {
         }
 
         let f = calculate_scale_factor(&input_stage.plan, nb_ctx.d_cfg);
+        // Scaling the rounded-up task count would turn a fractional producer load into a full
+        // task per boundary, so unions of tiny shuffled children would add up to several tasks.
+        let producer_soft_count = tc.soft.min(input_stage.tasks as f64);
 
         Ok(NetworkBoundaryBuilderResult {
-            consumer_task_count: TaskCountAnnotation::soft(input_stage.tasks as f64 * f),
+            consumer_task_count: TaskCountAnnotation::soft(producer_soft_count * f),
             input_stage: Stage::Local(input_stage),
             input_properties,
         })
@@ -859,8 +863,8 @@ mod tests {
             .broadcast_joins(false);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
-        HashJoinExec: task_count=TaskCountAnnotation: soft=1.33
-          NetworkShuffleExec: task_count=TaskCountAnnotation: soft=1.33
+        HashJoinExec: task_count=TaskCountAnnotation: soft=1.19
+          NetworkShuffleExec: task_count=TaskCountAnnotation: soft=1.19
             RepartitionExec: task_count=TaskCountAnnotation: soft=1.78
               ProjectionExec: task_count=TaskCountAnnotation: soft=1.78
                 AggregateExec: task_count=TaskCountAnnotation: soft=1.78
@@ -870,7 +874,7 @@ mod tests {
                         FilterExec: task_count=TaskCountAnnotation: soft=4.00
                           RepartitionExec: task_count=TaskCountAnnotation: soft=4.00
                             DistributedLeafExec: task_count=TaskCountAnnotation: soft=4.00
-          NetworkShuffleExec: task_count=TaskCountAnnotation: soft=1.33
+          NetworkShuffleExec: task_count=TaskCountAnnotation: soft=1.19
             RepartitionExec: task_count=TaskCountAnnotation: soft=1.78
               ProjectionExec: task_count=TaskCountAnnotation: soft=1.78
                 AggregateExec: task_count=TaskCountAnnotation: soft=1.78
@@ -1074,6 +1078,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_fractional_union_hints_survive_shuffles() {
+        let query = r#"
+        SELECT DISTINCT "RainToday" FROM weather
+        UNION ALL
+        SELECT DISTINCT "RainTomorrow" FROM weather
+        "#;
+        let test_plan_builder = TestPlanBuilder::new()
+            .target_partitions(4)
+            .num_workers(4)
+            .distributed_cardinality_effect_task_scale_factor(1.5)
+            .distributed_planner(false)
+            .broadcast_joins(false)
+            .desired_task_count_handler(fractional_leaf_desired_task_count_handler);
+        let annotated = annotate_test_plan(test_plan_builder, query).await;
+        assert_snapshot!(annotated, @r"
+        ChildrenIsolatorUnionExec: task_count=TaskCountAnnotation: soft=0.53
+          AggregateExec: task_count=TaskCountAnnotation: soft=0.53, exact=1
+            NetworkShuffleExec: task_count=TaskCountAnnotation: soft=0.53, exact=1
+              RepartitionExec: task_count=TaskCountAnnotation: soft=0.40
+                AggregateExec: task_count=TaskCountAnnotation: soft=0.40
+                  DistributedLeafExec: task_count=TaskCountAnnotation: soft=0.40
+          ProjectionExec: task_count=TaskCountAnnotation: soft=0.53, exact=1
+            AggregateExec: task_count=TaskCountAnnotation: soft=0.53, exact=1
+              NetworkShuffleExec: task_count=TaskCountAnnotation: soft=0.53, exact=1
+                RepartitionExec: task_count=TaskCountAnnotation: soft=0.40
+                  AggregateExec: task_count=TaskCountAnnotation: soft=0.40
+                    DistributedLeafExec: task_count=TaskCountAnnotation: soft=0.40
+        ");
+    }
+
+    #[tokio::test]
     async fn test_intermediate_task_estimator() {
         let query = r#"
         SELECT DISTINCT "RainToday" FROM weather
@@ -1173,7 +1208,7 @@ mod tests {
             ChildrenIsolatorUnionExec: task_count=TaskCountAnnotation: soft=4.00, exact=2
               DistributedLeafExec: task_count=TaskCountAnnotation: soft=4.00, exact=2
               DistributedLeafExec: task_count=TaskCountAnnotation: soft=4.00, exact=2
-          DistributedLeafExec: task_count=TaskCountAnnotation: soft=4.00, exact=3
+          DistributedLeafExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
         ");
     }
 
