@@ -136,10 +136,11 @@ pub struct RunOpt {
     two_step_shuffle_fanout_threshold: usize,
 }
 
-/// Serves a benchmark worker on the provided listener until it fails.
+/// Serves a benchmark worker on the provided listener until it fails or `shutdown` resolves.
 pub(crate) async fn serve_worker<B: BenchmarkBackend>(
     backend: B,
     listener: TcpListener,
+    shutdown: impl Future<Output = ()>,
 ) -> Result<(), tonic::transport::Error> {
     // Workers need to be able to decode the WorkUnitFileScan plan
     // node when the feature is on. The codec is registered via a
@@ -153,7 +154,7 @@ pub(crate) async fn serve_worker<B: BenchmarkBackend>(
     });
     Server::builder()
         .add_service(worker.into_worker_server())
-        .serve_with_incoming(TcpListenerStream::new(listener))
+        .serve_with_incoming_shutdown(TcpListenerStream::new(listener), shutdown)
         .await
 }
 
@@ -188,7 +189,9 @@ impl RunOpt {
 
     pub async fn run<B: BenchmarkBackend + Clone>(self, mut backend: B) -> Result<()> {
         let local_workers = LocalWorkers::start(self.workers, &backend).await?;
-        self.run_local(&mut backend, &local_workers.ports).await
+        let result = self.run_local(&mut backend, &local_workers.ports).await;
+        local_workers.shutdown().await;
+        result
     }
 
     async fn run_local(self, backend: &mut impl BenchmarkBackend, ports: &[u16]) -> Result<()> {
