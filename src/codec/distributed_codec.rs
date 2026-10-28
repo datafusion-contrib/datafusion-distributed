@@ -176,7 +176,6 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 partitioning,
                 input_stage,
                 equivalence_classes,
-                leading_padding,
             }) => {
                 let schema: Schema = schema
                     .as_ref()
@@ -211,7 +210,6 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     partitioning,
                     equivalence_properties,
                     parse_stage_proto(input_stage, inputs, dynamic_filter_anchors)?,
-                    leading_padding as usize,
                 )))
             }
             DistributedExecNode::NetworkBroadcast(NetworkBroadcastExecProto {
@@ -404,7 +402,6 @@ impl PhysicalExtensionCodec for DistributedCodec {
             wrapper.encode(buf).map_err(|e| proto_error(format!("{e}")))
         } else if let Some(node) = node.downcast_ref::<NetworkCoalesceExec>() {
             let inner = NetworkCoalesceExecProto {
-                leading_padding: node.leading_padding as u64,
                 schema: Some(node.schema().try_into()?),
                 partitioning: Some(serialize_partitioning(
                     node.properties().output_partitioning(),
@@ -745,15 +742,12 @@ pub struct NetworkCoalesceExecProto {
     input_stage: Option<StageProto>,
     #[prost(message, repeated, tag = "4")]
     equivalence_classes: Vec<EquivalenceClassProto>,
-    #[prost(uint64, tag = "5")]
-    leading_padding: u64,
 }
 
 fn new_network_coalesce_tasks_exec(
     partitioning: Partitioning,
     equivalence_properties: EquivalenceProperties,
     input_stage: Stage,
-    leading_padding: usize,
 ) -> NetworkCoalesceExec {
     NetworkCoalesceExec {
         properties: Arc::new(PlanProperties::new(
@@ -765,7 +759,6 @@ fn new_network_coalesce_tasks_exec(
         worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
         input_stage,
         task_partitionings: None,
-        leading_padding,
     }
 }
 
@@ -1031,7 +1024,6 @@ mod tests {
             Partitioning::RoundRobinBatch(3),
             EquivalenceProperties::new(schema),
             dummy_stage(),
-            0,
         ));
 
         let mut buf = Vec::new();
@@ -1076,7 +1068,6 @@ mod tests {
             Partitioning::RoundRobinBatch(3),
             EquivalenceProperties::new(schema),
             dummy_stage_with_plan(),
-            0,
         ));
 
         let mut buf = Vec::new();
@@ -1098,7 +1089,6 @@ mod tests {
             Partitioning::UnknownPartitioning(1),
             EquivalenceProperties::new(schema),
             dummy_stage(),
-            0,
         ));
 
         let plan: Arc<dyn ExecutionPlan> =
@@ -1123,13 +1113,11 @@ mod tests {
             Partitioning::RoundRobinBatch(2),
             EquivalenceProperties::new(schema.clone()),
             dummy_stage(),
-            0,
         ));
         let right = Arc::new(new_network_coalesce_tasks_exec(
             Partitioning::RoundRobinBatch(2),
             EquivalenceProperties::new(schema.clone()),
             dummy_stage(),
-            0,
         ));
 
         let union = UnionExec::try_new(vec![left.clone(), right.clone()])?;
@@ -1235,7 +1223,6 @@ mod tests {
                     Partitioning::UnknownPartitioning(1),
                     equivalence_properties.clone(),
                     dummy_stage(),
-                    0,
                 )),
             ),
             (

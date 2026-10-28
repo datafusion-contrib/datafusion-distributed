@@ -5,7 +5,6 @@ use crate::events::{
 };
 use crate::execution_plans::ChildrenIsolatorUnionExec;
 use crate::execution_plans::ShuffleMode;
-use crate::execution_plans::range_partitioning::task_ranges;
 use crate::stage::LocalStage;
 use crate::worker_resolver::WorkerResolverExtension;
 use crate::{
@@ -685,7 +684,7 @@ impl NetworkBoundaryBuilder for CardinalityBasedNetworkBoundaryBuilder {
         input_stage.plan =
             nb_ctx.propagate_task_count_until_network_boundaries(&input_stage.plan, tc)?;
         let input_properties = Arc::clone(input_stage.plan.properties());
-        let input_ranges = task_ranges(&input_stage.plan, input_stage.tasks)?;
+        let input_ranges = NetworkCoalesceExec::input_ranges(&input_stage.plan, input_stage.tasks)?;
 
         if nb_type == TypeId::of::<NetworkCoalesceExec>() {
             return Ok(NetworkBoundaryBuilderResult {

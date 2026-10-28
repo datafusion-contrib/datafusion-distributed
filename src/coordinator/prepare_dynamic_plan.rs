@@ -9,7 +9,6 @@ use crate::dynamic_filtering::{
     is_remote_dynamic_filtering_enabled, orphan_dynamic_filter_consumers,
 };
 use crate::execution_plans::SamplerExec;
-use crate::execution_plans::range_partitioning::task_ranges;
 use crate::stage::{LocalStage, RemoteStage};
 use crate::{
     BytesCounterMetric, CoordinatorToWorkerMsg, LoadInfo, MaxGaugeMetric, NetworkBoundaryExt,
@@ -139,7 +138,8 @@ pub(super) async fn prepare_dynamic_plan(
                 // before it's moved: the returned stage is remote and carries no plan to read it
                 // back from.
                 let input_properties = Arc::clone(input_stage.plan.properties());
-                let input_ranges = task_ranges(&input_stage.plan, input_stage.tasks)?;
+                let input_ranges =
+                    NetworkCoalesceExec::input_ranges(&input_stage.plan, input_stage.tasks)?;
                 plans_for_viz.insert(input_stage.num, input_stage.plan, metrics);
                 Ok(NetworkBoundaryBuilderResult {
                     consumer_task_count: consumer_tc,
