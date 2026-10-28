@@ -25,18 +25,17 @@ In general, prefer writing integration tests rather than unit tests.
 ## writing good tests
 
 - Always wrap tests in a `mod tests {};` block.
-- Never make the body of a test very long. prefer adding the necessary helpers
-  at the bottom of the `mod tests {};` block, and reuse these helpers
-  extensively across many permutations of different test scenarios. A good
-  example of this is
-  [inject_network_boundaries.rs](../../../src/distributed_planner/inject_network_boundaries.rs)
-  or
-  [complexity_cpu.rs](../../../src/distributed_planner/statistics/complexity_cpu.rs)
-  where there are many test cases, but each test case has a very narrowed and
-  readable body.
-- While building tests, prefer using builder patterns for ergonomically building
-  different permutations of test cases, keeping the builder pattern helpers at
-  the bottom of the `mod tests {};` block.
+- Tests are executable documentation. Keep the scenario, relevant configuration,
+  operation, and expected behavior understandable in place. Explicit setup is
+  preferable to a shorter test that requires navigating through helper functions.
+- Reuse the harness for session, codec, worker, and fixture plumbing. Keep the
+  scenario's configuration together in its builder chain. Prefer existing builder
+  methods and configuration hooks over adding wrappers for individual settings.
+- Put fixture and observation helpers below the tests. Helpers should encapsulate
+  mechanics, not hide the scenario, execution, and assertions together.
+- Give distinct integration scenarios named, directly runnable tests rather than
+  hiding them in loops or generated test macros. Loops remain useful for fixture
+  construction and checking one coherent invariant.
 - Never test implementation details, always prefer testing at the public API
   level.
 - Prefer quality to quantity. Adding a lot of tests with overlapping intentions
@@ -46,7 +45,7 @@ In general, prefer writing integration tests rather than unit tests.
 ## Red flags in tests
 
 - Too many tests with overlapping intentions.
-- Tests with big bodies and a lot of in-lined preparation steps.
+- Tests dominated by low-level preparation, or short helpers that hide the scenario.
 - Tests that do not follow the code pattern of adjacent tests.
 - Exposing internal details of tested structs with #[cfg(test)] flags.
 - PRs with a high ratio of tests VS actual code.
@@ -58,6 +57,11 @@ In general, prefer writing integration tests rather than unit tests.
   nearby helper only.
 - Remove redundant cases and boilerplate. A small set of clear cases is more
   valuable than generated variations that do not add coverage.
+
+The full [test-design rules](../../../AGENTS.md#test-design-and-review) also cover
+realistic execution paths, fixture boundaries, and avoiding redundant coverage.
+Before submitting, read each changed test without opening helpers or snapshot
+files and check that its setup and expected behavior are clear.
 
 ## Running Unit Tests
 
