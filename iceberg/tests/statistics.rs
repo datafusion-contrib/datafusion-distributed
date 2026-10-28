@@ -78,50 +78,8 @@ mod tests {
             .await?;
         table
             .append()
-            .described_file(
-                DescribedFile::new(
-                    "metrics-first.parquet",
-                    METRICS_FILE_ROWS,
-                    METRICS_FILE_BYTES,
-                )
-                .partition([Literal::date_from_str("2024-01-10")?])
-                .column(
-                    "vendor_id",
-                    ColumnMetrics::default()
-                        .null_count(2)
-                        .size(100)
-                        .bounds(Datum::int(2), Datum::int(9)),
-                )
-                .column(
-                    "passenger_count",
-                    ColumnMetrics::default()
-                        .null_count(4)
-                        .size(200)
-                        .bounds(Datum::long(10), Datum::long(20)),
-                ),
-            )
-            .described_file(
-                DescribedFile::new(
-                    "metrics-second.parquet",
-                    METRICS_FILE_ROWS,
-                    METRICS_FILE_BYTES,
-                )
-                .partition([Literal::date_from_str("2024-01-10")?])
-                .column(
-                    "vendor_id",
-                    ColumnMetrics::default()
-                        .null_count(3)
-                        .size(300)
-                        .bounds(Datum::int(1), Datum::int(5)),
-                )
-                // No null count, so the scan's total must stay unknown.
-                .column(
-                    "passenger_count",
-                    ColumnMetrics::default()
-                        .size(400)
-                        .bounds(Datum::long(30), Datum::long(40)),
-                ),
-            )
+            .described_file(first_metrics_file())
+            .described_file(second_metrics_file())
             .commit()
             .await?;
         let harness = IcebergTestHarness::builder()
@@ -161,50 +119,8 @@ mod tests {
             .await?;
         table
             .append()
-            .described_file(
-                DescribedFile::new(
-                    "metrics-first.parquet",
-                    METRICS_FILE_ROWS,
-                    METRICS_FILE_BYTES,
-                )
-                .partition([Literal::date_from_str("2024-01-10")?])
-                .column(
-                    "vendor_id",
-                    ColumnMetrics::default()
-                        .null_count(2)
-                        .size(100)
-                        .bounds(Datum::int(2), Datum::int(9)),
-                )
-                .column(
-                    "passenger_count",
-                    ColumnMetrics::default()
-                        .null_count(4)
-                        .size(200)
-                        .bounds(Datum::long(10), Datum::long(20)),
-                ),
-            )
-            .described_file(
-                DescribedFile::new(
-                    "metrics-second.parquet",
-                    METRICS_FILE_ROWS,
-                    METRICS_FILE_BYTES,
-                )
-                .partition([Literal::date_from_str("2024-01-10")?])
-                .column(
-                    "vendor_id",
-                    ColumnMetrics::default()
-                        .null_count(3)
-                        .size(300)
-                        .bounds(Datum::int(1), Datum::int(5)),
-                )
-                // No null count, so the scan's total must stay unknown.
-                .column(
-                    "passenger_count",
-                    ColumnMetrics::default()
-                        .size(400)
-                        .bounds(Datum::long(30), Datum::long(40)),
-                ),
-            )
+            .described_file(first_metrics_file())
+            .described_file(second_metrics_file())
             .commit()
             .await?;
         let harness = IcebergTestHarness::builder()
@@ -240,50 +156,8 @@ mod tests {
             .await?;
         table
             .append()
-            .described_file(
-                DescribedFile::new(
-                    "metrics-first.parquet",
-                    METRICS_FILE_ROWS,
-                    METRICS_FILE_BYTES,
-                )
-                .partition([Literal::date_from_str("2024-01-10")?])
-                .column(
-                    "vendor_id",
-                    ColumnMetrics::default()
-                        .null_count(2)
-                        .size(100)
-                        .bounds(Datum::int(2), Datum::int(9)),
-                )
-                .column(
-                    "passenger_count",
-                    ColumnMetrics::default()
-                        .null_count(4)
-                        .size(200)
-                        .bounds(Datum::long(10), Datum::long(20)),
-                ),
-            )
-            .described_file(
-                DescribedFile::new(
-                    "metrics-second.parquet",
-                    METRICS_FILE_ROWS,
-                    METRICS_FILE_BYTES,
-                )
-                .partition([Literal::date_from_str("2024-01-10")?])
-                .column(
-                    "vendor_id",
-                    ColumnMetrics::default()
-                        .null_count(3)
-                        .size(300)
-                        .bounds(Datum::int(1), Datum::int(5)),
-                )
-                // No null count, so the scan's total must stay unknown.
-                .column(
-                    "passenger_count",
-                    ColumnMetrics::default()
-                        .size(400)
-                        .bounds(Datum::long(30), Datum::long(40)),
-                ),
-            )
+            .described_file(first_metrics_file())
+            .described_file(second_metrics_file())
             .commit()
             .await?;
         let harness = IcebergTestHarness::builder()
@@ -335,50 +209,8 @@ mod tests {
             .await?;
         table
             .append()
-            .described_file(
-                DescribedFile::new(
-                    "metrics-first.parquet",
-                    METRICS_FILE_ROWS,
-                    METRICS_FILE_BYTES,
-                )
-                .partition([Literal::date_from_str("2024-01-10")?])
-                .column(
-                    "vendor_id",
-                    ColumnMetrics::default()
-                        .null_count(2)
-                        .size(100)
-                        .bounds(Datum::int(2), Datum::int(9)),
-                )
-                .column(
-                    "passenger_count",
-                    ColumnMetrics::default()
-                        .null_count(4)
-                        .size(200)
-                        .bounds(Datum::long(10), Datum::long(20)),
-                ),
-            )
-            .described_file(
-                DescribedFile::new(
-                    "metrics-second.parquet",
-                    METRICS_FILE_ROWS,
-                    METRICS_FILE_BYTES,
-                )
-                .partition([Literal::date_from_str("2024-01-10")?])
-                .column(
-                    "vendor_id",
-                    ColumnMetrics::default()
-                        .null_count(3)
-                        .size(300)
-                        .bounds(Datum::int(1), Datum::int(5)),
-                )
-                // No null count, so the scan's total must stay unknown.
-                .column(
-                    "passenger_count",
-                    ColumnMetrics::default()
-                        .size(400)
-                        .bounds(Datum::long(30), Datum::long(40)),
-                ),
-            )
+            .described_file(first_metrics_file())
+            .described_file(second_metrics_file())
             .commit()
             .await?;
         let harness = IcebergTestHarness::builder()
@@ -414,50 +246,8 @@ mod tests {
             .await?;
         table
             .append()
-            .described_file(
-                DescribedFile::new(
-                    "metrics-first.parquet",
-                    METRICS_FILE_ROWS,
-                    METRICS_FILE_BYTES,
-                )
-                .partition([Literal::date_from_str("2024-01-10")?])
-                .column(
-                    "vendor_id",
-                    ColumnMetrics::default()
-                        .null_count(2)
-                        .size(100)
-                        .bounds(Datum::int(2), Datum::int(9)),
-                )
-                .column(
-                    "passenger_count",
-                    ColumnMetrics::default()
-                        .null_count(4)
-                        .size(200)
-                        .bounds(Datum::long(10), Datum::long(20)),
-                ),
-            )
-            .described_file(
-                DescribedFile::new(
-                    "metrics-second.parquet",
-                    METRICS_FILE_ROWS,
-                    METRICS_FILE_BYTES,
-                )
-                .partition([Literal::date_from_str("2024-01-10")?])
-                .column(
-                    "vendor_id",
-                    ColumnMetrics::default()
-                        .null_count(3)
-                        .size(300)
-                        .bounds(Datum::int(1), Datum::int(5)),
-                )
-                // No null count, so the scan's total must stay unknown.
-                .column(
-                    "passenger_count",
-                    ColumnMetrics::default()
-                        .size(400)
-                        .bounds(Datum::long(30), Datum::long(40)),
-                ),
-            )
+            .described_file(first_metrics_file())
+            .described_file(second_metrics_file())
             .commit()
             .await?;
         let harness = IcebergTestHarness::builder()
@@ -669,5 +459,54 @@ mod tests {
             .build()
             .expect("taxi metadata is valid")
             .metadata
+    }
+
+    // The first of the two described files on 2024-01-10.
+    fn first_metrics_file() -> DescribedFile {
+        DescribedFile::new(
+            "metrics-first.parquet",
+            METRICS_FILE_ROWS,
+            METRICS_FILE_BYTES,
+        )
+        .partition([Literal::date_from_str("2024-01-10").expect("valid date")])
+        .column(
+            "vendor_id",
+            ColumnMetrics::default()
+                .null_count(2)
+                .size(100)
+                .bounds(Datum::int(2), Datum::int(9)),
+        )
+        .column(
+            "passenger_count",
+            ColumnMetrics::default()
+                .null_count(4)
+                .size(200)
+                .bounds(Datum::long(10), Datum::long(20)),
+        )
+    }
+
+    // The second of the two described files on 2024-01-10, without a null count for
+    // passenger_count.
+    fn second_metrics_file() -> DescribedFile {
+        DescribedFile::new(
+            "metrics-second.parquet",
+            METRICS_FILE_ROWS,
+            METRICS_FILE_BYTES,
+        )
+        .partition([Literal::date_from_str("2024-01-10").expect("valid date")])
+        .column(
+            "vendor_id",
+            ColumnMetrics::default()
+                .null_count(3)
+                .size(300)
+                .bounds(Datum::int(1), Datum::int(5)),
+        )
+        // No null count, so the scan's total must stay unknown.
+        .column(
+            "passenger_count",
+            ColumnMetrics::default()
+                .size(400)
+                .bounds(Datum::long(30), Datum::long(40)),
+        )
     }
 }
