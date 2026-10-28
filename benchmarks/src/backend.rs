@@ -16,6 +16,7 @@ pub trait BenchmarkBackend: Send + Sync + 'static {
     }
 }
 
+#[derive(Clone)]
 pub struct ParquetBenchmarkBackend;
 
 #[async_trait]

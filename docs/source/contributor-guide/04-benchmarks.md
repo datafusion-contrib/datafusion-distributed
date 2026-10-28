@@ -33,13 +33,13 @@ This might take a while.
 
 ### Running Benchmarks
 
-After generating the data, it's recommended to use the `run.sh` script to run
-the benchmarks. A good setup is to run 8 workers throttled at 2 physical threads
-per worker. This provides a relatively accurate benchmarking environment for a
-distributed system locally.
+After generating the data, run the benchmarks with the `dfbench run` command. A
+good setup is to run 8 workers throttled at 2 physical threads per worker. This
+provides a relatively accurate benchmarking environment for a distributed system
+locally.
 
 ```bash
-WORKERS=8 ./benchmarks/run.sh --threads 2 --dataset tpch/sf10
+cargo run -p datafusion-distributed-benchmarks --release -- run --workers 8 --threads 2 --dataset tpch/sf10
 ```
 
 Subsequent runs will compare results against the previous one, so a useful trick

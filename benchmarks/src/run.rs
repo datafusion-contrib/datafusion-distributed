@@ -17,6 +17,7 @@
 
 use crate::backend::BenchmarkBackend;
 use crate::datasets::{clickbench, tpcds, tpch};
+use crate::local_workers::LocalWorkers;
 use crate::results::{BenchResult, BenchmarkRun, QueryIter, dataset_path};
 use crate::stats::stats_estimation_q_error;
 use datafusion::arrow::ipc::CompressionType;
@@ -37,16 +38,15 @@ use datafusion_distributed::test_utils::work_unit_file_scan::{
 };
 use datafusion_distributed::{
     DistributedExt, DistributedMetricsFormat, NetworkBoundaryExt, SessionStateBuilderExt, Worker,
-    display_plan_ascii, rewrite_distributed_plan_with_metrics,
+    WorkerQueryContext, display_plan_ascii, rewrite_distributed_plan_with_metrics,
 };
-use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use structopt::StructOpt;
 use tokio::net::TcpListener;
-use tonic::codegen::tokio_stream;
+use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
 
 /// Run the tpch benchmark.
@@ -62,22 +62,20 @@ use tonic::transport::Server;
 #[structopt(verbatim_doc_comment)]
 pub struct RunOpt {
     /// Query number. If not specified, runs all queries
-    #[structopt(short, long, use_delimiter = true)]
+    #[structopt(short, long, alias = "queries", use_delimiter = true)]
     pub query: Vec<String>,
 
     /// Path to data files
     #[structopt(long)]
     dataset: String,
 
-    /// Spawns a worker in the specified port.
-    #[structopt(long)]
-    spawn: Option<u16>,
+    /// Number of localhost workers to start in this same process, on the same Tokio runtime as
+    /// the benchmark runner. Use 0 for running the benchmarks in single-node mode.
+    #[structopt(long, default_value = "0")]
+    workers: usize,
 
-    /// The ports of all the workers involved in the query.
-    #[structopt(long, use_delimiter = true)]
-    workers: Vec<u16>,
-
-    /// Number of physical threads per worker.
+    /// Number of physical threads per worker. The runner and the workers share one Tokio
+    /// runtime with --threads × (workers + 1) threads, capped at the available parallelism.
     #[structopt(long)]
     threads: Option<usize>,
 
@@ -128,6 +126,35 @@ pub struct RunOpt {
     /// to measure the latency overhead introduced by that path.
     #[structopt(long = "work-unit-file-scan")]
     work_unit_file_scan: bool,
+
+    /// Fan-out threshold for choosing between Direct and TwoPhase shuffle modes. In Direct mode
+    /// the producer hashes into `consumer_task_count × consumer_partition_count` global buckets;
+    /// TwoPhase mode is used when that product meets or exceeds this value, reducing the
+    /// producer-side hash to `consumer_task_count` buckets and adding a local RepartitionExec
+    /// on the consumer side.
+    #[structopt(long = "two-step-shuffle-fanout-threshold", default_value = "128")]
+    two_step_shuffle_fanout_threshold: usize,
+}
+
+/// Serves a benchmark worker on the provided listener until it fails.
+pub(crate) async fn serve_worker<B: BenchmarkBackend>(
+    backend: B,
+    listener: TcpListener,
+) -> Result<(), tonic::transport::Error> {
+    // Workers need to be able to decode the WorkUnitFileScan plan
+    // node when the feature is on. The codec is registered via a
+    // session builder so it is installed on every worker session.
+    let worker = Worker::from_session_builder(move |ctx: WorkerQueryContext| {
+        let builder = backend.configure_session(
+            ctx.builder
+                .with_distributed_user_codec(WorkUnitFileScanCodec),
+        );
+        async move { Ok(builder.build()) }
+    });
+    Server::builder()
+        .add_service(worker.into_worker_server())
+        .serve_with_incoming(TcpListenerStream::new(listener))
+        .await
 }
 
 fn queries_for_dataset(dataset: &str) -> Result<Vec<(String, String)>, DataFusionError> {
@@ -159,47 +186,16 @@ impl RunOpt {
         })
     }
 
-    pub fn run<B: BenchmarkBackend>(self, mut backend: B) -> Result<()> {
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(self.threads.unwrap_or(get_available_parallelism()))
-            .enable_all()
-            .build()?;
-
-        if let Some(port) = self.spawn {
-            rt.block_on(async move {
-                let listener = TcpListener::bind(format!("127.0.0.1:{port}")).await?;
-                println!("Listening on {}...", listener.local_addr().unwrap());
-                let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
-                // Workers need to be able to decode the WorkUnitFileScan plan
-                // node when the feature is on. The codec is registered via a
-                // session builder so it is installed on every worker session.
-                let worker = Worker::from_session_builder(
-                    move |ctx: datafusion_distributed::WorkerQueryContext| {
-                        let builder = backend.configure_session(
-                            ctx.builder
-                                .with_distributed_user_codec(WorkUnitFileScanCodec),
-                        );
-                        async move { Ok(builder.build()) }
-                    },
-                );
-                Ok::<_, Box<dyn Error + Send + Sync>>(
-                    Server::builder()
-                        .add_service(worker.into_worker_server())
-                        .serve_with_incoming(incoming)
-                        .await?,
-                )
-            })?;
-        } else {
-            rt.block_on(self.run_local(&mut backend))?;
-        }
-        Ok(())
+    pub async fn run<B: BenchmarkBackend + Clone>(self, mut backend: B) -> Result<()> {
+        let local_workers = LocalWorkers::start(self.workers, &backend).await?;
+        self.run_local(&mut backend, &local_workers.ports).await
     }
 
-    async fn run_local(self, backend: &mut impl BenchmarkBackend) -> Result<()> {
+    async fn run_local(self, backend: &mut impl BenchmarkBackend, ports: &[u16]) -> Result<()> {
         let mut builder = SessionStateBuilder::new()
             .with_default_features()
             .with_config(self.config()?)
-            .with_distributed_worker_resolver(LocalHostWorkerResolver::new(self.workers.clone()))
+            .with_distributed_worker_resolver(LocalHostWorkerResolver::new(ports.to_vec()))
             .with_distributed_planner()
             .with_distributed_cardinality_effect_task_scale_factor(
                 self.cardinality_task_sf.unwrap_or(1.0),
@@ -213,6 +209,9 @@ impl RunOpt {
             })?
             .with_distributed_children_isolator_unions(true)?
             .with_distributed_broadcast_joins(true)?
+            .with_distributed_two_step_shuffle_fanout_threshold(
+                self.two_step_shuffle_fanout_threshold,
+            )?
             .with_distributed_metrics_collection(
                 self.collect_metrics || self.debug || self.dynamic,
             )?
@@ -254,7 +253,7 @@ impl RunOpt {
         println!("Running benchmarks with the following options: {self:?}");
         let mut benchmark_run = BenchmarkRun::new(
             self.dataset.clone(),
-            self.workers.len(),
+            ports.len(),
             self.threads.unwrap_or(get_available_parallelism()),
         );
 

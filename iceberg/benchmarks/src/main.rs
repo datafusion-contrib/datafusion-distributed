@@ -16,14 +16,13 @@ enum Options {
     Run(RunOpt),
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     env_logger::init();
 
     match Options::from_args() {
-        Options::Prepare(options) => {
-            let runtime = tokio::runtime::Runtime::new()?;
-            runtime.block_on(options.run())
-        }
-        Options::Run(options) => options.run(IcebergBenchmarkBackend),
-    }
+        Options::Prepare(options) => options.run().await?,
+        Options::Run(options) => options.run(IcebergBenchmarkBackend).await?,
+    };
+    Ok(())
 }
