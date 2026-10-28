@@ -27,11 +27,13 @@
 
 mod append;
 mod catalog;
+mod described;
 mod error;
 mod table;
 mod taxi;
 
 pub use append::Append;
 pub use catalog::FixtureCatalog;
+pub use described::{ColumnMetrics, DescribedFile};
 pub use table::{FixtureTable, TableBuilder};
 pub use taxi::*;

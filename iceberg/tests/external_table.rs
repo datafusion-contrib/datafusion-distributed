@@ -6,7 +6,10 @@ mod tests {
 
     #[tokio::test]
     async fn registers_the_fixture_with_the_iceberg_schema() -> Result<()> {
-        let harness = IcebergTestHarness::new().await?;
+        let harness = IcebergTestHarness::builder()
+            .with_taxi_dataset()
+            .build()
+            .await?;
         let (_, batches) = harness.query("DESCRIBE taxi").await?;
 
         insta::assert_snapshot!(batches, @r"
@@ -34,12 +37,18 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_schema_definitions_for_existing_iceberg_tables() -> Result<()> {
-        let harness = IcebergTestHarness::new().await?;
+        let harness = IcebergTestHarness::builder()
+            .with_taxi_dataset()
+            .build()
+            .await?;
         let error = harness
             .query(&format!(
                 "CREATE EXTERNAL TABLE invalid (id INT) STORED AS ICEBERG \
                  LOCATION '{}'",
-                harness.taxi_metadata_location()?
+                harness
+                    .table()
+                    .expect("the harness has a table")
+                    .metadata_location()?
             ))
             .await
             .unwrap_err();
@@ -54,6 +63,7 @@ mod tests {
     #[tokio::test]
     async fn registers_a_table_at_a_specific_snapshot() -> Result<()> {
         let harness = IcebergTestHarness::builder()
+            .with_taxi_dataset()
             .with_table_option("iceberg.snapshot_id", "1")
             .build()
             .await?;
@@ -73,6 +83,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_an_invalid_snapshot_id() -> Result<()> {
         let error = IcebergTestHarness::builder()
+            .with_taxi_dataset()
             .with_table_option("iceberg.snapshot_id", "not-a-snapshot-id")
             .build()
             .await

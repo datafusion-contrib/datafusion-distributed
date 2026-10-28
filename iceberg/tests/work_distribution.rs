@@ -34,6 +34,7 @@ mod tests {
         eager_file_planning: bool,
     ) -> Result<()> {
         let harness = IcebergTestHarness::builder()
+            .with_taxi_dataset()
             .with_workers(workers)
             .configure_iceberg(|config| config.eager_file_planning = eager_file_planning)
             .configure_session(|mut state| {
@@ -60,7 +61,12 @@ mod tests {
         }, {
             insta::assert_snapshot!(snapshot, scans);
         });
-        let (_, local_results) = IcebergTestHarness::new().await?.query(&sql).await?;
+        let (_, local_results) = IcebergTestHarness::builder()
+            .with_taxi_dataset()
+            .build()
+            .await?
+            .query(&sql)
+            .await?;
         assert_eq!(results, local_results);
         Ok(())
     }

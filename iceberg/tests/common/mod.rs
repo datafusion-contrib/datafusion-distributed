@@ -2,10 +2,12 @@
 #![allow(dead_code)]
 
 use std::collections::BTreeMap;
+use std::mem;
 use std::str::FromStr;
 use std::sync::Arc;
 
 use datafusion::arrow::util::pretty::pretty_format_batches;
+use datafusion::common::exec_err;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_plan::{ExecutionPlan, collect};
@@ -21,21 +23,23 @@ use datafusion_distributed::{
 use datafusion_distributed_iceberg::{
     IcebergConfig, IcebergExt, IcebergIntegrationOptions, iceberg_desired_task_count,
 };
-use datafusion_distributed_iceberg_test_tools::{FixtureCatalog, FixtureTable, create_taxi_table};
+use datafusion_distributed_iceberg_test_tools::{
+    DescribedFile, FixtureCatalog, FixtureTable, create_taxi_table, taxi_schema,
+};
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use iceberg::io::LocalFsStorageFactory;
-use iceberg::spec::{MAIN_BRANCH, TableMetadata, TableMetadataBuilder};
-use iceberg::table::Table;
+use iceberg::spec::{MAIN_BRANCH, TableMetadata, TableMetadataBuilder, Transform};
 use iceberg::{MetadataLocation, TableIdent};
 
-/// A DataFusion session for integration tests, over a freshly generated taxi table.
+/// A DataFusion session for integration tests, over the table its builder chose, if any.
 ///
-/// The table from [`create_taxi_table`] is registered as `taxi` with
+/// The table is registered under its name, e.g. `taxi` for
+/// [`IcebergTestHarnessBuilder::with_taxi_dataset`], with
 /// `CREATE EXTERNAL TABLE ... STORED AS ICEBERG`. The harness owns the fixture catalog,
 /// so the table's files live as long as the harness.
 pub struct IcebergTestHarness {
     ctx: SessionContext,
-    taxi: FixtureTable,
+    table: Option<FixtureTable>,
     _fixtures: FixtureCatalog,
 }
 
@@ -44,18 +48,9 @@ impl IcebergTestHarness {
         IcebergTestHarnessBuilder::default()
     }
 
-    pub async fn new() -> Result<Self> {
-        Self::builder().build().await
-    }
-
-    /// The generated taxi table, e.g. to inspect its files.
-    pub fn taxi(&self) -> &FixtureTable {
-        &self.taxi
-    }
-
-    /// The current metadata file of the generated taxi table.
-    pub fn taxi_metadata_location(&self) -> Result<&str> {
-        self.taxi.metadata_location()
+    /// The registered table, e.g. to inspect its files.
+    pub fn table(&self) -> Option<&FixtureTable> {
+        self.table.as_ref()
     }
 
     pub async fn query(&self, sql: &str) -> Result<(String, String)> {
@@ -82,10 +77,14 @@ impl IcebergTestHarness {
         self.ctx.sql(sql).await?.create_physical_plan().await
     }
 
-    /// Returns the fixture scan without SQL optimization, including for an empty table.
+    /// Returns the registered table's scan without SQL optimization, including for an
+    /// empty table.
     pub async fn scan(&self) -> Result<Arc<dyn ExecutionPlan>> {
+        let Some(table) = &self.table else {
+            return exec_err!("the harness has no table to scan");
+        };
         self.ctx
-            .table_provider("taxi")
+            .table_provider(table.ident().name())
             .await?
             .scan(&self.ctx.state(), None, &[], None)
             .await
@@ -110,9 +109,15 @@ impl IcebergTestHarness {
     }
 }
 
+/// Derives the metadata to register a table from, given its own.
+type MetadataTransform = Box<dyn FnOnce(&TableMetadata) -> TableMetadata>;
+
 pub struct IcebergTestHarnessBuilder {
     session_builder: SessionStateBuilder,
     table_options: BTreeMap<String, String>,
+    taxi_dataset: bool,
+    described_files: Vec<DescribedFile>,
+    metadata: Option<MetadataTransform>,
     workers: Option<usize>,
 }
 
@@ -124,6 +129,9 @@ impl Default for IcebergTestHarnessBuilder {
                 .with_config(SessionConfig::new().with_target_partitions(4))
                 .with_distributed_option_extension(DistributedConfig::default()),
             table_options: BTreeMap::new(),
+            taxi_dataset: false,
+            described_files: Vec::new(),
+            metadata: None,
             workers: None,
         }
     }
@@ -159,9 +167,34 @@ impl IcebergTestHarnessBuilder {
         self.configure_iceberg(|config| config.column_stats_enabled = true)
     }
 
+    /// Registers the taxi dataset from [`create_taxi_table`] as `taxi`.
+    pub fn with_taxi_dataset(mut self) -> Self {
+        self.taxi_dataset = true;
+        self
+    }
+
     /// Sets a table option; later values replace earlier ones for the same key.
     pub fn with_table_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.table_options.insert(key.into(), value.into());
+        self
+    }
+
+    /// Registers as `taxi` a table with the taxi dataset's schema and partitioning whose
+    /// only snapshot lists the described files, which are never written. Can't be combined
+    /// with [`Self::with_taxi_dataset`].
+    pub fn with_described_file(mut self, file: DescribedFile) -> Self {
+        self.described_files.push(file);
+        self
+    }
+
+    /// Registers the chosen table from the metadata `metadata` returns for its own. The
+    /// metadata is written next to the table's, so it can refer to the table's manifests
+    /// and data files.
+    pub fn with_metadata(
+        mut self,
+        metadata: impl FnOnce(&TableMetadata) -> TableMetadata + 'static,
+    ) -> Self {
+        self.metadata = Some(Box::new(metadata));
         self
     }
 
@@ -171,38 +204,66 @@ impl IcebergTestHarnessBuilder {
         self
     }
 
-    /// Generates the taxi table and registers it as `taxi`.
-    pub async fn build(self) -> Result<IcebergTestHarness> {
-        let (fixtures, taxi) = generate_taxi_table().await?;
-        let location = taxi.metadata_location()?.to_string();
-        self.register(fixtures, taxi, location).await
+    /// Creates the chosen table, if any, and registers it, from customized metadata if
+    /// [`Self::with_metadata`] was given.
+    pub async fn build(mut self) -> Result<IcebergTestHarness> {
+        let fixtures = FixtureCatalog::try_new().await?;
+        let table = match (self.create_table(&fixtures).await?, self.metadata.take()) {
+            (None, None) => None,
+            (None, Some(_)) => {
+                return exec_err!("table metadata can only be customized for a chosen table");
+            }
+            (Some(table), None) => {
+                let location = table.metadata_location()?.to_string();
+                Some((table, location))
+            }
+            (Some(table), Some(metadata)) => {
+                let metadata = metadata(table.table().metadata());
+                let location = MetadataLocation::from_str(table.metadata_location()?)
+                    .map_err(external)?
+                    .with_next_version();
+                metadata
+                    .write_to(table.table().file_io(), &location)
+                    .await
+                    .map_err(external)?;
+                Some((table, location.to_string()))
+            }
+        };
+        self.register(fixtures, table).await
     }
 
-    /// Generates the taxi table and registers `taxi` from the metadata `metadata` returns
-    /// for it. The metadata is written next to the generated table's, so it can refer to
-    /// the generated manifests and data files, as well as to files written through the
-    /// table's `FileIO`.
-    pub async fn build_with_table_metadata(
-        self,
-        metadata: impl AsyncFnOnce(&Table) -> Result<TableMetadata>,
-    ) -> Result<IcebergTestHarness> {
-        let (fixtures, taxi) = generate_taxi_table().await?;
-        let metadata = metadata(taxi.table()).await?;
-        let location = MetadataLocation::from_str(taxi.metadata_location()?)
-            .map_err(external)?
-            .with_next_version();
-        metadata
-            .write_to(taxi.table().file_io(), &location)
-            .await
-            .map_err(external)?;
-        self.register(fixtures, taxi, location.to_string()).await
+    /// Creates the table chosen with [`Self::with_taxi_dataset`] or
+    /// [`Self::with_described_file`] in `fixtures`, if any.
+    async fn create_table(&mut self, fixtures: &FixtureCatalog) -> Result<Option<FixtureTable>> {
+        let described_files = mem::take(&mut self.described_files);
+        if self.taxi_dataset && !described_files.is_empty() {
+            return exec_err!("the taxi dataset can't be combined with described files");
+        }
+        let ident = TableIdent::from_strs(["default", "taxi"]).map_err(external)?;
+        if self.taxi_dataset {
+            return Ok(Some(create_taxi_table(fixtures, ident).await?));
+        }
+        if described_files.is_empty() {
+            return Ok(None);
+        }
+        let mut table = fixtures
+            .table(ident, taxi_schema())
+            .partition_by("pickup_date", Transform::Identity)
+            .create()
+            .await?;
+        let mut append = table.append();
+        for file in described_files {
+            append = append.described_file(file);
+        }
+        append.commit().await?;
+        Ok(Some(table))
     }
 
+    /// Builds the session and registers `table`, given with its metadata location.
     async fn register(
         self,
         fixtures: FixtureCatalog,
-        taxi: FixtureTable,
-        metadata_location: String,
+        table: Option<(FixtureTable, String)>,
     ) -> Result<IcebergTestHarness> {
         let options = IcebergIntegrationOptions {
             storage_factory: Arc::new(LocalFsStorageFactory),
@@ -228,9 +289,16 @@ impl IcebergTestHarnessBuilder {
             state
         };
         let ctx = SessionContext::new_with_state(state.build());
+        let Some((table, metadata_location)) = table else {
+            return Ok(IcebergTestHarness {
+                ctx,
+                table: None,
+                _fixtures: fixtures,
+            });
+        };
         let mut statement = format!(
-            "CREATE EXTERNAL TABLE taxi STORED AS ICEBERG \
-             LOCATION '{metadata_location}'"
+            "CREATE EXTERNAL TABLE {} STORED AS ICEBERG LOCATION '{metadata_location}'",
+            table.ident().name()
         );
         if !self.table_options.is_empty() {
             let options = self
@@ -250,13 +318,13 @@ impl IcebergTestHarnessBuilder {
         ctx.sql(&statement).await?.collect().await?;
         Ok(IcebergTestHarness {
             ctx,
-            taxi,
+            table: Some(table),
             _fixtures: fixtures,
         })
     }
 }
 
-/// Returns a data file's path relative to the generated table's `data/` directory, which,
+/// Returns a data file's path relative to its table's `data/` directory, which,
 /// unlike the temp dir the table lives in, is the same on every run.
 pub fn data_file_name(path: &str) -> &str {
     path.rsplit_once("/data/").map_or(path, |(_, name)| name)
@@ -272,13 +340,7 @@ pub fn without_snapshots(metadata: &TableMetadata) -> TableMetadataBuilder {
         .remove_snapshots(&snapshot_ids)
 }
 
-async fn generate_taxi_table() -> Result<(FixtureCatalog, FixtureTable)> {
-    let fixtures = FixtureCatalog::try_new().await?;
-    let ident = TableIdent::from_strs(["default", "taxi"]).map_err(external)?;
-    let taxi = create_taxi_table(&fixtures, ident).await?;
-    Ok((fixtures, taxi))
-}
-
-fn external(error: iceberg::Error) -> DataFusionError {
+/// Converts an error from iceberg-rust into a DataFusion error.
+pub fn external(error: iceberg::Error) -> DataFusionError {
     DataFusionError::External(Box::new(error))
 }

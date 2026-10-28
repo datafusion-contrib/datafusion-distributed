@@ -8,12 +8,12 @@ mod tests {
     use datafusion_distributed::DistributedExt;
     use datafusion_distributed_iceberg::EagerIcebergDataSource;
     use iceberg::spec::{MAIN_BRANCH, Snapshot, TableMetadata};
-    use iceberg::table::Table;
 
     #[tokio::test]
     async fn executes_with_estimated_scan_tasks() -> Result<()> {
         // 5,656,412 bytes / 1 MB / 2 partitions rounds up to 3 tasks, not all 4 workers.
         let harness = IcebergTestHarness::builder()
+            .with_taxi_dataset()
             .with_workers(4)
             .configure_session(|mut state| {
                 let config = state.config().get_or_insert_default();
@@ -63,6 +63,7 @@ mod tests {
     #[tokio::test]
     async fn planned_scan_tasks_are_bounded_by_selected_file_work() -> Result<()> {
         let harness = IcebergTestHarness::builder()
+            .with_taxi_dataset()
             .configure_iceberg(|config| config.eager_file_planning = true)
             .configure_session(|mut state| {
                 let session = state.config().get_or_insert_default();
@@ -159,28 +160,31 @@ mod tests {
 
     #[tokio::test]
     async fn remote_feed_does_not_estimate_again() -> Result<()> {
-        let harness = IcebergTestHarness::new().await?;
+        let harness = IcebergTestHarness::builder()
+            .with_taxi_dataset()
+            .build()
+            .await?;
         let plan = harness.roundtrip_plan(harness.scan().await?)?;
         assert_eq!(harness.estimate_task_count(&plan)?, None);
         Ok(())
     }
 
     async fn assert_task_count(
-        metadata: impl FnOnce(&TableMetadata) -> TableMetadata,
+        metadata: impl FnOnce(&TableMetadata) -> TableMetadata + 'static,
         snapshot_id: Option<i64>,
         expected: Option<usize>,
     ) -> Result<()> {
-        let mut builder = IcebergTestHarness::builder().configure_session(|mut state| {
-            let config = state.config().get_or_insert_default();
-            config.options_mut().execution.target_partitions = 2;
-            state.with_distributed_file_scan_config_bytes_per_partition(1_000_000)
-        })?;
+        let mut builder = IcebergTestHarness::builder()
+            .with_taxi_dataset()
+            .configure_session(|mut state| {
+                let config = state.config().get_or_insert_default();
+                config.options_mut().execution.target_partitions = 2;
+                state.with_distributed_file_scan_config_bytes_per_partition(1_000_000)
+            })?;
         if let Some(id) = snapshot_id {
             builder = builder.with_table_option("iceberg.snapshot_id", id.to_string());
         }
-        let harness = builder
-            .build_with_table_metadata(async move |taxi: &Table| Ok(metadata(taxi.metadata())))
-            .await?;
+        let harness = builder.with_metadata(metadata).build().await?;
         assert_eq!(
             harness.estimate_task_count(&harness.scan().await?)?,
             expected

@@ -21,13 +21,15 @@ use iceberg::writer::file_writer::location_generator::{
 use iceberg::writer::file_writer::rolling_writer::RollingFileWriterBuilder;
 use iceberg::writer::{IcebergWriter, IcebergWriterBuilder};
 
-use crate::FixtureTable;
 use crate::error::df_err;
+use crate::{DescribedFile, FixtureTable};
 
 /// One commit that adds data files, started by [`FixtureTable::append`].
 ///
 /// Each [`Append::file`] becomes exactly one Parquet data file, so tests
-/// control how rows are laid out across files. [`Append::commit`] adds them
+/// control how rows are laid out across files, and each
+/// [`Append::described_file`] is listed with exactly the metrics it was given
+/// but never written. [`Append::commit`] adds them
 /// all in one snapshot on top of the current one. Snapshots are numbered 1,
 /// 2, 3, ..., unlike iceberg-rust's `fast_append`, which picks random ids, so
 /// that tests can show snapshot ids. Only adds data files: no deletes, and
@@ -35,7 +37,13 @@ use crate::error::df_err;
 pub struct Append<'a> {
     table: &'a mut FixtureTable,
     writer_properties: WriterProperties,
-    files: Vec<RecordBatch>,
+    files: Vec<PendingFile>,
+}
+
+/// A data file of an [`Append`], in the order it was added.
+enum PendingFile {
+    Written(RecordBatch),
+    Described(DescribedFile),
 }
 
 impl<'a> Append<'a> {
@@ -59,7 +67,13 @@ impl<'a> Append<'a> {
     /// Columns of the table that `batch` lacks are null. On a partitioned
     /// table every row must belong to the same partition.
     pub fn file(mut self, batch: RecordBatch) -> Self {
-        self.files.push(batch);
+        self.files.push(PendingFile::Written(batch));
+        self
+    }
+
+    /// Lists `file` in the manifest without writing it.
+    pub fn described_file(mut self, file: DescribedFile) -> Self {
+        self.files.push(PendingFile::Described(file));
         self
     }
 
@@ -104,8 +118,14 @@ impl<'a> Append<'a> {
             DefaultFileNameGenerator::new(format!("{snapshot_id}"), None, DataFileFormat::Parquet),
         ));
         let mut data_files = Vec::with_capacity(self.files.len());
-        for batch in &self.files {
-            let batch = conform(batch, &arrow_schema)?;
+        for file in self.files {
+            let batch = match file {
+                PendingFile::Written(batch) => conform(&batch, &arrow_schema)?,
+                PendingFile::Described(file) => {
+                    data_files.push(file.into_data_file(metadata)?);
+                    continue;
+                }
+            };
             let partition_key = match &splitter {
                 None => None,
                 Some(splitter) => {
@@ -274,6 +294,8 @@ fn now_ms() -> i64 {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+    use std::path::Path;
     use std::sync::Arc;
 
     use datafusion::arrow::array::{AsArray, Int32Array, RecordBatch, StringArray};
@@ -281,10 +303,10 @@ mod tests {
     use datafusion::error::{DataFusionError, Result};
     use futures::TryStreamExt;
     use iceberg::TableIdent;
-    use iceberg::spec::{NestedField, PrimitiveType, Schema, Transform, Type};
+    use iceberg::spec::{Datum, Literal, NestedField, PrimitiveType, Schema, Transform, Type};
 
     use crate::error::df_err;
-    use crate::{FixtureCatalog, FixtureTable};
+    use crate::{ColumnMetrics, DescribedFile, FixtureCatalog, FixtureTable};
 
     async fn create_table(fixtures: &FixtureCatalog) -> Result<FixtureTable> {
         let schema = Schema::builder()
@@ -423,6 +445,109 @@ mod tests {
             files[0].file_path()
         );
         assert_eq!(scanned_ids(&table).await?, vec![7]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn lists_described_files_without_writing_them() -> Result<()> {
+        let fixtures = FixtureCatalog::try_new().await?;
+        let mut table = create_table(&fixtures).await?;
+        let files = table
+            .append()
+            .file(batch(vec![1], vec!["a"]))
+            .described_file(
+                DescribedFile::new("described.parquet", 10, 1_000)
+                    .partition([Literal::string("b")])
+                    .column(
+                        "id",
+                        ColumnMetrics::default()
+                            .size(40)
+                            .bounds(Datum::int(2), Datum::int(11)),
+                    ),
+            )
+            .commit()
+            .await?;
+
+        let described = &files[1];
+        assert!(described.file_path().ends_with("/data/described.parquet"));
+        assert!(!Path::new(described.file_path()).exists());
+        assert_eq!(described.record_count(), 10);
+        assert_eq!(described.file_size_in_bytes(), 1_000);
+        assert!(described.null_value_counts().is_empty());
+        assert_eq!(described.column_sizes(), &HashMap::from([(1, 40)]));
+        assert_eq!(
+            described.lower_bounds(),
+            &HashMap::from([(1, Datum::int(2))])
+        );
+        assert_eq!(
+            described.upper_bounds(),
+            &HashMap::from([(1, Datum::int(11))])
+        );
+        let summary = &table
+            .table()
+            .metadata()
+            .current_snapshot()
+            .unwrap()
+            .summary()
+            .additional_properties;
+        assert_eq!(summary["total-records"], "11");
+
+        // The manifest lists both files.
+        let tasks: Vec<_> = table
+            .table()
+            .scan()
+            .build()
+            .map_err(df_err)?
+            .plan_files()
+            .await
+            .map_err(df_err)?
+            .try_collect()
+            .await
+            .map_err(df_err)?;
+        let mut planned: Vec<_> = tasks.iter().map(|task| task.data_file_path()).collect();
+        planned.sort_unstable();
+        let mut committed: Vec<_> = files.iter().map(|file| file.file_path()).collect();
+        committed.sort_unstable();
+        assert_eq!(planned, committed);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rejects_invalid_described_files() -> Result<()> {
+        let fixtures = FixtureCatalog::try_new().await?;
+        let mut table = create_table(&fixtures).await?;
+        let invalid = [
+            (
+                DescribedFile::new("f.parquet", 1, 1),
+                "has 0 partition values, but the table is partitioned by 1 fields",
+            ),
+            (
+                DescribedFile::new("f.parquet", 1, 1)
+                    .partition([Literal::string("a")])
+                    .column("nope", ColumnMetrics::default().null_count(0)),
+                "the table has no column nope",
+            ),
+            (
+                DescribedFile::new("f.parquet", 1, 1)
+                    .partition([Literal::string("a")])
+                    .column(
+                        "id",
+                        ColumnMetrics::default().bounds(Datum::long(1), Datum::long(2)),
+                    ),
+                "the bounds of id must have its type, int",
+            ),
+        ];
+        for (file, message) in invalid {
+            let error = table
+                .append()
+                .described_file(file)
+                .commit()
+                .await
+                .unwrap_err();
+            assert!(matches!(error, DataFusionError::Execution(_)), "{error}");
+            assert!(error.to_string().contains(message), "{error}");
+        }
+        assert!(table.table().metadata().current_snapshot().is_none());
         Ok(())
     }
 }

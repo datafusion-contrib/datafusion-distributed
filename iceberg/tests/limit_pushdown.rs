@@ -6,7 +6,10 @@ mod tests {
 
     #[tokio::test]
     async fn applies_sql_limit_to_the_iceberg_scan_output() -> Result<()> {
-        let harness = IcebergTestHarness::new().await?;
+        let harness = IcebergTestHarness::builder()
+            .with_taxi_dataset()
+            .build()
+            .await?;
         let (plan, batches) = harness
             .query(
                 r"SELECT vendor_id, pickup_at, passenger_count, trip_distance, pickup_date
@@ -38,7 +41,10 @@ mod tests {
 
     #[tokio::test]
     async fn keeps_unordered_limits_above_the_iceberg_source() -> Result<()> {
-        let harness = IcebergTestHarness::new().await?;
+        let harness = IcebergTestHarness::builder()
+            .with_taxi_dataset()
+            .build()
+            .await?;
         let (plan, batches) = harness
             .query("SELECT pickup_date FROM taxi WHERE pickup_date = DATE '2024-01-10' LIMIT 3")
             .await?;
@@ -63,7 +69,10 @@ mod tests {
 
     #[tokio::test]
     async fn passes_the_scan_limit_to_the_iceberg_source() -> Result<()> {
-        let harness = IcebergTestHarness::new().await?;
+        let harness = IcebergTestHarness::builder()
+            .with_taxi_dataset()
+            .build()
+            .await?;
         let (plan, batches) = harness
             .query("SELECT pickup_date FROM taxi LIMIT 3")
             .await?;
@@ -87,7 +96,10 @@ mod tests {
 
     #[tokio::test]
     async fn avoids_scanning_for_limit_zero() -> Result<()> {
-        let harness = IcebergTestHarness::new().await?;
+        let harness = IcebergTestHarness::builder()
+            .with_taxi_dataset()
+            .build()
+            .await?;
         let (plan, batches) = harness
             .query("SELECT vendor_id FROM taxi WHERE pickup_date = DATE '2024-01-10' LIMIT 0")
             .await?;
@@ -105,7 +117,10 @@ mod tests {
 
     #[tokio::test]
     async fn applies_offset_before_limit() -> Result<()> {
-        let harness = IcebergTestHarness::new().await?;
+        let harness = IcebergTestHarness::builder()
+            .with_taxi_dataset()
+            .build()
+            .await?;
         let (plan, batches) = harness
             .query(
                 r"SELECT vendor_id, pickup_at

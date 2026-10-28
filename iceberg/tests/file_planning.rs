@@ -18,10 +18,12 @@ mod tests {
     #[tokio::test]
     async fn eager_and_lazy_scans_return_the_same_rows() -> Result<()> {
         let lazy = IcebergTestHarness::builder()
+            .with_taxi_dataset()
             .with_column_stats_enabled()
             .build()
             .await?;
         let eager = IcebergTestHarness::builder()
+            .with_taxi_dataset()
             .with_column_stats_enabled()
             .with_eager_file_planning()
             .build()
@@ -46,11 +48,13 @@ mod tests {
     #[tokio::test]
     async fn eager_planning_reuses_files_on_distributed_workers() -> Result<()> {
         let lazy = IcebergTestHarness::builder()
+            .with_taxi_dataset()
             .with_workers(2)
             .with_column_stats_enabled()
             .build()
             .await?;
         let eager = IcebergTestHarness::builder()
+            .with_taxi_dataset()
             .with_workers(2)
             .with_column_stats_enabled()
             .with_eager_file_planning()
@@ -66,6 +70,7 @@ mod tests {
     #[tokio::test]
     async fn eager_scan_can_be_executed_again() -> Result<()> {
         let harness = IcebergTestHarness::builder()
+            .with_taxi_dataset()
             .with_eager_file_planning()
             .build()
             .await?;
@@ -88,6 +93,7 @@ mod tests {
                 .build()?,
         );
         let eager = IcebergTestHarness::builder()
+            .with_taxi_dataset()
             .configure_iceberg(|config| config.eager_file_planning = true)
             .configure_session(|state| Ok(state.with_runtime_env(runtime)))?
             .build()
@@ -105,7 +111,10 @@ mod tests {
 
     #[tokio::test]
     async fn lazy_feeds_are_claimed_once_and_clones_get_fresh_execution() -> Result<()> {
-        let harness = IcebergTestHarness::new().await?;
+        let harness = IcebergTestHarness::builder()
+            .with_taxi_dataset()
+            .build()
+            .await?;
         let scan = harness.scan().await?;
         let partitions = scan.properties().partitioning.partition_count();
         let provider = scan

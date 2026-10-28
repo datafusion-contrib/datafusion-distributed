@@ -17,6 +17,7 @@ mod tests {
     async fn routing_uses_the_files_assigned_to_each_task() -> Result<()> {
         let routes = FileRoutes::default();
         let harness = IcebergTestHarness::builder()
+            .with_taxi_dataset()
             .with_workers(3)
             .with_eager_file_planning()
             .configure_session(|state| {
@@ -39,6 +40,7 @@ mod tests {
     async fn pruned_files_choose_the_same_worker_across_union_branches_and_queries() -> Result<()> {
         let routes = FileRoutes::default();
         let harness = IcebergTestHarness::builder()
+            .with_taxi_dataset()
             .with_workers(3)
             .with_eager_file_planning()
             .configure_session(|state| {
