@@ -716,10 +716,10 @@ impl NetworkBoundaryBuilder for CardinalityBasedNetworkBoundaryBuilder {
         let f = calculate_scale_factor(&input_stage.plan, nb_ctx.d_cfg);
         // Scaling the rounded-up task count would turn a fractional producer load into a full
         // task per boundary, so unions of tiny shuffled children would add up to several tasks.
-        let producer_load = tc.soft.min(input_stage.tasks as f64);
+        let producer_soft_count = tc.soft.min(input_stage.tasks as f64);
 
         Ok(NetworkBoundaryBuilderResult {
-            consumer_task_count: TaskCountAnnotation::soft(producer_load * f),
+            consumer_task_count: TaskCountAnnotation::soft(producer_soft_count * f),
             input_stage: Stage::Local(input_stage),
             input_properties,
         })
