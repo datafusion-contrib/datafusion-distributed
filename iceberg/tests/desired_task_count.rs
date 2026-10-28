@@ -7,13 +7,14 @@ mod tests {
     use datafusion::datasource::source::DataSourceExec;
     use datafusion_distributed::DistributedExt;
     use datafusion_distributed_iceberg::EagerIcebergDataSource;
+    use datafusion_distributed_iceberg_test_tools::create_taxi_table;
     use iceberg::spec::{MAIN_BRANCH, Snapshot, TableMetadata};
 
     #[tokio::test]
     async fn executes_with_estimated_scan_tasks() -> Result<()> {
         // 5,656,412 bytes / 1 MB / 2 partitions rounds up to 3 tasks, not all 4 workers.
         let harness = IcebergTestHarness::builder()
-            .with_taxi_dataset()
+            .with_table(create_taxi_table().await?)
             .with_workers(4)
             .configure_session(|mut state| {
                 let config = state.config().get_or_insert_default();
@@ -63,7 +64,7 @@ mod tests {
     #[tokio::test]
     async fn planned_scan_tasks_are_bounded_by_selected_file_work() -> Result<()> {
         let harness = IcebergTestHarness::builder()
-            .with_taxi_dataset()
+            .with_table(create_taxi_table().await?)
             .configure_iceberg(|config| config.eager_file_planning = true)
             .configure_session(|mut state| {
                 let session = state.config().get_or_insert_default();
@@ -161,7 +162,7 @@ mod tests {
     #[tokio::test]
     async fn remote_feed_does_not_estimate_again() -> Result<()> {
         let harness = IcebergTestHarness::builder()
-            .with_taxi_dataset()
+            .with_table(create_taxi_table().await?)
             .build()
             .await?;
         let plan = harness.roundtrip_plan(harness.scan().await?)?;
@@ -175,7 +176,7 @@ mod tests {
         expected: Option<usize>,
     ) -> Result<()> {
         let mut builder = IcebergTestHarness::builder()
-            .with_taxi_dataset()
+            .with_table(create_taxi_table().await?)
             .configure_session(|mut state| {
                 let config = state.config().get_or_insert_default();
                 config.options_mut().execution.target_partitions = 2;

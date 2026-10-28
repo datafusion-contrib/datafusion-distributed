@@ -148,9 +148,8 @@ impl PhysicalExtensionCodec for LazyIcebergCodec {
 mod tests {
     use datafusion::common::Statistics;
     use datafusion::datasource::source::DataSource;
-    use datafusion_distributed_iceberg_test_tools::{FixtureCatalog, create_taxi_table};
+    use datafusion_distributed_iceberg_test_tools::create_taxi_table;
     use datafusion_proto::physical_plan::DefaultPhysicalProtoConverter;
-    use iceberg::TableIdent;
     use iceberg::io::LocalFsStorageFactory;
     use iceberg::table::Table;
 
@@ -160,9 +159,7 @@ mod tests {
 
     #[tokio::test]
     async fn roundtrips_data_source_plan() -> Result<()> {
-        let fixtures = FixtureCatalog::try_new().await?;
-        let ident = TableIdent::from_strs(["default", "taxi"]).map_err(df_err)?;
-        let taxi = create_taxi_table(&fixtures, ident).await?;
+        let taxi = create_taxi_table().await?;
         let file_io = FileIOBuilder::new(Arc::new(LocalFsStorageFactory))
             .with_props([
                 ("fixture.storage", "roundtrip's value"),

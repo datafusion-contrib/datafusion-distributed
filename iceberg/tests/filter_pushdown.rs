@@ -3,11 +3,12 @@ mod common;
 mod tests {
     use crate::common::IcebergTestHarness;
     use datafusion::error::Result;
+    use datafusion_distributed_iceberg_test_tools::create_taxi_table;
 
     #[tokio::test]
     async fn pushes_down_compound_predicates() -> Result<()> {
         let harness = IcebergTestHarness::builder()
-            .with_taxi_dataset()
+            .with_table(create_taxi_table().await?)
             .build()
             .await?;
         let (plan, batches) = harness
@@ -42,7 +43,7 @@ mod tests {
     #[tokio::test]
     async fn pushes_down_disjunctions() -> Result<()> {
         let harness = IcebergTestHarness::builder()
-            .with_taxi_dataset()
+            .with_table(create_taxi_table().await?)
             .build()
             .await?;
         let (plan, batches) = harness
@@ -81,7 +82,7 @@ mod tests {
     #[tokio::test]
     async fn pushes_down_null_predicates() -> Result<()> {
         let harness = IcebergTestHarness::builder()
-            .with_taxi_dataset()
+            .with_table(create_taxi_table().await?)
             .build()
             .await?;
         let (plan, batches) = harness
@@ -110,7 +111,7 @@ mod tests {
     #[tokio::test]
     async fn retains_unsupported_filter_after_safe_pushdown() -> Result<()> {
         let harness = IcebergTestHarness::builder()
-            .with_taxi_dataset()
+            .with_table(create_taxi_table().await?)
             .build()
             .await?;
         let (plan, batches) = harness
@@ -144,7 +145,7 @@ mod tests {
     #[tokio::test]
     async fn executes_wholly_unsupported_filters_without_pushdown() -> Result<()> {
         let harness = IcebergTestHarness::builder()
-            .with_taxi_dataset()
+            .with_table(create_taxi_table().await?)
             .build()
             .await?;
         let (plan, batches) = harness

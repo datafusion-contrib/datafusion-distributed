@@ -12,6 +12,7 @@ use iceberg::spec::{
 };
 use iceberg::table::Table;
 use iceberg::{Catalog, MetadataLocation, TableCreation, TableIdent};
+use tempfile::TempDir;
 
 use crate::Append;
 use crate::error::df_err;
@@ -23,6 +24,7 @@ use crate::error::df_err;
 /// [`FixtureTable::append`].
 pub struct TableBuilder {
     catalog: Arc<MemoryCatalog>,
+    directory: Arc<TempDir>,
     ident: TableIdent,
     schema: Schema,
     partition_fields: Vec<(String, Transform)>,
@@ -30,9 +32,15 @@ pub struct TableBuilder {
 }
 
 impl TableBuilder {
-    pub(crate) fn new(catalog: Arc<MemoryCatalog>, ident: TableIdent, schema: Schema) -> Self {
+    pub(crate) fn new(
+        catalog: Arc<MemoryCatalog>,
+        directory: Arc<TempDir>,
+        ident: TableIdent,
+        schema: Schema,
+    ) -> Self {
         Self {
             catalog,
+            directory,
             ident,
             schema,
             partition_fields: Vec::new(),
@@ -102,6 +110,7 @@ impl TableBuilder {
         Ok(FixtureTable {
             catalog: self.catalog,
             table,
+            _directory: self.directory,
         })
     }
 }
@@ -126,9 +135,11 @@ fn partition_field_name(column: &str, transform: Transform) -> String {
 /// It tracks the table as of its latest commit, so [`FixtureTable::table`]
 /// reflects every change made through it. Changes made in other ways, such as
 /// SQL `INSERT`s, aren't seen until the table is loaded from the catalog again.
+/// It keeps its files, which live in its catalog's directory, until dropped.
 pub struct FixtureTable {
     catalog: Arc<MemoryCatalog>,
     table: Table,
+    _directory: Arc<TempDir>,
 }
 
 impl FixtureTable {

@@ -197,19 +197,15 @@ impl EagerIcebergCodec {
 #[cfg(test)]
 mod tests {
     use datafusion::prelude::SessionConfig;
-    use datafusion_distributed_iceberg_test_tools::{FixtureCatalog, create_taxi_table};
-    use iceberg::TableIdent;
+    use datafusion_distributed_iceberg_test_tools::create_taxi_table;
 
     use super::*;
     use crate::IcebergConfig;
-    use crate::common::df_err;
     use crate::table_provider::scan::plan_scan;
 
     #[tokio::test]
     async fn rejects_missing_config_and_invalid_assigned_groups() -> Result<()> {
-        let fixtures = FixtureCatalog::try_new().await?;
-        let ident = TableIdent::from_strs(["default", "taxi"]).map_err(df_err)?;
-        let taxi = create_taxi_table(&fixtures, ident).await?;
+        let taxi = create_taxi_table().await?;
         let config = IcebergConfig {
             eager_file_planning: true,
             ..Default::default()

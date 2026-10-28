@@ -3,11 +3,12 @@ mod common;
 mod tests {
     use crate::common::IcebergTestHarness;
     use datafusion::error::Result;
+    use datafusion_distributed_iceberg_test_tools::create_taxi_table;
 
     #[tokio::test]
     async fn applies_sql_limit_to_the_iceberg_scan_output() -> Result<()> {
         let harness = IcebergTestHarness::builder()
-            .with_taxi_dataset()
+            .with_table(create_taxi_table().await?)
             .build()
             .await?;
         let (plan, batches) = harness
@@ -42,7 +43,7 @@ mod tests {
     #[tokio::test]
     async fn keeps_unordered_limits_above_the_iceberg_source() -> Result<()> {
         let harness = IcebergTestHarness::builder()
-            .with_taxi_dataset()
+            .with_table(create_taxi_table().await?)
             .build()
             .await?;
         let (plan, batches) = harness
@@ -70,7 +71,7 @@ mod tests {
     #[tokio::test]
     async fn passes_the_scan_limit_to_the_iceberg_source() -> Result<()> {
         let harness = IcebergTestHarness::builder()
-            .with_taxi_dataset()
+            .with_table(create_taxi_table().await?)
             .build()
             .await?;
         let (plan, batches) = harness
@@ -97,7 +98,7 @@ mod tests {
     #[tokio::test]
     async fn avoids_scanning_for_limit_zero() -> Result<()> {
         let harness = IcebergTestHarness::builder()
-            .with_taxi_dataset()
+            .with_table(create_taxi_table().await?)
             .build()
             .await?;
         let (plan, batches) = harness
@@ -118,7 +119,7 @@ mod tests {
     #[tokio::test]
     async fn applies_offset_before_limit() -> Result<()> {
         let harness = IcebergTestHarness::builder()
-            .with_taxi_dataset()
+            .with_table(create_taxi_table().await?)
             .build()
             .await?;
         let (plan, batches) = harness

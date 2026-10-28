@@ -4,6 +4,7 @@ mod tests {
     use std::sync::Arc;
 
     use crate::common::{IcebergTestHarness, data_file_name};
+
     use datafusion::arrow::util::pretty::pretty_format_batches;
     use datafusion::common::Result;
     use datafusion::datasource::source::{DataSource, DataSourceExec};
@@ -11,11 +12,12 @@ mod tests {
     use datafusion::physical_plan::collect;
     use datafusion::prelude::SessionContext;
     use datafusion_distributed_iceberg::{EagerIcebergDataSource, iceberg};
+    use datafusion_distributed_iceberg_test_tools::create_taxi_table;
 
     #[tokio::test]
     async fn regrouping_a_subset_reads_the_selected_dates() -> Result<()> {
         let harness = IcebergTestHarness::builder()
-            .with_taxi_dataset()
+            .with_table(create_taxi_table().await?)
             .with_eager_file_planning()
             .build()
             .await?;
@@ -35,7 +37,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_invalid_groups_in_the_visible_file_set() -> Result<()> {
         let harness = IcebergTestHarness::builder()
-            .with_taxi_dataset()
+            .with_table(create_taxi_table().await?)
             .with_eager_file_planning()
             .build()
             .await?;
@@ -68,7 +70,7 @@ mod tests {
     #[tokio::test]
     async fn reconstruction_preserves_groups_and_reads_the_selected_dates() -> Result<()> {
         let harness = IcebergTestHarness::builder()
-            .with_taxi_dataset()
+            .with_table(create_taxi_table().await?)
             .with_eager_file_planning()
             .build()
             .await?;
@@ -99,7 +101,7 @@ mod tests {
     #[tokio::test]
     async fn subsets_keep_the_reservation_until_the_last_source_is_dropped() -> Result<()> {
         let harness = IcebergTestHarness::builder()
-            .with_taxi_dataset()
+            .with_table(create_taxi_table().await?)
             .with_eager_file_planning()
             .build()
             .await?;

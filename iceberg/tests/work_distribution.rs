@@ -4,6 +4,7 @@ mod tests {
     use crate::common::IcebergTestHarness;
     use datafusion::common::Result;
     use datafusion_distributed::DistributedExt;
+    use datafusion_distributed_iceberg_test_tools::create_taxi_table;
 
     #[tokio::test]
     async fn pruned_files_use_distinct_workers_before_local_partitions() -> Result<()> {
@@ -34,7 +35,7 @@ mod tests {
         eager_file_planning: bool,
     ) -> Result<()> {
         let harness = IcebergTestHarness::builder()
-            .with_taxi_dataset()
+            .with_table(create_taxi_table().await?)
             .with_workers(workers)
             .configure_iceberg(|config| config.eager_file_planning = eager_file_planning)
             .configure_session(|mut state| {
@@ -62,7 +63,7 @@ mod tests {
             insta::assert_snapshot!(snapshot, scans);
         });
         let (_, local_results) = IcebergTestHarness::builder()
-            .with_taxi_dataset()
+            .with_table(create_taxi_table().await?)
             .build()
             .await?
             .query(&sql)

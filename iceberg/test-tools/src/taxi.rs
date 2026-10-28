@@ -21,6 +21,7 @@ use rand::distr::weighted::WeightedIndex;
 use rand::{RngExt, SeedableRng};
 use rand_pcg::Pcg64Mcg;
 
+use crate::error::df_err;
 use crate::{FixtureCatalog, FixtureTable};
 
 /// The number of days of trips, each of which is one partition and one file.
@@ -33,15 +34,15 @@ pub const TAXI_FIRST_DAY: i32 = 19_730;
 const MICROS_PER_SECOND: i64 = 1_000_000;
 const SECONDS_PER_DAY: i64 = 86_400;
 
-/// Creates table `ident` of trips, partitioned by `pickup_date`, with one
-/// snapshot that adds one file per day, in date order.
+/// Creates table `default.taxi` of trips, partitioned by `pickup_date`, with
+/// one snapshot that adds one file per day, in date order.
 ///
-/// Each file is a single row group with column chunk statistics but without
-/// page indexes.
-pub async fn create_taxi_table(
-    fixtures: &FixtureCatalog,
-    ident: TableIdent,
-) -> Result<FixtureTable> {
+/// The table is the only one in its own [`FixtureCatalog`], and keeps its
+/// files until dropped. Each file is a single row group with column chunk
+/// statistics but without page indexes.
+pub async fn create_taxi_table() -> Result<FixtureTable> {
+    let fixtures = FixtureCatalog::try_new().await?;
+    let ident = TableIdent::from_strs(["default", "taxi"]).map_err(df_err)?;
     let mut table = fixtures
         .table(ident, taxi_schema())
         .partition_by("pickup_date", Transform::Identity)

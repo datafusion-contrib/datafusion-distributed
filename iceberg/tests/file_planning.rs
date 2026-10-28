@@ -4,6 +4,7 @@ mod tests {
     use std::sync::Arc;
 
     use crate::common::IcebergTestHarness;
+
     use datafusion::common::Result;
     use datafusion::datasource::source::DataSourceExec;
     use datafusion::execution::TaskContext;
@@ -12,18 +13,19 @@ mod tests {
     use datafusion::physical_plan::collect;
     use datafusion_distributed::WorkUnitFeedProvider;
     use datafusion_distributed_iceberg::{IcebergWorkUnitFeed, LazyIcebergDataSource};
+    use datafusion_distributed_iceberg_test_tools::create_taxi_table;
     use futures::TryStreamExt;
     use prost::Message;
 
     #[tokio::test]
     async fn eager_and_lazy_scans_return_the_same_rows() -> Result<()> {
         let lazy = IcebergTestHarness::builder()
-            .with_taxi_dataset()
+            .with_table(create_taxi_table().await?)
             .with_column_stats_enabled()
             .build()
             .await?;
         let eager = IcebergTestHarness::builder()
-            .with_taxi_dataset()
+            .with_table(create_taxi_table().await?)
             .with_column_stats_enabled()
             .with_eager_file_planning()
             .build()
@@ -48,13 +50,13 @@ mod tests {
     #[tokio::test]
     async fn eager_planning_reuses_files_on_distributed_workers() -> Result<()> {
         let lazy = IcebergTestHarness::builder()
-            .with_taxi_dataset()
+            .with_table(create_taxi_table().await?)
             .with_workers(2)
             .with_column_stats_enabled()
             .build()
             .await?;
         let eager = IcebergTestHarness::builder()
-            .with_taxi_dataset()
+            .with_table(create_taxi_table().await?)
             .with_workers(2)
             .with_column_stats_enabled()
             .with_eager_file_planning()
@@ -70,7 +72,7 @@ mod tests {
     #[tokio::test]
     async fn eager_scan_can_be_executed_again() -> Result<()> {
         let harness = IcebergTestHarness::builder()
-            .with_taxi_dataset()
+            .with_table(create_taxi_table().await?)
             .with_eager_file_planning()
             .build()
             .await?;
@@ -93,7 +95,7 @@ mod tests {
                 .build()?,
         );
         let eager = IcebergTestHarness::builder()
-            .with_taxi_dataset()
+            .with_table(create_taxi_table().await?)
             .configure_iceberg(|config| config.eager_file_planning = true)
             .configure_session(|state| Ok(state.with_runtime_env(runtime)))?
             .build()
@@ -112,7 +114,7 @@ mod tests {
     #[tokio::test]
     async fn lazy_feeds_are_claimed_once_and_clones_get_fresh_execution() -> Result<()> {
         let harness = IcebergTestHarness::builder()
-            .with_taxi_dataset()
+            .with_table(create_taxi_table().await?)
             .build()
             .await?;
         let scan = harness.scan().await?;

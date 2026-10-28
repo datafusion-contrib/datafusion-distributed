@@ -5,6 +5,11 @@ mod tests {
     use std::sync::Arc;
 
     use crate::common::{IcebergTestHarness, without_snapshots};
+
+    use datafusion_distributed_iceberg_test_tools::{
+        FixtureCatalog, create_taxi_table, taxi_schema,
+    };
+
     use datafusion::common::stats::Precision;
     use datafusion::common::{ColumnStatistics, Statistics};
     use datafusion::error::Result;
@@ -12,6 +17,8 @@ mod tests {
     use datafusion::physical_plan::statistics::{StatisticsArgs, StatisticsContext};
     use datafusion::scalar::ScalarValue;
     use datafusion_distributed_iceberg_test_tools::{ColumnMetrics, DescribedFile};
+    use iceberg::TableIdent;
+    use iceberg::spec::Transform;
     use iceberg::spec::{Datum, Literal, MAIN_BRANCH, Operation, Snapshot, Summary, TableMetadata};
 
     // Values from the generated taxi snapshot summary.
@@ -25,7 +32,7 @@ mod tests {
     #[tokio::test]
     async fn missing_snapshot_summary_statistics_are_absent() -> Result<()> {
         let harness = IcebergTestHarness::builder()
-            .with_taxi_dataset()
+            .with_table(create_taxi_table().await?)
             .with_metadata(metadata_without_summary_statistics)
             .build()
             .await?;
@@ -40,7 +47,7 @@ mod tests {
     async fn planned_file_statistics_use_manifest_totals_when_snapshot_summary_is_missing()
     -> Result<()> {
         let harness = IcebergTestHarness::builder()
-            .with_taxi_dataset()
+            .with_table(create_taxi_table().await?)
             .configure_iceberg(|config| config.eager_file_planning = true)
             .with_metadata(metadata_without_summary_statistics)
             .build()
@@ -61,11 +68,15 @@ mod tests {
 
     #[tokio::test]
     async fn eager_filtered_scan_skips_unused_column_statistics() -> Result<(), Box<dyn Error>> {
-        let harness = IcebergTestHarness::builder()
-            .with_table_option("iceberg.snapshot_id", "1")
-            .with_eager_file_planning()
-            .with_column_stats_enabled()
-            .with_described_file(
+        let fixtures = FixtureCatalog::try_new().await?;
+        let mut table = fixtures
+            .table(TableIdent::from_strs(["default", "taxi"])?, taxi_schema())
+            .partition_by("pickup_date", Transform::Identity)
+            .create()
+            .await?;
+        table
+            .append()
+            .described_file(
                 DescribedFile::new(
                     "metrics-first.parquet",
                     METRICS_FILE_ROWS,
@@ -87,7 +98,7 @@ mod tests {
                         .bounds(Datum::long(10), Datum::long(20)),
                 ),
             )
-            .with_described_file(
+            .described_file(
                 DescribedFile::new(
                     "metrics-second.parquet",
                     METRICS_FILE_ROWS,
@@ -109,6 +120,13 @@ mod tests {
                         .bounds(Datum::long(30), Datum::long(40)),
                 ),
             )
+            .commit()
+            .await?;
+        let harness = IcebergTestHarness::builder()
+            .with_table(table)
+            .with_table_option("iceberg.snapshot_id", "1")
+            .with_eager_file_planning()
+            .with_column_stats_enabled()
             .build()
             .await?;
         // The manifest's partition summary excludes this query. Delete the manifest
@@ -132,9 +150,15 @@ mod tests {
 
     #[tokio::test]
     async fn full_scan_without_column_stats() -> Result<(), Box<dyn Error>> {
-        let harness = IcebergTestHarness::builder()
-            .with_table_option("iceberg.snapshot_id", "1")
-            .with_described_file(
+        let fixtures = FixtureCatalog::try_new().await?;
+        let mut table = fixtures
+            .table(TableIdent::from_strs(["default", "taxi"])?, taxi_schema())
+            .partition_by("pickup_date", Transform::Identity)
+            .create()
+            .await?;
+        table
+            .append()
+            .described_file(
                 DescribedFile::new(
                     "metrics-first.parquet",
                     METRICS_FILE_ROWS,
@@ -156,7 +180,7 @@ mod tests {
                         .bounds(Datum::long(10), Datum::long(20)),
                 ),
             )
-            .with_described_file(
+            .described_file(
                 DescribedFile::new(
                     "metrics-second.parquet",
                     METRICS_FILE_ROWS,
@@ -178,6 +202,11 @@ mod tests {
                         .bounds(Datum::long(30), Datum::long(40)),
                 ),
             )
+            .commit()
+            .await?;
+        let harness = IcebergTestHarness::builder()
+            .with_table(table)
+            .with_table_option("iceberg.snapshot_id", "1")
             .build()
             .await?;
         let stats = query_statistics(&harness, "SELECT * FROM taxi").await?;
@@ -199,10 +228,15 @@ mod tests {
 
     #[tokio::test]
     async fn full_scan_with_column_stats() -> Result<(), Box<dyn Error>> {
-        let harness = IcebergTestHarness::builder()
-            .with_table_option("iceberg.snapshot_id", "1")
-            .with_column_stats_enabled()
-            .with_described_file(
+        let fixtures = FixtureCatalog::try_new().await?;
+        let mut table = fixtures
+            .table(TableIdent::from_strs(["default", "taxi"])?, taxi_schema())
+            .partition_by("pickup_date", Transform::Identity)
+            .create()
+            .await?;
+        table
+            .append()
+            .described_file(
                 DescribedFile::new(
                     "metrics-first.parquet",
                     METRICS_FILE_ROWS,
@@ -224,7 +258,7 @@ mod tests {
                         .bounds(Datum::long(10), Datum::long(20)),
                 ),
             )
-            .with_described_file(
+            .described_file(
                 DescribedFile::new(
                     "metrics-second.parquet",
                     METRICS_FILE_ROWS,
@@ -246,6 +280,12 @@ mod tests {
                         .bounds(Datum::long(30), Datum::long(40)),
                 ),
             )
+            .commit()
+            .await?;
+        let harness = IcebergTestHarness::builder()
+            .with_table(table)
+            .with_table_option("iceberg.snapshot_id", "1")
+            .with_column_stats_enabled()
             .build()
             .await?;
         let stats = query_statistics(&harness, "SELECT * FROM taxi").await?;
@@ -282,9 +322,15 @@ mod tests {
 
     #[tokio::test]
     async fn projection_without_column_stats() -> Result<(), Box<dyn Error>> {
-        let harness = IcebergTestHarness::builder()
-            .with_table_option("iceberg.snapshot_id", "1")
-            .with_described_file(
+        let fixtures = FixtureCatalog::try_new().await?;
+        let mut table = fixtures
+            .table(TableIdent::from_strs(["default", "taxi"])?, taxi_schema())
+            .partition_by("pickup_date", Transform::Identity)
+            .create()
+            .await?;
+        table
+            .append()
+            .described_file(
                 DescribedFile::new(
                     "metrics-first.parquet",
                     METRICS_FILE_ROWS,
@@ -306,7 +352,7 @@ mod tests {
                         .bounds(Datum::long(10), Datum::long(20)),
                 ),
             )
-            .with_described_file(
+            .described_file(
                 DescribedFile::new(
                     "metrics-second.parquet",
                     METRICS_FILE_ROWS,
@@ -328,6 +374,11 @@ mod tests {
                         .bounds(Datum::long(30), Datum::long(40)),
                 ),
             )
+            .commit()
+            .await?;
+        let harness = IcebergTestHarness::builder()
+            .with_table(table)
+            .with_table_option("iceberg.snapshot_id", "1")
             .build()
             .await?;
         let stats = query_statistics(
@@ -349,10 +400,15 @@ mod tests {
 
     #[tokio::test]
     async fn projection_with_column_stats() -> Result<(), Box<dyn Error>> {
-        let harness = IcebergTestHarness::builder()
-            .with_table_option("iceberg.snapshot_id", "1")
-            .with_column_stats_enabled()
-            .with_described_file(
+        let fixtures = FixtureCatalog::try_new().await?;
+        let mut table = fixtures
+            .table(TableIdent::from_strs(["default", "taxi"])?, taxi_schema())
+            .partition_by("pickup_date", Transform::Identity)
+            .create()
+            .await?;
+        table
+            .append()
+            .described_file(
                 DescribedFile::new(
                     "metrics-first.parquet",
                     METRICS_FILE_ROWS,
@@ -374,7 +430,7 @@ mod tests {
                         .bounds(Datum::long(10), Datum::long(20)),
                 ),
             )
-            .with_described_file(
+            .described_file(
                 DescribedFile::new(
                     "metrics-second.parquet",
                     METRICS_FILE_ROWS,
@@ -396,6 +452,12 @@ mod tests {
                         .bounds(Datum::long(30), Datum::long(40)),
                 ),
             )
+            .commit()
+            .await?;
+        let harness = IcebergTestHarness::builder()
+            .with_table(table)
+            .with_table_option("iceberg.snapshot_id", "1")
+            .with_column_stats_enabled()
             .build()
             .await?;
         let stats = query_statistics(
@@ -431,7 +493,7 @@ mod tests {
     #[tokio::test]
     async fn reports_statistics_for_the_selected_snapshot() -> Result<()> {
         let harness = IcebergTestHarness::builder()
-            .with_taxi_dataset()
+            .with_table(create_taxi_table().await?)
             .with_table_option("iceberg.snapshot_id", "42")
             .with_metadata(historical_taxi_metadata)
             .build()
@@ -446,7 +508,7 @@ mod tests {
     #[tokio::test]
     async fn statistics_propagate_through_filter() -> Result<()> {
         let harness = IcebergTestHarness::builder()
-            .with_taxi_dataset()
+            .with_table(create_taxi_table().await?)
             .build()
             .await?;
         let stats = query_statistics(
@@ -463,7 +525,7 @@ mod tests {
     #[tokio::test]
     async fn statistics_propagate_through_projection_and_sort() -> Result<()> {
         let harness = IcebergTestHarness::builder()
-            .with_taxi_dataset()
+            .with_table(create_taxi_table().await?)
             .build()
             .await?;
         let stats = query_statistics(
@@ -480,7 +542,7 @@ mod tests {
     #[tokio::test]
     async fn explain_shows_statistics_on_the_iceberg_source() -> Result<()> {
         let harness = IcebergTestHarness::builder()
-            .with_taxi_dataset()
+            .with_table(create_taxi_table().await?)
             .build()
             .await?;
         let plan = harness.physical_plan("SELECT vendor_id FROM taxi").await?;
@@ -498,7 +560,7 @@ mod tests {
     #[tokio::test]
     async fn count_star_skips_scan_without_column_stats() -> Result<()> {
         let harness = IcebergTestHarness::builder()
-            .with_taxi_dataset()
+            .with_table(create_taxi_table().await?)
             .build()
             .await?;
         let (plan, batches) = harness.query("SELECT count(*) FROM taxi").await?;
@@ -520,7 +582,7 @@ mod tests {
     #[tokio::test]
     async fn count_star_skips_scan_with_column_stats() -> Result<()> {
         let harness = IcebergTestHarness::builder()
-            .with_taxi_dataset()
+            .with_table(create_taxi_table().await?)
             .with_column_stats_enabled()
             .build()
             .await?;

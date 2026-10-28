@@ -4,6 +4,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use crate::common::{IcebergTestHarness, data_file_name};
+
     use async_trait::async_trait;
     use datafusion::common::Result;
     use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
@@ -12,12 +13,13 @@ mod tests {
         DistributedExt, RouteTaskEvent, RouteTaskEventResponse, RouteTaskHandler, ok_or_some_err,
     };
     use datafusion_distributed_iceberg::EagerIcebergDataSource;
+    use datafusion_distributed_iceberg_test_tools::create_taxi_table;
 
     #[tokio::test]
     async fn routing_uses_the_files_assigned_to_each_task() -> Result<()> {
         let routes = FileRoutes::default();
         let harness = IcebergTestHarness::builder()
-            .with_taxi_dataset()
+            .with_table(create_taxi_table().await?)
             .with_workers(3)
             .with_eager_file_planning()
             .configure_session(|state| {
@@ -40,7 +42,7 @@ mod tests {
     async fn pruned_files_choose_the_same_worker_across_union_branches_and_queries() -> Result<()> {
         let routes = FileRoutes::default();
         let harness = IcebergTestHarness::builder()
-            .with_taxi_dataset()
+            .with_table(create_taxi_table().await?)
             .with_workers(3)
             .with_eager_file_planning()
             .configure_session(|state| {
