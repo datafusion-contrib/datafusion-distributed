@@ -2,40 +2,43 @@
 
 ### Generating Benchmarking data
 
-Generate datasets alongside the integration-test fixtures under `testdata/`.
-For example, `tpch/sf1` is stored in `testdata/tpch/sf1`.
+The `dfbench prepare-*` commands generate datasets alongside the integration-test fixtures
+under `testdata/`. For example, `tpch/sf1` is stored in `testdata/tpch/sf1`.
 TPC-H generation partitions the scalable tables, but writes `nation` (25 rows) and `region`
 (5 rows) only once. The preparation commands require an empty output directory or S3 prefix.
 Prepare a new Iceberg copy separately after regenerating Parquet; an existing copy is not updated.
 
 ```shell
-# TPC-H (default: SCALE_FACTOR=1, PARTITIONS=16, SORTED=false - override by setting these environment variables)
-./gen-tpch.sh
+# TPC-H into testdata/tpch/sf1 (defaults: --scale-factor 1 --partitions 16)
+cargo run -p datafusion-distributed-benchmarks --release -- prepare-tpch
 
-# Sorted TPC-H (same generators, Parquet sorting_columns metadata)
-SORTED=true ./gen-tpch.sh
+# Sorted TPC-H into testdata/tpch/sorted_sf1 (same generators, Parquet sorting_columns metadata)
+cargo run -p datafusion-distributed-benchmarks --release -- prepare-tpch --sorted
 
-# TPC-DS (default: SCALE_FACTOR=1, PARTITIONS=16 - override with environment variables)
-./gen-tpcds.sh
+# TPC-DS into testdata/tpcds/sf1 (defaults: --sf 1 --partitions 16)
+cargo run -p datafusion-distributed-benchmarks --release -- prepare-tpcds
+
+# ClickBench into testdata/clickbench/0-100 (defaults: --partition-start 0 --partition-end 100)
+cargo run -p datafusion-distributed-benchmarks --release -- prepare-clickbench
 ```
 
-`tpch/sorted_sf1` is written to `testdata/tpch/sorted_sf<scale-factor>`. Use a
-small `SCALE_FACTOR` (for example `0.01`) for a cheap smoke generation; SF1 is
-the default. Files record the columns tpchgen already emits in order:
+The default directory name follows the scale factor, for example `--scale-factor 10` writes
+`testdata/tpch/sf10`. Use a small scale factor (for example `0.01`) for a cheap smoke
+generation; SF1 is the default. Sorted TPC-H files record the columns tpchgen already emits in order:
 `r_regionkey`, `n_nationkey`, `c_custkey`, `s_suppkey`, `p_partkey`,
 `ps_partkey`, `o_orderkey`, and `(l_orderkey, l_linenumber)`.
 
 ### Writing datasets to S3
 
-Pass `--output` to a generation script to choose a local directory or S3 prefix:
+Pass `--output` to a `prepare-*` command to choose a local directory or S3 prefix:
 
 ```shell
-SCALE_FACTOR=1 PARTITIONS=16 ./benchmarks/gen-tpch.sh --output s3://my-bucket/tpch/sf1
-./benchmarks/gen-tpcds.sh --output s3://my-bucket/tpcds/sf1
-PARTITION_END=1 ./benchmarks/gen-clickbench.sh --output s3://my-bucket/clickbench/0-1
+cargo run -p datafusion-distributed-benchmarks --release -- prepare-tpch --output s3://my-bucket/tpch/sf1
+cargo run -p datafusion-distributed-benchmarks --release -- prepare-tpcds --output s3://my-bucket/tpcds/sf1
+cargo run -p datafusion-distributed-benchmarks --release -- prepare-clickbench --partition-end 1 \
+  --output s3://my-bucket/clickbench/0-1
 ```
 
-The corresponding `dfbench prepare-* --output` commands accept the same destinations.
 Use an empty destination. `_SUCCESS` is written only after every table has finished;
 if generation fails, use a new prefix or remove the incomplete output before retrying.
 TPC-H and TPC-DS stream generated batches directly to Parquet in the destination.
@@ -98,8 +101,7 @@ Iceberg preparation and execution live in a separate package so the benchmark cr
 root integration tests does not depend on Iceberg. Prepare the Parquet input, then convert it:
 
 ```shell
-cargo run -p datafusion-distributed-benchmarks --release -- prepare-tpch \
-  --output testdata/tpch/sf1 --scale-factor 1 --partitions 16
+cargo run -p datafusion-distributed-benchmarks --release -- prepare-tpch
 cargo run -p datafusion-distributed-iceberg-benchmarks --release -- prepare \
   --input testdata/tpch/sf1
 

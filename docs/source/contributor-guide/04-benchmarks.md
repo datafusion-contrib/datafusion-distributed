@@ -25,11 +25,10 @@ there are no performance regressions.
 First, a TPCH dataset must be generated:
 
 ```bash
-cd benchmarks
-SCALE_FACTOR=10 ./gen-tpch.sh
+cargo run -p datafusion-distributed-benchmarks --release -- prepare-tpch --scale-factor 10
 ```
 
-This might take a while.
+This writes `testdata/tpch/sf10` and might take a while.
 
 ### Running Benchmarks
 

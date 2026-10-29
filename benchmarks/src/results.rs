@@ -5,7 +5,7 @@ use datafusion::common::{Result, internal_datafusion_err};
 use serde::ser::SerializeSeq;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, SystemTime};
 
@@ -120,16 +120,15 @@ impl BenchmarkRun {
     }
 }
 
-pub(crate) fn dataset_path(dataset: &str) -> PathBuf {
-    if std::path::Path::new(dataset).is_absolute() {
+pub fn dataset_path(dataset: &str) -> PathBuf {
+    if Path::new(dataset).is_absolute() {
         return PathBuf::from(dataset);
     }
     let (suite, variant) = dataset.split_once('/').unwrap_or((dataset, ""));
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("testdata")
-        .join(suite)
-        .join(variant)
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("benchmarks crate is inside the repository");
+    repo_root.join("testdata").join(suite).join(variant)
 }
 
 pub fn get_current_branch() -> String {

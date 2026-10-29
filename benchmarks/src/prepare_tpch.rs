@@ -17,14 +17,16 @@
 
 use datafusion::common::{Result, exec_datafusion_err};
 use datafusion_distributed_benchmarks::datasets::{output::DatasetOutput, tpch::generate_data};
+use datafusion_distributed_benchmarks::results::dataset_path;
 use structopt::StructOpt;
 
 /// Generate TPC-H parquet files for benchmarks
 #[derive(Debug, StructOpt)]
 pub struct PrepareTpchOpt {
-    /// Empty local directory or s3://bucket/prefix for generated Parquet files
-    #[structopt(required = true, short = "o", long = "output")]
-    output_path: String,
+    /// Empty local directory or s3://bucket/prefix for generated Parquet files. Defaults to
+    /// `testdata/tpch/sf<scale-factor>`, or `testdata/tpch/sorted_sf<scale-factor>` with `--sorted`.
+    #[structopt(short = "o", long = "output")]
+    output_path: Option<String>,
 
     /// Scale factor (e.g. 1.0, 10.0, 100.0)
     #[structopt(short = "s", long = "scale-factor", default_value = "1")]
@@ -42,11 +44,16 @@ pub struct PrepareTpchOpt {
 impl PrepareTpchOpt {
     pub async fn run(self) -> Result<()> {
         let label = if self.sorted { "sorted TPC-H" } else { "TPC-H" };
+        let output_path = self.output_path.unwrap_or_else(|| {
+            let variant = if self.sorted { "sorted_sf" } else { "sf" };
+            let dataset = format!("tpch/{variant}{}", self.scale_factor);
+            dataset_path(&dataset).display().to_string()
+        });
         println!(
-            "Generating {label} data at scale factor {} with {} partitions in '{}'",
-            self.scale_factor, self.partitions, self.output_path
+            "Generating {label} data at scale factor {} with {} partitions in '{output_path}'",
+            self.scale_factor, self.partitions
         );
-        let output = DatasetOutput::new(&self.output_path).await?;
+        let output = DatasetOutput::new(&output_path).await?;
         generate_data(&output, self.scale_factor, self.partitions, self.sorted)
             .await
             .map_err(|e| exec_datafusion_err!("{e}"))?;

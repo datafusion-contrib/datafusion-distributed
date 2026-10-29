@@ -34,8 +34,9 @@ always load manifest column statistics. See `benchmarks/README.md` for S3 output
 
 ## Things worth knowing
 
-- `--dataset tpch/sf10` reads `testdata/tpch/sf10`; generate missing data with the
-  `benchmarks/gen-*.sh` scripts.
+- `--dataset tpch/sf10` reads `testdata/tpch/sf10`; generate missing data with
+  `dfbench prepare-tpch --scale-factor 10` (likewise `prepare-tpcds --sf`, `prepare-clickbench`),
+  which writes to that path by default and refuses a non-empty directory.
 - Query ids are `q1`, `q18`, … (`-q q1,q18`). An unknown id silently runs nothing.
 - `--workers N` runs N localhost workers in the same process and Tokio runtime as the runner,
   so a profiler attached to `dfbench` sees everything.
