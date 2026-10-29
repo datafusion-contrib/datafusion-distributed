@@ -2,8 +2,8 @@
 source: iceberg/tests/file_groups.rs
 expression: execute_groups(restored).await?
 ---
-Partition 0: [s3://iceberg-test/warehouse/taxi/data/pickup_date=2024-01-13/data_0.parquet, s3://iceberg-test/warehouse/taxi/data/pickup_date=2024-01-09/data_0.parquet]
-Partition 1: [s3://iceberg-test/warehouse/taxi/data/pickup_date=2024-01-12/data_0.parquet]
+Partition 0: [pickup_date=2024-01-13/1-00005.parquet, pickup_date=2024-01-09/1-00001.parquet]
+Partition 1: [pickup_date=2024-01-12/1-00004.parquet]
 
 +-------------+-------+
 | pickup_date | rows  |

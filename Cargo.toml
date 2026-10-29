@@ -6,6 +6,7 @@ members = [
     "console",
     "iceberg",
     "iceberg/benchmarks",
+    "iceberg/test-tools",
 ]
 
 [workspace.dependencies]

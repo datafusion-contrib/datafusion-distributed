@@ -1,6 +1,9 @@
-#[cfg(all(test, feature = "integration"))]
 mod tests {
     use std::sync::Arc;
+
+    use datafusion_distributed_iceberg_test_tools::{IcebergTestHarness, data_file_name};
+
+    use datafusion_distributed_iceberg::IcebergExt;
 
     use datafusion::arrow::util::pretty::pretty_format_batches;
     use datafusion::common::Result;
@@ -8,13 +11,15 @@ mod tests {
     use datafusion::execution::TaskContext;
     use datafusion::physical_plan::collect;
     use datafusion::prelude::SessionContext;
-    use datafusion_distributed_iceberg::test_utils::IcebergTestHarness;
     use datafusion_distributed_iceberg::{EagerIcebergDataSource, iceberg};
+    use datafusion_distributed_iceberg_test_tools::create_taxi_table;
 
     #[tokio::test]
     async fn regrouping_a_subset_reads_the_selected_dates() -> Result<()> {
         let harness = IcebergTestHarness::builder()
-            .with_eager_file_planning()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
+            .with_table(create_taxi_table().await?)
+            .with_config_option("iceberg.eager_file_planning", true)
             .build()
             .await?;
         let plan = harness.scan().await?;
@@ -33,7 +38,9 @@ mod tests {
     #[tokio::test]
     async fn rejects_invalid_groups_in_the_visible_file_set() -> Result<()> {
         let harness = IcebergTestHarness::builder()
-            .with_eager_file_planning()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
+            .with_table(create_taxi_table().await?)
+            .with_config_option("iceberg.eager_file_planning", true)
             .build()
             .await?;
         let plan = harness.scan().await?;
@@ -65,7 +72,9 @@ mod tests {
     #[tokio::test]
     async fn reconstruction_preserves_groups_and_reads_the_selected_dates() -> Result<()> {
         let harness = IcebergTestHarness::builder()
-            .with_eager_file_planning()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
+            .with_table(create_taxi_table().await?)
+            .with_config_option("iceberg.eager_file_planning", true)
             .build()
             .await?;
         let plan = harness.scan().await?;
@@ -95,7 +104,9 @@ mod tests {
     #[tokio::test]
     async fn subsets_keep_the_reservation_until_the_last_source_is_dropped() -> Result<()> {
         let harness = IcebergTestHarness::builder()
-            .with_eager_file_planning()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
+            .with_table(create_taxi_table().await?)
+            .with_config_option("iceberg.eager_file_planning", true)
             .build()
             .await?;
         let plan = harness.scan().await?;
@@ -142,7 +153,7 @@ mod tests {
         for partition in 0..source.output_partitioning().partition_count() {
             let files = source
                 .planned_partition_tasks(partition)?
-                .map(|file| file.data_file_path().to_owned())
+                .map(|file| data_file_name(file.data_file_path()).to_owned())
                 .collect::<Vec<_>>();
             lines.push(format!("Partition {partition}: [{}]", files.join(", ")));
         }

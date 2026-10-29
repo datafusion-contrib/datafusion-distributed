@@ -1,6 +1,9 @@
-#[cfg(all(feature = "integration", test))]
 mod tests {
     use std::sync::Arc;
+
+    use datafusion_distributed_iceberg_test_tools::IcebergTestHarness;
+
+    use datafusion_distributed_iceberg::IcebergExt;
 
     use datafusion::common::Result;
     use datafusion::datasource::source::DataSourceExec;
@@ -9,20 +12,24 @@ mod tests {
     use datafusion::execution::runtime_env::RuntimeEnvBuilder;
     use datafusion::physical_plan::collect;
     use datafusion_distributed::WorkUnitFeedProvider;
-    use datafusion_distributed_iceberg::test_utils::IcebergTestHarness;
     use datafusion_distributed_iceberg::{IcebergWorkUnitFeed, LazyIcebergDataSource};
+    use datafusion_distributed_iceberg_test_tools::create_taxi_table;
     use futures::TryStreamExt;
     use prost::Message;
 
     #[tokio::test]
     async fn eager_and_lazy_scans_return_the_same_rows() -> Result<()> {
         let lazy = IcebergTestHarness::builder()
-            .with_column_stats_enabled()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
+            .with_table(create_taxi_table().await?)
+            .with_config_option("iceberg.column_stats_enabled", true)
             .build()
             .await?;
         let eager = IcebergTestHarness::builder()
-            .with_column_stats_enabled()
-            .with_eager_file_planning()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
+            .with_table(create_taxi_table().await?)
+            .with_config_option("iceberg.column_stats_enabled", true)
+            .with_config_option("iceberg.eager_file_planning", true)
             .build()
             .await?;
         let query = "SELECT pickup_date, COUNT(*) AS trips FROM taxi \
@@ -44,28 +51,37 @@ mod tests {
 
     #[tokio::test]
     async fn eager_planning_reuses_files_on_distributed_workers() -> Result<()> {
-        let lazy = IcebergTestHarness::builder()
-            .with_workers(2)
-            .with_column_stats_enabled()
-            .build()
-            .await?;
-        let eager = IcebergTestHarness::builder()
-            .with_workers(2)
-            .with_column_stats_enabled()
-            .with_eager_file_planning()
-            .build()
-            .await?;
         let query = "SELECT pickup_date, COUNT(*) AS trips FROM taxi \
                      WHERE pickup_date <= DATE '2024-01-11' \
                      GROUP BY pickup_date ORDER BY pickup_date";
-        assert_eq!(lazy.query(query).await?.1, eager.query(query).await?.1);
+        assert_eq!(
+            IcebergTestHarness::builder()
+                .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
+                .with_table(create_taxi_table().await?)
+                .with_workers(2)
+                .with_config_option("iceberg.column_stats_enabled", true)
+                .query(query)
+                .await?
+                .1,
+            IcebergTestHarness::builder()
+                .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
+                .with_table(create_taxi_table().await?)
+                .with_workers(2)
+                .with_config_option("iceberg.column_stats_enabled", true)
+                .with_config_option("iceberg.eager_file_planning", true)
+                .query(query)
+                .await?
+                .1
+        );
         Ok(())
     }
 
     #[tokio::test]
     async fn eager_scan_can_be_executed_again() -> Result<()> {
         let harness = IcebergTestHarness::builder()
-            .with_eager_file_planning()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
+            .with_table(create_taxi_table().await?)
+            .with_config_option("iceberg.eager_file_planning", true)
             .build()
             .await?;
         let scan = harness.scan().await?;
@@ -87,7 +103,9 @@ mod tests {
                 .build()?,
         );
         let eager = IcebergTestHarness::builder()
-            .configure_iceberg(|config| config.eager_file_planning = true)
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
+            .with_table(create_taxi_table().await?)
+            .with_config_option("iceberg.eager_file_planning", true)
             .configure_session(|state| Ok(state.with_runtime_env(runtime)))?
             .build()
             .await?;
@@ -104,7 +122,11 @@ mod tests {
 
     #[tokio::test]
     async fn lazy_feeds_are_claimed_once_and_clones_get_fresh_execution() -> Result<()> {
-        let harness = IcebergTestHarness::new().await?;
+        let harness = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
+            .with_table(create_taxi_table().await?)
+            .build()
+            .await?;
         let scan = harness.scan().await?;
         let partitions = scan.properties().partitioning.partition_count();
         let provider = scan

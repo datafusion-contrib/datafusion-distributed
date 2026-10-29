@@ -16,21 +16,21 @@ expression: "format!(\"{plan}\\n{}\\n{rows}\", routes.take())"
     │ RepartitionExec: partitioning=Hash([pickup_date@0], 12), input_partitions=4
     │   AggregateExec: mode=Partial, gby=[pickup_date@0 as pickup_date], aggr=[count(Int64(1))]
     │     DistributedLeafExec:
-    │       t0: DataSourceExec: format=iceberg, planned_files=2
-    │       t1: DataSourceExec: format=iceberg, planned_files=3
+    │       t0: DataSourceExec: format=iceberg, planned_files=3
+    │       t1: DataSourceExec: format=iceberg, planned_files=2
     │       t2: DataSourceExec: format=iceberg, planned_files=2
     └──────────────────────────────────────────────────
 
-Task 0 -> http://url-1/
-  s3://iceberg-test/warehouse/taxi/data/pickup_date=2024-01-11/data_0.parquet
-  s3://iceberg-test/warehouse/taxi/data/pickup_date=2024-01-13/data_0.parquet
-Task 1 -> http://url-2/
-  s3://iceberg-test/warehouse/taxi/data/pickup_date=2024-01-09/data_0.parquet
-  s3://iceberg-test/warehouse/taxi/data/pickup_date=2024-01-10/data_0.parquet
-  s3://iceberg-test/warehouse/taxi/data/pickup_date=2024-01-14/data_0.parquet
-Task 2 -> http://url-1/
-  s3://iceberg-test/warehouse/taxi/data/pickup_date=2024-01-08/data_0.parquet
-  s3://iceberg-test/warehouse/taxi/data/pickup_date=2024-01-12/data_0.parquet
+Task 0 -> http://url-0/
+  pickup_date=2024-01-08/1-00000.parquet
+  pickup_date=2024-01-10/1-00002.parquet
+  pickup_date=2024-01-14/1-00006.parquet
+Task 1 -> http://url-0/
+  pickup_date=2024-01-11/1-00003.parquet
+  pickup_date=2024-01-13/1-00005.parquet
+Task 2 -> http://url-2/
+  pickup_date=2024-01-09/1-00001.parquet
+  pickup_date=2024-01-12/1-00004.parquet
 +-------------+----------+
 | pickup_date | count(*) |
 +-------------+----------+

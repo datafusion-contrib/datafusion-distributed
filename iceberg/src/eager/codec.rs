@@ -196,16 +196,29 @@ impl EagerIcebergCodec {
 
 #[cfg(test)]
 mod tests {
+    use datafusion::prelude::SessionConfig;
+    use datafusion_distributed_iceberg_test_tools::create_taxi_table;
+
     use super::*;
-    use crate::test_utils::IcebergTestHarness;
+    use crate::IcebergConfig;
+    use crate::table_provider::scan::plan_scan;
 
     #[tokio::test]
     async fn rejects_missing_config_and_invalid_assigned_groups() -> Result<()> {
-        let harness = IcebergTestHarness::builder()
-            .with_eager_file_planning()
-            .build()
-            .await?;
-        let plan = harness.scan().await?;
+        let taxi = create_taxi_table().await?;
+        let config = IcebergConfig {
+            eager_file_planning: true,
+            ..Default::default()
+        };
+        let task_ctx = TaskContext::default()
+            .with_session_config(SessionConfig::new().with_option_extension(config));
+        let plan = plan_scan(
+            taxi.table().clone(),
+            taxi.schema()?,
+            Default::default(),
+            Arc::new(task_ctx),
+        )
+        .await?;
         let exec = plan.downcast_ref::<DataSourceExec>().unwrap();
         let source = exec
             .data_source()

@@ -148,23 +148,51 @@ impl PhysicalExtensionCodec for LazyIcebergCodec {
 mod tests {
     use datafusion::common::Statistics;
     use datafusion::datasource::source::DataSource;
+    use datafusion_distributed_iceberg_test_tools::create_taxi_table;
+    use datafusion_proto::physical_plan::DefaultPhysicalProtoConverter;
+    use iceberg::io::LocalFsStorageFactory;
+    use iceberg::table::Table;
 
     use super::*;
-    use crate::test_utils::IcebergTestHarness;
+    use crate::common::df_err;
+    use crate::table_provider::scan::{IcebergDataSourceOptions, plan_scan};
 
     #[tokio::test]
     async fn roundtrips_data_source_plan() -> Result<()> {
-        let harness = IcebergTestHarness::builder()
-            .with_table_option("fixture.storage", "roundtrip's value")
-            .with_table_option("fixture.region", "test-region")
+        let taxi = create_taxi_table().await?;
+        let file_io = FileIOBuilder::new(Arc::new(LocalFsStorageFactory))
+            .with_props([
+                ("fixture.storage", "roundtrip's value"),
+                ("fixture.region", "test-region"),
+            ])
+            .build();
+        let table = Table::builder()
+            .metadata(taxi.table().metadata_ref())
+            .identifier(taxi.ident().clone())
+            .file_io(file_io)
+            .runtime(iceberg::Runtime::current())
             .build()
-            .await?;
-        let plan = harness.physical_plan("SELECT * FROM taxi LIMIT 10").await?;
-        let decoded_plan = harness.roundtrip_plan(Arc::clone(&plan))?;
-        let source_plan = iceberg_plan(&plan)?;
-        let decoded_source_plan = iceberg_plan(&decoded_plan)?;
-        let source = iceberg_source(&source_plan)?;
-        let decoded = iceberg_source(&decoded_source_plan)?;
+            .map_err(df_err)?;
+        let options = IcebergDataSourceOptions {
+            fetch: Some(10),
+            ..Default::default()
+        };
+        let plan = plan_scan(
+            table,
+            taxi.schema()?,
+            options,
+            Arc::new(TaskContext::default()),
+        )
+        .await?;
+        let codec =
+            LazyIcebergCodec::new(Arc::new(LocalFsStorageFactory), iceberg::Runtime::current());
+        let proto_converter = DefaultPhysicalProtoConverter {};
+        let mut buf = Vec::new();
+        codec.try_encode(Arc::clone(&plan), &mut buf, &proto_converter)?;
+        let decoded_plan =
+            codec.try_decode(&buf, &[], &TaskContext::default(), &proto_converter)?;
+        let source = iceberg_source(&plan)?;
+        let decoded = iceberg_source(&decoded_plan)?;
 
         assert_eq!(source.scan.schema, decoded.scan.schema);
         assert_eq!(
@@ -191,23 +219,6 @@ mod tests {
             &Statistics::new_unknown(&decoded.scan.schema)
         );
         Ok(())
-    }
-
-    fn iceberg_plan(plan: &Arc<dyn ExecutionPlan>) -> Result<Arc<dyn ExecutionPlan>> {
-        if let Some(exec) = plan.downcast_ref::<DataSourceExec>()
-            && exec
-                .data_source()
-                .downcast_ref::<LazyIcebergDataSource>()
-                .is_some()
-        {
-            return Ok(Arc::clone(plan));
-        }
-        for child in plan.children() {
-            if let Ok(plan) = iceberg_plan(child) {
-                return Ok(plan);
-            }
-        }
-        internal_err!("fixture query contains no LazyIcebergDataSource")
     }
 
     fn iceberg_source(plan: &Arc<dyn ExecutionPlan>) -> Result<&LazyIcebergDataSource> {

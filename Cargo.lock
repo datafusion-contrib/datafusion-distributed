@@ -2488,6 +2488,7 @@ dependencies = [
  "bytes",
  "datafusion",
  "datafusion-distributed",
+ "datafusion-distributed-iceberg-test-tools",
  "datafusion-proto",
  "delegate",
  "futures",
@@ -2498,12 +2499,9 @@ dependencies = [
  "parquet",
  "prost",
  "rmp-serde",
- "serde",
- "serde_json",
  "tempfile",
  "tokio",
  "tokio-stream",
- "typetag",
 ]
 
 [[package]]
@@ -2521,6 +2519,21 @@ dependencies = [
  "structopt",
  "tokio",
  "url",
+]
+
+[[package]]
+name = "datafusion-distributed-iceberg-test-tools"
+version = "0.1.0"
+dependencies = [
+ "datafusion",
+ "datafusion-distributed",
+ "datafusion-proto",
+ "futures",
+ "iceberg",
+ "rand 0.10.2",
+ "rand_pcg",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

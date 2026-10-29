@@ -2,6 +2,6 @@
 source: iceberg/tests/work_distribution.rs
 expression: scans
 ---
-output_rows={0:50.00 K}
-output_rows={1:75.00 K}
+output_rows={0:75.00 K}
+output_rows={1:50.00 K}
 output_rows={2:50.00 K}

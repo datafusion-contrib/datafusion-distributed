@@ -1,29 +1,29 @@
-#[cfg(all(feature = "integration", test))]
 mod tests {
     use datafusion::common::Result;
     use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
     use datafusion::datasource::source::DataSourceExec;
+    use datafusion_distributed::DesiredTaskCountEvent;
     use datafusion_distributed::DistributedExt;
     use datafusion_distributed_iceberg::EagerIcebergDataSource;
-    use datafusion_distributed_iceberg::test_utils::{
-        IcebergTestHarness, empty_taxi_metadata_builder, taxi_metadata,
-    };
-    use iceberg::spec::{Snapshot, TableMetadata};
+    use datafusion_distributed_iceberg::IcebergExt;
+    use datafusion_distributed_iceberg::iceberg_desired_task_count;
+    use datafusion_distributed_iceberg_test_tools::create_taxi_table;
+    use datafusion_distributed_iceberg_test_tools::{IcebergTestHarness, without_snapshots};
+    use iceberg::spec::{MAIN_BRANCH, Snapshot, TableMetadata};
 
     #[tokio::test]
     async fn executes_with_estimated_scan_tasks() -> Result<()> {
-        // 4,480,382 bytes / 1 MB / 2 partitions rounds up to 3 tasks, not all 4 workers.
-        let harness = IcebergTestHarness::builder()
+        // 5,656,412 bytes / 1 MB / 2 partitions rounds up to 3 tasks, not all 4 workers.
+        // Grouping prevents COUNT(*) from being answered from snapshot metadata alone.
+        let (plan, results) = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
+            .with_table(create_taxi_table().await?)
             .with_workers(4)
             .configure_session(|mut state| {
                 let config = state.config().get_or_insert_default();
                 config.options_mut().execution.target_partitions = 2;
                 state.with_distributed_file_scan_config_bytes_per_partition(1_000_000)
             })?
-            .build()
-            .await?;
-        // Grouping prevents COUNT(*) from being answered from snapshot metadata alone.
-        let (plan, results) = harness
             .query(
                 "SELECT pickup_date, COUNT(*) AS trips FROM taxi \
              GROUP BY pickup_date ORDER BY pickup_date",
@@ -63,7 +63,9 @@ mod tests {
     #[tokio::test]
     async fn planned_scan_tasks_are_bounded_by_selected_file_work() -> Result<()> {
         let harness = IcebergTestHarness::builder()
-            .configure_iceberg(|config| config.eager_file_planning = true)
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
+            .with_table(create_taxi_table().await?)
+            .with_config_option("iceberg.eager_file_planning", true)
             .configure_session(|mut state| {
                 let session = state.config().get_or_insert_default();
                 session.options_mut().execution.target_partitions = 2;
@@ -72,7 +74,12 @@ mod tests {
             .build()
             .await?;
         assert_eq!(
-            harness.estimate_task_count(&harness.scan().await?)?,
+            iceberg_desired_task_count(DesiredTaskCountEvent {
+                plan: &harness.scan().await?,
+                session_config: harness.state().config()
+            })
+            .transpose()?
+            .map(|response| response.task_count.as_usize()),
             Some(7)
         );
         let plan = harness
@@ -83,7 +90,14 @@ mod tests {
             if let Some(exec) = node.downcast_ref::<DataSourceExec>()
                 && exec.data_source().is::<EagerIcebergDataSource>()
             {
-                estimates.push(harness.estimate_task_count(node)?);
+                estimates.push(
+                    iceberg_desired_task_count(DesiredTaskCountEvent {
+                        plan: node,
+                        session_config: harness.state().config(),
+                    })
+                    .transpose()?
+                    .map(|response| response.task_count.as_usize()),
+                );
             }
             Ok(TreeNodeRecursion::Continue)
         })?;
@@ -93,14 +107,20 @@ mod tests {
 
     #[tokio::test]
     async fn estimates_current_snapshot() -> Result<()> {
-        assert_task_count(metadata_with_file_size(Some("24000000")), None, Some(12)).await
+        assert_task_count(
+            |metadata| metadata_with_file_size(metadata, Some("24000000")),
+            None,
+            Some(12),
+        )
+        .await
     }
 
     #[tokio::test]
     async fn estimates_selected_snapshot() -> Result<()> {
         assert_task_count(
-            metadata_with_file_size(Some("24000000")),
-            taxi_metadata().current_snapshot_id(),
+            |metadata| metadata_with_file_size(metadata, Some("24000000")),
+            // The generated table's own snapshot, before the one with the overridden size.
+            Some(1),
             Some(3),
         )
         .await
@@ -108,28 +128,43 @@ mod tests {
 
     #[tokio::test]
     async fn empty_table_uses_minimum_task_count() -> Result<()> {
-        assert_task_count(empty_metadata(), None, Some(1)).await
+        assert_task_count(empty_metadata, None, Some(1)).await
     }
 
     #[tokio::test]
     async fn missing_size_does_not_estimate() -> Result<()> {
-        assert_task_count(metadata_with_file_size(None), None, None).await
+        assert_task_count(
+            |metadata| metadata_with_file_size(metadata, None),
+            None,
+            None,
+        )
+        .await
     }
 
     #[tokio::test]
     async fn malformed_size_does_not_estimate() -> Result<()> {
-        assert_task_count(metadata_with_file_size(Some("invalid")), None, None).await
+        assert_task_count(
+            |metadata| metadata_with_file_size(metadata, Some("invalid")),
+            None,
+            None,
+        )
+        .await
     }
 
     #[tokio::test]
     async fn negative_size_does_not_estimate() -> Result<()> {
-        assert_task_count(metadata_with_file_size(Some("-1")), None, None).await
+        assert_task_count(
+            |metadata| metadata_with_file_size(metadata, Some("-1")),
+            None,
+            None,
+        )
+        .await
     }
 
     #[tokio::test]
     async fn overflowing_size_does_not_estimate() -> Result<()> {
         assert_task_count(
-            metadata_with_file_size(Some("18446744073709551616")),
+            |metadata| metadata_with_file_size(metadata, Some("18446744073709551616")),
             None,
             None,
         )
@@ -138,19 +173,32 @@ mod tests {
 
     #[tokio::test]
     async fn remote_feed_does_not_estimate_again() -> Result<()> {
-        let harness = IcebergTestHarness::new().await?;
+        let harness = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
+            .with_table(create_taxi_table().await?)
+            .build()
+            .await?;
         let plan = harness.roundtrip_plan(harness.scan().await?)?;
-        assert_eq!(harness.estimate_task_count(&plan)?, None);
+        assert_eq!(
+            iceberg_desired_task_count(DesiredTaskCountEvent {
+                plan: &plan,
+                session_config: harness.state().config()
+            })
+            .transpose()?
+            .map(|response| response.task_count.as_usize()),
+            None
+        );
         Ok(())
     }
 
     async fn assert_task_count(
-        metadata: TableMetadata,
+        metadata: impl FnOnce(&TableMetadata) -> TableMetadata + 'static,
         snapshot_id: Option<i64>,
         expected: Option<usize>,
     ) -> Result<()> {
         let mut builder = IcebergTestHarness::builder()
-            .with_table_metadata(metadata)
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
+            .with_table(create_taxi_table().await?)
             .configure_session(|mut state| {
                 let config = state.config().get_or_insert_default();
                 config.options_mut().execution.target_partitions = 2;
@@ -159,23 +207,27 @@ mod tests {
         if let Some(id) = snapshot_id {
             builder = builder.with_table_option("iceberg.snapshot_id", id.to_string());
         }
-        let harness = builder.build().await?;
+        let harness = builder.with_metadata(metadata).build().await?;
         assert_eq!(
-            harness.estimate_task_count(&harness.scan().await?)?,
+            iceberg_desired_task_count(DesiredTaskCountEvent {
+                plan: &harness.scan().await?,
+                session_config: harness.state().config()
+            })
+            .transpose()?
+            .map(|response| response.task_count.as_usize()),
             expected
         );
         Ok(())
     }
 
-    fn empty_metadata() -> TableMetadata {
-        empty_taxi_metadata_builder()
+    fn empty_metadata(metadata: &TableMetadata) -> TableMetadata {
+        without_snapshots(metadata)
             .build()
             .expect("empty taxi metadata is valid")
             .metadata
     }
 
-    fn metadata_with_file_size(size: Option<&str>) -> TableMetadata {
-        let metadata = taxi_metadata();
+    fn metadata_with_file_size(metadata: &TableMetadata, size: Option<&str>) -> TableMetadata {
         let current = metadata.current_snapshot().expect("taxi has a snapshot");
         let mut summary = current.summary().clone();
         match size {
@@ -199,8 +251,9 @@ mod tests {
             .with_summary(summary)
             .build();
         metadata
+            .clone()
             .into_builder(None)
-            .set_branch_snapshot(snapshot, "main")
+            .set_branch_snapshot(snapshot, MAIN_BRANCH)
             .expect("new snapshot is valid")
             .build()
             .expect("taxi metadata is valid")

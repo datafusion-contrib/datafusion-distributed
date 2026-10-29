@@ -91,8 +91,12 @@ separate change. Task-local eager variants and decoded plans report unknown
 statistics rather than applying whole-snapshot aggregates to a subset.
 
 ```bash
-cargo test -p datafusion-distributed-iceberg --features integration
+cargo test -p datafusion-distributed-iceberg -p datafusion-distributed-iceberg-test-tools
 ```
+
+Tests generate the Iceberg tables they read with the unpublished
+[`datafusion-distributed-iceberg-test-tools`](test-tools) package instead of
+reading checked-in data files.
 
 Local TPC-H Iceberg benchmarks use the separate
 [`datafusion-distributed-iceberg-benchmarks`](benchmarks/README.md) package. This keeps benchmark

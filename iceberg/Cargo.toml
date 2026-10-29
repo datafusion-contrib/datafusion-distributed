@@ -7,10 +7,6 @@ description = "Read-only Apache Iceberg table providers for DataFusion Distribut
 license = "Apache-2.0"
 repository = "https://github.com/datafusion-contrib/datafusion-distributed"
 
-[features]
-# Integration tests and public test utilities, including distributed worker support.
-integration = ["datafusion-distributed/integration"]
-
 [dependencies]
 async-trait = "0.1"
 bytes = "1"
@@ -21,9 +17,6 @@ iceberg-datafusion = { git = "https://github.com/apache/datafusion-iceberg.git",
 futures = "0.3"
 iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "5b82ab99aeaf50bf4f5b3b776ac9cd6380a5f3e3" }
 iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust", rev = "5b82ab99aeaf50bf4f5b3b776ac9cd6380a5f3e3", default-features = false, features = ["opendal-fs", "opendal-s3", "opendal-gcs"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-typetag = "0.2"
 datafusion-distributed = { path = "..", features = ["sql"] }
 delegate = "0.13"
 prost = "0.14.1"
@@ -32,6 +25,7 @@ tokio = { version = "1.48", features = ["full"] }
 tokio-stream = "0.1"
 
 [dev-dependencies]
+datafusion-distributed-iceberg-test-tools = { path = "test-tools" }
 tempfile = "3"
 insta = "1"
 parquet = "59"

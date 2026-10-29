@@ -1,8 +1,9 @@
-#[cfg(all(test, feature = "integration"))]
 mod tests {
     use datafusion::common::Result;
     use datafusion_distributed::DistributedExt;
-    use datafusion_distributed_iceberg::test_utils::IcebergTestHarness;
+    use datafusion_distributed_iceberg::IcebergExt;
+    use datafusion_distributed_iceberg_test_tools::IcebergTestHarness;
+    use datafusion_distributed_iceberg_test_tools::create_taxi_table;
 
     #[tokio::test]
     async fn pruned_files_use_distinct_workers_before_local_partitions() -> Result<()> {
@@ -32,22 +33,23 @@ mod tests {
         snapshot: &str,
         eager_file_planning: bool,
     ) -> Result<()> {
-        let harness = IcebergTestHarness::builder()
-            .with_workers(workers)
-            .configure_iceberg(|config| config.eager_file_planning = eager_file_planning)
-            .configure_session(|mut state| {
-                let session = state.config().get_or_insert_default();
-                session.options_mut().execution.target_partitions = partitions;
-                state.with_distributed_file_scan_config_bytes_per_partition(1)
-            })?
-            .build()
-            .await?;
         let sql = format!(
             "SELECT pickup_date, COUNT(*) AS trips FROM taxi \
              WHERE pickup_date <= DATE '{last_date}' \
              GROUP BY pickup_date ORDER BY pickup_date"
         );
-        let (plan, results) = harness.query_with_metrics(&sql).await?;
+        let (plan, results) = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
+            .with_table(create_taxi_table().await?)
+            .with_workers(workers)
+            .with_config_option("iceberg.eager_file_planning", eager_file_planning)
+            .configure_session(|mut state| {
+                let session = state.config().get_or_insert_default();
+                session.options_mut().execution.target_partitions = partitions;
+                state.with_distributed_file_scan_config_bytes_per_partition(1)
+            })?
+            .query_with_metrics(&sql)
+            .await?;
         let scans = plan
             .lines()
             .filter(|line| line.contains("DataSourceExec: format=iceberg"))
@@ -59,7 +61,11 @@ mod tests {
         }, {
             insta::assert_snapshot!(snapshot, scans);
         });
-        let (_, local_results) = IcebergTestHarness::new().await?.query(&sql).await?;
+        let (_, local_results) = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
+            .with_table(create_taxi_table().await?)
+            .query(&sql)
+            .await?;
         assert_eq!(results, local_results);
         Ok(())
     }

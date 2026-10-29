@@ -1,12 +1,14 @@
-#[cfg(all(feature = "integration", test))]
 mod tests {
     use datafusion::error::Result;
-    use datafusion_distributed_iceberg::test_utils::IcebergTestHarness;
+    use datafusion_distributed_iceberg::IcebergExt;
+    use datafusion_distributed_iceberg_test_tools::IcebergTestHarness;
+    use datafusion_distributed_iceberg_test_tools::create_taxi_table;
 
     #[tokio::test]
     async fn pushes_down_compound_predicates() -> Result<()> {
-        let harness = IcebergTestHarness::new().await?;
-        let (plan, batches) = harness
+        let (plan, batches) = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
+            .with_table(create_taxi_table().await?)
             .query(
                 r"SELECT COUNT(*) AS trips
                FROM taxi
@@ -25,20 +27,21 @@ mod tests {
                   DataSourceExec: format=iceberg, table=default.taxi, projection=[trip_distance, payment_type, pickup_date], predicate=((pickup_date = 2024-01-10) AND ((payment_type = 1) OR (payment_type = 2))) AND (trip_distance >= 2)
         ");
         insta::assert_snapshot!(batches, @r"
-    +-------+
-    | trips |
-    +-------+
-    | 9891  |
-    +-------+
-    ");
+        +-------+
+        | trips |
+        +-------+
+        | 10659 |
+        +-------+
+        ");
 
         Ok(())
     }
 
     #[tokio::test]
     async fn pushes_down_disjunctions() -> Result<()> {
-        let harness = IcebergTestHarness::new().await?;
-        let (plan, batches) = harness
+        let (plan, batches) = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
+            .with_table(create_taxi_table().await?)
             .query(
                 r"SELECT pickup_date, COUNT(*) AS trips
                    FROM taxi
@@ -73,8 +76,9 @@ mod tests {
 
     #[tokio::test]
     async fn pushes_down_null_predicates() -> Result<()> {
-        let harness = IcebergTestHarness::new().await?;
-        let (plan, batches) = harness
+        let (plan, batches) = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
+            .with_table(create_taxi_table().await?)
             .query("SELECT COUNT(*) AS trips FROM taxi WHERE passenger_count IS NULL")
             .await?;
 
@@ -87,20 +91,21 @@ mod tests {
                   DataSourceExec: format=iceberg, table=default.taxi, projection=[passenger_count], predicate=passenger_count IS NULL
         ");
         insta::assert_snapshot!(batches, @r"
-    +-------+
-    | trips |
-    +-------+
-    | 8829  |
-    +-------+
-    ");
+        +-------+
+        | trips |
+        +-------+
+        | 8886  |
+        +-------+
+        ");
 
         Ok(())
     }
 
     #[tokio::test]
     async fn retains_unsupported_filter_after_safe_pushdown() -> Result<()> {
-        let harness = IcebergTestHarness::new().await?;
-        let (plan, batches) = harness
+        let (plan, batches) = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
+            .with_table(create_taxi_table().await?)
             .query(
                 r"SELECT COUNT(*) AS trips
                    FROM taxi
@@ -118,20 +123,21 @@ mod tests {
                   DataSourceExec: format=iceberg, table=default.taxi, projection=[trip_distance, pickup_date], predicate=pickup_date = 2024-01-10
         ");
         insta::assert_snapshot!(batches, @r"
-    +-------+
-    | trips |
-    +-------+
-    | 10516 |
-    +-------+
-    ");
+        +-------+
+        | trips |
+        +-------+
+        | 11688 |
+        +-------+
+        ");
 
         Ok(())
     }
 
     #[tokio::test]
     async fn executes_wholly_unsupported_filters_without_pushdown() -> Result<()> {
-        let harness = IcebergTestHarness::new().await?;
-        let (plan, batches) = harness
+        let (plan, batches) = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
+            .with_table(create_taxi_table().await?)
             .query("SELECT COUNT(*) AS trips FROM taxi WHERE trip_distance + 1.0 > 20.0")
             .await?;
 
@@ -144,12 +150,12 @@ mod tests {
                   DataSourceExec: format=iceberg, table=default.taxi, projection=[trip_distance]
         ");
         insta::assert_snapshot!(batches, @r"
-    +-------+
-    | trips |
-    +-------+
-    | 2757  |
-    +-------+
-    ");
+        +-------+
+        | trips |
+        +-------+
+        | 4462  |
+        +-------+
+        ");
 
         Ok(())
     }

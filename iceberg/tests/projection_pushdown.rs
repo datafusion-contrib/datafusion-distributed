@@ -1,12 +1,14 @@
-#[cfg(all(feature = "integration", test))]
 mod tests {
     use datafusion::error::Result;
-    use datafusion_distributed_iceberg::test_utils::IcebergTestHarness;
+    use datafusion_distributed_iceberg::IcebergExt;
+    use datafusion_distributed_iceberg_test_tools::IcebergTestHarness;
+    use datafusion_distributed_iceberg_test_tools::create_taxi_table;
 
     #[tokio::test]
     async fn projects_only_columns_required_by_the_query() -> Result<()> {
-        let harness = IcebergTestHarness::new().await?;
-        let (plan, batches) = harness
+        let (plan, batches) = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
+            .with_table(create_taxi_table().await?)
             .query(
                 r"SELECT pickup_date, COUNT(*) AS trips
                FROM taxi
@@ -43,8 +45,9 @@ mod tests {
 
     #[tokio::test]
     async fn includes_filter_columns_that_are_not_in_the_output() -> Result<()> {
-        let harness = IcebergTestHarness::new().await?;
-        let (plan, batches) = harness
+        let (plan, batches) = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
+            .with_table(create_taxi_table().await?)
             .query(
                 r"SELECT vendor_id, pickup_location_id
                    FROM taxi
@@ -62,22 +65,23 @@ mod tests {
                 DataSourceExec: format=iceberg, table=default.taxi, projection=[vendor_id, pickup_at, pickup_location_id, pickup_date], predicate=pickup_date = 2024-01-10
         ");
         insta::assert_snapshot!(batches, @r"
-    +-----------+--------------------+
-    | vendor_id | pickup_location_id |
-    +-----------+--------------------+
-    | 2         | 75                 |
-    | 1         | 161                |
-    | 2         | 162                |
-    +-----------+--------------------+
-    ");
+        +-----------+--------------------+
+        | vendor_id | pickup_location_id |
+        +-----------+--------------------+
+        | 1         | 93                 |
+        | 2         | 228                |
+        | 2         | 8                  |
+        +-----------+--------------------+
+        ");
 
         Ok(())
     }
 
     #[tokio::test]
     async fn projects_source_columns_for_computed_expressions() -> Result<()> {
-        let harness = IcebergTestHarness::new().await?;
-        let (plan, batches) = harness
+        let (plan, batches) = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
+            .with_table(create_taxi_table().await?)
             .query(
                 r"SELECT MAX(trip_distance * fare_amount) AS max_weighted_fare
                    FROM taxi
@@ -94,20 +98,21 @@ mod tests {
                   DataSourceExec: format=iceberg, table=default.taxi, projection=[trip_distance, fare_amount, pickup_date], predicate=pickup_date = 2024-01-10
         ");
         insta::assert_snapshot!(batches, @r"
-    +-------------------+
-    | max_weighted_fare |
-    +-------------------+
-    | 207508.9584       |
-    +-------------------+
-    ");
+        +-------------------+
+        | max_weighted_fare |
+        +-------------------+
+        | 5389.1892         |
+        +-------------------+
+        ");
 
         Ok(())
     }
 
     #[tokio::test]
     async fn reads_all_columns_when_selecting_star() -> Result<()> {
-        let harness = IcebergTestHarness::new().await?;
-        let (plan, batches) = harness
+        let (plan, batches) = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
+            .with_table(create_taxi_table().await?)
             .query(
                 r"SELECT *
                    FROM taxi
@@ -124,12 +129,12 @@ mod tests {
               DataSourceExec: format=iceberg, table=default.taxi, projection=[vendor_id, pickup_at, dropoff_at, passenger_count, trip_distance, pickup_location_id, dropoff_location_id, payment_type, fare_amount, tip_amount, tolls_amount, total_amount, pickup_date], predicate=pickup_date = 2024-01-10
         ");
         insta::assert_snapshot!(batches, @r"
-    +-----------+---------------------+---------------------+-----------------+---------------+--------------------+---------------------+--------------+-------------+------------+--------------+--------------+-------------+
-    | vendor_id | pickup_at           | dropoff_at          | passenger_count | trip_distance | pickup_location_id | dropoff_location_id | payment_type | fare_amount | tip_amount | tolls_amount | total_amount | pickup_date |
-    +-----------+---------------------+---------------------+-----------------+---------------+--------------------+---------------------+--------------+-------------+------------+--------------+--------------+-------------+
-    | 2         | 2024-01-10T00:00:09 | 2024-01-10T00:03:30 |                 | 0.78          | 75                 | 236                 | 0            | 1.74        | 3.15       | 0.0          | 8.89         | 2024-01-10  |
-    +-----------+---------------------+---------------------+-----------------+---------------+--------------------+---------------------+--------------+-------------+------------+--------------+--------------+-------------+
-    ");
+        +-----------+---------------------+---------------------+-----------------+---------------+--------------------+---------------------+--------------+-------------+------------+--------------+--------------+-------------+
+        | vendor_id | pickup_at           | dropoff_at          | passenger_count | trip_distance | pickup_location_id | dropoff_location_id | payment_type | fare_amount | tip_amount | tolls_amount | total_amount | pickup_date |
+        +-----------+---------------------+---------------------+-----------------+---------------+--------------------+---------------------+--------------+-------------+------------+--------------+--------------+-------------+
+        | 1         | 2024-01-10T00:00:04 | 2024-01-10T00:03:44 | 1               | 0.68          | 93                 | 237                 | 1            | 6.17        | 1.05       | 0.0          | 10.72        | 2024-01-10  |
+        +-----------+---------------------+---------------------+-----------------+---------------+--------------------+---------------------+--------------+-------------+------------+--------------+--------------+-------------+
+        ");
 
         Ok(())
     }
