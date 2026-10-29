@@ -85,6 +85,7 @@ Read the relevant contributor guide before starting work in these areas:
 - Tests: `docs/source/contributor-guide/03-tests.md`
 - Performance and benchmark changes:
   `docs/source/contributor-guide/04-benchmarks.md`
+- Running, comparing or profiling benchmarks: `.agents/skills/benchmark/SKILL.md`
 
 ## Test design and review
 

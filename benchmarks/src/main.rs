@@ -28,25 +28,18 @@ enum Options {
 }
 
 // Main benchmark runner entrypoint
-pub fn main() -> Result<()> {
+#[tokio::main]
+pub async fn main() -> Result<()> {
     env_logger::init();
 
     match Options::from_args() {
-        Options::Run(opt) => opt.run(ParquetBenchmarkBackend),
+        Options::Run(opt) => opt.run(ParquetBenchmarkBackend).await?,
         Options::Compare { states, dataset } => {
-            compare::run(compare::parse_comparison_args(states, dataset)?)
+            compare::run(compare::parse_comparison_args(states, dataset)?)?
         }
-        Options::PrepareTpch(opt) => {
-            let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(opt.run())
-        }
-        Options::PrepareTpcds(opt) => {
-            let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(async { opt.run().await })
-        }
-        Options::PrepareClickbench(opt) => {
-            let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(async { opt.run().await })
-        }
-    }
+        Options::PrepareTpch(opt) => opt.run().await?,
+        Options::PrepareTpcds(opt) => opt.run().await?,
+        Options::PrepareClickbench(opt) => opt.run().await?,
+    };
+    Ok(())
 }

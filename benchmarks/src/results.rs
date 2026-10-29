@@ -41,8 +41,6 @@ pub struct BenchResult {
 pub struct BenchmarkRun {
     /// Number of workers involved in a distributed query
     pub workers: usize,
-    /// Number of physical threads used per worker
-    pub threads: usize,
     /// Start time
     #[serde(
         serialize_with = "serialize_start_time",
@@ -56,10 +54,9 @@ pub struct BenchmarkRun {
 }
 
 impl BenchmarkRun {
-    pub fn new(dataset: String, workers: usize, threads: usize) -> Self {
+    pub fn new(dataset: String, workers: usize) -> Self {
         Self {
             workers,
-            threads,
             dataset,
             branch: get_current_branch(),
             start_time: SystemTime::now(),
@@ -109,7 +106,6 @@ impl BenchmarkRun {
         println!("os:        {}", std::env::consts::OS);
         println!("arch:      {}", std::env::consts::ARCH);
         println!("cpu cores: {}", get_available_parallelism());
-        println!("threads:   {} -> {}", previous.threads, self.threads);
         println!("workers:   {} -> {}", previous.workers, self.workers);
         println!("{}", "=".repeat(header.len()));
         for query in self.results.iter() {

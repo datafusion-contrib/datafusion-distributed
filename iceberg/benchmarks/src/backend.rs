@@ -10,6 +10,7 @@ use datafusion_distributed_iceberg::{IcebergExt, IcebergIntegrationOptions};
 use crate::dataset;
 
 /// Iceberg registration and session extensions for local and remote benchmarks.
+#[derive(Clone)]
 pub struct IcebergBenchmarkBackend;
 
 #[async_trait]

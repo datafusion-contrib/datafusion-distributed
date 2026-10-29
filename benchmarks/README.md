@@ -69,28 +69,25 @@ final S3 paths; no metadata rewriting or filesystem sync is needed.
 After generating the data with the command above, the benchmarks can be run with:
 
 ```shell
-WORKERS=0 ./benchmarks/run.sh --threads 2 --dataset tpch/sf1
+cargo run -p datafusion-distributed-benchmarks --release -- run --dataset tpch/sf1
 ```
 
-- `--threads`: This is the physical threads that the Tokio runtime will use for executing the
-  binary. It's recommended to set `--threads` to something small, like `2`, for throttling each
-  individual process running queries, and simulate how adding throttled workers can speed up the
-  queries.
 - `--dataset`: Logical dataset name (e.g. `tpch/sf1`, `tpch/sorted_sf1`,
   `tpcds/sf1`). It is resolved to the corresponding
   `testdata/<suite>/<variant>` directory.
 
 ### Running benchmarks with local workers
 
-The same script is used for running distributed benchmarks:
+The same command is used for running distributed benchmarks:
 
 ```shell
-WORKERS=8 ./benchmarks/run.sh --threads 2 --dataset tpch/sf1 --file-scan-config-bytes-per-partition 16777216
+cargo run -p datafusion-distributed-benchmarks --release -- run --workers 8 --dataset tpch/sf1 --file-scan-config-bytes-per-partition 16777216
 ```
 
-- `WORKERS`: Env variable that sets the amount of localhost workers used in the query.
-- `--threads`: Sets the Tokio runtime threads for each individual worker and for the benchmarking
-  binary.
+- `--workers`: Amount of localhost workers used in the query. They all run in the same
+  process and on the same Tokio runtime as the benchmark runner, so a profiler like `samply`
+  attached to the benchmark process observes both the coordinator and the workers on the same
+  threads.
 - `--dataset`: Dataset directory name under `testdata`.
 - `--file-scan-config-bytes-per-partition`: How many bytes each partition is expected to scan. Lower values
   produce more partitions/tasks. Defaults to the engine default when unset.
@@ -119,8 +116,10 @@ written last, and the output directory must be empty.
 Run each representation with its format-specific binary, then compare them with `dfbench`:
 
 ```shell
-WORKERS=2 ./benchmarks/run.sh --dataset tpch/sf1 --threads 2 --partitions 2
-WORKERS=2 ./iceberg/benchmarks/run.sh --dataset tpch/sf1_iceberg --threads 2 --partitions 2
+cargo run -p datafusion-distributed-benchmarks --release -- run \
+  --workers 2 --dataset tpch/sf1 --partitions 2
+cargo run -p datafusion-distributed-iceberg-benchmarks --release -- run \
+  --workers 2 --dataset tpch/sf1_iceberg --partitions 2
 
 dfbench compare tpch/sf1 tpch/sf1_iceberg
 dfbench compare tpch/sf1@base tpch/sf1_iceberg@candidate
