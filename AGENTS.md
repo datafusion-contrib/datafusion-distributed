@@ -122,9 +122,16 @@ Optimize for that understanding, not for the fewest lines.
 - Keep fixture helpers focused on constructing data or metadata. They must not
   silently choose execution mode, worker count, planner settings, or assertions.
   Make relevant fixture contents and properties apparent at the call site.
-- Prefer composable fixture builders over constructor combinations such as
-  `with_x_and_y`. Reuse existing data where it fits; use generated fixtures when
-  the scenario requires a different shape. Avoid extensive ad hoc patching of a
+- Never add constructor or registration variants named `with_x_and_y`,
+  `with_x_with_y`, or equivalent combinations of options. Put independent
+  settings in the existing options struct or composable builder methods, and
+  pass them through the harness's existing configuration hooks.
+- Use the harness for session construction, codec registration, and worker
+  setup instead of recreating that plumbing in tests. Keep scenario-defining
+  options visible in each test's builder chain; helpers must not silently
+  install a different execution mode or configuration.
+- Reuse existing fixtures where they fit; use the fixture builders when the
+  scenario requires a different shape. Avoid extensive ad hoc patching of a
   fixed dataset.
 - Put helper implementations below the tests. Moving boilerplate into a helper
   is useful only if the test remains understandable without opening that helper.
