@@ -36,8 +36,9 @@ statistics. See `benchmarks/README.md` for S3 output and other options.
 
 ## Things worth knowing
 
-- Dataset names are `<suite>_<format>/<key>=<value>/...` paths under `testdata/` that record
-  every generation parameter; `prepare-*` prints them. Generating a complete dataset again is a
+- Datasets live in `testdata/<suite>_<format>/<key>=<value>/...` directories that record every
+  generation parameter; `prepare-*` prints the absolute path, and `--dataset` takes it absolute
+  or relative to the current directory. Generating a complete dataset again is a
   no-op; an interrupted one must be removed before regenerating. Layout options
   (`--max-file-size`, `--dictionary`, `--sorted`) are listed in `benchmarks/README.md`.
 - DuckDB and Spark treat the `key=value` directories as Hive partitions and add them as columns;

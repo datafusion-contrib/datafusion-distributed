@@ -1,5 +1,4 @@
 use crate::RESULTS_DIR;
-use crate::datasets::common::workspace_root;
 use crate::stats::median;
 use datafusion::common::utils::get_available_parallelism;
 use datafusion::common::{Result, internal_datafusion_err};
@@ -121,10 +120,9 @@ impl BenchmarkRun {
     }
 }
 
-/// The directory of a dataset under the repository's testdata directory, or the dataset itself
-/// when it is an absolute path.
+/// The directory of a dataset, given as an absolute path or relative to the current directory.
 pub fn dataset_path(dataset: &str) -> PathBuf {
-    workspace_root().join("testdata").join(dataset)
+    std::path::absolute(dataset).unwrap_or_else(|_| PathBuf::from(dataset))
 }
 
 pub fn get_current_branch() -> String {
