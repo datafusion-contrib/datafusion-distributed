@@ -1,9 +1,12 @@
 use crate::backend::BenchmarkBackend;
-use crate::run::serve_worker;
 use datafusion::common::runtime::SpawnedTask;
 use datafusion::error::Result;
+use datafusion_distributed::test_utils::work_unit_file_scan::WorkUnitFileScanCodec;
+use datafusion_distributed::{DistributedExt, Worker, WorkerQueryContext};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
+use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
+use tonic::transport::Server;
 
 /// Localhost workers running in the current process.
 ///
@@ -15,6 +18,7 @@ pub(crate) struct LocalWorkers {
     /// Aborted when dropped, which stops the workers.
     tasks: Vec<SpawnedTask<()>>,
     shutdown: watch::Sender<()>,
+    pub(crate) workers: Vec<Worker>,
     pub(crate) ports: Vec<u16>,
 }
 
@@ -28,6 +32,7 @@ impl LocalWorkers {
         let (shutdown, shutdown_rx) = watch::channel(());
         let mut tasks = Vec::with_capacity(count);
         let mut ports = Vec::with_capacity(count);
+        let mut workers = Vec::with_capacity(count);
         for i in 0..count {
             let listener = TcpListener::bind("127.0.0.1:0").await?;
             ports.push(listener.local_addr()?.port());
@@ -36,14 +41,32 @@ impl LocalWorkers {
             let signal = async move {
                 let _ = shutdown_rx.changed().await;
             };
+
+            // Workers need to be able to decode the WorkUnitFileScan plan
+            // node when the feature is on. The codec is registered via a
+            // session builder so it is installed on every worker session.
+            let worker = Worker::from_session_builder(move |ctx: WorkerQueryContext| {
+                let builder = backend.configure_session(
+                    ctx.builder
+                        .with_distributed_user_codec(WorkUnitFileScanCodec),
+                );
+                async move { Ok(builder.build()) }
+            });
+            workers.push(worker.clone());
+
+            let server = Server::builder().add_service(worker.into_worker_server());
             tasks.push(SpawnedTask::spawn(async move {
-                if let Err(err) = serve_worker(backend, listener, signal).await {
+                let result = server
+                    .serve_with_incoming_shutdown(TcpListenerStream::new(listener), signal)
+                    .await;
+                if let Err(err) = result {
                     eprintln!("Local worker {i} failed: {err}");
                 }
             }));
         }
         Ok(Self {
             tasks,
+            workers,
             shutdown,
             ports,
         })

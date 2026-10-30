@@ -37,17 +37,15 @@ use datafusion_distributed::test_utils::work_unit_file_scan::{
     work_unit_file_scan_desired_task_count, work_unit_file_scan_scale_up_leaf_node,
 };
 use datafusion_distributed::{
-    DistributedExt, DistributedMetricsFormat, NetworkBoundaryExt, SessionStateBuilderExt, Worker,
-    WorkerQueryContext, display_plan_ascii, rewrite_distributed_plan_with_metrics,
+    DistributedExt, DistributedMetricsFormat, NetworkBoundaryExt, SessionStateBuilderExt,
+    display_plan_ascii, rewrite_distributed_plan_with_metrics,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use structopt::StructOpt;
-use tokio::net::TcpListener;
-use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
-use tonic::transport::Server;
+use url::Url;
 
 /// Run the tpch benchmark.
 ///
@@ -130,28 +128,6 @@ pub struct RunOpt {
     two_step_shuffle_fanout_threshold: usize,
 }
 
-/// Serves a benchmark worker on the provided listener until it fails or `shutdown` resolves.
-pub(crate) async fn serve_worker<B: BenchmarkBackend>(
-    backend: B,
-    listener: TcpListener,
-    shutdown: impl Future<Output = ()>,
-) -> Result<(), tonic::transport::Error> {
-    // Workers need to be able to decode the WorkUnitFileScan plan
-    // node when the feature is on. The codec is registered via a
-    // session builder so it is installed on every worker session.
-    let worker = Worker::from_session_builder(move |ctx: WorkerQueryContext| {
-        let builder = backend.configure_session(
-            ctx.builder
-                .with_distributed_user_codec(WorkUnitFileScanCodec),
-        );
-        async move { Ok(builder.build()) }
-    });
-    Server::builder()
-        .add_service(worker.into_worker_server())
-        .serve_with_incoming_shutdown(TcpListenerStream::new(listener), shutdown)
-        .await
-}
-
 /// The query suite of a dataset path such as `tpch_parquet/scale_factor=1/...`: the benchmark
 /// name in its last component that is not a `key=value` parameter.
 fn dataset_suite(dataset: &str) -> &str {
@@ -197,16 +173,22 @@ impl RunOpt {
 
     pub async fn run<B: BenchmarkBackend + Clone>(self, mut backend: B) -> Result<()> {
         let local_workers = LocalWorkers::start(self.workers, &backend).await?;
-        let result = self.run_local(&mut backend, &local_workers.ports).await;
+        let result = self.run_local(&mut backend, &local_workers).await;
         local_workers.shutdown().await;
         result
     }
 
-    async fn run_local(self, backend: &mut impl BenchmarkBackend, ports: &[u16]) -> Result<()> {
+    async fn run_local(
+        self,
+        backend: &mut impl BenchmarkBackend,
+        local_workers: &LocalWorkers,
+    ) -> Result<()> {
         let mut builder = SessionStateBuilder::new()
             .with_default_features()
             .with_config(self.config()?)
-            .with_distributed_worker_resolver(LocalHostWorkerResolver::new(ports.to_vec()))
+            .with_distributed_worker_resolver(LocalHostWorkerResolver::new(
+                local_workers.ports.to_vec(),
+            ))
             .with_distributed_planner()
             .with_distributed_cardinality_effect_task_scale_factor(
                 self.cardinality_task_sf.unwrap_or(1.0),
@@ -236,9 +218,13 @@ impl RunOpt {
                     .map(|v| &v.feed)
             });
 
+        if let Some(local_worker) = local_workers.workers.first() {
+            let url = Url::parse(&format!("http://127.0.0.1:{}", local_workers.ports[0])).unwrap();
+            builder.set_distributed_local_worker_context(local_worker.to_local_worker_context(url))
+        }
+
         if let Some(bytes_per_partition) = self.file_scan_config_bytes_per_partition {
-            builder = builder
-                .with_distributed_file_scan_config_bytes_per_partition(bytes_per_partition)?;
+            builder.set_distributed_file_scan_config_bytes_per_partition(bytes_per_partition)?;
         }
 
         if self.work_unit_file_scan {
@@ -251,7 +237,7 @@ impl RunOpt {
         let dataset_suite = dataset_suite(&self.dataset);
 
         println!("Running benchmarks with the following options: {self:?}");
-        let mut benchmark_run = BenchmarkRun::new(self.dataset.clone(), ports.len());
+        let mut benchmark_run = BenchmarkRun::new(self.dataset.clone(), local_workers.ports.len());
 
         for (id, sql) in queries_for_dataset(dataset_suite)? {
             if !self.query.is_empty() && !self.query.contains(&id.to_string()) {
