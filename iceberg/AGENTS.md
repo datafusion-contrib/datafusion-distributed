@@ -2,14 +2,22 @@
 
 ## Tests
 
-- Reuse `IcebergTestHarness` from `datafusion-distributed-iceberg-test-tools`
-  as much as possible. It doesn't depend on this crate, so each test installs
+- Use `IcebergTestHarness` from `datafusion-distributed-iceberg-test-tools`
+  for integration-test session, codec, and worker setup. It doesn't depend on this crate, so each test installs
   the integration with
   `with_session_extension(|state| state.with_iceberg_integration(..))`, sets
   Iceberg options by name with `with_config_option("iceberg.*", ..)`, builds
   its table with the test tools, e.g. `create_taxi_table()`, and hands it over
   with `with_table(..)`; without one, the harness has no table. Use
   `with_metadata` to serve customized metadata for that table.
+- Never add `with_x_and_y`, `with_x_with_y`, or equivalent constructor or
+  registration variants. Add settings to `IcebergIntegrationOptions` or use
+  existing composable builder methods. Register custom codecs through
+  `with_session_extension` and `IcebergIntegrationOptions::file_io_codec`, so
+  the harness installs them on both the coordinator and workers.
+- Use `configure_session` for coordinator-only session configuration and
+  `with_workers` for distributed execution. Keep these choices in the test's
+  builder chain; do not construct replacement sessions or workers by hand.
 - Build any other table with `datafusion-distributed-iceberg-test-tools`
   (`test-tools/`) rather than by hand or by committing data files. A
   `FixtureCatalog` is an in-memory catalog over a temp dir.

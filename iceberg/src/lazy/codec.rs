@@ -1,4 +1,6 @@
+use crate::IcebergFileIOCodec;
 use crate::common::scan_config::ScanConfig;
+use crate::file_io_codec::FileIOCodec;
 use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
@@ -13,7 +15,7 @@ use datafusion_proto::physical_plan::{
     PhysicalExtensionCodec, PhysicalPlanDecodeContext, PhysicalProtoConverterExtension,
 };
 use datafusion_proto::protobuf::proto_error;
-use iceberg::io::{FileIOBuilder, StorageFactory};
+use iceberg::io::StorageFactory;
 use iceberg_storage_opendal::OpenDalResolvingStorageFactory;
 use prost::Message;
 
@@ -23,8 +25,8 @@ use crate::{IcebergWorkUnitFeed, LazyIcebergDataSource};
 /// Physical plan codec for [`LazyIcebergDataSource`].
 #[derive(Debug, Clone)]
 pub struct LazyIcebergCodec {
-    storage_factory: Arc<dyn StorageFactory>,
     iceberg_runtime: iceberg::Runtime,
+    file_io_codec: FileIOCodec,
 }
 
 impl LazyIcebergCodec {
@@ -34,9 +36,16 @@ impl LazyIcebergCodec {
         iceberg_runtime: iceberg::Runtime,
     ) -> Self {
         Self {
-            storage_factory,
             iceberg_runtime,
+            file_io_codec: FileIOCodec::new(storage_factory),
         }
+    }
+
+    /// Overrides file IO encoding and decoding while retaining the standard plan codec.
+    /// For session registration, use [`crate::IcebergIntegrationOptions::file_io_codec`].
+    pub fn with_file_io_codec(mut self, codec: Arc<dyn IcebergFileIOCodec>) -> Self {
+        self.file_io_codec.custom = Some(codec);
+        self
     }
 }
 
@@ -89,9 +98,11 @@ impl PhysicalExtensionCodec for LazyIcebergCodec {
             .map(usize::try_from)
             .transpose()
             .map_err(|_| proto_error("Iceberg fetch limit does not fit in usize"))?;
-        let iceberg_file_io = FileIOBuilder::new(Arc::clone(&self.storage_factory))
-            .with_props(proto.storage_properties)
-            .build();
+        let iceberg_file_io = self.file_io_codec.decode(
+            proto.storage_properties,
+            proto.custom_file_io.as_deref(),
+            ctx,
+        )?;
 
         Ok(DataSourceExec::from_data_source(LazyIcebergDataSource {
             scan: ScanConfig {
@@ -124,6 +135,7 @@ impl PhysicalExtensionCodec for LazyIcebergCodec {
             return internal_err!("expected DataSourceExec wrapping LazyIcebergDataSource");
         };
 
+        let file_io = self.file_io_codec.encode(&source.scan.iceberg_file_io)?;
         let feed = source.feed.to_proto();
         let proto = pb::IcebergDataSource {
             schema: Some(datafusion_proto::protobuf::Schema::try_from(
@@ -136,7 +148,8 @@ impl PhysicalExtensionCodec for LazyIcebergCodec {
                 proto_converter,
             )?),
             fetch: source.scan.fetch.map(|value| value as u64),
-            storage_properties: source.scan.iceberg_file_io.config().props().clone(),
+            storage_properties: file_io.properties,
+            custom_file_io: file_io.custom,
         };
         proto.encode(buf).map_err(|error| {
             proto_error(format!("failed to encode LazyIcebergDataSource: {error}"))
@@ -150,7 +163,7 @@ mod tests {
     use datafusion::datasource::source::DataSource;
     use datafusion_distributed_iceberg_test_tools::create_taxi_table;
     use datafusion_proto::physical_plan::DefaultPhysicalProtoConverter;
-    use iceberg::io::LocalFsStorageFactory;
+    use iceberg::io::{FileIOBuilder, LocalFsStorageFactory};
     use iceberg::table::Table;
 
     use super::*;

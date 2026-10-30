@@ -8,10 +8,10 @@ use delegate::delegate;
 use iceberg::io::StorageFactory;
 use iceberg_storage_opendal::OpenDalResolvingStorageFactory;
 
-use crate::EagerIcebergCodec;
 use crate::LazyIcebergCodec;
 use crate::distributed_desired_task_count_handler::iceberg_desired_task_count;
 use crate::distributed_scale_up_handler::iceberg_scale_up;
+use crate::{EagerIcebergCodec, IcebergFileIOCodec};
 use crate::{IcebergConfig, IcebergTableProviderFactory, LazyIcebergDataSource};
 
 /// Configuration required to register the Iceberg SQL integration.
@@ -24,6 +24,8 @@ pub struct IcebergIntegrationOptions {
     /// Construct this from the application's Tokio runtime with
     /// [`iceberg::Runtime::new`] or [`iceberg::Runtime::new_with_split`].
     pub iceberg_runtime: iceberg::Runtime,
+    /// Optional file IO codec, registered identically on coordinators and workers.
+    pub file_io_codec: Option<Arc<dyn IcebergFileIOCodec>>,
 }
 
 impl Default for IcebergIntegrationOptions {
@@ -31,6 +33,7 @@ impl Default for IcebergIntegrationOptions {
         Self {
             storage_factory: Arc::new(OpenDalResolvingStorageFactory::new()),
             iceberg_runtime: iceberg::Runtime::current(),
+            file_io_codec: None,
         }
     }
 }
@@ -112,14 +115,21 @@ const TABLE_FACTORY_IDENTIFIER: &str = "ICEBERG";
 
 fn set_iceberg_integration(state: &mut SessionState, options: IcebergIntegrationOptions) {
     iceberg_config_mut(state.config_mut());
-    let codec = LazyIcebergCodec::new(
+    let lazy = LazyIcebergCodec::new(
         Arc::clone(&options.storage_factory),
         options.iceberg_runtime.clone(),
     );
-    let assigned_codec = EagerIcebergCodec::new(
+    let eager = EagerIcebergCodec::new(
         Arc::clone(&options.storage_factory),
         options.iceberg_runtime.clone(),
     );
+    let (lazy, eager) = match options.file_io_codec {
+        Some(codec) => (
+            lazy.with_file_io_codec(Arc::clone(&codec)),
+            eager.with_file_io_codec(codec),
+        ),
+        None => (lazy, eager),
+    };
     state.table_factories_mut().insert(
         TABLE_FACTORY_IDENTIFIER.to_string(),
         Arc::new(IcebergTableProviderFactory::new_with_runtime(
@@ -128,28 +138,35 @@ fn set_iceberg_integration(state: &mut SessionState, options: IcebergIntegration
         )),
     );
     state.set_distributed_desired_task_count_handler(iceberg_desired_task_count);
-    // Assigned sources specialize their file groups; only lazy sources register feeds.
+    // Eager sources specialize their file groups; only lazy sources register feeds.
     state.set_distributed_scale_up_leaf_node_handler(iceberg_scale_up);
     state.set_distributed_work_unit_feed(|plan: &DataSourceExec| {
         plan.data_source()
             .downcast_ref::<LazyIcebergDataSource>()
             .map(LazyIcebergDataSource::feed)
     });
-    state.set_distributed_user_codec(codec);
-    state.set_distributed_user_codec(assigned_codec);
+    state.set_distributed_user_codec(lazy);
+    state.set_distributed_user_codec(eager);
 }
 
 impl IcebergExt for SessionStateBuilder {
     fn set_iceberg_integration(&mut self, options: IcebergIntegrationOptions) {
         iceberg_config_mut(self.config().get_or_insert_default());
-        let codec = LazyIcebergCodec::new(
+        let lazy = LazyIcebergCodec::new(
             Arc::clone(&options.storage_factory),
             options.iceberg_runtime.clone(),
         );
-        let assigned_codec = EagerIcebergCodec::new(
+        let eager = EagerIcebergCodec::new(
             Arc::clone(&options.storage_factory),
             options.iceberg_runtime.clone(),
         );
+        let (lazy, eager) = match options.file_io_codec {
+            Some(codec) => (
+                lazy.with_file_io_codec(Arc::clone(&codec)),
+                eager.with_file_io_codec(codec),
+            ),
+            None => (lazy, eager),
+        };
         self.table_factories().get_or_insert_default().insert(
             TABLE_FACTORY_IDENTIFIER.to_string(),
             Arc::new(IcebergTableProviderFactory::new_with_runtime(
@@ -165,8 +182,8 @@ impl IcebergExt for SessionStateBuilder {
                 .downcast_ref::<LazyIcebergDataSource>()
                 .map(LazyIcebergDataSource::feed)
         });
-        self.set_distributed_user_codec(codec);
-        self.set_distributed_user_codec(assigned_codec);
+        self.set_distributed_user_codec(lazy);
+        self.set_distributed_user_codec(eager);
     }
 
     delegate! {

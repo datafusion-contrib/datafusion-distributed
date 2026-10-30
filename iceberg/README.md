@@ -108,3 +108,22 @@ Eager source construction and regrouping are independent of distributed scheduli
 order), sharing descriptors and their reservation. Groups may select a subset but
 cannot repeat a position. The scale-up handler chooses the distributed assignment;
 the codec reconstructs it through the same public API on workers.
+
+### Custom file IO serialization
+
+Set `IcebergIntegrationOptions::file_io_codec` to customize how eager and lazy
+scans transport `FileIO`. Implement `IcebergFileIOCodec::encode` to return bytes
+and `decode` to rebuild file IO using those bytes and the worker's `TaskContext`.
+This lets a custom storage factory capture query-local observability without
+replacing the physical-plan codecs.
+
+```rust,ignore
+let state = state.with_iceberg_integration(IcebergIntegrationOptions {
+    file_io_codec: Some(Arc::new(MyFileIOCodec::new(/* application state */))),
+    ..Default::default()
+});
+```
+
+Register compatible codecs on coordinators and workers. With no custom codec,
+scans retain the existing storage-properties encoding. Custom payloads use a
+separate optional byte field; a receiver without a matching codec returns an error.
