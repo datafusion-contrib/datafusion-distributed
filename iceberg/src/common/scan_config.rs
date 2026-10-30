@@ -9,14 +9,17 @@ use datafusion::physical_plan::limit::LimitStream;
 use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use futures::TryStreamExt;
-use iceberg::arrow::ArrowReaderBuilder;
+use iceberg::arrow::{ArrowReader, ArrowReaderBuilder};
 use iceberg::io::FileIO;
 use iceberg::scan::FileScanTaskStream;
 use iceberg::spec::SnapshotRef;
+use std::fmt;
 use std::sync::Arc;
 
 /// Execution settings shared by assigned-file and feed-backed scans.
-#[derive(Debug, Clone)]
+/// Reader settings are captured from the planning or decoding context. Clones
+/// share the process-local reader; decoding constructs a fresh worker reader.
+#[derive(Clone)]
 pub(crate) struct ScanConfig {
     pub(crate) schema: SchemaRef,
     pub(crate) partitioning: Partitioning,
@@ -24,26 +27,45 @@ pub(crate) struct ScanConfig {
     pub(crate) metrics: ExecutionPlanMetricsSet,
     pub(crate) iceberg_file_io: FileIO,
     pub(crate) iceberg_runtime: iceberg::Runtime,
+    // Clones share the delete loader across this source's local partitions.
+    reader: ArrowReader,
 }
 
 impl ScanConfig {
+    pub(crate) fn new(
+        schema: SchemaRef,
+        partitioning: Partitioning,
+        fetch: Option<usize>,
+        iceberg_file_io: FileIO,
+        iceberg_runtime: iceberg::Runtime,
+        context: &TaskContext,
+    ) -> Self {
+        let config = IcebergConfig::from_config_options(context.session_config().options());
+        let reader = ArrowReaderBuilder::new(iceberg_file_io.clone(), iceberg_runtime.clone())
+            .with_batch_size(context.session_config().batch_size())
+            .with_data_file_concurrency_limit(config.data_file_concurrency_limit)
+            .with_row_group_filtering_enabled(config.row_group_filtering_enabled)
+            .with_row_selection_enabled(config.row_selection_enabled)
+            .build();
+        Self {
+            schema,
+            partitioning,
+            fetch,
+            metrics: Default::default(),
+            iceberg_file_io,
+            iceberg_runtime,
+            reader,
+        }
+    }
+
     pub(crate) fn open(
         &self,
         tasks: FileScanTaskStream,
         partition: usize,
-        context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        let config = IcebergConfig::from_task_context(&context);
-
-        let reader =
-            ArrowReaderBuilder::new(self.iceberg_file_io.clone(), self.iceberg_runtime.clone())
-                .with_batch_size(context.session_config().batch_size())
-                .with_data_file_concurrency_limit(config.data_file_concurrency_limit)
-                .with_row_group_filtering_enabled(config.row_group_filtering_enabled)
-                .with_row_selection_enabled(config.row_selection_enabled)
-                .build();
-
-        let stream = reader
+        let stream = self
+            .reader
+            .clone()
             .read(tasks)
             .map(|result| result.stream())
             .map_err(df_err)?
@@ -57,6 +79,19 @@ impl ScanConfig {
         let metrics = BaselineMetrics::new(&self.metrics, partition);
 
         Ok(Box::pin(LimitStream::new(stream, 0, self.fetch, metrics)))
+    }
+}
+
+impl fmt::Debug for ScanConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ScanConfig")
+            .field("schema", &self.schema)
+            .field("partitioning", &self.partitioning)
+            .field("fetch", &self.fetch)
+            .field("metrics", &self.metrics)
+            .field("iceberg_file_io", &self.iceberg_file_io)
+            .field("iceberg_runtime", &self.iceberg_runtime)
+            .finish_non_exhaustive()
     }
 }
 

@@ -175,14 +175,14 @@ impl EagerIcebergCodec {
             proto.custom_file_io.as_deref(),
             ctx,
         )?;
-        Ok(ScanConfig {
+        Ok(ScanConfig::new(
             schema,
             partitioning,
             fetch,
-            metrics: Default::default(),
             iceberg_file_io,
-            iceberg_runtime: self.iceberg_runtime.clone(),
-        })
+            self.iceberg_runtime.clone(),
+            ctx,
+        ))
     }
 
     fn encode_config(

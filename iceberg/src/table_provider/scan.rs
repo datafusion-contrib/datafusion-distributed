@@ -51,16 +51,15 @@ pub(crate) async fn plan_scan(
     let predicates = convert_filters_to_predicate(opts.filters);
     let partitioning =
         Partitioning::UnknownPartitioning(context.session_config().target_partitions());
-    let scan = ScanConfig {
-        schema: output_schema,
-        iceberg_file_io: table.file_io().clone(),
-        partitioning: partitioning.clone(),
-        fetch: opts.fetch,
-        metrics: Default::default(),
-        iceberg_runtime: opts
-            .iceberg_runtime
+    let scan = ScanConfig::new(
+        output_schema,
+        partitioning.clone(),
+        opts.fetch,
+        table.file_io().clone(),
+        opts.iceberg_runtime
             .unwrap_or_else(iceberg::Runtime::current),
-    };
+        &context,
+    );
     let planned = if IcebergConfig::from_task_context(&context).eager_file_planning {
         if partitioning.partition_count() == 0 {
             return config_err!("Iceberg scan requires at least one output partition");
