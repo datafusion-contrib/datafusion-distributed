@@ -55,10 +55,10 @@ Pass `--root` to a `prepare-*` command to create the dataset path under another
 local directory or an S3 prefix:
 
 ```shell
-cargo run -p datafusion-distributed-benchmarks --release -- prepare-tpch --root s3://my-bucket/datasets
-cargo run -p datafusion-distributed-benchmarks --release -- prepare-tpcds --root s3://my-bucket/datasets
+cargo run -p datafusion-distributed-benchmarks --release -- prepare-tpch --root s3://my-bucket
+cargo run -p datafusion-distributed-benchmarks --release -- prepare-tpcds --root s3://my-bucket
 cargo run -p datafusion-distributed-benchmarks --release -- prepare-clickbench --partition-end 1 \
-  --root s3://my-bucket/datasets
+  --root s3://my-bucket
 ```
 
 TPC-H and TPC-DS stream generated batches directly to Parquet in the
@@ -138,7 +138,7 @@ ICEBERG=$(cargo run -p datafusion-distributed-iceberg-benchmarks --release -- pr
 # Or write the Iceberg representation directly to S3:
 cargo run -p datafusion-distributed-iceberg-benchmarks --release -- prepare \
   --input $DATASET \
-  --output s3://my-bucket/datasets/tpch_iceberg/${DATASET#*tpch_parquet/}/target_file_size=1099511627776
+  --output s3://my-bucket/tpch_iceberg/${DATASET#*tpch_parquet/}/target_file_size=1099511627776
 ```
 
 Without `--output`, the conversion writes the matching `tpch_iceberg` dataset,
