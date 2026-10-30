@@ -9,6 +9,7 @@ use crate::{DistributedExt, DistributedTaskContext, NetworkShuffleExec, Stage, g
 use arrow::datatypes::Schema;
 use arrow_ipc::CompressionType;
 use datafusion::common::Result;
+use datafusion::common::runtime::JoinSet;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
@@ -17,7 +18,6 @@ use datafusion::physical_plan::{ExecutionPlan, PlanProperties};
 use futures::TryStreamExt;
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
-use tokio::task::JoinSet;
 use url::Url;
 use uuid::Uuid;
 

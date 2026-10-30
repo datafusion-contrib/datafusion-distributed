@@ -1,6 +1,7 @@
 use crate::common::df_err;
+use datafusion::common::runtime::JoinSet;
 use datafusion::common::stats::Precision;
-use datafusion::common::{ColumnStatistics, Result};
+use datafusion::common::{ColumnStatistics, HashMap, Result};
 use datafusion::error::DataFusionError;
 use datafusion::scalar::ScalarValue;
 use iceberg::puffin::APACHE_DATASKETCHES_THETA_V1;
@@ -9,7 +10,6 @@ use iceberg::spec::{
     SnapshotRef,
 };
 use iceberg::table::Table;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Getting number of distinct values for columns in a table
@@ -69,7 +69,7 @@ pub async fn compute_column_stats(
                 .filter(|manifest| manifest.content == ManifestContentType::Data)
                 .cloned()
                 .collect();
-            let mut join_set = tokio::task::JoinSet::new();
+            let mut join_set = JoinSet::new();
 
             for manifest_file in manifests {
                 let table = table.clone();

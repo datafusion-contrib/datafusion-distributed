@@ -1,4 +1,5 @@
 disallowed-types = [
+  { path = "tokio::task::JoinSet", reason = "Use datafusion::common::runtime::JoinSet to correctly propagate task context" },
   { path = "std::collections::HashMap", reason = "Use hashbrown::HashMap (or datafusion_common::HashMap) for better performance" },
   { path = "std::collections::HashSet", reason = "Use hashbrown::HashSet (or datafusion_common::HashSet) for better performance" },
 ]

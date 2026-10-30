@@ -1,4 +1,8 @@
 use std::borrow::Cow;
+#[allow(
+    clippy::disallowed_types,
+    reason = "CreateExternalTable options use std HashMap"
+)]
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -120,6 +124,10 @@ impl TableProviderFactory for IcebergTableProviderFactory {
     }
 }
 
+#[allow(
+    clippy::disallowed_types,
+    reason = "CreateExternalTable options use std HashMap"
+)]
 fn parse_snapshot_id(options: &HashMap<String, String>) -> Result<Option<i64>> {
     options
         .get(SNAPSHOT_ID_OPTION)

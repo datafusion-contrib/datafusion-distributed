@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use datafusion::common::DataFusionError;
+use datafusion::common::runtime::JoinSet;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_plan::execute_stream;
 use datafusion::prelude::SessionContext;
@@ -16,7 +17,6 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use structopt::StructOpt;
 use tokio::sync::Semaphore;
-use tokio::task::JoinSet;
 use url::Url;
 
 #[derive(StructOpt)]
