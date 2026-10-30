@@ -1,16 +1,17 @@
 use datafusion::common::exec_datafusion_err;
 use datafusion_distributed_benchmarks::datasets::{output::DatasetOutput, tpcds};
+use datafusion_distributed_benchmarks::results::dataset_path;
 use structopt::StructOpt;
 
 /// Prepare TPC-DS parquet files for benchmarks
 #[derive(Debug, StructOpt)]
 pub struct PrepareTpcdsOpt {
-    /// Empty local directory or s3://bucket/prefix
-    #[structopt(required = true, short = "o", long = "output")]
-    output_path: String,
+    /// Empty local directory or s3://bucket/prefix. Defaults to `testdata/tpcds/sf<sf>`.
+    #[structopt(short = "o", long = "output")]
+    output_path: Option<String>,
 
-    /// Number of partitions to produce. By default, uses only 1 partition.
-    #[structopt(short = "n", long = "partitions", default_value = "1")]
+    /// Number of partitions to produce.
+    #[structopt(short = "n", long = "partitions", default_value = "16")]
     partitions: usize,
 
     /// Scale factor of the TPC-DS data
@@ -20,8 +21,13 @@ pub struct PrepareTpcdsOpt {
 
 impl PrepareTpcdsOpt {
     pub async fn run(self) -> datafusion::common::Result<()> {
+        let output_path = self.output_path.unwrap_or_else(|| {
+            dataset_path(&format!("tpcds/sf{}", self.sf))
+                .display()
+                .to_string()
+        });
         tpcds::generate_data(
-            &DatasetOutput::new(&self.output_path).await?,
+            &DatasetOutput::new(&output_path).await?,
             self.sf,
             self.partitions,
         )
