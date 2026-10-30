@@ -8,10 +8,9 @@ use delegate::delegate;
 use iceberg::io::StorageFactory;
 use iceberg_storage_opendal::OpenDalResolvingStorageFactory;
 
-use crate::EagerIcebergCodec;
-use crate::LazyIcebergCodec;
 use crate::distributed_desired_task_count_handler::iceberg_desired_task_count;
 use crate::distributed_scale_up_handler::iceberg_scale_up;
+use crate::{EagerIcebergCodec, IcebergFileIOCodec, LazyIcebergCodec};
 use crate::{IcebergConfig, IcebergTableProviderFactory, LazyIcebergDataSource};
 
 /// Configuration required to register the Iceberg SQL integration.
@@ -68,6 +67,27 @@ pub trait IcebergExt: Sized {
     fn with_iceberg_column_stats_enabled(self, enabled: bool) -> Self;
 }
 
+/// Registers Iceberg sessions with application-defined file IO serialization.
+pub trait IcebergFileIOExt: Sized {
+    /// Registers the Iceberg integration with custom file IO serialization.
+    /// Use this instead of `set_iceberg_integration` when installing a file IO hook.
+    fn set_iceberg_integration_with_file_io_codec(
+        &mut self,
+        options: IcebergIntegrationOptions,
+        codec: Arc<dyn IcebergFileIOCodec>,
+    );
+
+    /// Registers the Iceberg integration with custom file IO serialization.
+    fn with_iceberg_integration_with_file_io_codec(
+        mut self,
+        options: IcebergIntegrationOptions,
+        codec: Arc<dyn IcebergFileIOCodec>,
+    ) -> Self {
+        self.set_iceberg_integration_with_file_io_codec(options, codec);
+        self
+    }
+}
+
 trait IcebergConfigExt {
     fn set_iceberg_data_file_concurrency_limit(&mut self, limit: usize);
     fn set_iceberg_row_group_filtering_enabled(&mut self, enabled: bool);
@@ -110,7 +130,11 @@ fn iceberg_config_mut(config: &mut SessionConfig) -> &mut IcebergConfig {
 
 const TABLE_FACTORY_IDENTIFIER: &str = "ICEBERG";
 
-fn set_iceberg_integration(state: &mut SessionState, options: IcebergIntegrationOptions) {
+fn set_iceberg_integration(
+    state: &mut SessionState,
+    options: IcebergIntegrationOptions,
+    file_io_codec: Option<Arc<dyn IcebergFileIOCodec>>,
+) {
     iceberg_config_mut(state.config_mut());
     let codec = LazyIcebergCodec::new(
         Arc::clone(&options.storage_factory),
@@ -120,6 +144,14 @@ fn set_iceberg_integration(state: &mut SessionState, options: IcebergIntegration
         Arc::clone(&options.storage_factory),
         options.iceberg_runtime.clone(),
     );
+    let assigned_codec = match &file_io_codec {
+        Some(file_io_codec) => assigned_codec.with_file_io_codec(Arc::clone(file_io_codec)),
+        None => assigned_codec,
+    };
+    let codec = match file_io_codec {
+        Some(file_io_codec) => codec.with_file_io_codec(file_io_codec),
+        None => codec,
+    };
     state.table_factories_mut().insert(
         TABLE_FACTORY_IDENTIFIER.to_string(),
         Arc::new(IcebergTableProviderFactory::new_with_runtime(
@@ -139,34 +171,50 @@ fn set_iceberg_integration(state: &mut SessionState, options: IcebergIntegration
     state.set_distributed_user_codec(assigned_codec);
 }
 
+fn set_iceberg_integration_on_builder(
+    builder: &mut SessionStateBuilder,
+    options: IcebergIntegrationOptions,
+    file_io_codec: Option<Arc<dyn IcebergFileIOCodec>>,
+) {
+    iceberg_config_mut(builder.config().get_or_insert_default());
+    let codec = LazyIcebergCodec::new(
+        Arc::clone(&options.storage_factory),
+        options.iceberg_runtime.clone(),
+    );
+    let assigned_codec = EagerIcebergCodec::new(
+        Arc::clone(&options.storage_factory),
+        options.iceberg_runtime.clone(),
+    );
+    let assigned_codec = match &file_io_codec {
+        Some(file_io_codec) => assigned_codec.with_file_io_codec(Arc::clone(file_io_codec)),
+        None => assigned_codec,
+    };
+    let codec = match file_io_codec {
+        Some(file_io_codec) => codec.with_file_io_codec(file_io_codec),
+        None => codec,
+    };
+    builder.table_factories().get_or_insert_default().insert(
+        TABLE_FACTORY_IDENTIFIER.to_string(),
+        Arc::new(IcebergTableProviderFactory::new_with_runtime(
+            options.storage_factory,
+            options.iceberg_runtime,
+        )),
+    );
+    builder.set_distributed_desired_task_count_handler(iceberg_desired_task_count);
+    // Same hooks as SessionState, registered before the builder creates the state.
+    builder.set_distributed_scale_up_leaf_node_handler(iceberg_scale_up);
+    builder.set_distributed_work_unit_feed(|plan: &DataSourceExec| {
+        plan.data_source()
+            .downcast_ref::<LazyIcebergDataSource>()
+            .map(LazyIcebergDataSource::feed)
+    });
+    builder.set_distributed_user_codec(codec);
+    builder.set_distributed_user_codec(assigned_codec);
+}
+
 impl IcebergExt for SessionStateBuilder {
     fn set_iceberg_integration(&mut self, options: IcebergIntegrationOptions) {
-        iceberg_config_mut(self.config().get_or_insert_default());
-        let codec = LazyIcebergCodec::new(
-            Arc::clone(&options.storage_factory),
-            options.iceberg_runtime.clone(),
-        );
-        let assigned_codec = EagerIcebergCodec::new(
-            Arc::clone(&options.storage_factory),
-            options.iceberg_runtime.clone(),
-        );
-        self.table_factories().get_or_insert_default().insert(
-            TABLE_FACTORY_IDENTIFIER.to_string(),
-            Arc::new(IcebergTableProviderFactory::new_with_runtime(
-                options.storage_factory,
-                options.iceberg_runtime,
-            )),
-        );
-        self.set_distributed_desired_task_count_handler(iceberg_desired_task_count);
-        // Same hooks as SessionState, registered before the builder creates the state.
-        self.set_distributed_scale_up_leaf_node_handler(iceberg_scale_up);
-        self.set_distributed_work_unit_feed(|plan: &DataSourceExec| {
-            plan.data_source()
-                .downcast_ref::<LazyIcebergDataSource>()
-                .map(LazyIcebergDataSource::feed)
-        });
-        self.set_distributed_user_codec(codec);
-        self.set_distributed_user_codec(assigned_codec);
+        set_iceberg_integration_on_builder(self, options, None);
     }
 
     delegate! {
@@ -203,7 +251,7 @@ impl IcebergExt for SessionStateBuilder {
 
 impl IcebergExt for SessionState {
     fn set_iceberg_integration(&mut self, options: IcebergIntegrationOptions) {
-        set_iceberg_integration(self, options);
+        set_iceberg_integration(self, options, None);
     }
 
     delegate! {
@@ -268,6 +316,38 @@ impl IcebergExt for SessionContext {
             #[call(set_iceberg_column_stats_enabled)]
             #[expr($;self)]
             fn with_iceberg_column_stats_enabled(mut self, enabled: bool) -> Self;
+        }
+    }
+}
+
+impl IcebergFileIOExt for SessionStateBuilder {
+    fn set_iceberg_integration_with_file_io_codec(
+        &mut self,
+        options: IcebergIntegrationOptions,
+        codec: Arc<dyn IcebergFileIOCodec>,
+    ) {
+        set_iceberg_integration_on_builder(self, options, Some(codec));
+    }
+}
+
+impl IcebergFileIOExt for SessionState {
+    fn set_iceberg_integration_with_file_io_codec(
+        &mut self,
+        options: IcebergIntegrationOptions,
+        codec: Arc<dyn IcebergFileIOCodec>,
+    ) {
+        set_iceberg_integration(self, options, Some(codec));
+    }
+}
+
+impl IcebergFileIOExt for SessionContext {
+    delegate! {
+        to self.state_ref().write() {
+            fn set_iceberg_integration_with_file_io_codec(
+                &mut self,
+                options: IcebergIntegrationOptions,
+                codec: Arc<dyn IcebergFileIOCodec>,
+            );
         }
     }
 }

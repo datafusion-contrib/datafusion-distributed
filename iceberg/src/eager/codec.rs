@@ -1,4 +1,5 @@
 use crate::EagerIcebergDataSource;
+use crate::IcebergFileIOCodec;
 use crate::common::scan_config::ScanConfig;
 use std::sync::Arc;
 
@@ -24,6 +25,7 @@ use crate::proto::generated::iceberg as pb;
 pub struct EagerIcebergCodec {
     storage_factory: Arc<dyn StorageFactory>,
     iceberg_runtime: iceberg::Runtime,
+    file_io_codec: Option<Arc<dyn IcebergFileIOCodec>>,
 }
 
 impl EagerIcebergCodec {
@@ -35,7 +37,15 @@ impl EagerIcebergCodec {
         Self {
             storage_factory,
             iceberg_runtime,
+            file_io_codec: None,
         }
+    }
+
+    /// Overrides file IO encoding and decoding while retaining the standard plan codec.
+    /// For session registration, use [`crate::IcebergFileIOExt`].
+    pub fn with_file_io_codec(mut self, codec: Arc<dyn IcebergFileIOCodec>) -> Self {
+        self.file_io_codec = Some(codec);
+        self
     }
 }
 
@@ -161,9 +171,12 @@ impl EagerIcebergCodec {
             .map(usize::try_from)
             .transpose()
             .map_err(|_| proto_error("Iceberg fetch limit does not fit in usize"))?;
-        let iceberg_file_io = FileIOBuilder::new(Arc::clone(&self.storage_factory))
-            .with_props(proto.storage_properties)
-            .build();
+        let iceberg_file_io = match &self.file_io_codec {
+            Some(codec) => codec.decode(proto.storage_properties, ctx)?,
+            None => FileIOBuilder::new(Arc::clone(&self.storage_factory))
+                .with_props(proto.storage_properties)
+                .build(),
+        };
         Ok(ScanConfig {
             schema,
             partitioning,
@@ -189,7 +202,10 @@ impl EagerIcebergCodec {
                 proto_converter,
             )?),
             fetch: source.fetch().map(|value| value as u64),
-            storage_properties: source.file_io().config().props().clone(),
+            storage_properties: match &self.file_io_codec {
+                Some(codec) => codec.encode(source.file_io())?,
+                None => source.file_io().config().props().clone(),
+            },
         })
     }
 }

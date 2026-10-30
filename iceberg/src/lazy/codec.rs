@@ -1,3 +1,4 @@
+use crate::IcebergFileIOCodec;
 use crate::common::scan_config::ScanConfig;
 use std::sync::Arc;
 
@@ -25,6 +26,7 @@ use crate::{IcebergWorkUnitFeed, LazyIcebergDataSource};
 pub struct LazyIcebergCodec {
     storage_factory: Arc<dyn StorageFactory>,
     iceberg_runtime: iceberg::Runtime,
+    file_io_codec: Option<Arc<dyn IcebergFileIOCodec>>,
 }
 
 impl LazyIcebergCodec {
@@ -36,7 +38,15 @@ impl LazyIcebergCodec {
         Self {
             storage_factory,
             iceberg_runtime,
+            file_io_codec: None,
         }
+    }
+
+    /// Overrides file IO encoding and decoding while retaining the standard plan codec.
+    /// For session registration, use [`crate::IcebergFileIOExt`].
+    pub fn with_file_io_codec(mut self, codec: Arc<dyn IcebergFileIOCodec>) -> Self {
+        self.file_io_codec = Some(codec);
+        self
     }
 }
 
@@ -89,9 +99,12 @@ impl PhysicalExtensionCodec for LazyIcebergCodec {
             .map(usize::try_from)
             .transpose()
             .map_err(|_| proto_error("Iceberg fetch limit does not fit in usize"))?;
-        let iceberg_file_io = FileIOBuilder::new(Arc::clone(&self.storage_factory))
-            .with_props(proto.storage_properties)
-            .build();
+        let iceberg_file_io = match &self.file_io_codec {
+            Some(codec) => codec.decode(proto.storage_properties, ctx)?,
+            None => FileIOBuilder::new(Arc::clone(&self.storage_factory))
+                .with_props(proto.storage_properties)
+                .build(),
+        };
 
         Ok(DataSourceExec::from_data_source(LazyIcebergDataSource {
             scan: ScanConfig {
@@ -136,7 +149,10 @@ impl PhysicalExtensionCodec for LazyIcebergCodec {
                 proto_converter,
             )?),
             fetch: source.scan.fetch.map(|value| value as u64),
-            storage_properties: source.scan.iceberg_file_io.config().props().clone(),
+            storage_properties: match &self.file_io_codec {
+                Some(codec) => codec.encode(&source.scan.iceberg_file_io)?,
+                None => source.scan.iceberg_file_io.config().props().clone(),
+            },
         };
         proto.encode(buf).map_err(|error| {
             proto_error(format!("failed to encode LazyIcebergDataSource: {error}"))

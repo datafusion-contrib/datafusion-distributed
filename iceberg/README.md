@@ -108,3 +108,31 @@ Eager source construction and regrouping are independent of distributed scheduli
 order), sharing descriptors and their reservation. Groups may select a subset but
 cannot repeat a position. The scale-up handler chooses the distributed assignment;
 the codec reconstructs it through the same public API on workers.
+
+### Custom file IO serialization
+
+Use `IcebergFileIOCodec` when workers need to resolve storage from custom metadata
+or bind it to the current query. Its default `encode` method transports the
+`FileIO` properties; `decode` receives those properties and the worker's
+`TaskContext`. Override `encode` too if you need a different property map.
+The hook runs for each decoded scan, so a query-bound storage factory can capture
+observability context there, including for reads that Iceberg spawns internally.
+
+Register the hook on both coordinator and worker sessions using `IcebergFileIOExt`
+in place of the usual `with_iceberg_integration` call:
+
+```rust,ignore
+use datafusion_distributed_iceberg::IcebergFileIOExt;
+
+let state = state.with_iceberg_integration_with_file_io_codec(
+    options,
+    Arc::new(MyFileIOCodec::new(/* application state */)),
+);
+```
+
+`MyFileIOCodec` implements `IcebergFileIOCodec`, not `PhysicalExtensionCodec`.
+For a query-bound factory, its `decode` method can return
+`FileIOBuilder::new(query_storage_factory).with_props(properties).build()`.
+The existing plan format is retained: custom metadata uses the storage-properties
+map, and the factory itself stays local. Coordinators and workers must use
+compatible hooks when overriding the encoded representation.
