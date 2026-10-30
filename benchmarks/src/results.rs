@@ -1,11 +1,12 @@
 use crate::RESULTS_DIR;
+use crate::datasets::common::workspace_root;
 use crate::stats::median;
 use datafusion::common::utils::get_available_parallelism;
 use datafusion::common::{Result, internal_datafusion_err};
 use serde::ser::SerializeSeq;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, SystemTime};
 
@@ -120,15 +121,10 @@ impl BenchmarkRun {
     }
 }
 
+/// The directory of a dataset under the repository's testdata directory, or the dataset itself
+/// when it is an absolute path.
 pub fn dataset_path(dataset: &str) -> PathBuf {
-    if Path::new(dataset).is_absolute() {
-        return PathBuf::from(dataset);
-    }
-    let (suite, variant) = dataset.split_once('/').unwrap_or((dataset, ""));
-    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("benchmarks crate is inside the repository");
-    repo_root.join("testdata").join(suite).join(variant)
+    workspace_root().join("testdata").join(dataset)
 }
 
 pub fn get_current_branch() -> String {

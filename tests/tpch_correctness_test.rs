@@ -5,13 +5,11 @@ mod tests {
     use datafusion_distributed::test_utils::in_memory_channel_resolver::start_in_memory_context;
     use datafusion_distributed::{DefaultSessionBuilder, DistributedExt};
     use datafusion_distributed_benchmarks::datasets::{
-        output::DatasetOutput, register_tables, tpch,
+        output::TESTDATA_ROOT, parquet_layout::ParquetLayout, register_tables, tpch,
     };
     use futures::TryStreamExt;
     use std::error::Error;
     use std::fmt::Display;
-    use std::fs;
-    use std::path::Path;
     use tokio::sync::OnceCell;
 
     const ADAPTIVE_ENV_VAR: &str = "ADAPTIVE";
@@ -20,7 +18,7 @@ mod tests {
     const FILE_SCAN_CONFIG_BYTES_PER_PARTITION: usize = 1;
     const CARDINALITY_TASK_COUNT_FACTOR: f64 = 1.5;
     const TPCH_SCALE_FACTOR: f64 = 1.0;
-    const TPCH_DATA_PARTS: usize = 16;
+    const TPCH_MAX_FILE_SIZE: usize = 24_000_000;
 
     #[tokio::test]
     async fn test_tpch_1() -> Result<(), Box<dyn Error>> {
@@ -164,7 +162,7 @@ mod tests {
         ctx: SessionContext,
         sql: String,
     ) -> Result<impl Display, Box<dyn Error>> {
-        let data_dir = ensure_tpch_data(TPCH_SCALE_FACTOR, TPCH_DATA_PARTS).await;
+        let data_dir = ensure_tpch_data(TPCH_SCALE_FACTOR, TPCH_MAX_FILE_SIZE).await;
         ctx.state_ref()
             .write()
             .config_mut()
@@ -205,19 +203,21 @@ mod tests {
     // OnceCell to ensure TPCH tables are generated only once for tests
     static INIT_TEST_TPCH_TABLES: OnceCell<()> = OnceCell::const_new();
 
-    pub async fn ensure_tpch_data(sf: f64, parts: usize) -> std::path::PathBuf {
-        let data_dir =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("testdata/tpch/correctness_sf{sf}"));
+    pub async fn ensure_tpch_data(sf: f64, max_file_size: usize) -> std::path::PathBuf {
+        let spec = tpch::TpchSpec {
+            location: TESTDATA_ROOT.to_string(),
+            scale_factor: sf,
+            layout: ParquetLayout {
+                max_file_size,
+                ..ParquetLayout::default()
+            },
+        };
+        let data_dir = std::path::PathBuf::from(spec.dataset());
         INIT_TEST_TPCH_TABLES
             .get_or_init(|| async {
-                if !fs::exists(&data_dir).unwrap() {
-                    let output = DatasetOutput::new(data_dir.to_str().unwrap())
-                        .await
-                        .unwrap();
-                    tpch::generate_data(&output, sf, parts, false)
-                        .await
-                        .expect("Failed to generate TPC-H data");
-                }
+                tpch::generate_data(&spec)
+                    .await
+                    .expect("Failed to generate TPC-H data");
             })
             .await;
         data_dir

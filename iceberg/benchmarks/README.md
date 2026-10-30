@@ -7,13 +7,16 @@ depending on Iceberg.
 From the repository root:
 
 ```shell
-cargo run -p datafusion-distributed-iceberg-benchmarks --release -- prepare \
-  --input testdata/tpch/sf1
+DATASET=$(cargo run -p datafusion-distributed-benchmarks --release -- prepare-tpch)
+ICEBERG=$(cargo run -p datafusion-distributed-iceberg-benchmarks --release -- prepare \
+  --input $DATASET)
 cargo run -p datafusion-distributed-iceberg-benchmarks --release -- run \
-  --workers 2 --dataset tpch/sf1_iceberg --partitions 2
+  --workers 2 --dataset $ICEBERG --partitions 2
 ```
 
-Preparation writes an immutable sibling dataset named `<input>_iceberg` by default.
+Preparation writes an immutable `tpch_iceberg` dataset by default, whose path repeats the input's
+parameters followed by `target_file_size`.
 Use `--output <directory|s3://bucket/prefix>` to choose its destination. The source must be a
-non-empty local Parquet dataset, and the destination must be empty. See the
+non-empty local Parquet dataset. Converting into a complete dataset does nothing, and any other
+non-empty destination is rejected. See the
 [benchmark guide](../../benchmarks/README.md#iceberg-benchmarks) for generation and comparison.

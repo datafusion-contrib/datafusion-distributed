@@ -1,10 +1,8 @@
+use super::parquet_layout::{ParquetLayout, TableColumns, TableWriter};
+use super::progress::dataset_progress;
 use super::{common, output::DatasetOutput};
-use arrow::datatypes::Schema;
-use arrow::record_batch::RecordBatch;
 use datafusion::common::{DataFusionError, exec_datafusion_err};
-use parquet::arrow::AsyncArrowWriter;
-use parquet::file::metadata::SortingColumn;
-use parquet::file::properties::WriterProperties;
+use indicatif::HumanCount;
 use tpchgen::generators::{
     CustomerGenerator, LineItemGenerator, NationGenerator, OrderGenerator, PartGenerator,
     PartSuppGenerator, RegionGenerator, SupplierGenerator,
@@ -14,20 +12,56 @@ use tpchgen_arrow::{
     SupplierArrow,
 };
 
-/// Columns that the pinned tpchgen already emits in order, used as Parquet
-/// `sorting_columns` for the `tpch/sorted_sf*` variant.
-///
-/// `partsupp` only records `ps_partkey`: `ps_suppkey` wraps within each part.
-const TABLE_SORT_KEYS: &[(&str, &[&str])] = &[
-    ("region", &["r_regionkey"]),
-    ("nation", &["n_nationkey"]),
-    ("customer", &["c_custkey"]),
-    ("supplier", &["s_suppkey"]),
-    ("part", &["p_partkey"]),
-    ("partsupp", &["ps_partkey"]),
-    ("orders", &["o_orderkey"]),
-    ("lineitem", &["l_orderkey", "l_linenumber"]),
-];
+/// The parameters a TPC-H dataset is generated with.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TpchSpec {
+    pub location: String,
+    pub scale_factor: f64,
+    pub layout: ParquetLayout,
+}
+
+impl TpchSpec {
+    /// The location of the dataset: `location` followed by a path that encodes every parameter.
+    pub fn dataset(&self) -> String {
+        format!(
+            "{}/tpch_parquet/scale_factor={}/{}",
+            self.location.trim_end_matches('/'),
+            self.scale_factor,
+            self.layout.path()
+        )
+    }
+}
+
+/// Per-table columns. Sort keys are the columns that the pinned tpchgen already emits in order;
+/// `partsupp` only records `ps_partkey` because `ps_suppkey` wraps within each part.
+fn table_columns(table: &str) -> TableColumns {
+    let (sort_keys, dictionary): (&'static [&'static str], &'static [&'static str]) = match table {
+        "region" => (&["r_regionkey"], &["r_name"]),
+        "nation" => (&["n_nationkey"], &["n_name"]),
+        "customer" => (&["c_custkey"], &["c_mktsegment"]),
+        "supplier" => (&["s_suppkey"], &[]),
+        "part" => (
+            &["p_partkey"],
+            &["p_mfgr", "p_brand", "p_type", "p_container"],
+        ),
+        "partsupp" => (&["ps_partkey"], &[]),
+        "orders" => (&["o_orderkey"], &["o_orderstatus", "o_orderpriority"]),
+        "lineitem" => (
+            &["l_orderkey", "l_linenumber"],
+            &[
+                "l_returnflag",
+                "l_linestatus",
+                "l_shipinstruct",
+                "l_shipmode",
+            ],
+        ),
+        _ => (&[], &[]),
+    };
+    TableColumns {
+        sort_keys,
+        dictionary,
+    }
+}
 
 pub fn get_queries() -> Vec<String> {
     common::get_queries("testdata/tpch/queries")
@@ -37,103 +71,44 @@ pub fn get_query(id: &str) -> Result<String, DataFusionError> {
     common::get_query("testdata/tpch/queries", id)
 }
 
-fn sort_keys(table: &str) -> Option<&'static [&'static str]> {
-    TABLE_SORT_KEYS
-        .iter()
-        .find(|(name, _)| *name == table)
-        .map(|(_, keys)| *keys)
-}
-
-fn writer_props(
-    schema: &Schema,
-    sort_cols: Option<&[&str]>,
-) -> Result<WriterProperties, Box<dyn std::error::Error>> {
-    let mut builder = WriterProperties::builder();
-    if let Some(sort_cols) = sort_cols {
-        let sorting_columns = sort_cols
-            .iter()
-            .map(|name| {
-                let idx = schema.index_of(name)?;
-                Ok(SortingColumn {
-                    column_idx: idx as i32,
-                    descending: false,
-                    nulls_first: false,
-                })
-            })
-            .collect::<Result<Vec<_>, arrow::error::ArrowError>>()?;
-        builder = builder.set_sorting_columns(Some(sorting_columns));
+/// Streams TPC-H Parquet files to a local directory or S3 prefix, unless it already holds the
+/// complete dataset.
+pub async fn generate_data(spec: &TpchSpec) -> Result<(), Box<dyn std::error::Error>> {
+    let sf = spec.scale_factor;
+    if !sf.is_finite() || sf <= 0.0 {
+        return Err(exec_datafusion_err!("scale factor must be positive").into());
     }
-    Ok(builder.build())
-}
-
-async fn generate_table<A>(
-    mut data_source: A,
-    table_name: &str,
-    output: &DatasetOutput,
-    sort_cols: Option<&[&str]>,
-) -> Result<(), Box<dyn std::error::Error>>
-where
-    A: Iterator<Item = RecordBatch>,
-{
-    if let Some(first_batch) = data_source.next() {
-        let file = output.writer(&format!("{table_name}.parquet"));
-        let props = writer_props(first_batch.schema().as_ref(), sort_cols)?;
-        let mut writer = AsyncArrowWriter::try_new(file, first_batch.schema(), Some(props))?;
-
-        writer.write(&first_batch).await?;
-
-        for batch in data_source {
-            writer.write(&batch).await?;
-        }
-
-        writer.close().await?;
+    let output = &DatasetOutput::new(&spec.dataset()).await?;
+    eprintln!("Generating {}", output.location());
+    if output.is_complete().await? {
+        return Ok(());
     }
 
-    Ok(())
-}
-
-/// Streams TPC-H Parquet files to an empty local directory or S3 prefix.
-pub async fn generate_data(
-    output: &DatasetOutput,
-    sf: f64,
-    parts: usize,
-    sorted: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    if !sf.is_finite() || sf <= 0.0 || parts == 0 || parts > i32::MAX as usize {
-        return Err(exec_datafusion_err!(
-            "scale factor and partitions must be positive, with partitions <= i32::MAX"
-        )
-        .into());
-    }
-    output.ensure_empty().await?;
-
+    // One step per generated table below.
+    let progress = dataset_progress(8, "tables")?;
     macro_rules! generate_tpch_table {
-        ($generator:ident, $arrow:ident, $name:literal, $parts:expr) => {{
-            let table_parts = $parts;
-            let keys = if sorted { sort_keys($name) } else { None };
-            for part in 1..=(table_parts as i32) {
-                generate_table(
-                    $arrow::new($generator::new(sf, part, table_parts as i32))
-                        .with_batch_size(1000),
-                    &format!("{}/{part}", $name),
-                    output,
-                    keys,
-                )
-                .await?;
+        ($generator:ident, $arrow:ident, $name:literal) => {
+            let mut writer = TableWriter::new(output, &spec.layout, $name, table_columns($name));
+            let mut rows = 0;
+            for batch in $arrow::new($generator::new(sf, 1, 1)).with_batch_size(1000) {
+                rows += batch.num_rows() as u64;
+                progress.set_message(format!("{}: {} rows", $name, HumanCount(rows)));
+                writer.write(batch).await?;
             }
-        }};
+            writer.close().await?;
+            progress.inc(1);
+        };
     }
 
-    // These generators ignore partition arguments and emit the entire fixed-size table.
-    // Using the requested partition count would duplicate every row in benchmark datasets.
-    generate_tpch_table!(RegionGenerator, RegionArrow, "region", 1);
-    generate_tpch_table!(NationGenerator, NationArrow, "nation", 1);
-    generate_tpch_table!(CustomerGenerator, CustomerArrow, "customer", parts);
-    generate_tpch_table!(SupplierGenerator, SupplierArrow, "supplier", parts);
-    generate_tpch_table!(PartGenerator, PartArrow, "part", parts);
-    generate_tpch_table!(PartSuppGenerator, PartSuppArrow, "partsupp", parts);
-    generate_tpch_table!(OrderGenerator, OrderArrow, "orders", parts);
-    generate_tpch_table!(LineItemGenerator, LineItemArrow, "lineitem", parts);
-    output.write("_SUCCESS", Vec::new()).await?;
+    generate_tpch_table!(RegionGenerator, RegionArrow, "region");
+    generate_tpch_table!(NationGenerator, NationArrow, "nation");
+    generate_tpch_table!(CustomerGenerator, CustomerArrow, "customer");
+    generate_tpch_table!(SupplierGenerator, SupplierArrow, "supplier");
+    generate_tpch_table!(PartGenerator, PartArrow, "part");
+    generate_tpch_table!(PartSuppGenerator, PartSuppArrow, "partsupp");
+    generate_tpch_table!(OrderGenerator, OrderArrow, "orders");
+    generate_tpch_table!(LineItemGenerator, LineItemArrow, "lineitem");
+    progress.finish_with_message("done");
+    output.mark_complete().await?;
     Ok(())
 }

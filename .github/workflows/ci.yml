@@ -112,8 +112,8 @@ jobs:
       - uses: ./.github/actions/setup
       - uses: actions/cache@v4
         with:
-          path: testdata/clickbench/
-          key: "data"
+          path: testdata/clickbench_parquet/
+          key: "clickbench_parquet"
       - run: cargo test --features clickbench --test clickbench_correctness_test
         env:
           ADAPTIVE: ${{ matrix.planning_mode == 'adaptive' }}
@@ -125,8 +125,8 @@ jobs:
       - uses: ./.github/actions/setup
       - uses: actions/cache@v4
         with:
-          path: testdata/clickbench/
-          key: "data"
+          path: testdata/clickbench_parquet/
+          key: "clickbench_parquet"
       - run: cargo test --features clickbench --test clickbench_plans_test
 
   iceberg-test:

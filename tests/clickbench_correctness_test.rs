@@ -13,10 +13,9 @@ mod tests {
         DefaultSessionBuilder, DistributedExec, DistributedExt, display_plan_ascii,
     };
     use datafusion_distributed_benchmarks::datasets::{
-        clickbench, output::DatasetOutput, register_tables,
+        clickbench, output::TESTDATA_ROOT, register_tables,
     };
     use std::ops::Range;
-    use std::path::Path;
     use std::sync::Arc;
     use tokio::sync::OnceCell;
 
@@ -267,20 +266,15 @@ mod tests {
     }
 
     async fn test_clickbench_query(query_id: &str) -> Result<()> {
-        let data_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
-            "testdata/clickbench/correctness_range{}-{}",
-            FILE_RANGE.start, FILE_RANGE.end
-        ));
+        let spec = clickbench::ClickBenchSpec {
+            location: TESTDATA_ROOT.to_string(),
+            partition_start: FILE_RANGE.start,
+            partition_end: FILE_RANGE.end,
+        };
+        let data_dir = std::path::PathBuf::from(spec.dataset());
         INIT_TEST_TPCDS_TABLES
             .get_or_init(|| async {
-                if !data_dir.exists() {
-                    let output = DatasetOutput::new(data_dir.to_str().unwrap())
-                        .await
-                        .unwrap();
-                    clickbench::generate_data(&output, FILE_RANGE)
-                        .await
-                        .unwrap();
-                }
+                clickbench::generate_data(&spec).await.unwrap();
             })
             .await;
 

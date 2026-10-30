@@ -33,11 +33,22 @@ use parquet::file::properties::WriterProperties;
 )]
 type CatalogProperties = std::collections::HashMap<String, String>;
 
-/// The sibling dataset directory used for the Iceberg representation.
-pub(super) fn output_path(input: &Path) -> PathBuf {
-    let mut name = input.file_name().unwrap_or_default().to_os_string();
-    name.push("_iceberg");
-    input.with_file_name(name)
+/// The dataset directory used for the Iceberg representation of `input`:
+/// `<root>/tpch_parquet/<key>=<value>/...` becomes
+/// `<root>/tpch_iceberg/<key>=<value>/.../target_file_size=<bytes>`, so the path records every
+/// parameter of both the Parquet generation and the conversion.
+pub(super) fn output_path(
+    input: &Path,
+    target_file_size: usize,
+) -> Result<PathBuf, DataFusionError> {
+    let input = input.to_string_lossy();
+    let Some((root, parameters)) = input.rsplit_once("_parquet/") else {
+        return exec_err!("{input} is not a <benchmark>_parquet dataset; pass --output");
+    };
+    let parameters = parameters.trim_end_matches('/');
+    Ok(PathBuf::from(format!(
+        "{root}_iceberg/{parameters}/target_file_size={target_file_size}"
+    )))
 }
 
 /// Converts prepared local Parquet tables, independently of their query suite.
@@ -53,7 +64,9 @@ pub(super) async fn convert_parquet_to_iceberg(
     if !source_dir.is_dir() {
         return Err(format!("source dataset does not exist: {}", source_dir.display()).into());
     }
-    output.ensure_empty().await?;
+    if output.is_complete().await? {
+        return Ok(());
+    }
 
     let tables = fs::read_dir(source_dir)?
         .map(|entry| entry.map(|entry| entry.path()))
@@ -106,7 +119,7 @@ pub(super) async fn convert_parquet_to_iceberg(
         )
         .await?;
     }
-    output.write("_SUCCESS", Vec::new()).await?;
+    output.mark_complete().await?;
     Ok(())
 }
 

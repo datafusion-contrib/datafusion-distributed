@@ -152,6 +152,20 @@ pub(crate) async fn serve_worker<B: BenchmarkBackend>(
         .await
 }
 
+/// The query suite of a dataset path such as `tpch_parquet/scale_factor=1/...`: the benchmark
+/// name in its last component that is not a `key=value` parameter.
+fn dataset_suite(dataset: &str) -> &str {
+    let suite = Path::new(dataset)
+        .components()
+        .rev()
+        .filter_map(|component| component.as_os_str().to_str())
+        .find(|name| !name.contains('='))
+        .unwrap_or("");
+    suite
+        .split_once('_')
+        .map_or(suite, |(suite, _format)| suite)
+}
+
 fn queries_for_dataset(dataset: &str) -> Result<Vec<(String, String)>, DataFusionError> {
     match dataset {
         "tpch" => tpch::get_queries()
@@ -234,18 +248,7 @@ impl RunOpt {
         let state = backend.configure_session(builder).build();
         let ctx = SessionContext::new_with_state(state);
         backend.register_tables(&ctx, &self.get_path()?).await?;
-        let dataset_suite = if Path::new(&self.dataset).is_absolute() {
-            // Absolute paths follow the same <suite>/<variant> convention.
-            Path::new(&self.dataset)
-                .parent()
-                .and_then(Path::file_name)
-                .and_then(|name| name.to_str())
-                .unwrap_or("")
-        } else {
-            self.dataset
-                .split_once('/')
-                .map_or(self.dataset.as_str(), |(suite, _)| suite)
-        };
+        let dataset_suite = dataset_suite(&self.dataset);
 
         println!("Running benchmarks with the following options: {self:?}");
         let mut benchmark_run = BenchmarkRun::new(self.dataset.clone(), ports.len());

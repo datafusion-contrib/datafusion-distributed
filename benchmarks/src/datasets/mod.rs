@@ -1,6 +1,8 @@
 pub mod clickbench;
-mod common;
+pub(crate) mod common;
 pub mod output;
+pub mod parquet_layout;
+mod progress;
 pub mod tpcds;
 pub mod tpch;
 
