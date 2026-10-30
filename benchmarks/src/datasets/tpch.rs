@@ -1,6 +1,8 @@
 use super::parquet_layout::{ParquetLayout, TableColumns, TableWriter};
+use super::progress::dataset_progress;
 use super::{common, output::DatasetOutput};
 use datafusion::common::{DataFusionError, exec_datafusion_err};
+use indicatif::HumanCount;
 use tpchgen::generators::{
     CustomerGenerator, LineItemGenerator, NationGenerator, OrderGenerator, PartGenerator,
     PartSuppGenerator, RegionGenerator, SupplierGenerator,
@@ -82,13 +84,19 @@ pub async fn generate_data(spec: &TpchSpec) -> Result<(), Box<dyn std::error::Er
         return Ok(());
     }
 
+    // One step per generated table below.
+    let progress = dataset_progress(8, "tables")?;
     macro_rules! generate_tpch_table {
         ($generator:ident, $arrow:ident, $name:literal) => {
             let mut writer = TableWriter::new(output, &spec.layout, $name, table_columns($name));
+            let mut rows = 0;
             for batch in $arrow::new($generator::new(sf, 1, 1)).with_batch_size(1000) {
+                rows += batch.num_rows() as u64;
+                progress.set_message(format!("{}: {} rows", $name, HumanCount(rows)));
                 writer.write(batch).await?;
             }
             writer.close().await?;
+            progress.inc(1);
         };
     }
 
@@ -100,6 +108,7 @@ pub async fn generate_data(spec: &TpchSpec) -> Result<(), Box<dyn std::error::Er
     generate_tpch_table!(PartSuppGenerator, PartSuppArrow, "partsupp");
     generate_tpch_table!(OrderGenerator, OrderArrow, "orders");
     generate_tpch_table!(LineItemGenerator, LineItemArrow, "lineitem");
+    progress.finish_with_message("done");
     output.mark_complete().await?;
     Ok(())
 }

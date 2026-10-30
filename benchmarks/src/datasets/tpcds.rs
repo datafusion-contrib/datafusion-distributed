@@ -1,9 +1,11 @@
 use super::parquet_layout::{ParquetLayout, TableColumns, TableWriter};
+use super::progress::dataset_progress;
 use super::{common, output::DatasetOutput};
 use arrow::datatypes::{Field, Schema};
 use arrow::record_batch::RecordBatch;
 use datafusion::common::exec_datafusion_err;
 use datafusion::error::DataFusionError;
+use indicatif::{HumanCount, ProgressBar};
 use std::sync::Arc;
 use tpcdsgen::config::Options;
 use tpcdsgen_arrow::{
@@ -90,15 +92,20 @@ async fn generate_table<A>(
     table_name: &str,
     output: &DatasetOutput,
     spec: &TpcdsSpec,
+    progress: &ProgressBar,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
     A: Iterator<Item = RecordBatch>,
 {
     let mut writer = TableWriter::new(output, &spec.layout, table_name, table_columns(table_name));
+    let mut rows = 0;
     for batch in data_source {
+        rows += batch.num_rows() as u64;
+        progress.set_message(format!("{table_name}: {} rows", HumanCount(rows)));
         writer.write(canonical_names(batch, table_name)?).await?;
     }
     writer.close().await?;
+    progress.inc(1);
     Ok(())
 }
 
@@ -156,6 +163,8 @@ pub async fn generate_data(spec: &TpcdsSpec) -> Result<(), Box<dyn std::error::E
     options.scale = spec.scale_factor;
     let session = options.to_session()?;
 
+    // One step per generated table below.
+    let progress = dataset_progress(24, "tables")?;
     macro_rules! generate_tpcds_table {
         ($generator:ident, $name:literal) => {
             generate_table(
@@ -163,6 +172,7 @@ pub async fn generate_data(spec: &TpcdsSpec) -> Result<(), Box<dyn std::error::E
                 $name,
                 output,
                 spec,
+                &progress,
             )
             .await?
         };
@@ -192,6 +202,7 @@ pub async fn generate_data(spec: &TpcdsSpec) -> Result<(), Box<dyn std::error::E
     generate_tpcds_table!(WebReturnsArrow, "web_returns");
     generate_tpcds_table!(WebSalesArrow, "web_sales");
     generate_tpcds_table!(WebSiteArrow, "web_site");
+    progress.finish_with_message("done");
     output.mark_complete().await?;
     Ok(())
 }

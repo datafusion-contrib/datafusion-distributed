@@ -1,3 +1,4 @@
+use super::progress::dataset_progress;
 use super::{common, output::DatasetOutput};
 use arrow::array::Array;
 use arrow::compute::cast;
@@ -64,8 +65,6 @@ async fn download_benchmark(
     // Write to file
     let mut file = fs::File::create(&dest_path)?;
     file.write_all(&bytes)?;
-
-    eprintln!("Downloaded to {}", dest_path.display());
 
     Ok(())
 }
@@ -146,7 +145,6 @@ async fn fix_event_dates(path: PathBuf) -> Result<(), Box<dyn std::error::Error>
         }
 
         fs::rename(&temp_path, &file_path)?;
-        eprintln!("Fixed EventDate in {}", file_path.display());
     }
 
     Ok(())
@@ -167,15 +165,21 @@ pub async fn generate_data(spec: &ClickBenchSpec) -> Result<(), Box<dyn std::err
     if output.is_complete().await? {
         return Ok(());
     }
+    let progress = dataset_progress(range.len(), "files")?;
     for part in range {
         let relative = format!("hits/{part}.parquet");
         let staging = tempfile::tempdir()?;
+        progress.set_message(format!("{relative}: downloading"));
         download_benchmark(staging.path().join(&relative), part).await?;
+        progress.set_message(format!("{relative}: fixing EventDate"));
         fix_event_dates(staging.path().to_path_buf()).await?;
+        progress.set_message(format!("{relative}: uploading"));
         output
             .copy_file(&relative, &staging.path().join(&relative))
             .await?;
+        progress.inc(1);
     }
+    progress.finish_with_message("done");
     output.mark_complete().await?;
     Ok(())
 }
