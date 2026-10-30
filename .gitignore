@@ -1,5 +1,7 @@
 /.idea
 /target
+testdata/*_parquet/
+testdata/*_iceberg/
 testdata/tpch/*
 !testdata/tpch/queries
 testdata/tpcds/*

@@ -12,7 +12,8 @@ What counts as evidence for a performance claim is defined in
 
 ```shell
 cargo build -p datafusion-distributed-benchmarks --release
-target/release/dfbench run --dataset tpch/sf10 --workers 8 -i 5
+DATASET=$(target/release/dfbench prepare-tpch --scale-factor 10)   # only the path goes to stdout
+target/release/dfbench run --dataset $DATASET --workers 8 -i 5
 ```
 
 `dfbench run --help` lists all options.
@@ -24,19 +25,23 @@ same `run` options:
 
 ```shell
 cargo build -p datafusion-distributed-iceberg-benchmarks --release
-target/release/dfbench-iceberg prepare --input testdata/tpch/sf10   # writes testdata/tpch/sf10_iceberg
-target/release/dfbench-iceberg run --dataset tpch/sf10_iceberg --workers 8 -i 5
-target/release/dfbench compare tpch/sf10 tpch/sf10_iceberg          # Parquet vs Iceberg results
+ICEBERG=$(target/release/dfbench-iceberg prepare --input $DATASET)
+target/release/dfbench-iceberg run --dataset $ICEBERG --workers 8 -i 5
+target/release/dfbench compare $DATASET $ICEBERG                     # Parquet vs Iceberg results
 ```
 
-`prepare` converts an existing Parquet dataset and needs an empty output directory. Iceberg runs
-always load manifest column statistics. See `benchmarks/README.md` for S3 output and other options.
+`prepare` converts an existing Parquet dataset; converting into a complete dataset is a no-op, so
+remove the Iceberg copy after regenerating its source. Iceberg runs always load manifest column
+statistics. See `benchmarks/README.md` for S3 output and other options.
 
 ## Things worth knowing
 
-- `--dataset tpch/sf10` reads `testdata/tpch/sf10`; generate missing data with
-  `dfbench prepare-tpch --scale-factor 10` (likewise `prepare-tpcds --sf`, `prepare-clickbench`),
-  which writes to that path by default and refuses a non-empty directory.
+- Dataset names are `<suite>_<format>/<key>=<value>/...` paths under `testdata/` that record
+  every generation parameter; `prepare-*` prints them. Generating a complete dataset again is a
+  no-op; an interrupted one must be removed before regenerating. Layout options
+  (`--max-file-size`, `--dictionary`, `--sorted`) are listed in `benchmarks/README.md`.
+- DuckDB and Spark treat the `key=value` directories as Hive partitions and add them as columns;
+  pass `hive_partitioning=false` when inspecting files with DuckDB.
 - Query ids are `q1`, `q18`, … (`-q q1,q18`). An unknown id silently runs nothing.
 - `--workers N` runs N localhost workers in the same process and Tokio runtime as the runner,
   so a profiler attached to `dfbench` sees everything.
@@ -49,7 +54,7 @@ always load manifest column statistics. See `benchmarks/README.md` for S3 output
   (`npm install -g @firefox-devtools/profiler-cli@latest`; run `profiler-cli guide` first):
 
   ```shell
-  samply record --save-only -o /tmp/x.json.gz "$PWD"/target/release/dfbench run --dataset tpch/sf10 ...
+  samply record --save-only -o /tmp/x.json.gz "$PWD"/target/release/dfbench run --dataset $DATASET ...
   profiler-cli load /tmp/x.json.gz --with-samply
   ```
 

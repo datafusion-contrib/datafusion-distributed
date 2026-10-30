@@ -13,10 +13,10 @@ mod tests {
         DefaultSessionBuilder, DistributedExec, DistributedExt, display_plan_ascii,
     };
     use datafusion_distributed_benchmarks::datasets::{
-        output::DatasetOutput, register_tables, tpcds,
+        output::TESTDATA_ROOT,
+        parquet_layout::{Dictionary, ParquetLayout},
+        register_tables, tpcds,
     };
-    use std::fs;
-    use std::path::Path;
     use std::sync::Arc;
     use tokio::sync::OnceCell;
 
@@ -26,7 +26,7 @@ mod tests {
     const FILE_SCAN_CONFIG_BYTES_PER_PARTITION: usize = 1;
     const CARDINALITY_TASK_COUNT_FACTOR: f64 = 2.0;
     const SF: f64 = 1.0;
-    const PARQUET_PARTITIONS: usize = 4;
+    const MAX_FILE_SIZE: usize = 128 * 1024 * 1024;
 
     #[tokio::test]
     async fn test_tpcds_shard01_q1() -> Result<()> {
@@ -552,19 +552,19 @@ mod tests {
     }
 
     async fn test_tpcds_query(query_id: &str) -> Result<()> {
-        let data_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
-            "testdata/tpcds/correctness_sf{SF}_partitions{PARQUET_PARTITIONS}"
-        ));
+        let spec = tpcds::TpcdsSpec {
+            location: TESTDATA_ROOT.to_string(),
+            scale_factor: SF,
+            layout: ParquetLayout {
+                max_file_size: MAX_FILE_SIZE,
+                dictionary: Dictionary::Arrow,
+                ..ParquetLayout::default()
+            },
+        };
+        let data_dir = std::path::PathBuf::from(spec.dataset());
         INIT_TEST_TPCDS_TABLES
             .get_or_init(|| async {
-                if !fs::exists(&data_dir).unwrap_or(false) {
-                    let output = DatasetOutput::new(data_dir.to_str().unwrap())
-                        .await
-                        .unwrap();
-                    tpcds::generate_data(&output, SF, PARQUET_PARTITIONS)
-                        .await
-                        .unwrap();
-                }
+                tpcds::generate_data(&spec).await.unwrap();
             })
             .await;
 

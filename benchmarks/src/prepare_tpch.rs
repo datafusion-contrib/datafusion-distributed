@@ -16,48 +16,38 @@
 // under the License.
 
 use datafusion::common::{Result, exec_datafusion_err};
-use datafusion_distributed_benchmarks::datasets::{output::DatasetOutput, tpch::generate_data};
-use datafusion_distributed_benchmarks::results::dataset_path;
+use datafusion_distributed_benchmarks::datasets::output::TESTDATA_ROOT;
+use datafusion_distributed_benchmarks::datasets::parquet_layout::ParquetLayout;
+use datafusion_distributed_benchmarks::datasets::tpch::{TpchSpec, generate_data};
 use structopt::StructOpt;
 
 /// Generate TPC-H parquet files for benchmarks
 #[derive(Debug, StructOpt)]
 pub struct PrepareTpchOpt {
-    /// Empty local directory or s3://bucket/prefix for generated Parquet files. Defaults to
-    /// `testdata/tpch/sf<scale-factor>`, or `testdata/tpch/sorted_sf<scale-factor>` with `--sorted`.
-    #[structopt(short = "o", long = "output")]
-    output_path: Option<String>,
+    /// Local directory or s3://bucket/prefix under which the dataset path is created
+    #[structopt(long, default_value = TESTDATA_ROOT.as_str())]
+    root: String,
 
-    /// Scale factor (e.g. 1.0, 10.0, 100.0)
+    /// Scale factor (e.g. 1, 10, 100)
     #[structopt(short = "s", long = "scale-factor", default_value = "1")]
     scale_factor: f64,
 
-    /// Number of partitions (parquet files per table)
-    #[structopt(short = "n", long = "partitions", default_value = "16")]
-    partitions: usize,
-
-    /// Write Parquet `sorting_columns` metadata for the order tpchgen already emits
-    #[structopt(long)]
-    sorted: bool,
+    #[structopt(flatten)]
+    layout: ParquetLayout,
 }
 
 impl PrepareTpchOpt {
     pub async fn run(self) -> Result<()> {
-        let label = if self.sorted { "sorted TPC-H" } else { "TPC-H" };
-        let output_path = self.output_path.unwrap_or_else(|| {
-            let variant = if self.sorted { "sorted_sf" } else { "sf" };
-            let dataset = format!("tpch/{variant}{}", self.scale_factor);
-            dataset_path(&dataset).display().to_string()
-        });
-        println!(
-            "Generating {label} data at scale factor {} with {} partitions in '{output_path}'",
-            self.scale_factor, self.partitions
-        );
-        let output = DatasetOutput::new(&output_path).await?;
-        generate_data(&output, self.scale_factor, self.partitions, self.sorted)
+        let spec = TpchSpec {
+            location: self.root,
+            scale_factor: self.scale_factor,
+            layout: self.layout,
+        };
+        generate_data(&spec)
             .await
             .map_err(|e| exec_datafusion_err!("{e}"))?;
-        println!("{label} data generation complete.");
+        // The only output on stdout, so that `DATASET=$(dfbench prepare-...)` captures it.
+        println!("{}", spec.dataset());
         Ok(())
     }
 }

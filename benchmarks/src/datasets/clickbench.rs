@@ -8,12 +8,32 @@ use parquet::arrow::arrow_writer::ArrowWriter;
 use parquet::file::properties::WriterProperties;
 use std::fs;
 use std::io::Write;
-use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 const URL: &str =
     "https://datasets.clickhouse.com/hits_compatible/athena_partitioned/hits_{}.parquet";
+
+/// The parameters a ClickBench dataset is prepared with: the range of the 100 source files to
+/// download.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClickBenchSpec {
+    pub location: String,
+    pub partition_start: usize,
+    pub partition_end: usize,
+}
+
+impl ClickBenchSpec {
+    /// The location of the dataset: `location` followed by a path that encodes every parameter.
+    pub fn dataset(&self) -> String {
+        format!(
+            "{}/clickbench_parquet/partition_start={}/partition_end={}",
+            self.location.trim_end_matches('/'),
+            self.partition_start,
+            self.partition_end
+        )
+    }
+}
 
 pub fn get_queries() -> Vec<String> {
     common::get_queries("testdata/clickbench/queries")
@@ -45,7 +65,7 @@ async fn download_benchmark(
     let mut file = fs::File::create(&dest_path)?;
     file.write_all(&bytes)?;
 
-    println!("Downloaded to {}", dest_path.display());
+    eprintln!("Downloaded to {}", dest_path.display());
 
     Ok(())
 }
@@ -126,33 +146,36 @@ async fn fix_event_dates(path: PathBuf) -> Result<(), Box<dyn std::error::Error>
         }
 
         fs::rename(&temp_path, &file_path)?;
-        println!("Fixed EventDate in {}", file_path.display());
+        eprintln!("Fixed EventDate in {}", file_path.display());
     }
 
     Ok(())
 }
 
-/// Prepares and uploads one source partition at a time, bounding temporary disk usage.
-pub async fn generate_data(
-    output: &DatasetOutput,
-    range: Range<usize>,
-) -> Result<(), Box<dyn std::error::Error>> {
+/// Prepares and uploads one source partition at a time, bounding temporary disk usage, unless
+/// the output already holds the complete dataset.
+pub async fn generate_data(spec: &ClickBenchSpec) -> Result<(), Box<dyn std::error::Error>> {
+    let range = spec.partition_start..spec.partition_end;
     if range.is_empty() || range.end > 100 {
         return Err(exec_datafusion_err!(
             "ClickBench requires a non-empty partition range within 0..100"
         )
         .into());
     }
-    output.ensure_empty().await?;
+    let output = DatasetOutput::new(&spec.dataset()).await?;
+    eprintln!("Preparing {}", output.location());
+    if output.is_complete().await? {
+        return Ok(());
+    }
     for part in range {
-        let staging = tempfile::tempdir()?;
         let relative = format!("hits/{part}.parquet");
+        let staging = tempfile::tempdir()?;
         download_benchmark(staging.path().join(&relative), part).await?;
         fix_event_dates(staging.path().to_path_buf()).await?;
         output
             .copy_file(&relative, &staging.path().join(&relative))
             .await?;
     }
-    output.write("_SUCCESS", Vec::new()).await?;
+    output.mark_complete().await?;
     Ok(())
 }

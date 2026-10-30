@@ -11,7 +11,7 @@ mod tests {
         DistributedExt, SessionStateBuilderExt, Worker, WorkerQueryContext,
     };
     use datafusion_distributed_benchmarks::datasets::{
-        output::DatasetOutput, register_tables, tpch,
+        output::TESTDATA_ROOT, parquet_layout::ParquetLayout, register_tables, tpch,
     };
     use moka::future::FutureExt;
     use rand::SeedableRng;
@@ -19,10 +19,8 @@ mod tests {
     use std::collections::VecDeque;
     use std::convert::Infallible;
     use std::env;
-    use std::fs;
     use std::future::Future;
     use std::ops::Range;
-    use std::path::Path;
     use std::pin::Pin;
     use std::sync::{Arc, Mutex};
     use std::task::{Context, Poll};
@@ -41,7 +39,7 @@ mod tests {
     const CONCURRENT_QUERIES_PER_CLIENT_RANDOM_RANGE: Range<usize> = 1..4;
     const CONCURRENT_CLIENTS: usize = 10;
     const TPCH_SCALE_FACTOR: f64 = 0.1;
-    const TPCH_DATA_PARTS: usize = 16;
+    const TPCH_MAX_FILE_SIZE: usize = 2_000_000;
 
     fn seed() -> u64 {
         env::var("CHAOS_SEED").map_or_else(
@@ -327,18 +325,20 @@ mod tests {
     static INIT_TEST_TPCH_TABLES: OnceCell<()> = OnceCell::const_new();
 
     pub async fn ensure_tpch_data() -> std::path::PathBuf {
-        let data_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join(format!("testdata/tpch/chaos_sf{TPCH_SCALE_FACTOR}"));
+        let spec = tpch::TpchSpec {
+            location: TESTDATA_ROOT.to_string(),
+            scale_factor: TPCH_SCALE_FACTOR,
+            layout: ParquetLayout {
+                max_file_size: TPCH_MAX_FILE_SIZE,
+                ..ParquetLayout::default()
+            },
+        };
+        let data_dir = std::path::PathBuf::from(spec.dataset());
         INIT_TEST_TPCH_TABLES
             .get_or_init(|| async {
-                if !fs::exists(&data_dir).unwrap() {
-                    let output = DatasetOutput::new(data_dir.to_str().unwrap())
-                        .await
-                        .unwrap();
-                    tpch::generate_data(&output, TPCH_SCALE_FACTOR, TPCH_DATA_PARTS, false)
-                        .await
-                        .expect("Failed to generate TPC-H data");
-                }
+                tpch::generate_data(&spec)
+                    .await
+                    .expect("Failed to generate TPC-H data");
             })
             .await;
         data_dir

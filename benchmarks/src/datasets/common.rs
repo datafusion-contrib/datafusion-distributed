@@ -4,7 +4,7 @@ use std::fs;
 use std::path::Path;
 
 /// Returns the workspace root directory (parent of the benchmarks crate).
-fn workspace_root() -> &'static Path {
+pub(crate) fn workspace_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("benchmarks crate should be inside a workspace")

@@ -7,12 +7,12 @@ use datafusion_distributed::{
     DistributedExt, DistributedMetricsFormat, SessionStateBuilderExt, WorkerResolver,
     display_plan_ascii,
 };
-use datafusion_distributed_benchmarks::datasets::{output::DatasetOutput, register_tables, tpcds};
+use datafusion_distributed_benchmarks::datasets::{
+    output::TESTDATA_ROOT, parquet_layout::ParquetLayout, register_tables, tpcds,
+};
 use futures::TryStreamExt;
 use std::error::Error;
-use std::fs;
 use std::num::NonZeroUsize;
-use std::path::Path;
 use std::sync::Arc;
 use structopt::StructOpt;
 use tokio::sync::Semaphore;
@@ -29,8 +29,8 @@ struct Args {
     #[structopt(long, default_value = "1.0")]
     scale_factor: f64,
 
-    #[structopt(long, default_value = "4")]
-    parquet_partitions: usize,
+    #[structopt(flatten)]
+    layout: ParquetLayout,
 
     /// Specific query to run (e.g., "q1"), or "all" to run all queries
     #[structopt(long, default_value = "all")]
@@ -57,7 +57,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     run_queries(
         args.cluster_ports,
         args.scale_factor,
-        args.parquet_partitions,
+        args.layout,
         &args.query,
         args.concurrency,
         args.explain_analyze,
@@ -69,26 +69,25 @@ async fn main() -> Result<(), Box<dyn Error>> {
 async fn run_queries(
     cluster_ports: Vec<u16>,
     scale_factor: f64,
-    parquet_partitions: usize,
+    layout: ParquetLayout,
     query_id: &str,
     concurrency: Option<NonZeroUsize>,
     explain_analyze: bool,
     show_distributed_plan: bool,
 ) -> Result<(), Box<dyn Error>> {
+    let spec = tpcds::TpcdsSpec {
+        location: TESTDATA_ROOT.to_string(),
+        scale_factor,
+        layout,
+    };
     println!(
-        "Running TPC-DS queries (SF={scale_factor}, partitions={parquet_partitions}) against workers: {cluster_ports:?}"
+        "Running TPC-DS queries ({}) against workers: {cluster_ports:?}",
+        spec.dataset()
     );
 
-    // Generate test data if needed
-    let data_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
-        "testdata/tpcds/correctness_sf{scale_factor}_partitions{parquet_partitions}",
-    ));
-
-    if !fs::exists(&data_dir).unwrap_or(false) {
-        println!("Generating TPC-DS data at {data_dir:?}...");
-        let output = DatasetOutput::new(data_dir.to_str().unwrap()).await?;
-        tpcds::generate_data(&output, scale_factor, parquet_partitions).await?;
-    }
+    // Generate test data if needed. Generation skips a dataset that is already complete.
+    tpcds::generate_data(&spec).await?;
+    let data_dir = std::path::PathBuf::from(spec.dataset());
 
     // Create distributed context
     let localhost_resolver = LocalhostWorkerResolver {

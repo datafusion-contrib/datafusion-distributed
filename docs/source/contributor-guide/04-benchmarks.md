@@ -25,10 +25,13 @@ there are no performance regressions.
 First, a TPCH dataset must be generated:
 
 ```bash
-cargo run -p datafusion-distributed-benchmarks --release -- prepare-tpch --scale-factor 10
+DATASET=$(cargo run -p datafusion-distributed-benchmarks --release -- prepare-tpch --scale-factor 10)
 ```
 
-This writes `testdata/tpch/sf10` and might take a while.
+This might take a while. It prints the dataset's path under `testdata/`, which records every
+generation parameter, and nothing else on stdout. See the
+[benchmarks README](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/benchmarks/README.md)
+for the available layout options.
 
 ### Running Benchmarks
 
@@ -37,7 +40,7 @@ good setup is to run 8 local workers. This provides a relatively accurate
 benchmarking environment for a distributed system locally.
 
 ```bash
-cargo run -p datafusion-distributed-benchmarks --release -- run --workers 8 --dataset tpch/sf10
+cargo run -p datafusion-distributed-benchmarks --release -- run --workers 8 --dataset $DATASET
 ```
 
 Subsequent runs will compare results against the previous one, so a useful trick

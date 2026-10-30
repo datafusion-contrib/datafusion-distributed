@@ -1,5 +1,5 @@
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use aws_credential_types::provider::ProvideCredentials;
 use datafusion::common::{Result, exec_datafusion_err, exec_err};
@@ -7,10 +7,24 @@ use datafusion::object_store::aws::{AmazonS3Builder, AwsCredential};
 use datafusion::object_store::buffered::BufWriter;
 use datafusion::object_store::local::LocalFileSystem;
 use datafusion::object_store::path::Path as ObjectPath;
-use datafusion::object_store::{ObjectStore, ObjectStoreExt, StaticCredentialProvider};
+use datafusion::object_store::{
+    Error as ObjectStoreError, ObjectStore, ObjectStoreExt, StaticCredentialProvider,
+};
 use futures::TryStreamExt;
 use tokio::io::AsyncWriteExt;
 use url::Url;
+
+use crate::datasets::common::workspace_root;
+
+const SUCCESS: &str = "_SUCCESS";
+
+/// The repository's testdata directory, the default location under which datasets are generated.
+pub static TESTDATA_ROOT: LazyLock<String> = LazyLock::new(|| {
+    workspace_root()
+        .join("testdata")
+        .to_string_lossy()
+        .into_owned()
+});
 
 /// A dataset destination. Both local files and S3 objects use the same write path.
 pub struct DatasetOutput {
@@ -91,26 +105,42 @@ impl DatasetOutput {
         BufWriter::new(Arc::clone(&self.store), self.key(relative))
     }
 
-    pub async fn has_files(&self, relative: &str) -> Result<bool> {
-        Ok(self
-            .store
-            .list(Some(&self.key(relative)))
-            .try_next()
-            .await?
-            .is_some())
+    async fn exists(&self, relative: &str) -> Result<bool> {
+        match self.store.head(&self.key(relative)).await {
+            Ok(_) => Ok(true),
+            Err(ObjectStoreError::NotFound { .. }) => Ok(false),
+            Err(error) => Err(error.into()),
+        }
     }
 
-    pub async fn ensure_empty(&self) -> Result<()> {
-        if self
+    async fn is_empty(&self) -> Result<bool> {
+        Ok(self
             .store
             .list(Some(&self.prefix))
             .try_next()
             .await?
-            .is_some()
-        {
-            return exec_err!("Output dataset is not empty: {}", self.location);
+            .is_none())
+    }
+
+    /// Whether a previous generation into this output completed, in which case it is skipped.
+    /// Fails on an output that holds anything else, such as an interrupted generation.
+    pub async fn is_complete(&self) -> Result<bool> {
+        if self.exists(SUCCESS).await? {
+            eprintln!("{} is already generated", self.location);
+            return Ok(true);
         }
-        Ok(())
+        if !self.is_empty().await? {
+            return exec_err!(
+                "{} is not empty but holds no complete dataset; remove it and generate again",
+                self.location
+            );
+        }
+        Ok(false)
+    }
+
+    /// Marks the output as a complete dataset, once every table has been written.
+    pub async fn mark_complete(&self) -> Result<()> {
+        self.write(SUCCESS, Vec::new()).await
     }
 
     pub async fn write(&self, relative: &str, bytes: Vec<u8>) -> Result<()> {
