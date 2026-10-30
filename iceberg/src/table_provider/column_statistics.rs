@@ -1,4 +1,5 @@
 use crate::common::df_err;
+use datafusion::common::runtime::JoinSet;
 use datafusion::common::stats::Precision;
 use datafusion::common::{ColumnStatistics, Result};
 use datafusion::error::DataFusionError;
@@ -69,7 +70,7 @@ pub async fn compute_column_stats(
                 .filter(|manifest| manifest.content == ManifestContentType::Data)
                 .cloned()
                 .collect();
-            let mut join_set = tokio::task::JoinSet::new();
+            let mut join_set = JoinSet::new();
 
             for manifest_file in manifests {
                 let table = table.clone();
