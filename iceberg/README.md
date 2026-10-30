@@ -111,28 +111,19 @@ the codec reconstructs it through the same public API on workers.
 
 ### Custom file IO serialization
 
-Use `IcebergFileIOCodec` when workers need to resolve storage from custom metadata
-or bind it to the current query. Its default `encode` method transports the
-`FileIO` properties; `decode` receives those properties and the worker's
-`TaskContext`. Override `encode` too if you need a different property map.
-The hook runs for each decoded scan, so a query-bound storage factory can capture
-observability context there, including for reads that Iceberg spawns internally.
-
-Register the hook on both coordinator and worker sessions using `IcebergFileIOExt`
-in place of the usual `with_iceberg_integration` call:
+Set `IcebergIntegrationOptions::file_io_codec` to customize how eager and lazy
+scans transport `FileIO`. Implement `IcebergFileIOCodec::encode` to return bytes
+and `decode` to rebuild file IO using those bytes and the worker's `TaskContext`.
+This lets a custom storage factory capture query-local observability without
+replacing the physical-plan codecs.
 
 ```rust,ignore
-use datafusion_distributed_iceberg::IcebergFileIOExt;
-
-let state = state.with_iceberg_integration_with_file_io_codec(
-    options,
-    Arc::new(MyFileIOCodec::new(/* application state */)),
-);
+let state = state.with_iceberg_integration(IcebergIntegrationOptions {
+    file_io_codec: Some(Arc::new(MyFileIOCodec::new(/* application state */))),
+    ..Default::default()
+});
 ```
 
-`MyFileIOCodec` implements `IcebergFileIOCodec`, not `PhysicalExtensionCodec`.
-For a query-bound factory, its `decode` method can return
-`FileIOBuilder::new(query_storage_factory).with_props(properties).build()`.
-The existing plan format is retained: custom metadata uses the storage-properties
-map, and the factory itself stays local. Coordinators and workers must use
-compatible hooks when overriding the encoded representation.
+Register compatible codecs on coordinators and workers. With no custom codec,
+scans retain the existing storage-properties encoding. Custom payloads use a
+separate optional byte field; a receiver without a matching codec returns an error.

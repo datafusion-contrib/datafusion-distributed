@@ -1,16 +1,13 @@
-#[expect(
-    clippy::disallowed_types,
-    reason = "Iceberg FileIO properties use std::collections::HashMap"
-)]
 mod tests {
-    use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use datafusion::common::{Result, exec_err};
     use datafusion::execution::{SessionStateBuilder, TaskContext};
     use datafusion_distributed::DistributedExt;
-    use datafusion_distributed_iceberg::{IcebergFileIOCodec, IcebergFileIOExt};
+    use datafusion_distributed_iceberg::{
+        IcebergExt, IcebergFileIOCodec, IcebergIntegrationOptions,
+    };
     use datafusion_distributed_iceberg_test_tools::{IcebergTestHarness, create_taxi_table};
     use iceberg::io::{FileIO, FileIOBuilder, LocalFsStorageFactory};
 
@@ -99,16 +96,13 @@ mod tests {
     struct QueryStorage(String);
 
     impl IcebergFileIOCodec for QueryFileIOCodec {
-        fn encode(&self, file_io: &FileIO) -> Result<HashMap<String, String>> {
+        fn encode(&self, file_io: &FileIO) -> Result<Vec<u8>> {
             assert_eq!(file_io.config().props()["fixture.storage"], "original");
-            Ok(HashMap::from([("storage-id".into(), "custom".into())]))
+            Ok(vec![0, 255, 128, 1])
         }
 
-        fn decode(&self, properties: HashMap<String, String>, ctx: &TaskContext) -> Result<FileIO> {
-            assert_eq!(
-                properties,
-                HashMap::from([("storage-id".into(), "custom".into())])
-            );
+        fn decode(&self, bytes: &[u8], ctx: &TaskContext) -> Result<FileIO> {
+            assert_eq!(bytes, &[0, 255, 128, 1]);
             let storage = ctx
                 .session_config()
                 .get_extension::<QueryStorage>()
@@ -132,6 +126,9 @@ mod tests {
             .config()
             .get_or_insert_default()
             .set_extension(Arc::new(QueryStorage("worker-storage".into())));
-        state.with_iceberg_integration_with_file_io_codec(Default::default(), hook)
+        state.with_iceberg_integration(IcebergIntegrationOptions {
+            file_io_codec: Some(hook),
+            ..Default::default()
+        })
     }
 }

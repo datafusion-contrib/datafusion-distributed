@@ -7,6 +7,7 @@ message IcebergDataSource {
   DataFusionPartitioning partitioning = 3;
   optional uint64 fetch = 4;
   map<string, string> storage_properties = 5;
+  optional bytes custom_file_io = 6;
 }
 
 message WorkUnitFeed {
@@ -22,6 +23,7 @@ message ScanConfig {
   DataFusionPartitioning partitioning = 2;
   optional uint64 fetch = 3;
   map<string, string> storage_properties = 4;
+  optional bytes custom_file_io = 5;
 }
 message AssignedScan {
   ScanConfig config = 1;
