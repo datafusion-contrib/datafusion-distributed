@@ -58,7 +58,7 @@ In general, prefer writing integration tests rather than unit tests.
 - Remove redundant cases and boilerplate. A small set of clear cases is more
   valuable than generated variations that do not add coverage.
 
-The full [test-design rules](../../../AGENTS.md#test-design-and-review) also cover
+The full [test-design rules](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/AGENTS.md#test-design-and-review) also cover
 realistic execution paths, fixture boundaries, and avoiding redundant coverage.
 Before submitting, read each changed test without opening helpers or snapshot
 files and check that its setup and expected behavior are clear.
