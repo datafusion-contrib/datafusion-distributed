@@ -29,7 +29,7 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           components: clippy
-      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo clippy -p datafusion-distributed -p datafusion-distributed-iceberg --all-targets --all-features -- -D warnings
 
   unit-test:
     runs-on: ubuntu-latest

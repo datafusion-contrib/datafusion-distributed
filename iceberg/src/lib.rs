@@ -1,5 +1,3 @@
-#![allow(clippy::disallowed_types)]
-
 //! Read-only Apache Iceberg integration for DataFusion Distributed.
 //!
 //! This crate ports the read path from Apache Iceberg Rust's DataFusion

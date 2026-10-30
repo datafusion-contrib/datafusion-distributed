@@ -3,6 +3,7 @@ use datafusion::arrow::array::UInt8Array;
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::Statistics;
+use datafusion::common::runtime::JoinSet;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::Result;
 use datafusion::execution::memory_pool::{MemoryPool, PeakRecordingPool, UnboundedMemoryPool};
@@ -189,7 +190,7 @@ async fn run_scenario(
 
     let start = Instant::now();
 
-    let mut join_set = tokio::task::JoinSet::new();
+    let mut join_set = JoinSet::new();
     for consumer in &scenario.consumers {
         let plan = Arc::clone(&broadcast) as Arc<dyn ExecutionPlan>;
         let task_ctx = Arc::clone(&task_ctx);

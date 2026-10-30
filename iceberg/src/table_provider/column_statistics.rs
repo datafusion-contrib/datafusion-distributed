@@ -1,7 +1,7 @@
 use crate::common::df_err;
 use datafusion::common::runtime::JoinSet;
 use datafusion::common::stats::Precision;
-use datafusion::common::{ColumnStatistics, Result};
+use datafusion::common::{ColumnStatistics, HashMap, Result};
 use datafusion::error::DataFusionError;
 use datafusion::scalar::ScalarValue;
 use iceberg::puffin::APACHE_DATASKETCHES_THETA_V1;
@@ -10,7 +10,6 @@ use iceberg::spec::{
     SnapshotRef,
 };
 use iceberg::table::Table;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Getting number of distinct values for columns in a table
