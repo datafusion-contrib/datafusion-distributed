@@ -11,10 +11,10 @@ generated with, in a fixed order:
 testdata/tpch_parquet/scale_factor=1/max_file_size=134217728/dictionary=pages/sorted=false/
 ```
 
-`run --dataset` and `compare` take either the path relative to `testdata/` or
-the absolute path that each `prepare-*` command prints when it finishes. That
-path is the only output on stdout (progress goes to stderr), so it can be
-captured:
+`run --dataset` and `compare` take the dataset's directory, absolute or relative
+to the current directory, such as the absolute path that each `prepare-*` command
+prints when it finishes. That path is the only output on stdout (progress goes to
+stderr), so it can be captured:
 
 ```shell
 # TPC-H (default: --scale-factor 1)
@@ -101,7 +101,7 @@ DATASET=$(cargo run -p datafusion-distributed-benchmarks --release -- prepare-tp
 cargo run -p datafusion-distributed-benchmarks --release -- run --dataset $DATASET
 ```
 
-- `--dataset`: Dataset path, relative to `testdata/` or absolute. Its
+- `--dataset`: Dataset directory, absolute or relative to the current directory. Its
   `<benchmark>_<format>`
   directory selects the queries: `tpch_parquet` and `tpch_iceberg` run the TPC-H
   queries.
