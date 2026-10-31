@@ -1,6 +1,9 @@
-use datafusion::physical_plan::metrics::MetricsSet;
+use datafusion::physical_plan::metrics::{MetricValue, MetricsSet};
+use std::any::TypeId;
+use std::mem::{Discriminant, discriminant};
 use std::sync::Arc;
 
+use datafusion::common::HashSet;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::Result;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
@@ -85,39 +88,197 @@ impl ExecutionPlan for MetricsWrapperExec {
         unimplemented!("MetricsWrapperExec does not implement execute")
     }
 
-    /// returns the wrapped metrics merged with any other present in
-    /// the inner [ExecutionPlan].
+    /// The supplied snapshot is authoritative for each reported metric family,
+    /// including all partitions. Preserve local-only families, such as counters
+    /// on a coordinator's work-unit feed that cannot be reported by workers.
     fn metrics(&self) -> Option<MetricsSet> {
-        match self.inner.metrics() {
-            None => Some(self.metrics.clone()),
-            Some(local_metrics) => {
-                let mut all_metrics = self.metrics.clone();
-
-                for local_metric in local_metrics {
-                    // When a node is executed in an in-process worker, the ExecutionPlan might not
-                    // have suffered any [de]serialization. This means that execution metrics
-                    // collected at runtime in the Worker will be automatically visible in the
-                    // coordinator, as both happen to run in-process, and therefore, the pointer
-                    // that holds the ExecutionPlan MetricsSet is the same.
-                    //
-                    // This means that we need to dedupe the metrics here, otherwise, we might
-                    // double-count metrics:
-                    // 1. What was collected in the local worker
-                    // 2. What is automatically available in the coordinator because of pointer
-                    //    equivalence.
-                    if !self.metrics.iter().any(|wrapped| {
-                        wrapped.value() == local_metric.value()
-                            && wrapped.partition() == local_metric.partition()
-                    }) {
-                        all_metrics.push(local_metric);
-                    }
+        let mut metrics = self.metrics.clone();
+        if let Some(local_metrics) = self.inner.metrics() {
+            let mut reported = HashSet::new();
+            for metric in self.metrics.iter() {
+                reported.insert(metric_family(metric.value()));
+            }
+            for local in local_metrics {
+                if !reported.contains(&metric_family(local.value())) {
+                    metrics.push(local);
                 }
-                Some(all_metrics)
             }
         }
+        Some(metrics)
     }
 
     fn downcast_delegate(&self) -> Option<&dyn ExecutionPlan> {
         Some(self.inner.as_ref())
+    }
+}
+
+fn metric_family(value: &MetricValue) -> (Discriminant<MetricValue>, &str, Option<TypeId>) {
+    let custom_type = match value {
+        MetricValue::Custom { value, .. } => Some(value.as_any().type_id()),
+        _ => None,
+    };
+    (discriminant(value), value.name(), custom_type)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::metrics::{BytesCounterMetric, MaxGaugeMetric};
+    use datafusion::arrow::datatypes::Schema;
+    use datafusion::physical_plan::empty::EmptyExec;
+    use datafusion::physical_plan::metrics::{Count, Metric};
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    #[test]
+    fn supplied_snapshot_is_authoritative_for_in_process_workers() {
+        let raw = counters(3);
+        for snapshot in [raw.clone(), counters(1)] {
+            let expected = snapshot.iter().cloned().collect::<Vec<_>>();
+            let wrapper = wrapper(raw.clone(), snapshot);
+            let actual = wrapper.metrics().unwrap();
+            assert_eq!(actual.iter().count(), expected.len());
+            for (actual, expected) in actual.iter().zip(expected) {
+                assert!(Arc::ptr_eq(actual, &expected));
+            }
+        }
+    }
+
+    #[test]
+    fn local_only_metric_families_are_preserved() {
+        let mut local = counters(3);
+        let feed_count = Count::new();
+        feed_count.add(6);
+        local.push(Arc::new(Metric::new(
+            MetricValue::Count {
+                name: "work_units_sent".into(),
+                count: feed_count,
+            },
+            Some(0),
+        )));
+        let metrics = wrapper(local.clone(), counters(3).aggregate_by_name())
+            .metrics()
+            .unwrap();
+        assert_eq!(metrics.iter().count(), 2);
+        assert_eq!(
+            metrics.sum_by_name("work_units_sent").unwrap().as_usize(),
+            6
+        );
+        assert_eq!(
+            wrapper(local, MetricsSet::new())
+                .metrics()
+                .unwrap()
+                .iter()
+                .count(),
+            4
+        );
+    }
+
+    #[test]
+    fn metric_families_distinguish_value_variants_and_custom_types() {
+        let mut local = MetricsSet::new();
+        local.push(Arc::new(Metric::new(
+            MetricValue::Count {
+                name: "output_rows".into(),
+                count: Count::new(),
+            },
+            None,
+        )));
+        local.push(BytesCounterMetric::new_metric("custom", 1));
+        let mut snapshot = counters(1);
+        snapshot.push(MaxGaugeMetric::new_metric("custom", 1));
+        let metrics = wrapper(local.clone(), snapshot).metrics().unwrap();
+        assert_eq!(metrics.iter().count(), 4);
+        for (actual, expected) in metrics.iter().skip(2).zip(local.iter()) {
+            assert!(Arc::ptr_eq(actual, expected));
+        }
+    }
+
+    #[test]
+    fn compact_snapshot_does_not_reintroduce_raw_partition_metrics() {
+        let raw = counters(3);
+        let summary = raw.aggregate_by_name();
+        let wrapper = wrapper(raw, summary);
+        let metrics = wrapper.metrics().unwrap();
+        assert_eq!(metrics.iter().count(), 1);
+        let metric = metrics.iter().next().unwrap();
+        assert_eq!(metric.value().as_usize(), 6);
+        assert_eq!(metric.partition(), None);
+    }
+
+    #[test]
+    #[ignore = "terminal metrics microbenchmark; run with --release --ignored --nocapture"]
+    fn benchmark_terminal_snapshot() {
+        for entries in [4_096, 16_384, 65_536] {
+            let metrics = counters(entries);
+            let wrapper = wrapper(metrics.clone(), metrics);
+            let mut legacy = Vec::new();
+            let mut snapshot = Vec::new();
+            for iteration in 0..4 {
+                let run_legacy = || {
+                    let start = Instant::now();
+                    drop(black_box(legacy_metrics(black_box(&wrapper))));
+                    start.elapsed()
+                };
+                let run_snapshot = || {
+                    let start = Instant::now();
+                    for _ in 0..100 {
+                        drop(black_box(black_box(&wrapper).metrics()));
+                    }
+                    start.elapsed() / 100
+                };
+                let (before, after) = if iteration % 2 == 0 {
+                    (run_legacy(), run_snapshot())
+                } else {
+                    let after = run_snapshot();
+                    (run_legacy(), after)
+                };
+                if iteration > 0 {
+                    legacy.push(before);
+                    snapshot.push(after);
+                }
+            }
+            legacy.sort();
+            snapshot.sort();
+            let before = legacy[1];
+            let after = snapshot[1];
+            eprintln!(
+                "entries={entries} legacy_ms={:.3} snapshot_ms={:.3} speedup={:.1}x (includes result clone/drop)",
+                before.as_secs_f64() * 1000.0,
+                after.as_secs_f64() * 1000.0,
+                before.as_secs_f64() / after.as_secs_f64(),
+            );
+        }
+    }
+
+    fn counters(entries: usize) -> MetricsSet {
+        let mut metrics = MetricsSet::new();
+        for partition in 0..entries {
+            let count = Count::new();
+            count.add(partition + 1);
+            metrics.push(Arc::new(Metric::new(
+                MetricValue::OutputRows(count),
+                Some(partition),
+            )));
+        }
+        metrics
+    }
+
+    fn wrapper(local: MetricsSet, snapshot: MetricsSet) -> MetricsWrapperExec {
+        let inner =
+            MetricsWrapperExec::new(Arc::new(EmptyExec::new(Arc::new(Schema::empty()))), local);
+        MetricsWrapperExec::new(Arc::new(inner), snapshot)
+    }
+
+    fn legacy_metrics(wrapper: &MetricsWrapperExec) -> MetricsSet {
+        let mut metrics = wrapper.metrics.clone();
+        for local in wrapper.inner.metrics().unwrap_or_default() {
+            if !wrapper.metrics.iter().any(|wrapped| {
+                wrapped.value() == local.value() && wrapped.partition() == local.partition()
+            }) {
+                metrics.push(local);
+            }
+        }
+        metrics
     }
 }
