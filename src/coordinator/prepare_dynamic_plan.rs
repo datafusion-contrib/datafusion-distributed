@@ -5,6 +5,9 @@ use crate::distributed_planner::{
     InjectNetworkBoundaryContext, NetworkBoundaryBuilderResult, ProducerHead, calculate_cost,
     inject_network_boundaries,
 };
+use crate::distributed_planner::{
+    StageRootWrapperConfig, map_stage_root, replace_stage_producer, wrap_stage_root,
+};
 use crate::dynamic_filtering::{
     is_remote_dynamic_filtering_enabled, orphan_dynamic_filter_consumers,
 };
@@ -18,6 +21,7 @@ use dashmap::DashMap;
 use datafusion::common::stats::Precision;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{Result, exec_err, plan_err};
+use datafusion::execution::config::SessionConfig;
 use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::{
     ColumnStatistics, ExecutionPlan, ExecutionPlanProperties, Statistics, StatisticsArgs,
@@ -83,7 +87,21 @@ pub(super) async fn prepare_dynamic_plan(
             input_stage.tasks = task_count.as_usize();
             // In order to infer the compute the cost of the stage above this one, here a sampler
             // is injected to gather runtime statistics.
-            input_stage.plan = ProducerHead::insert_sampler(input_stage.plan)?;
+            if nb_type == TypeId::of::<NetworkCoalesceExec>()
+                && query_coordinator
+                    .session_config()
+                    .get_extension::<StageRootWrapperConfig>()
+                    .is_some()
+            {
+                input_stage.plan = ProducerHead::None.insert(input_stage.plan)?;
+            }
+            input_stage.plan =
+                wrap_stage_root(input_stage.plan, query_coordinator.session_config())?;
+            input_stage.plan = map_stage_root(
+                input_stage.plan,
+                query_coordinator.session_config(),
+                ProducerHead::insert_sampler,
+            )?;
             let dynamic_filter_anchors =
                 if is_remote_dynamic_filtering_enabled(query_coordinator.session_config())? {
                     orphan_dynamic_filter_consumers(&input_stage.plan)?
@@ -157,7 +175,7 @@ pub(super) async fn prepare_dynamic_plan(
     .await?;
 
     Ok(PreparedPlan {
-        plan_for_viz: plans_for_viz.reconstruct(&head_stage)?,
+        plan_for_viz: plans_for_viz.reconstruct(&head_stage, query_coordinator.session_config())?,
         head_stage,
     })
 }
@@ -182,7 +200,11 @@ impl PlanReconstructor {
         self.stage_map.insert(stage, (plan, metrics_set));
     }
 
-    fn reconstruct(&self, head_stage: &Arc<dyn ExecutionPlan>) -> Result<Arc<dyn ExecutionPlan>> {
+    fn reconstruct(
+        &self,
+        head_stage: &Arc<dyn ExecutionPlan>,
+        config: &SessionConfig,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
         let head_stage = Arc::clone(head_stage);
         let reconstructed = head_stage.transform_down_with_task_count(1, |plan, tc| {
             let Some(nb) = plan.as_network_boundary() else {
@@ -197,7 +219,7 @@ impl PlanReconstructor {
             };
             let (plan_for_viz, metrics_set) = entry;
 
-            let plan_for_viz = nb.producer_head(tc)?.insert(plan_for_viz)?;
+            let plan_for_viz = replace_stage_producer(plan_for_viz, config, nb.producer_head(tc)?)?;
 
             let nb = nb.with_input_stage(Stage::Local(LocalStage {
                 query_id: input_stage.query_id(),

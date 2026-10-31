@@ -1,6 +1,7 @@
 use crate::common::TreeNodeExt;
 #[cfg(feature = "integration")]
 use crate::common::on_drop_stream;
+use crate::distributed_planner::reset_stage_root;
 use crate::dynamic_filtering::{
     apply_dynamic_filter_update, discover_dynamic_filter_consumers,
     discover_dynamic_filter_producers,
@@ -102,6 +103,7 @@ impl Worker {
 
             let task_ctx = session_state.task_ctx();
             let plan = request.plan.decode(&task_ctx)?;
+            let plan = reset_stage_root(plan, session_state.config())?;
 
             let ev = WorkerPlanRewriteEvent {
                 plan,

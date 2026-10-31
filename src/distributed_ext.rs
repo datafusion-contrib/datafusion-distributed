@@ -2,6 +2,7 @@ use crate::codec::{set_distributed_user_codec, set_distributed_user_codec_arc};
 use crate::config_extension_ext::{
     set_distributed_option_extension, set_distributed_option_extension_from_headers,
 };
+use crate::distributed_planner::StageRootWrapperConfig;
 use crate::events::{
     DesiredTaskCountHandler, DesiredTaskCountHandlers, RouteTaskHandler, RouteTaskHandlers,
     ScaleUpLeafNodeHandler, ScaleUpLeafNodeHandlers, WorkerPlanRewriteHandler,
@@ -12,8 +13,8 @@ use crate::protocol::set_distributed_channel_resolver;
 use crate::work_unit_feed::set_distributed_work_unit_feed;
 use crate::worker_resolver::set_distributed_worker_resolver;
 use crate::{
-    ChannelResolver, DistributedConfig, LocalWorkerContext, WorkUnitFeed, WorkUnitFeedProvider,
-    WorkerResolver, get_distributed_worker_resolver,
+    ChannelResolver, DistributedConfig, LocalWorkerContext, StageRootWrapper, WorkUnitFeed,
+    WorkUnitFeedProvider, WorkerResolver, get_distributed_worker_resolver,
 };
 use datafusion::common::DataFusionError;
 use datafusion::config::ConfigExtension;
@@ -728,6 +729,15 @@ pub trait DistributedExt: Sized {
     /// mutation.
     fn set_distributed_route_task_handler<T: RouteTaskHandler>(&mut self, handler: T);
 
+    /// Installs a custom unary wrapper on producer stage roots before distribution.
+    ///
+    /// Register the same adapter and its physical extension codec on coordinator and worker
+    /// sessions. Replaces any previously configured adapter. See [`StageRootWrapper`].
+    fn with_distributed_stage_root_wrapper<T: StageRootWrapper>(self, wrapper: T) -> Self;
+
+    /// In-place variant of [`Self::with_distributed_stage_root_wrapper`].
+    fn set_distributed_stage_root_wrapper<T: StageRootWrapper>(&mut self, wrapper: T);
+
     /// Registers a handler that rewrites a decoded worker stage plan before it is executed.
     ///
     /// Handlers registered with this method need to meet the following criteria:
@@ -985,6 +995,10 @@ impl DistributedExt for SessionConfig {
         RouteTaskHandlers::push_custom(self, Arc::new(h));
     }
 
+    fn set_distributed_stage_root_wrapper<T: StageRootWrapper>(&mut self, wrapper: T) {
+        self.set_extension(Arc::new(StageRootWrapperConfig(Arc::new(wrapper))));
+    }
+
     fn set_distributed_worker_plan_rewrite_handler<H: WorkerPlanRewriteHandler>(&mut self, h: H) {
         WorkerPlanRewriteHandlers::push_custom(self, Arc::new(h));
     }
@@ -1108,6 +1122,10 @@ impl DistributedExt for SessionConfig {
             #[call(set_distributed_worker_plan_rewrite_handler)]
             #[expr($;self)]
             fn with_distributed_worker_plan_rewrite_handler<H: WorkerPlanRewriteHandler>(mut self, h: H) -> Self;
+
+            #[call(set_distributed_stage_root_wrapper)]
+            #[expr($;self)]
+            fn with_distributed_stage_root_wrapper<T: StageRootWrapper>(mut self, wrapper: T) -> Self;
         }
     }
 }
@@ -1268,9 +1286,14 @@ impl DistributedExt for SessionStateBuilder {
             fn with_distributed_route_task_handler<H: RouteTaskHandler>(mut self, h: H) -> Self;
 
             fn set_distributed_worker_plan_rewrite_handler<H: WorkerPlanRewriteHandler>(&mut self, h: H);
+            fn set_distributed_stage_root_wrapper<T: StageRootWrapper>(&mut self, wrapper: T);
             #[call(set_distributed_worker_plan_rewrite_handler)]
             #[expr($;self)]
             fn with_distributed_worker_plan_rewrite_handler<H: WorkerPlanRewriteHandler>(mut self, h: H) -> Self;
+
+            #[call(set_distributed_stage_root_wrapper)]
+            #[expr($;self)]
+            fn with_distributed_stage_root_wrapper<T: StageRootWrapper>(mut self, wrapper: T) -> Self;
         }
     }
 }
@@ -1433,9 +1456,14 @@ impl DistributedExt for SessionState {
             fn with_distributed_route_task_handler<H: RouteTaskHandler>(mut self, h: H) -> Self;
 
             fn set_distributed_worker_plan_rewrite_handler<H: WorkerPlanRewriteHandler>(&mut self, h: H);
+            fn set_distributed_stage_root_wrapper<T: StageRootWrapper>(&mut self, wrapper: T);
             #[call(set_distributed_worker_plan_rewrite_handler)]
             #[expr($;self)]
             fn with_distributed_worker_plan_rewrite_handler<H: WorkerPlanRewriteHandler>(mut self, h: H) -> Self;
+
+            #[call(set_distributed_stage_root_wrapper)]
+            #[expr($;self)]
+            fn with_distributed_stage_root_wrapper<T: StageRootWrapper>(mut self, wrapper: T) -> Self;
         }
     }
 }
@@ -1591,6 +1619,10 @@ impl DistributedExt for SessionContext {
             fn with_distributed_route_task_handler<H: RouteTaskHandler>(self, h: H) -> Self;
 
             fn set_distributed_worker_plan_rewrite_handler<H: WorkerPlanRewriteHandler>(&mut self, h: H);
+            fn set_distributed_stage_root_wrapper<T: StageRootWrapper>(&mut self, wrapper: T);
+            #[call(set_distributed_stage_root_wrapper)]
+            #[expr($;self)]
+            fn with_distributed_stage_root_wrapper<T: StageRootWrapper>(self, wrapper: T) -> Self;
             #[call(set_distributed_worker_plan_rewrite_handler)]
             #[expr($;self)]
             fn with_distributed_worker_plan_rewrite_handler<H: WorkerPlanRewriteHandler>(self, h: H) -> Self;

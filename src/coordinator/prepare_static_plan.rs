@@ -1,6 +1,7 @@
 use crate::common::TreeNodeExt;
 use crate::coordinator::distributed::PreparedPlan;
 use crate::coordinator::query_coordinator::QueryCoordinator;
+use crate::distributed_planner::wrap_stage_roots;
 use crate::dynamic_filtering::{
     is_remote_dynamic_filtering_enabled, orphan_dynamic_filter_consumers,
 };
@@ -25,7 +26,8 @@ pub(super) async fn prepare_static_plan(
     query_coordinator: &QueryCoordinator,
     base_plan: &Arc<dyn ExecutionPlan>,
 ) -> Result<PreparedPlan> {
-    let prepared = Arc::clone(base_plan).transform_up_async(async |plan| {
+    let base_plan = wrap_stage_roots(Arc::clone(base_plan), query_coordinator.session_config())?;
+    let prepared = Arc::clone(&base_plan).transform_up_async(async |plan| {
         // The following logic is just applied on network boundaries.
         let Some(plan) = plan.as_network_boundary() else {
             return Ok(Transformed::no(plan));
@@ -67,8 +69,7 @@ pub(super) async fn prepare_static_plan(
     });
     Ok(PreparedPlan {
         head_stage: prepared.await?.data,
-        // If the plan was statically planned, the base plan is the same one that will be used for
-        // visualization.
-        plan_for_viz: Arc::clone(base_plan),
+        // Worker metrics use the same wrapped layout as the plan sent to workers.
+        plan_for_viz: base_plan,
     })
 }
