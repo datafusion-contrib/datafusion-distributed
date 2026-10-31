@@ -1,15 +1,15 @@
 use crate::distributed_planner::insert_broadcast::is_left_broadcast_safe;
 use crate::events::{
     DesiredTaskCountEvent, DesiredTaskCountHandlers, ScaleUpLeafNodeEvent, ScaleUpLeafNodeHandlers,
-    TaskCountAnnotation, TaskCountRestriction,
+    StageBuiltHandlers, TaskCountAnnotation, TaskCountRestriction,
 };
 use crate::execution_plans::ChildrenIsolatorUnionExec;
 use crate::execution_plans::ShuffleMode;
 use crate::stage::LocalStage;
 use crate::worker_resolver::WorkerResolverExtension;
 use crate::{
-    BroadcastExec, DistributedConfig, NetworkBoundaryExt, NetworkBroadcastExec,
-    NetworkCoalesceExec, NetworkShuffleExec, Stage,
+    BroadcastExec, Cost, DistributedConfig, NetworkBoundaryExt, NetworkBroadcastExec,
+    NetworkCoalesceExec, NetworkShuffleExec, Stage, StageBuiltEvent, StageBuiltEventResponse,
 };
 use async_trait::async_trait;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
@@ -164,8 +164,8 @@ pub(crate) async fn inject_network_boundaries(
 #[derive(Clone)]
 pub(crate) struct InjectNetworkBoundaryContext<'a> {
     pub(crate) d_cfg: &'a DistributedConfig,
+    pub(crate) cfg: &'a SessionConfig,
 
-    cfg: &'a SessionConfig,
     worker_resolver: Arc<WorkerResolverExtension>,
     nb_builder: &'a (dyn NetworkBoundaryBuilder + Send + Sync),
     task_counts: &'a Mutex<HashMap<usize, TaskCountAnnotation>>,
@@ -174,11 +174,34 @@ pub(crate) struct InjectNetworkBoundaryContext<'a> {
 }
 
 impl<'a> InjectNetworkBoundaryContext<'a> {
-    pub(crate) fn max_tasks(&self) -> Result<usize> {
-        Ok(match self.d_cfg.max_tasks_per_stage {
+    /// Caps the task count by the configured max-per-stage budget, failing if a required task
+    /// count does not fit in it.
+    pub(crate) fn cap_task_count(
+        &self,
+        mut task_count: TaskCountAnnotation,
+    ) -> Result<TaskCountAnnotation> {
+        let max_tasks = match self.d_cfg.max_tasks_per_stage {
             0 => self.worker_resolver.0.get_urls()?.len().max(1),
             v => v,
-        })
+        };
+        if let Some(min) = task_count.get_min()
+            && max_tasks < min.get()
+        {
+            return plan_err!(
+                "Cannot assign a required task count of {min}, the max task slots available are {max_tasks}"
+            );
+        }
+        task_count.soft = task_count.soft.min(max_tasks as f64);
+        if let TaskCountRestriction::Exact(count) | TaskCountRestriction::Min(count) =
+            task_count.restriction
+            && count.get() > max_tasks
+        {
+            return plan_err!(
+                "Cannot assign a required task count of {count}, the max task slots available are {max_tasks}"
+            );
+        }
+        task_count.soft = task_count.soft.min(max_tasks as f64);
+        Ok(task_count)
     }
 
     fn set_task_count(&self, plan: &Arc<dyn ExecutionPlan>, task_count: TaskCountAnnotation) {
@@ -251,7 +274,7 @@ async fn _inject_network_boundaries(
         session_config: nb_ctx.cfg,
     };
 
-    let mut task_count = if plan.children().is_empty() {
+    let task_count = if plan.children().is_empty() {
         // This is a leaf node, maybe a DataSourceExec, or maybe something else custom from the user.
         // If we could not determine how many tasks this leaf node should run on, we need to assume
         // it cannot be distributed and use just 1 task.
@@ -349,15 +372,7 @@ async fn _inject_network_boundaries(
         ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
     )?;
     // Cap the reconciled task count by the configured max-per-stage budget.
-    let max_tasks = nb_ctx.max_tasks()?;
-    if let Some(min) = task_count.get_min()
-        && max_tasks < min.get()
-    {
-        return plan_err!(
-            "Cannot assign a required task count of {min}, the max task slots available are {max_tasks}"
-        );
-    }
-    task_count.soft = task_count.soft.min(max_tasks as f64);
+    let task_count = nb_ctx.cap_task_count(task_count)?;
 
     // Upon reaching a hash repartition, we need to introduce a network shuffle right above it.
     if let Some(r_exec) = plan.downcast_ref::<RepartitionExec>()
@@ -679,14 +694,30 @@ impl NetworkBoundaryBuilder for CardinalityBasedNetworkBoundaryBuilder {
         nb_type: TypeId,
         nb_ctx: &'a InjectNetworkBoundaryContext<'a>,
     ) -> Result<NetworkBoundaryBuilderResult> {
-        let tc = nb_ctx.task_count(&input_stage.plan)?;
+        let propagated_task_count = nb_ctx.task_count(&input_stage.plan)?;
+
+        let ev = StageBuiltEvent {
+            session_config: nb_ctx.cfg,
+            // Cost::default() returns absent cost estimations.
+            cost: Cost::default(),
+            plan: input_stage.plan,
+        };
+        let StageBuiltEventResponse {
+            task_count,
+            plan,
+            metrics,
+        } = StageBuiltHandlers::handle(ev)?;
+        let task_count = nb_ctx.cap_task_count(task_count.merge(propagated_task_count)?)?;
+
         input_stage.plan =
-            nb_ctx.propagate_task_count_until_network_boundaries(&input_stage.plan, tc)?;
+            nb_ctx.propagate_task_count_until_network_boundaries(&plan, task_count)?;
+        input_stage.tasks = task_count.as_usize();
+        input_stage.metrics_set.extend(metrics);
         let input_properties = Arc::clone(input_stage.plan.properties());
 
         if nb_type == TypeId::of::<NetworkCoalesceExec>() {
             return Ok(NetworkBoundaryBuilderResult {
-                consumer_task_count: TaskCountAnnotation::exact(NonZeroUsize::MIN, tc.soft),
+                consumer_task_count: TaskCountAnnotation::exact(NonZeroUsize::MIN, task_count.soft),
                 input_stage: Stage::Local(input_stage),
                 input_properties,
             });
