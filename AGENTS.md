@@ -86,6 +86,8 @@ Read the relevant contributor guide before starting work in these areas:
 - Performance and benchmark changes:
   `docs/source/contributor-guide/04-benchmarks.md`
 - Running, comparing or profiling benchmarks: `.agents/skills/benchmark/SKILL.md`
+- Linking upstream DataFusion/arrow-rs source to debug or fix them:
+  `.agents/skills/upstream-source/SKILL.md`
 
 ## Test design and review
 
