@@ -1,3 +1,4 @@
+mod call_authorizer;
 mod channel_resolver;
 mod errors;
 mod generated;
@@ -10,6 +11,7 @@ mod worker_service;
 // TODO: this should not be exposed.
 pub(crate) use channel_resolver::DEFAULT_CHANNEL_RESOLVER_PER_RUNTIME;
 
+pub use call_authorizer::{WorkerCall, WorkerCallAuthorizer};
 pub use channel_resolver::{BoxCloneSyncChannel, DefaultChannelResolver};
 pub use observability::{
     GetClusterWorkersRequest, GetClusterWorkersResponse, GetTaskProgressRequest,
