@@ -38,6 +38,9 @@ pub(super) async fn prepare_dynamic_plan(
 
     let head_stage = inject_network_boundaries(
         Arc::clone(base_plan),
+        // TODO: Inject here a plan remainder replanner for reshaping the topology of the plan based on the runtime
+        //  collected statistics.
+        Ok,
         DynamicPlanBuilder {
             query_coordinator,
             plans_for_viz: &plans_for_viz,
