@@ -152,8 +152,8 @@ pub fn create_distributed_plan(
         }
 
         // Compute per-node task counts and inject `Network*Exec` nodes at the stage boundaries.
-        plan = inject_network_boundaries(plan, CardinalityBasedNetworkBoundaryBuilder, session_cfg)
-            .await?;
+        let nb_builder = CardinalityBasedNetworkBoundaryBuilder;
+        plan = inject_network_boundaries(plan, Ok, nb_builder, session_cfg).await?;
 
         plan = prepare_network_boundaries(plan)?;
         if !plan.exists(|plan| Ok(plan.is_network_boundary()))? {
