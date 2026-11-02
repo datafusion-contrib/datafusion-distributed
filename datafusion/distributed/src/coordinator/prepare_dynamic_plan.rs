@@ -3,7 +3,7 @@ use crate::coordinator::distributed::PreparedPlan;
 use crate::coordinator::query_coordinator::QueryCoordinator;
 use crate::distributed_planner::{
     InjectNetworkBoundaryContext, NetworkBoundaryBuilder, NetworkBoundaryBuilderResult,
-    ProducerHead, calculate_cost, inject_network_boundaries,
+    ProducerHead, calculate_cost, inject_network_boundaries, is_left_broadcast_safe,
 };
 use crate::dynamic_filtering::{
     is_remote_dynamic_filtering_enabled, orphan_dynamic_filter_consumers,
@@ -11,18 +11,29 @@ use crate::dynamic_filtering::{
 use crate::execution_plans::SamplerExec;
 use crate::stage::{LocalStage, RemoteStage};
 use crate::{
-    BytesCounterMetric, CoordinatorToWorkerMsg, LoadInfo, MaxGaugeMetric, NetworkBoundaryExt,
-    NetworkCoalesceExec, Stage, TaskCountAnnotation,
+    BroadcastExec, BytesCounterMetric, CoordinatorToWorkerMsg, DistributedConfig, LoadInfo,
+    MaxGaugeMetric, NetworkBoundaryExt, NetworkBroadcastExec, NetworkCoalesceExec,
+    NetworkShuffleExec, Stage, TaskCountAnnotation,
 };
 use async_trait::async_trait;
 use dashmap::DashMap;
 use datafusion::common::stats::Precision;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{Result, exec_err, plan_err};
+use datafusion::config::ConfigOptions;
+use datafusion::physical_expr::Partitioning;
+use datafusion::physical_optimizer::PhysicalOptimizerRule;
+use datafusion::physical_optimizer::combine_partial_final_agg::CombinePartialFinalAggregate;
+use datafusion::physical_optimizer::ensure_requirements::EnsureRequirements;
+use datafusion::physical_optimizer::output_requirements::OutputRequirements;
+use datafusion::physical_optimizer::update_aggr_exprs::OptimizeAggregateOrder;
+use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
+use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
 use datafusion::physical_plan::metrics::MetricsSet;
+use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::{
-    ColumnStatistics, ExecutionPlan, ExecutionPlanProperties, Statistics, StatisticsArgs,
-    StatisticsContext,
+    ChildrenPropertiesMode, ColumnStatistics, ExecutionPlan, ExecutionPlanProperties,
+    ReplaceChildrenOptions, Statistics, StatisticsArgs, StatisticsContext,
 };
 use futures::{Stream, StreamExt};
 use std::any::TypeId;
@@ -38,9 +49,7 @@ pub(super) async fn prepare_dynamic_plan(
 
     let head_stage = inject_network_boundaries(
         Arc::clone(base_plan),
-        // TODO: Inject here a plan remainder replanner for reshaping the topology of the plan based on the runtime
-        //  collected statistics.
-        |plan, _nb_ctx| Ok(plan),
+        optimize_remainder,
         DynamicPlanBuilder {
             query_coordinator,
             plans_for_viz: &plans_for_viz,
@@ -422,5 +431,959 @@ fn zero_stats(n_cols: usize) -> Statistics {
                 byte_size: Precision::Exact(0),
             })
             .collect(),
+    }
+}
+
+fn optimize_remainder(
+    mut plan: Arc<dyn ExecutionPlan>,
+    nb_ctx: &InjectNetworkBoundaryContext,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let config = nb_ctx.cfg.options();
+    let d_cfg = DistributedConfig::from_config_options(config)?;
+    if !d_cfg.dynamic_plan_remainder_replanning {
+        return Ok(plan);
+    }
+    plan = OutputRequirements::new_add_mode().optimize(plan, config)?;
+    plan = reorder_joins(Arc::clone(&plan), nb_ctx)?;
+    plan = EnsureRequirements::new().optimize(plan, config)?;
+    plan = CombinePartialFinalAggregate::new().optimize(plan, config)?;
+    plan = OptimizeAggregateOrder::new().optimize(plan, config)?;
+    plan = OutputRequirements::new_remove_mode().optimize(plan, config)?;
+    if plan.output_partitioning().partition_count() > 1 {
+        plan = Arc::new(CoalescePartitionsExec::new(plan));
+    }
+
+    Ok(plan)
+}
+
+fn reorder_joins(
+    plan: Arc<dyn ExecutionPlan>,
+    nb_ctx: &InjectNetworkBoundaryContext,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let cfg = nb_ctx.cfg.options();
+    let d_cfg = DistributedConfig::from_config_options(cfg)?;
+    plan.transform_up(|plan| {
+        if let Some(join) = plan.downcast_ref::<HashJoinExec>() {
+            if join.null_aware {
+                return Ok(Transformed::no(plan));
+            }
+
+            let supports_swap = cfg.optimizer.join_reordering
+                && !join.null_aware
+                && join.dynamic_expressions_produced().is_empty()
+                && join.join_type.supports_swap();
+
+            let should_swap =
+                supports_swap && should_swap(join.left.as_ref(), join.right.as_ref())?;
+
+            // The build side is the left input, which after a swap is the current right input.
+            let (candidate_build, join_type_after_swap) = match should_swap {
+                true => (join.right(), join.join_type().swap()),
+                false => (join.left(), *join.join_type()),
+            };
+
+            let supports_broadcast = cfg.optimizer.join_reordering
+                && !join.null_aware
+                && d_cfg.broadcast_joins
+                && is_left_broadcast_safe(&join_type_after_swap);
+            let should_broadcast =
+                supports_broadcast && should_broadcast(candidate_build.as_ref(), cfg)?;
+
+            match join.partition_mode() {
+                PartitionMode::Partitioned if should_swap && should_broadcast => {
+                    // Partitioned -> Swapped Broadcasted
+                    //
+                    // - The probe side needs to go to the build side, and it needs to go from shuffle to broadcast.
+                    // - The build side needs to go to the probe side and:
+                    //   - If it was a hash shuffle, it needs to go to a round-robin shuffle
+                    //   - If everything below was already co-partitioned, it can stay like that
+                    let join_or_proj = join.swap_inputs(PartitionMode::CollectLeft)?;
+                    let join_or_proj = join_or_proj.transform_down(|plan| {
+                        let Some(join) = plan.downcast_ref::<HashJoinExec>() else {
+                            return Ok(Transformed::no(plan));
+                        };
+
+                        // New probe side (old build side)
+                        let mut right = Arc::clone(join.right());
+
+                        if let Some(shuffle) = right.downcast_ref::<NetworkShuffleExec>() {
+                            // hash shuffle -> round-robin shuffle
+                            let rr_shuffle = Arc::new(shuffle.to_round_robin_shuffle()) as _;
+                            nb_ctx.set_task_count(&rr_shuffle, nb_ctx.task_count(&right)?);
+                            right = rr_shuffle;
+                        } else {
+                            // no partitioning -> stay the same, no specific partitioning is required.
+                        };
+
+                        // New build side (old probe side)
+                        let left = Arc::clone(join.left());
+                        let (coalesce, mut left) = left.split_head::<CoalescePartitionsExec>();
+
+                        if let Some(shuffle) = left.downcast_ref::<NetworkShuffleExec>() {
+                            // hash-shuffle -> broadcast
+                            let broadcast = Arc::new(shuffle.to_broadcast()) as _;
+                            nb_ctx.set_task_count(&broadcast, nb_ctx.task_count(&left)?);
+                            left = broadcast;
+                        } else {
+                            // no partitioning -> new BroadcastExec that will eventually be wired to
+                            // a NetworkBroadcastExec.
+                            left = Arc::new(BroadcastExec::new(left, 1))
+                        };
+
+                        left = coalesce.reattach(left)?;
+
+                        let plan = plan.replace_children(
+                            vec![left, right],
+                            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+                        )?;
+
+                        Ok(Transformed::yes(plan))
+                    })?;
+                    Ok(join_or_proj)
+                }
+                PartitionMode::Partitioned if should_swap && !should_broadcast => {
+                    // Partitioned -> Swapped Partitioned
+                    //
+                    // The join needs to stay partitioned, but their inputs need to be swapped.
+                    // This is easy to do, as both sides already expose the appropriate partitioning.
+                    let join_or_proj = join.swap_inputs(PartitionMode::Partitioned)?;
+                    Ok(Transformed::yes(join_or_proj))
+                }
+                PartitionMode::Partitioned if !should_swap && should_broadcast => {
+                    // Partitioned -> Broadcasted (no swap)
+                    //
+                    // - The probe side needs to:
+                    //   - If it was a hash shuffle, it needs to go to a round-robin shuffle
+                    //   - If everything below was already co-partitioned, it can stay like that
+                    // - The build side needs to go from shuffle to broadcast.
+
+                    // Probe side (does not swap)
+                    let mut right = Arc::clone(join.right());
+                    if let Some(shuffle) = right.downcast_ref::<NetworkShuffleExec>() {
+                        // hash shuffle -> round-robin shuffle
+                        let rr_shuffle = Arc::new(shuffle.to_round_robin_shuffle()) as _;
+                        nb_ctx.set_task_count(&rr_shuffle, nb_ctx.task_count(&right)?);
+                        right = rr_shuffle;
+                    } else {
+                        // no partitioning -> stay the same, no specific partitioning is required.
+                    };
+
+                    // Build side (does not swap)
+                    let left = Arc::clone(join.left());
+                    let (coalesce, mut left) = left.split_head::<CoalescePartitionsExec>();
+
+                    if let Some(shuffle) = left.downcast_ref::<NetworkShuffleExec>() {
+                        // hash shuffle -> round-robin shuffle
+                        let broadcast = Arc::new(shuffle.to_broadcast()) as _;
+                        nb_ctx.set_task_count(&broadcast, nb_ctx.task_count(&left)?);
+                        left = broadcast;
+                    } else {
+                        // no partitioning -> new BroadcastExec that will eventually be wired to
+                        // a NetworkBroadcastExec.
+                        left = Arc::new(BroadcastExec::new(left, 1))
+                    };
+
+                    left = coalesce.reattach(left)?;
+
+                    let join = join
+                        .builder()
+                        .with_partition_mode(PartitionMode::CollectLeft)
+                        .with_new_children(vec![left, right])?
+                        .build()?;
+                    Ok(Transformed::yes(Arc::new(join)))
+                }
+                PartitionMode::Partitioned if !should_swap && !should_broadcast => {
+                    // Stay partitioned
+                    Ok(Transformed::no(plan))
+                }
+                PartitionMode::CollectLeft if should_swap && should_broadcast => {
+                    // Broadcast -> Swapped Broadcast
+                    //
+                    // - The probe side needs to go to the build side, and we need to inject a new broadcast
+                    //   network boundary right there.
+                    // - The build side needs to go to the probe side, but it had already started executing in
+                    //   broadcast mode, so we need to set it to round-robin shuffle.
+                    let join_or_proj = join.swap_inputs(PartitionMode::CollectLeft)?;
+                    let join_or_proj = join_or_proj.transform_down(|plan| {
+                        let Some(join) = plan.downcast_ref::<HashJoinExec>() else {
+                            return Ok(Transformed::no(plan));
+                        };
+
+                        // New probe side (old build side)
+                        let right = Arc::clone(join.right());
+                        let (_coalesce, mut right) = right.split_head::<CoalescePartitionsExec>();
+                        if let Some(broadcast) = right.downcast_ref::<NetworkBroadcastExec>() {
+                            // broadcast -> round-robin shuffle
+                            let rr_shuffle = Arc::new(broadcast.to_round_robin_shuffle()) as _;
+                            nb_ctx.set_task_count(&rr_shuffle, nb_ctx.task_count(&right)?);
+                            right = rr_shuffle;
+                        } else {
+                            // no partitioning -> stay the same, no specific partitioning is required.
+                        };
+
+                        // New build side (old probe side)
+                        let left = Arc::clone(join.left());
+                        let (coalesce, mut left) = left.split_head::<CoalescePartitionsExec>();
+
+                        if let Some(shuffle) = left.downcast_ref::<NetworkShuffleExec>() {
+                            // any shuffle -> broadcast
+                            let broadcast = Arc::new(shuffle.to_broadcast()) as _;
+                            nb_ctx.set_task_count(&broadcast, nb_ctx.task_count(&left)?);
+                            left = broadcast;
+                        } else {
+                            // no partitioning -> new BroadcastExec that will eventually be wired to
+                            // a NetworkBroadcastExec.
+                            left = Arc::new(BroadcastExec::new(left, 1))
+                        };
+
+                        left = coalesce.reattach(left)?;
+
+                        let plan = plan.replace_children(
+                            vec![left, right],
+                            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+                        )?;
+
+                        Ok(Transformed::yes(plan))
+                    })?;
+                    Ok(join_or_proj)
+                }
+                PartitionMode::CollectLeft if should_swap && !should_broadcast => {
+                    // Broadcast -> Swapped Partitioned
+                    //
+                    // - The probe side needs to go to the build side, and in needs to move to a hash shuffle.
+                    // - The build side needs to go to the probe side, and it needs to swap from broadcast to
+                    //   shuffle.
+                    let join_or_proj = join.swap_inputs(PartitionMode::Partitioned)?;
+                    let join_or_proj = join_or_proj.transform_down(|plan| {
+                        let Some(join) = plan.downcast_ref::<HashJoinExec>() else {
+                            return Ok(Transformed::no(plan));
+                        };
+
+                        let target_partitions = cfg.execution.target_partitions;
+
+                        // New probe side (old build side)
+                        let right = Arc::clone(join.right());
+                        let right_keys = join.on().iter().map(|(_, r)| Arc::clone(r)).collect();
+                        let (_coalesce, mut right) = right.split_head::<CoalescePartitionsExec>();
+                        if let Some(broadcast) = right.downcast_ref::<NetworkBroadcastExec>() {
+                            // broadcast -> hash shuffle
+                            let rr_shuffle = Arc::new(broadcast.to_hash_shuffle(right_keys)) as _;
+                            nb_ctx.set_task_count(&rr_shuffle, nb_ctx.task_count(&right)?);
+                            right = rr_shuffle;
+                        } else {
+                            // no partitioning -> new RepartitionExec that will eventually be wired
+                            // to a NetworkShuffleExec.
+                            let partitioning = Partitioning::Hash(right_keys, target_partitions);
+                            right = Arc::new(RepartitionExec::try_new(right, partitioning)?);
+                        };
+
+                        // New build side (old probe side)
+                        let mut left = Arc::clone(join.left());
+                        let left_keys = join.on().iter().map(|(l, _)| Arc::clone(l)).collect();
+                        if let Some(broadcast) = left.downcast_ref::<NetworkBroadcastExec>() {
+                            // broadcast -> hash shuffle
+                            let h_shuffle = Arc::new(broadcast.to_hash_shuffle(left_keys)) as _;
+                            nb_ctx.set_task_count(&h_shuffle, nb_ctx.task_count(&left)?);
+                            left = h_shuffle;
+                        } else {
+                            // no partitioning -> new RepartitionExec that will eventually be wired
+                            // to a NetworkShuffleExec.
+                            let partitioning = Partitioning::Hash(left_keys, target_partitions);
+                            left = Arc::new(RepartitionExec::try_new(left, partitioning)?);
+                        };
+
+                        let plan = plan.replace_children(
+                            vec![left, right],
+                            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+                        )?;
+
+                        Ok(Transformed::yes(plan))
+                    })?;
+                    Ok(join_or_proj)
+                }
+                PartitionMode::CollectLeft if !should_swap && should_broadcast => {
+                    // Stay broadcasted
+                    Ok(Transformed::no(plan))
+                }
+                PartitionMode::CollectLeft if !should_swap && !should_broadcast => {
+                    // Broadcast -> Partitioned (no swap)
+                    //
+                    // - The probe side needs to move to a hash shuffle, regardless of what it was.
+                    // - The build side needs to go from broadcast to shuffle.
+                    let target_partitions = cfg.execution.target_partitions;
+
+                    // Probe side (does not swap)
+                    let mut right = Arc::clone(join.right());
+                    let right_keys = join.on().iter().map(|(_, r)| Arc::clone(r)).collect();
+                    if let Some(shuffle) = right.downcast_ref::<NetworkShuffleExec>() {
+                        // any shuffle -> hash shuffle (over join on right keys)
+                        let h_shuffle = Arc::new(shuffle.to_hash_shuffle(right_keys)) as _;
+                        nb_ctx.set_task_count(&h_shuffle, nb_ctx.task_count(&right)?);
+                        right = h_shuffle;
+                    } else {
+                        // no partitioning -> RepartitionExec (over join on left keys) that will
+                        // eventually be wired to a NetworkShuffleExec
+                        let partitioning = Partitioning::Hash(right_keys, target_partitions);
+                        right = Arc::new(RepartitionExec::try_new(right, partitioning)?);
+                    };
+
+                    // Build side (does not swap)
+                    let left = Arc::clone(join.left());
+                    let (_coalesce, mut left) = left.split_head::<CoalescePartitionsExec>();
+                    let left_keys = join.on().iter().map(|(l, _)| Arc::clone(l)).collect();
+                    if let Some(shuffle) = left.downcast_ref::<NetworkBroadcastExec>() {
+                        // broadcast -> hash shuffle (over join on left keys)
+                        let h_shuffle = Arc::new(shuffle.to_hash_shuffle(left_keys)) as _;
+                        nb_ctx.set_task_count(&h_shuffle, nb_ctx.task_count(&left)?);
+                        left = h_shuffle;
+                    } else {
+                        // no partitioning -> RepartitionExec (over join on left keys) that will
+                        // eventually be wired to a NetworkShuffleExec
+                        let partitioning = Partitioning::Hash(left_keys, target_partitions);
+                        left = Arc::new(RepartitionExec::try_new(left, partitioning)?);
+                    };
+
+                    let join = join
+                        .builder()
+                        .with_partition_mode(PartitionMode::Partitioned)
+                        .with_new_children(vec![left, right])?
+                        .build()?;
+                    Ok(Transformed::yes(Arc::new(join)))
+                }
+                PartitionMode::Auto => plan_err!(
+                    "Found a HashJoinExec in PartitionMode::Auto during plan remainder replanning."
+                ),
+                // Pretty annoying that the compiler does not enforce this
+                _ => unreachable!(),
+            }
+        } else {
+            Ok(Transformed::no(plan))
+        }
+    })
+    .map(|v| v.data)
+}
+
+fn should_broadcast(candidate_left: &dyn ExecutionPlan, config: &ConfigOptions) -> Result<bool> {
+    let left_stats = StatisticsContext::new().compute(candidate_left, &StatisticsArgs::new())?;
+
+    if let Some(byte_size) = left_stats.total_byte_size.get_value() {
+        Ok(*byte_size < config.optimizer.hash_join_single_partition_threshold)
+    } else if let Some(num_rows) = left_stats.num_rows.get_value() {
+        Ok(*num_rows < config.optimizer.hash_join_single_partition_threshold_rows)
+    } else {
+        Ok(false)
+    }
+}
+
+fn should_swap(left: &dyn ExecutionPlan, right: &dyn ExecutionPlan) -> Result<bool> {
+    let left_stats = StatisticsContext::new().compute(left, &StatisticsArgs::new())?;
+    let right_stats = StatisticsContext::new().compute(right, &StatisticsArgs::new())?;
+
+    // First compare total_byte_size, then fall back to num_rows if byte
+    // sizes are unavailable.
+    match (
+        left_stats.total_byte_size.get_value(),
+        right_stats.total_byte_size.get_value(),
+    ) {
+        (Some(l), Some(r)) => Ok(l > r),
+        _ => match (
+            left_stats.num_rows.get_value(),
+            right_stats.num_rows.get_value(),
+        ) {
+            (Some(l), Some(r)) => Ok(l > r),
+            _ => Ok(false),
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::assert_snapshot;
+    use crate::test_utils::plans::TestPlanBuilder;
+
+    #[tokio::test]
+    async fn partitioned_to_partitioned_swapped_join_reordering() -> Result<()> {
+        // Both `abs(...)` filters are opaque to statistics, so both sides get the same estimate
+        // statically. At runtime, `a` keeps all 366 rows while `b` keeps only 33.
+        let query = r#"
+        SELECT a."MinTemp", b."MaxTemp"
+        FROM (SELECT * FROM weather WHERE abs("Rainfall") >= 0) a
+        LEFT JOIN (SELECT * FROM weather WHERE abs("Rainfall") > 5) b
+          ON a."RainToday" = b."RainToday"
+        ORDER BY a."MinTemp", b."MaxTemp"
+        "#;
+
+        let (non_dynamic, physical_plan_ascii) = TestPlanBuilder::default()
+            .dynamic_filters(false)
+            .executed_plan_as_string(query)
+            .await;
+        assert_snapshot!(physical_plan_ascii, @r"
+        SortPreservingMergeExec: [MinTemp@0 ASC NULLS LAST, MaxTemp@1 ASC NULLS LAST]
+          [Stage 3] => NetworkCoalesceExec: output_partitions=12, input_tasks=3
+            SortExec: expr=[MinTemp@0 ASC NULLS LAST, MaxTemp@1 ASC NULLS LAST], preserve_partitioning=[true]
+              HashJoinExec: mode=Partitioned, join_type=Left, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
+                [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
+                  RepartitionExec: partitioning=Hash([RainToday@1], 12), input_partitions=4
+                    FilterExec: abs(Rainfall@1) >= 0, projection=[MinTemp@0, RainToday@2]
+                      RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+                        DistributedLeafExec: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, Rainfall, RainToday], file_type=parquet, predicate=abs(Rainfall@2) >= 0
+                [Stage 2] => NetworkShuffleExec: output_partitions=4, input_tasks=3
+                  RepartitionExec: partitioning=Hash([RainToday@1], 12), input_partitions=4
+                    FilterExec: abs(Rainfall@1) > 5, projection=[MaxTemp@0, RainToday@2]
+                      RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+                        DistributedLeafExec: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, Rainfall, RainToday], file_type=parquet, predicate=abs(Rainfall@2) > 5
+        ");
+
+        // Note how the two sides of the join are swapped:
+        // - static: projection=[MinTemp@0, MaxTemp@2]
+        // - adaptive: projection=[MinTemp@2, MaxTemp@0]
+        let (dynamic, physical_plan_ascii) = TestPlanBuilder::default()
+            .dynamic_filters(false)
+            .distributed_dynamic_task_count(true)
+            .distributed_dynamic_bytes_ready_sample_percentage(1.0)
+            .distributed_dynamic_plan_remainder_replanning(true)
+            .executed_plan_as_string(query)
+            .await;
+        assert_snapshot!(physical_plan_ascii, @r"
+        SortPreservingMergeExec: [MinTemp@0 ASC NULLS LAST, MaxTemp@1 ASC NULLS LAST]
+          [Stage 3] => NetworkCoalesceExec: output_partitions=4, input_tasks=1
+            SortExec: expr=[MinTemp@0 ASC NULLS LAST, MaxTemp@1 ASC NULLS LAST], preserve_partitioning=[true]
+              HashJoinExec: mode=Partitioned, join_type=Right, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@2, MaxTemp@0]
+                [Stage 2] => NetworkShuffleExec: output_partitions=4, input_tasks=3
+                  RepartitionExec: partitioning=Hash([RainToday@1], 4), input_partitions=4
+                    SamplerExec: partitions=4
+                      FilterExec: abs(Rainfall@1) > 5, projection=[MaxTemp@0, RainToday@2]
+                        RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+                          DistributedLeafExec: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, Rainfall, RainToday], file_type=parquet, predicate=abs(Rainfall@2) > 5
+                [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
+                  RepartitionExec: partitioning=Hash([RainToday@1], 4), input_partitions=4
+                    SamplerExec: partitions=4
+                      FilterExec: abs(Rainfall@1) >= 0, projection=[MinTemp@0, RainToday@2]
+                        RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+                          DistributedLeafExec: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, Rainfall, RainToday], file_type=parquet, predicate=abs(Rainfall@2) >= 0
+        ");
+
+        assert_eq!(non_dynamic, dynamic);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn dynamic_join_reordering_aggregation_becomes_build_side() -> Result<()> {
+        let query = r#"
+        SELECT a."MinTemp", b.cnt
+        FROM weather a
+        JOIN (SELECT "RainToday", count(*) AS cnt FROM weather GROUP BY "RainToday") b
+          ON a."RainToday" = b."RainToday"
+        ORDER BY a."MinTemp", b.cnt
+        "#;
+
+        // Statically, the aggregation output is not known to be small, so the full weather scan
+        // is kept as the build side.
+        let (non_dynamic, physical_plan_ascii) = TestPlanBuilder::default()
+            .dynamic_filters(false)
+            .broadcast_joins(true)
+            .hash_join_single_partition_threshold(1024)
+            .hash_join_single_partition_threshold_rows(10)
+            .executed_plan_as_string(query)
+            .await;
+        assert_snapshot!(physical_plan_ascii, @r"
+        SortPreservingMergeExec: [MinTemp@0 ASC NULLS LAST, cnt@1 ASC NULLS LAST]
+          [Stage 3] => NetworkCoalesceExec: output_partitions=12, input_tasks=3
+            SortExec: expr=[MinTemp@0 ASC NULLS LAST, cnt@1 ASC NULLS LAST], preserve_partitioning=[true]
+              HashJoinExec: mode=Partitioned, join_type=Inner, on=[(RainToday@1, RainToday@0)], projection=[MinTemp@0, cnt@3]
+                [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
+                  RepartitionExec: partitioning=Hash([RainToday@1], 12), input_partitions=3
+                    DistributedLeafExec: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
+                ProjectionExec: expr=[RainToday@0 as RainToday, count(Int64(1))@1 as cnt]
+                  AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
+                    [Stage 2] => NetworkShuffleExec: output_partitions=4, input_tasks=3
+                      RepartitionExec: partitioning=Hash([RainToday@0], 12), input_partitions=3
+                        AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
+                          DistributedLeafExec: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[RainToday], file_type=parquet
+        ");
+
+        // At runtime, the aggregation yields a handful of rows, so it becomes the build side.
+        let (dynamic, physical_plan_ascii) = TestPlanBuilder::default()
+            .broadcast_joins(true)
+            .hash_join_single_partition_threshold(1024)
+            .hash_join_single_partition_threshold_rows(10)
+            .dynamic_filters(false)
+            .distributed_dynamic_task_count(true)
+            .distributed_dynamic_bytes_ready_sample_percentage(1.0)
+            .distributed_dynamic_plan_remainder_replanning(true)
+            .executed_plan_as_string(query)
+            .await;
+        assert_snapshot!(physical_plan_ascii, @r"
+        SortPreservingMergeExec: [MinTemp@0 ASC NULLS LAST, cnt@1 ASC NULLS LAST]
+          [Stage 4] => NetworkCoalesceExec: output_partitions=4, input_tasks=1
+            SortExec: expr=[MinTemp@0 ASC NULLS LAST, cnt@1 ASC NULLS LAST], preserve_partitioning=[true]
+              HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@0, RainToday@1)], projection=[MinTemp@2, cnt@1]
+                CoalescePartitionsExec
+                  [Stage 3] => NetworkBroadcastExec: partitions_per_consumer=4, stage_partitions=4, input_tasks=1
+                    BroadcastExec: input_partitions=4, consumer_tasks=1, output_partitions=4
+                      SamplerExec: partitions=4
+                        ProjectionExec: expr=[RainToday@0 as RainToday, count(Int64(1))@1 as cnt]
+                          AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
+                            [Stage 2] => NetworkShuffleExec: output_partitions=4, input_tasks=3
+                              RepartitionExec: partitioning=Hash([RainToday@0], 4), input_partitions=3
+                                SamplerExec: partitions=3
+                                  AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
+                                    DistributedLeafExec: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[RainToday], file_type=parquet
+                [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
+                  RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+                    SamplerExec: partitions=3
+                      DistributedLeafExec: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
+        ");
+
+        assert_eq!(non_dynamic, dynamic);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn dynamic_join_reordering_shuffled_scan_becomes_broadcast_build_side() -> Result<()> {
+        // `abs(...)` filters are opaque to statistics, so both sides get the same estimate
+        // statically. At runtime, `a` keeps all 366 rows while `b` keeps only 3.
+        let query = r#"
+        SELECT a."MinTemp", b."MaxTemp"
+        FROM (SELECT * FROM weather WHERE abs("Rainfall") >= 0) a
+        JOIN (SELECT * FROM weather WHERE abs("Rainfall") > 20) b
+          ON a."RainToday" = b."RainToday"
+        ORDER BY a."MinTemp", b."MaxTemp"
+        "#;
+
+        // Statically, neither side is known to be small, so both are hash shuffled.
+        let (non_dynamic, physical_plan_ascii) = TestPlanBuilder::default()
+            .dynamic_filters(false)
+            .broadcast_joins(true)
+            .hash_join_single_partition_threshold(1024)
+            .hash_join_single_partition_threshold_rows(10)
+            .executed_plan_as_string(query)
+            .await;
+        assert_snapshot!(physical_plan_ascii, @r"
+        SortPreservingMergeExec: [MinTemp@0 ASC NULLS LAST, MaxTemp@1 ASC NULLS LAST]
+          [Stage 3] => NetworkCoalesceExec: output_partitions=12, input_tasks=3
+            SortExec: expr=[MinTemp@0 ASC NULLS LAST, MaxTemp@1 ASC NULLS LAST], preserve_partitioning=[true]
+              HashJoinExec: mode=Partitioned, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
+                [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
+                  RepartitionExec: partitioning=Hash([RainToday@1], 12), input_partitions=4
+                    FilterExec: abs(Rainfall@1) >= 0, projection=[MinTemp@0, RainToday@2]
+                      RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+                        DistributedLeafExec: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, Rainfall, RainToday], file_type=parquet, predicate=abs(Rainfall@2) >= 0
+                [Stage 2] => NetworkShuffleExec: output_partitions=4, input_tasks=3
+                  RepartitionExec: partitioning=Hash([RainToday@1], 12), input_partitions=4
+                    FilterExec: abs(Rainfall@1) > 20, projection=[MaxTemp@0, RainToday@2]
+                      RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+                        DistributedLeafExec: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, Rainfall, RainToday], file_type=parquet, predicate=abs(Rainfall@2) > 20
+        ");
+
+        // At runtime, `b` is tiny and its stage is already a plain shuffle right under the join,
+        // so the join swaps and that shuffle is read as a broadcast instead.
+        let (dynamic, physical_plan_ascii) = TestPlanBuilder::default()
+            .dynamic_filters(false)
+            .broadcast_joins(true)
+            .hash_join_single_partition_threshold(1024)
+            .hash_join_single_partition_threshold_rows(10)
+            .distributed_dynamic_task_count(true)
+            .distributed_dynamic_bytes_ready_sample_percentage(1.0)
+            .distributed_dynamic_plan_remainder_replanning(true)
+            .executed_plan_as_string(query)
+            .await;
+        assert_snapshot!(physical_plan_ascii, @r"
+        SortPreservingMergeExec: [MinTemp@0 ASC NULLS LAST, MaxTemp@1 ASC NULLS LAST]
+          [Stage 3] => NetworkCoalesceExec: output_partitions=4, input_tasks=1
+            SortExec: expr=[MinTemp@0 ASC NULLS LAST, MaxTemp@1 ASC NULLS LAST], preserve_partitioning=[true]
+              HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@2, MaxTemp@0]
+                CoalescePartitionsExec
+                  [Stage 2] => NetworkBroadcastExec: partitions_per_consumer=4, stage_partitions=4, input_tasks=3
+                    BroadcastExec: input_partitions=4, consumer_tasks=1, output_partitions=4
+                      SamplerExec: partitions=4
+                        FilterExec: abs(Rainfall@1) > 20, projection=[MaxTemp@0, RainToday@2]
+                          RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+                            DistributedLeafExec: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, Rainfall, RainToday], file_type=parquet, predicate=abs(Rainfall@2) > 20
+                [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
+                  RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=4
+                    SamplerExec: partitions=4
+                      FilterExec: abs(Rainfall@1) >= 0, projection=[MinTemp@0, RainToday@2]
+                        RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+                          DistributedLeafExec: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, Rainfall, RainToday], file_type=parquet, predicate=abs(Rainfall@2) >= 0
+        ");
+
+        assert_eq!(non_dynamic, dynamic);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn dynamic_join_reordering_shuffled_scan_broadcasts_without_swap() -> Result<()> {
+        // `abs(...)` filters are opaque to statistics, so both sides get the same estimate
+        // statically. At runtime, `a` keeps only 3 rows while `b` keeps all 366.
+        let query = r#"
+        SELECT a."MinTemp", b."MaxTemp"
+        FROM (SELECT * FROM weather WHERE abs("Rainfall") > 20) a
+        JOIN (SELECT * FROM weather WHERE abs("Rainfall") >= 0) b
+          ON a."RainToday" = b."RainToday"
+        ORDER BY a."MinTemp", b."MaxTemp"
+        "#;
+
+        // Statically, neither side is known to be small, so both are hash shuffled.
+        let (non_dynamic, physical_plan_ascii) = TestPlanBuilder::default()
+            .dynamic_filters(false)
+            .broadcast_joins(true)
+            .hash_join_single_partition_threshold(1024)
+            .hash_join_single_partition_threshold_rows(10)
+            .executed_plan_as_string(query)
+            .await;
+        assert_snapshot!(physical_plan_ascii, @r"
+        SortPreservingMergeExec: [MinTemp@0 ASC NULLS LAST, MaxTemp@1 ASC NULLS LAST]
+          [Stage 3] => NetworkCoalesceExec: output_partitions=12, input_tasks=3
+            SortExec: expr=[MinTemp@0 ASC NULLS LAST, MaxTemp@1 ASC NULLS LAST], preserve_partitioning=[true]
+              HashJoinExec: mode=Partitioned, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
+                [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
+                  RepartitionExec: partitioning=Hash([RainToday@1], 12), input_partitions=4
+                    FilterExec: abs(Rainfall@1) > 20, projection=[MinTemp@0, RainToday@2]
+                      RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+                        DistributedLeafExec: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, Rainfall, RainToday], file_type=parquet, predicate=abs(Rainfall@2) > 20
+                [Stage 2] => NetworkShuffleExec: output_partitions=4, input_tasks=3
+                  RepartitionExec: partitioning=Hash([RainToday@1], 12), input_partitions=4
+                    FilterExec: abs(Rainfall@1) >= 0, projection=[MaxTemp@0, RainToday@2]
+                      RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+                        DistributedLeafExec: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, Rainfall, RainToday], file_type=parquet, predicate=abs(Rainfall@2) >= 0
+        ");
+
+        // At runtime, `a` is tiny and already the build side, so the join keeps its input order
+        // and only switches to broadcasting `a`'s shuffle.
+        let (dynamic, physical_plan_ascii) = TestPlanBuilder::default()
+            .dynamic_filters(false)
+            .broadcast_joins(true)
+            .hash_join_single_partition_threshold(1024)
+            .hash_join_single_partition_threshold_rows(10)
+            .distributed_dynamic_task_count(true)
+            .distributed_dynamic_bytes_ready_sample_percentage(1.0)
+            .distributed_dynamic_plan_remainder_replanning(true)
+            .executed_plan_as_string(query)
+            .await;
+        assert_snapshot!(physical_plan_ascii, @r"
+        SortPreservingMergeExec: [MinTemp@0 ASC NULLS LAST, MaxTemp@1 ASC NULLS LAST]
+          [Stage 3] => NetworkCoalesceExec: output_partitions=4, input_tasks=1
+            SortExec: expr=[MinTemp@0 ASC NULLS LAST, MaxTemp@1 ASC NULLS LAST], preserve_partitioning=[true]
+              HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
+                CoalescePartitionsExec
+                  [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=4, stage_partitions=4, input_tasks=3
+                    BroadcastExec: input_partitions=4, consumer_tasks=1, output_partitions=4
+                      SamplerExec: partitions=4
+                        FilterExec: abs(Rainfall@1) > 20, projection=[MinTemp@0, RainToday@2]
+                          RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+                            DistributedLeafExec: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, Rainfall, RainToday], file_type=parquet, predicate=abs(Rainfall@2) > 20
+                [Stage 2] => NetworkShuffleExec: output_partitions=4, input_tasks=3
+                  RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=4
+                    SamplerExec: partitions=4
+                      FilterExec: abs(Rainfall@1) >= 0, projection=[MaxTemp@0, RainToday@2]
+                        RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+                          DistributedLeafExec: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, Rainfall, RainToday], file_type=parquet, predicate=abs(Rainfall@2) >= 0
+        ");
+
+        assert_eq!(non_dynamic, dynamic);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn dynamic_join_reordering_reverts_swap_after_sampling_probe_side() -> Result<()> {
+        // `b`'s filter is estimated from column statistics, while `a`'s `abs(...)` filter is opaque
+        // and gets a default selectivity. At runtime, `a` keeps all 366 rows and `b` keeps 218.
+        let query = r#"
+        SELECT a."MinTemp", b."MaxTemp"
+        FROM (SELECT * FROM weather WHERE abs("Rainfall") >= 0) a
+        JOIN (SELECT * FROM weather WHERE "MinTemp" > 5) b
+          ON a."RainToday" = b."RainToday"
+        ORDER BY a."MinTemp", b."MaxTemp"
+        "#;
+
+        // Statically, `b` is estimated smaller, so it is broadcast and `a` is probed in the join's
+        // stage.
+        let (non_dynamic, physical_plan_ascii) = TestPlanBuilder::default()
+            .dynamic_filters(false)
+            .broadcast_joins(true)
+            .hash_join_single_partition_threshold(1_000_000)
+            .hash_join_single_partition_threshold_rows(1_000)
+            .executed_plan_as_string(query)
+            .await;
+        assert_snapshot!(physical_plan_ascii, @r"
+        SortPreservingMergeExec: [MinTemp@0 ASC NULLS LAST, MaxTemp@1 ASC NULLS LAST]
+          [Stage 2] => NetworkCoalesceExec: output_partitions=12, input_tasks=3
+            SortExec: expr=[MinTemp@0 ASC NULLS LAST, MaxTemp@1 ASC NULLS LAST], preserve_partitioning=[true]
+              HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@2, MaxTemp@0]
+                CoalescePartitionsExec
+                  [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=4, stage_partitions=12, input_tasks=3
+                    BroadcastExec: input_partitions=4, consumer_tasks=3, output_partitions=12
+                      FilterExec: MinTemp@0 > 5, projection=[MaxTemp@1, RainToday@2]
+                        RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+                          DistributedLeafExec: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, MaxTemp, RainToday], file_type=parquet, predicate=MinTemp@0 > 5, pruning_predicate=MinTemp_null_count@1 != row_count@2 AND MinTemp_max@0 > 5, required_guarantees=[]
+                FilterExec: abs(Rainfall@1) >= 0, projection=[MinTemp@0, RainToday@2]
+                  RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+                    DistributedLeafExec: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, Rainfall, RainToday], file_type=parquet, predicate=abs(Rainfall@2) >= 0
+        ");
+
+        // At runtime, `b`'s sampled size is first compared against `a`'s static estimate, so the
+        // join swaps and `a` is moved into its own broadcast stage (Stage 2). Once `a` is sampled
+        // it turns out bigger, so the join swaps back: `b` is broadcast again and `a`'s stage is
+        // read as a round-robin shuffle.
+        let (dynamic, physical_plan_ascii) = TestPlanBuilder::default()
+            .dynamic_filters(false)
+            .broadcast_joins(true)
+            .hash_join_single_partition_threshold(1_000_000)
+            .hash_join_single_partition_threshold_rows(1_000)
+            .distributed_dynamic_task_count(true)
+            .distributed_dynamic_bytes_ready_sample_percentage(1.0)
+            .distributed_dynamic_plan_remainder_replanning(true)
+            .executed_plan_as_string(query)
+            .await;
+        assert_snapshot!(physical_plan_ascii, @r"
+        SortPreservingMergeExec: [MinTemp@0 ASC NULLS LAST, MaxTemp@1 ASC NULLS LAST]
+          [Stage 3] => NetworkCoalesceExec: output_partitions=4, input_tasks=1
+            SortExec: expr=[MinTemp@0 ASC NULLS LAST, MaxTemp@1 ASC NULLS LAST], preserve_partitioning=[true]
+              HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@2, MaxTemp@0]
+                CoalescePartitionsExec
+                  [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=4, stage_partitions=4, input_tasks=3
+                    BroadcastExec: input_partitions=4, consumer_tasks=1, output_partitions=4
+                      SamplerExec: partitions=4
+                        FilterExec: MinTemp@0 > 5, projection=[MaxTemp@1, RainToday@2]
+                          RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+                            DistributedLeafExec: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, MaxTemp, RainToday], file_type=parquet, predicate=MinTemp@0 > 5, pruning_predicate=MinTemp_null_count@1 != row_count@2 AND MinTemp_max@0 > 5, required_guarantees=[]
+                [Stage 2] => NetworkShuffleExec: output_partitions=4, input_tasks=3
+                  RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=4
+                    SamplerExec: partitions=4
+                      FilterExec: abs(Rainfall@1) >= 0, projection=[MinTemp@0, RainToday@2]
+                        RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+                          DistributedLeafExec: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, Rainfall, RainToday], file_type=parquet, predicate=abs(Rainfall@2) >= 0
+        ");
+
+        assert_eq!(non_dynamic, dynamic);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn dynamic_join_reordering_swaps_broadcast_to_smaller_probe_side() -> Result<()> {
+        // `b`'s filter is estimated from column statistics, while `a`'s `abs(...)` filter is opaque
+        // and gets a default selectivity. At runtime, `a` keeps only 3 rows and `b` keeps 218.
+        let query = r#"
+        SELECT a."MinTemp", b."MaxTemp"
+        FROM (SELECT * FROM weather WHERE abs("Rainfall") > 20) a
+        JOIN (SELECT * FROM weather WHERE "MinTemp" > 5) b
+          ON a."RainToday" = b."RainToday"
+        ORDER BY a."MinTemp", b."MaxTemp"
+        "#;
+
+        // Statically, `b` is estimated smaller, so it is broadcast and `a` is probed in the join's
+        // stage.
+        let (non_dynamic, physical_plan_ascii) = TestPlanBuilder::default()
+            .dynamic_filters(false)
+            .broadcast_joins(true)
+            .hash_join_single_partition_threshold(1_000_000)
+            .hash_join_single_partition_threshold_rows(1_000)
+            .executed_plan_as_string(query)
+            .await;
+        assert_snapshot!(physical_plan_ascii, @r"
+        SortPreservingMergeExec: [MinTemp@0 ASC NULLS LAST, MaxTemp@1 ASC NULLS LAST]
+          [Stage 2] => NetworkCoalesceExec: output_partitions=12, input_tasks=3
+            SortExec: expr=[MinTemp@0 ASC NULLS LAST, MaxTemp@1 ASC NULLS LAST], preserve_partitioning=[true]
+              HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@2, MaxTemp@0]
+                CoalescePartitionsExec
+                  [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=4, stage_partitions=12, input_tasks=3
+                    BroadcastExec: input_partitions=4, consumer_tasks=3, output_partitions=12
+                      FilterExec: MinTemp@0 > 5, projection=[MaxTemp@1, RainToday@2]
+                        RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+                          DistributedLeafExec: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, MaxTemp, RainToday], file_type=parquet, predicate=MinTemp@0 > 5, pruning_predicate=MinTemp_null_count@1 != row_count@2 AND MinTemp_max@0 > 5, required_guarantees=[]
+                FilterExec: abs(Rainfall@1) > 20, projection=[MinTemp@0, RainToday@2]
+                  RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+                    DistributedLeafExec: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, Rainfall, RainToday], file_type=parquet, predicate=abs(Rainfall@2) > 20
+        ");
+
+        // At runtime, `b` turns out bigger than `a`, so the join swaps: `a` is moved into its own
+        // broadcast stage and `b`'s already dispatched stage is read as a round-robin shuffle.
+        let (dynamic, physical_plan_ascii) = TestPlanBuilder::default()
+            .dynamic_filters(false)
+            .broadcast_joins(true)
+            .hash_join_single_partition_threshold(1_000_000)
+            .hash_join_single_partition_threshold_rows(1_000)
+            .distributed_dynamic_task_count(true)
+            .distributed_dynamic_bytes_ready_sample_percentage(1.0)
+            .distributed_dynamic_plan_remainder_replanning(true)
+            .executed_plan_as_string(query)
+            .await;
+        // The swap can be verified by looking at projection=[MinTemp@0, MaxTemp@2] vs the test above (projection=[MinTemp@2, MaxTemp@0])
+        assert_snapshot!(physical_plan_ascii, @r"
+        SortPreservingMergeExec: [MinTemp@0 ASC NULLS LAST, MaxTemp@1 ASC NULLS LAST]
+          [Stage 3] => NetworkCoalesceExec: output_partitions=4, input_tasks=1
+            SortExec: expr=[MinTemp@0 ASC NULLS LAST, MaxTemp@1 ASC NULLS LAST], preserve_partitioning=[true]
+              HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
+                CoalescePartitionsExec
+                  [Stage 2] => NetworkBroadcastExec: partitions_per_consumer=4, stage_partitions=4, input_tasks=3
+                    BroadcastExec: input_partitions=4, consumer_tasks=1, output_partitions=4
+                      SamplerExec: partitions=4
+                        FilterExec: abs(Rainfall@1) > 20, projection=[MinTemp@0, RainToday@2]
+                          RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+                            DistributedLeafExec: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, Rainfall, RainToday], file_type=parquet, predicate=abs(Rainfall@2) > 20
+                [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
+                  RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=4
+                    SamplerExec: partitions=4
+                      FilterExec: MinTemp@0 > 5, projection=[MaxTemp@1, RainToday@2]
+                        RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+                          DistributedLeafExec: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, MaxTemp, RainToday], file_type=parquet, predicate=MinTemp@0 > 5, pruning_predicate=MinTemp_null_count@1 != row_count@2 AND MinTemp_max@0 > 5, required_guarantees=[]
+        ");
+
+        assert_eq!(non_dynamic, dynamic);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn dynamic_join_reordering_broadcast_becomes_partitioned_and_swaps() -> Result<()> {
+        // `b`'s filter is estimated from column statistics, while `a`'s `abs(...)` filter is opaque
+        // and gets a default selectivity. At runtime, `a` keeps 33 rows and `b` keeps 218.
+        let query = r#"
+        SELECT a."MinTemp", b."MaxTemp"
+        FROM (SELECT * FROM weather WHERE abs("Rainfall") > 5) a
+        JOIN (SELECT * FROM weather WHERE "MinTemp" > 5) b
+          ON a."RainToday" = b."RainToday"
+        ORDER BY a."MinTemp", b."MaxTemp"
+        "#;
+
+        // Statically, `b` is estimated below the row threshold, so it is broadcast and `a` is
+        // probed in the join's stage.
+        let (non_dynamic, physical_plan_ascii) = TestPlanBuilder::default()
+            .dynamic_filters(false)
+            .broadcast_joins(true)
+            .hash_join_single_partition_threshold(50)
+            .hash_join_single_partition_threshold_rows(50)
+            .executed_plan_as_string(query)
+            .await;
+        assert_snapshot!(physical_plan_ascii, @r"
+        SortPreservingMergeExec: [MinTemp@0 ASC NULLS LAST, MaxTemp@1 ASC NULLS LAST]
+          [Stage 2] => NetworkCoalesceExec: output_partitions=12, input_tasks=3
+            SortExec: expr=[MinTemp@0 ASC NULLS LAST, MaxTemp@1 ASC NULLS LAST], preserve_partitioning=[true]
+              HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@2, MaxTemp@0]
+                CoalescePartitionsExec
+                  [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=4, stage_partitions=12, input_tasks=3
+                    BroadcastExec: input_partitions=4, consumer_tasks=3, output_partitions=12
+                      FilterExec: MinTemp@0 > 5, projection=[MaxTemp@1, RainToday@2]
+                        RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+                          DistributedLeafExec: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, MaxTemp, RainToday], file_type=parquet, predicate=MinTemp@0 > 5, pruning_predicate=MinTemp_null_count@1 != row_count@2 AND MinTemp_max@0 > 5, required_guarantees=[]
+                FilterExec: abs(Rainfall@1) > 5, projection=[MinTemp@0, RainToday@2]
+                  RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+                    DistributedLeafExec: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, Rainfall, RainToday], file_type=parquet, predicate=abs(Rainfall@2) > 5
+        ");
+
+        // At runtime, `b` turns out bigger than `a`'s estimate, which is itself above the row
+        // threshold, so the join swaps into a partitioned join: `a` becomes the hash shuffled build
+        // side and `b`'s already dispatched stage is read as a hash shuffle on the probe side.
+        // Once sampled, `a` is still smaller than `b` but above the byte threshold, so the join
+        // stays swapped and partitioned.
+        let (dynamic, physical_plan_ascii) = TestPlanBuilder::default()
+            .dynamic_filters(false)
+            .broadcast_joins(true)
+            .hash_join_single_partition_threshold(50)
+            .hash_join_single_partition_threshold_rows(50)
+            .distributed_dynamic_task_count(true)
+            .distributed_dynamic_bytes_ready_sample_percentage(1.0)
+            .distributed_dynamic_plan_remainder_replanning(true)
+            .executed_plan_as_string(query)
+            .await;
+        assert_snapshot!(physical_plan_ascii, @r"
+        SortPreservingMergeExec: [MinTemp@0 ASC NULLS LAST, MaxTemp@1 ASC NULLS LAST]
+          [Stage 3] => NetworkCoalesceExec: output_partitions=4, input_tasks=1
+            SortExec: expr=[MinTemp@0 ASC NULLS LAST, MaxTemp@1 ASC NULLS LAST], preserve_partitioning=[true]
+              HashJoinExec: mode=Partitioned, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
+                [Stage 2] => NetworkShuffleExec: output_partitions=4, input_tasks=3
+                  RepartitionExec: partitioning=Hash([RainToday@1], 4), input_partitions=4
+                    SamplerExec: partitions=4
+                      FilterExec: abs(Rainfall@1) > 5, projection=[MinTemp@0, RainToday@2]
+                        RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+                          DistributedLeafExec: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, Rainfall, RainToday], file_type=parquet, predicate=abs(Rainfall@2) > 5
+                [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
+                  RepartitionExec: partitioning=Hash([RainToday@1], 4), input_partitions=4
+                    SamplerExec: partitions=4
+                      FilterExec: MinTemp@0 > 5, projection=[MaxTemp@1, RainToday@2]
+                        RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+                          DistributedLeafExec: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, MaxTemp, RainToday], file_type=parquet, predicate=MinTemp@0 > 5, pruning_predicate=MinTemp_null_count@1 != row_count@2 AND MinTemp_max@0 > 5, required_guarantees=[]
+        ");
+
+        assert_eq!(non_dynamic, dynamic);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn dynamic_join_reordering_broadcast_becomes_partitioned_without_swap() -> Result<()> {
+        // `b`'s filter is estimated from column statistics, while `a` is a full scan with exact
+        // statistics. At runtime, `a` keeps all 366 rows and `b` keeps 218.
+        let query = r#"
+        SELECT a."MinTemp", b."MaxTemp"
+        FROM weather a
+        JOIN (SELECT * FROM weather WHERE "MinTemp" > 5) b
+          ON a."RainToday" = b."RainToday"
+        ORDER BY a."MinTemp", b."MaxTemp"
+        "#;
+
+        // Statically, `b` is estimated below the byte threshold, so it is broadcast and `a` is
+        // probed in the join's stage.
+        let (non_dynamic, physical_plan_ascii) = TestPlanBuilder::default()
+            .dynamic_filters(false)
+            .broadcast_joins(true)
+            .hash_join_single_partition_threshold(1_000)
+            .hash_join_single_partition_threshold_rows(1_000)
+            .executed_plan_as_string(query)
+            .await;
+        assert_snapshot!(physical_plan_ascii, @r"
+        SortPreservingMergeExec: [MinTemp@0 ASC NULLS LAST, MaxTemp@1 ASC NULLS LAST]
+          [Stage 2] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
+            SortExec: expr=[MinTemp@0 ASC NULLS LAST, MaxTemp@1 ASC NULLS LAST], preserve_partitioning=[true]
+              HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@2, MaxTemp@0]
+                CoalescePartitionsExec
+                  [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=4, stage_partitions=12, input_tasks=3
+                    BroadcastExec: input_partitions=4, consumer_tasks=3, output_partitions=12
+                      FilterExec: MinTemp@0 > 5, projection=[MaxTemp@1, RainToday@2]
+                        RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+                          DistributedLeafExec: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, MaxTemp, RainToday], file_type=parquet, predicate=MinTemp@0 > 5, pruning_predicate=MinTemp_null_count@1 != row_count@2 AND MinTemp_max@0 > 5, required_guarantees=[]
+                DistributedLeafExec: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
+        ");
+
+        // At runtime, `b` turns out above the byte threshold but still smaller than `a`, so the join
+        // keeps its input order and becomes partitioned: `b`'s already dispatched broadcast stage is
+        // read as a hash shuffle, and `a` is hash shuffled on the same keys.
+        let (dynamic, physical_plan_ascii) = TestPlanBuilder::default()
+            .dynamic_filters(false)
+            .broadcast_joins(true)
+            .hash_join_single_partition_threshold(1_000)
+            .hash_join_single_partition_threshold_rows(1_000)
+            .distributed_dynamic_task_count(true)
+            .distributed_dynamic_bytes_ready_sample_percentage(1.0)
+            .distributed_dynamic_plan_remainder_replanning(true)
+            .executed_plan_as_string(query)
+            .await;
+        assert_snapshot!(physical_plan_ascii, @r"
+        SortPreservingMergeExec: [MinTemp@0 ASC NULLS LAST, MaxTemp@1 ASC NULLS LAST]
+          [Stage 3] => NetworkCoalesceExec: output_partitions=4, input_tasks=1
+            SortExec: expr=[MinTemp@0 ASC NULLS LAST, MaxTemp@1 ASC NULLS LAST], preserve_partitioning=[true]
+              HashJoinExec: mode=Partitioned, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@2, MaxTemp@0]
+                [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
+                  RepartitionExec: partitioning=Hash([RainToday@1], 4), input_partitions=4
+                    SamplerExec: partitions=4
+                      FilterExec: MinTemp@0 > 5, projection=[MaxTemp@1, RainToday@2]
+                        RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+                          DistributedLeafExec: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, MaxTemp, RainToday], file_type=parquet, predicate=MinTemp@0 > 5, pruning_predicate=MinTemp_null_count@1 != row_count@2 AND MinTemp_max@0 > 5, required_guarantees=[]
+                [Stage 2] => NetworkShuffleExec: output_partitions=4, input_tasks=3
+                  RepartitionExec: partitioning=Hash([RainToday@1], 4), input_partitions=3
+                    SamplerExec: partitions=3
+                      DistributedLeafExec: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
+        ");
+
+        assert_eq!(non_dynamic, dynamic);
+
+        Ok(())
     }
 }

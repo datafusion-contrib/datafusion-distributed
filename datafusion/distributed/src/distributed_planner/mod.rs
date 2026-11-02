@@ -17,6 +17,7 @@ pub(crate) use inject_network_boundaries::{
     InjectNetworkBoundaryContext, NetworkBoundaryBuilder, NetworkBoundaryBuilderResult,
     inject_network_boundaries,
 };
+pub(crate) use insert_broadcast::is_left_broadcast_safe;
 pub use network_boundary::{NetworkBoundary, NetworkBoundaryExt, ProducerHead};
 pub use session_state_builder_ext::SessionStateBuilderExt;
 pub(crate) use statistics::calculate_cost;

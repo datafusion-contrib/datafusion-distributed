@@ -97,6 +97,16 @@ pub struct RunOpt {
     #[structopt(long)]
     dynamic: bool,
 
+    /// When dynamic task count is active, progressively re-plan the remainder of the plan based
+    /// on runtime collected statistics
+    #[structopt(long)]
+    dynamic_plan_remainder_replanning: bool,
+
+    /// Disable DataFusion's dynamic filters (TopK, join and aggregate). This also disables
+    /// distributed dynamic filters, as they build on top of DataFusion's
+    #[structopt(long)]
+    disable_dynamic_filters: bool,
+
     /// Number of iterations of each test run
     #[structopt(short = "i", long = "iterations")]
     iterations: Option<usize>,
@@ -163,12 +173,20 @@ fn queries_for_dataset(dataset: &str) -> Result<Vec<(String, String)>, DataFusio
 
 impl RunOpt {
     fn config(&self) -> Result<SessionConfig> {
-        SessionConfig::from_env().map(|mut config| {
-            if let Some(batch_size) = self.batch_size {
-                config = config.with_batch_size(batch_size);
-            }
-            config.with_target_partitions(self.partitions.unwrap_or_else(get_available_parallelism))
-        })
+        let mut config = SessionConfig::from_env()?;
+        if let Some(batch_size) = self.batch_size {
+            config = config.with_batch_size(batch_size);
+        }
+        if self.disable_dynamic_filters {
+            // Setting it through `set` also propagates the value to the TopK, join and aggregate
+            // dynamic filter options.
+            config.options_mut().set(
+                "datafusion.optimizer.enable_dynamic_filter_pushdown",
+                "false",
+            )?;
+        }
+        let target_partitions = self.partitions.unwrap_or_else(get_available_parallelism);
+        Ok(config.with_target_partitions(target_partitions))
     }
 
     pub async fn run<B: BenchmarkBackend + Clone>(self, mut backend: B) -> Result<()> {
@@ -194,6 +212,9 @@ impl RunOpt {
                 self.cardinality_task_sf.unwrap_or(1.0),
             )?
             .with_distributed_dynamic_task_count(self.dynamic)?
+            .with_distributed_dynamic_plan_remainder_replanning(
+                self.dynamic_plan_remainder_replanning,
+            )?
             .with_distributed_compression(match self.compression.as_str() {
                 "zstd" => Some(CompressionType::ZSTD),
                 "lz4" => Some(CompressionType::LZ4_FRAME),
