@@ -109,6 +109,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     workers: worker_urls,
                     runtime_stats: None,
                     dynamic_filter_anchors,
+                    snapshot: None,
                 }))
             }
         }
@@ -882,6 +883,7 @@ mod tests {
             workers: vec![],
             runtime_stats: None,
             dynamic_filter_anchors: vec![],
+            snapshot: None,
         })
     }
 
@@ -945,6 +947,7 @@ mod tests {
             workers: vec![],
             runtime_stats: None,
             dynamic_filter_anchors: vec![Arc::clone(&dynamic_filter)],
+            snapshot: None,
         });
         let network: Arc<dyn ExecutionPlan> = Arc::new(new_network_hash_shuffle_exec(
             Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 4),

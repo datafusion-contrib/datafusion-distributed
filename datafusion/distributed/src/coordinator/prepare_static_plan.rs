@@ -62,6 +62,7 @@ pub(super) async fn prepare_static_plan(
                 workers,
                 runtime_stats: None,
                 dynamic_filter_anchors,
+                snapshot: Some(Arc::clone(&stage.plan)),
             },
         ))?))
     });

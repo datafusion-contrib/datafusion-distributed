@@ -3,9 +3,9 @@ use crate::distributed_planner::ProducerHead;
 use crate::execution_plans::common::{salted_partitioning, scale_partitioning};
 use crate::stage::{LocalStage, Stage};
 use crate::worker::{PartitionMapping, WorkerConnectionPool};
-use crate::{DistributedTaskContext, MaybeEncoded, NetworkBoundary};
+use crate::{DistributedTaskContext, MaybeEncoded, NetworkBoundary, NetworkBroadcastExec};
 use datafusion::common::tree_node::TreeNodeRecursion;
-use datafusion::common::{Result, not_impl_err, plan_err};
+use datafusion::common::{Result, not_impl_err, plan_datafusion_err, plan_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::memory_pool::MemoryConsumer;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
@@ -193,6 +193,93 @@ impl NetworkShuffleExec {
             mode: ShuffleMode::TwoPhase {
                 salt: PRODUCER_SALT_DEFAULT,
             },
+        }
+    }
+
+    /// Returns a copy of this node switch to a RoundRobin shuffle. This can happen while
+    /// switching a Shuffle join to a Broadcast join: if this [NetworkShuffleExec] lands in
+    /// the Broadcast probe side, it can afford to just round-robin the batches upstream
+    /// without adhering to any particular partitioning.
+    pub(crate) fn to_round_robin_shuffle(&self) -> Self {
+        let partitioning =
+            Partitioning::RoundRobinBatch(self.producer_partitioning.partition_count());
+        let properties = Arc::new(PlanProperties::new(
+            self.properties.equivalence_properties().clone(),
+            partitioning.clone(),
+            EmissionType::Incremental,
+            Boundedness::Bounded,
+        ));
+        Self {
+            properties,
+            producer_partitioning: partitioning,
+            worker_connections: self.worker_connections.clone(),
+            input_stage: self.input_stage.clone(),
+            mode: ShuffleMode::Direct,
+        }
+    }
+
+    /// Returns a new [NetworkBroadcastExec] reading from the same stage. This happens when this
+    /// [NetworkShuffleExec] switches to be the build side of a CollectLeft join.
+    ///
+    /// The producer replaces its head with a [BroadcastExec](crate::BroadcastExec) over the plan
+    /// below it, so each consumer task reads as many partitions as that plan has. That count can
+    /// differ from the partitions this shuffle reads, which are the output of the producer's
+    /// [RepartitionExec], so it is taken from the plan below the producer's head.
+    pub(crate) fn try_to_broadcast(&self) -> Result<NetworkBroadcastExec> {
+        let producer_plan = match &self.input_stage {
+            Stage::Local(v) => &v.plan,
+            Stage::Remote(v) if let Some(snapshot) = &v.snapshot => snapshot,
+            _ => {
+                return plan_err!(
+                    "A NetworkShuffleExec remote stage is missing the snapshot of the plan that was sent over the wire"
+                );
+            }
+        };
+        let producer_partitions = producer_plan
+            .children()
+            .first()
+            .ok_or_else(|| {
+                plan_datafusion_err!(
+                    "The plan of stage {} has no input below its producer head",
+                    self.input_stage.num()
+                )
+            })?
+            .properties()
+            .partitioning
+            .partition_count();
+
+        let properties = Arc::new(PlanProperties::new(
+            self.properties.equivalence_properties().clone(),
+            Partitioning::UnknownPartitioning(producer_partitions),
+            EmissionType::Incremental,
+            Boundedness::Bounded,
+        ));
+        Ok(NetworkBroadcastExec {
+            properties,
+            worker_connections: WorkerConnectionPool::new(self.input_stage.task_count()),
+            input_stage: self.input_stage.clone(),
+        })
+    }
+
+    /// Returns a new [NetworkShuffleExec] with a new hash partitioning schema based on the provided
+    /// expressions. This can happen when the current [NetworkShuffleExec] is in the probe side of
+    /// a collect left join on round-robin mode, and it needs switch to a partitioned hash join
+    /// that adheres to one specific hash partitioning.
+    pub(crate) fn to_hash_shuffle(&self, exprs: Vec<Arc<dyn PhysicalExpr>>) -> NetworkShuffleExec {
+        let partitioning =
+            Partitioning::Hash(exprs, self.properties.partitioning.partition_count());
+        let properties = Arc::new(PlanProperties::new(
+            self.properties.equivalence_properties().clone(),
+            partitioning.clone(),
+            EmissionType::Incremental,
+            Boundedness::Bounded,
+        ));
+        NetworkShuffleExec {
+            properties,
+            producer_partitioning: partitioning,
+            worker_connections: WorkerConnectionPool::new(self.input_stage.task_count()),
+            input_stage: self.input_stage.clone(),
+            mode: ShuffleMode::Direct,
         }
     }
 

@@ -268,6 +268,7 @@ impl TransportFixture {
             workers: self.input_stage_tasks.clone(),
             runtime_stats: None,
             dynamic_filter_anchors: vec![],
+            snapshot: None,
         });
 
         let mut join_set = JoinSet::default();
