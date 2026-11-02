@@ -1,3 +1,5 @@
+#![allow(clippy::disallowed_types)]
+
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
