@@ -54,5 +54,5 @@ is followed for every pull request.
 
 ## LLM Usage Policy
 
-See: [AGENTS.md]
+See: [AGENTS.md](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/AGENTS.md)
 
