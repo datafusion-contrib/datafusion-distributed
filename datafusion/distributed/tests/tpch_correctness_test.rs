@@ -143,6 +143,7 @@ mod tests {
         let mut d_ctx = d_ctx.with_distributed_broadcast_joins(true)?;
         if std::env::var(ADAPTIVE_ENV_VAR).unwrap_or_default() == "true" {
             d_ctx.set_distributed_dynamic_task_count(true)?;
+            d_ctx.set_distributed_dynamic_plan_remainder_replanning(true)?;
         }
 
         let d_ctx = d_ctx
