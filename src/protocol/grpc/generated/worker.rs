@@ -528,7 +528,7 @@ pub struct FirstLatency {
 pub struct PercentileLatency {
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
-    #[prost(bytes = "vec", tag = "4")]
+    #[prost(bytes = "vec", tag = "5")]
     pub sketch_bytes: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

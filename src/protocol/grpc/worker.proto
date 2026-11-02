@@ -416,7 +416,8 @@ message FirstLatency {
 
 message PercentileLatency {
   string name = 1;
-  bytes sketch_bytes = 4;
+  reserved 4;
+  bytes sketch_bytes = 5;
 }
 
 message MaxGauge {
