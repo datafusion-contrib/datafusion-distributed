@@ -4,10 +4,13 @@ use datafusion::common::Result;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeIterator, TreeNodeRecursion};
 use datafusion::physical_expr::{Partitioning, physical_exprs_equal};
 use datafusion::physical_plan::joins::{CrossJoinExec, HashJoinExec, NestedLoopJoinExec};
-use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
+use datafusion::physical_plan::{
+    ChildrenPropertiesMode, ExecutionPlan, ExecutionPlanProperties, ReplaceChildrenOptions,
+};
 use futures::future::{BoxFuture, try_join_all};
 use std::cell::RefCell;
 use std::future::Future;
+use std::marker::PhantomData;
 use std::sync::Arc;
 
 pub(crate) trait TreeNodeExt {
@@ -129,6 +132,41 @@ pub(crate) trait TreeNodeExt {
     ) -> Result<Transformed<Self>>
     where
         Self: Sized;
+
+    /// Searches for an [ExecutionPlan] of type [T] recursively:
+    /// - If [T] is found, the return tuple will be:
+    ///   ("the head plan up to [T] (included)", "the rest of the plan after [T]")
+    /// - If [T] is not found, it returns:
+    ///   ("an empty head plan container", "the full original plan")
+    ///
+    /// This function only searches for [T] across nodes with exactly 1 child, it will not search
+    /// through Joins, Unions or nodes with more than one child.
+    fn split_head<T: ExecutionPlan>(self) -> (SplitHead<T>, Arc<dyn ExecutionPlan>);
+}
+
+pub struct SplitHead<T> {
+    head: Option<Arc<dyn ExecutionPlan>>,
+    _phantom_data: PhantomData<T>,
+}
+
+impl<T: ExecutionPlan> SplitHead<T> {
+    pub fn reattach(self, tail: Arc<dyn ExecutionPlan>) -> Result<Arc<dyn ExecutionPlan>> {
+        let Some(head) = self.head else {
+            return Ok(tail);
+        };
+        let mut tail = Some(tail);
+        let plan = head.transform_down(|plan| {
+            if plan.is::<T>() {
+                let plan = plan.replace_children(
+                    vec![tail.take().expect("tail taken twice")],
+                    ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+                )?;
+                return Ok(Transformed::new(plan, true, TreeNodeRecursion::Stop));
+            }
+            Ok(Transformed::no(plan))
+        })?;
+        Ok(plan.data)
+    }
 }
 
 /// Context propagated through the [TreeNodeExt::apply_driver_path] recursion jumps.
@@ -361,6 +399,37 @@ impl TreeNodeExt for Arc<dyn ExecutionPlan> {
             },
             |node| Ok(Transformed::no(node)),
         )
+    }
+
+    fn split_head<T: ExecutionPlan>(self) -> (SplitHead<T>, Arc<dyn ExecutionPlan>) {
+        let mut rest = None;
+        let _ = self.apply(|plan| {
+            let mut children = plan.children();
+            if children.len() != 1 {
+                return Ok(TreeNodeRecursion::Stop);
+            } else if plan.is::<T>() {
+                rest = Some(children.swap_remove(0));
+                return Ok(TreeNodeRecursion::Stop);
+            }
+            Ok(TreeNodeRecursion::Continue)
+        });
+
+        match rest.cloned() {
+            Some(rest) => (
+                SplitHead {
+                    head: Some(self),
+                    _phantom_data: PhantomData,
+                },
+                rest,
+            ),
+            None => (
+                SplitHead {
+                    head: None,
+                    _phantom_data: PhantomData,
+                },
+                self,
+            ),
+        }
     }
 }
 
