@@ -110,8 +110,8 @@ pub(super) async fn prepare_dynamic_plan(
                 {
                     workers.push(url);
                     load_info_rxs.push({
-                        let rx =
-                            stage_coordinator.worker_to_coordinator_task(task_i, worker_rx_stream);
+                        let rx = stage_coordinator
+                            .worker_to_coordinator_task(task_i, worker_rx_stream)?;
                         UnboundedReceiverStream::new(rx)
                     });
                     let _ = worker_tx.send(CoordinatorToWorkerMsg::KickOffSampling);

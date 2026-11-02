@@ -33,6 +33,11 @@ extensions_options! {
         /// the distributed plan. This does not control whether dynamic filtering is used during
         /// query execution.
         pub collect_dynamic_filters: bool, default = true
+        /// Time, in milliseconds, that the coordinator keeps reading final metrics and completed
+        /// dynamic filters from workers after a query fails or is cancelled. The query result is
+        /// not delayed: reports are collected in the background. Tasks that do not report in time
+        /// are finalized with empty reports. Set to 0 to stop reading immediately.
+        pub final_reports_grace_period_ms: u64, default = 1_000
         /// Control whether dynamic filters are distributed across network boundaries. This does
         /// not control intra-stage filter behavior.
         pub remote_dynamic_filters: bool, default = true

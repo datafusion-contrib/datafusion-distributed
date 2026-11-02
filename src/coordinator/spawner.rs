@@ -6,6 +6,7 @@ use futures::future::BoxFuture;
 use std::panic::resume_unwind;
 use tokio::select;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
+use tokio::task::JoinHandle;
 use tokio_util::sync::{CancellationToken, DropGuard};
 
 /// Owns query tokio task spawning and error propagation.
@@ -76,8 +77,13 @@ impl Spawner {
 
     /// Spawns a task whose lifetime is not tied to the response stream and whose
     /// errors do not propagate to the reposne stream.
-    pub(super) fn spawn_unbounded(&self, task: impl Future<Output = ()> + Send + 'static) {
+    ///
+    /// Dropping the returned handle does not abort the task.
+    pub(super) fn spawn_unbounded<T: Send + 'static>(
+        &self,
+        task: impl Future<Output = T> + Send + 'static,
+    ) -> JoinHandle<T> {
         #[allow(clippy::disallowed_methods)]
-        tokio::spawn(task);
+        tokio::spawn(task)
     }
 }
