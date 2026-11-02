@@ -7,7 +7,7 @@ All contributions are welcome. But first, please read this page.
 
 ### License
 
-All original contributions to distributed-datafusion are licensed under the
+All original contributions to datafusion-distributed are licensed under the
 [ASL - Apache License](https://www.apache.org/licenses/LICENSE-2.0), version 2.0 or later, or, if another license is specified as governing the file or directory being modified, such other license.
 
 ### Developer Certificate of Origin (DCO)
