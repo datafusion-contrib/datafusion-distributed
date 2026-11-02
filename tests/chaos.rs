@@ -8,7 +8,7 @@ mod tests {
     use datafusion::prelude::SessionContext;
     use datafusion_distributed::test_utils::localhost::LocalHostWorkerResolver;
     use datafusion_distributed::{
-        DistributedExt, SessionStateBuilderExt, Worker, WorkerQueryContext,
+        DistributedConfig, DistributedExt, SessionStateBuilderExt, Worker, WorkerQueryContext,
     };
     use datafusion_distributed_benchmarks::datasets::{
         output::TESTDATA_ROOT, parquet_layout::ParquetLayout, register_tables, tpch,
@@ -226,6 +226,9 @@ mod tests {
     impl ChaosAction {
         fn random(rng: &mut impl Rng) -> Self {
             let duration = Duration::from_millis(10 + u64::from(rng.random::<u8>() % 90));
+            // Odds of an error are 5 in 256. The odds of a query failing are (5/256)^num_retries.
+            // Make sure the max_coordinator_channel_retries in the DistributedConfig is large enough
+            // to avoid errors.
             match rng.random::<u8>() {
                 0..=4 => Self::Delay(duration),
                 5..=7 => Self::Timeout(duration),
@@ -288,8 +291,11 @@ mod tests {
         let first_worker_url = Url::parse(&format!("http://localhost:{}", ports[0])).unwrap();
 
         let worker_resolver = LocalHostWorkerResolver::new(ports.clone());
+        let mut distributed_config = DistributedConfig::default();
+        distributed_config.max_coordinator_channel_retries = 5;
         let state = SessionStateBuilder::new()
             .with_default_features()
+            .with_distributed_option_extension(distributed_config)
             .with_distributed_planner()
             .with_distributed_dynamic_task_count(adaptive())?
             .with_distributed_local_worker_context(
