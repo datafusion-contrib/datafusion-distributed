@@ -4,6 +4,6 @@ please consider reviewing https://github.com/datafusion-contrib/datafusion-distr
 In particular:
 
 All contributions are subject to the [Developer Certificate of Origin (DCO)](https://developercertificate.org/). The DCO
-text is also included verbatim in the [dco.txt](dco.txt) file in the root directory of the repository.
+text is also included verbatim in the [dco.txt](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/dco.txt) file in the root directory of the repository.
 
 -->
