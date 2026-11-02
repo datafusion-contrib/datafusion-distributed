@@ -587,6 +587,21 @@ pub trait DistributedExt: Sized {
     /// Same as [DistributedExt::with_distributed_dynamic_task_count] but with an in-place mutation.
     fn set_distributed_dynamic_task_count(&mut self, enabled: bool) -> Result<(), DataFusionError>;
 
+    /// If dynamic task count is enabled, progressively re-plans the remainder of the plan that has
+    /// not yet been submitted to workers based on runtime collected statistics. For example, this
+    /// allows swapping the sides of a JOIN once the actual size of its inputs is known.
+    fn with_distributed_dynamic_plan_remainder_replanning(
+        self,
+        enabled: bool,
+    ) -> Result<Self, DataFusionError>;
+
+    /// Same as [DistributedExt::with_distributed_dynamic_plan_remainder_replanning] but with an
+    /// in-place mutation.
+    fn set_distributed_dynamic_plan_remainder_replanning(
+        &mut self,
+        enabled: bool,
+    ) -> Result<(), DataFusionError>;
+
     /// Target throughput in bytes per partition per second used by the dynamic task count
     /// allocator to decide how many tasks to assign to each stage based on runtime statistics.
     fn with_distributed_dynamic_bytes_per_partition(
@@ -960,6 +975,15 @@ impl DistributedExt for SessionConfig {
         Ok(())
     }
 
+    fn set_distributed_dynamic_plan_remainder_replanning(
+        &mut self,
+        enabled: bool,
+    ) -> Result<(), DataFusionError> {
+        let d_cfg = DistributedConfig::from_config_options_mut(self.options_mut())?;
+        d_cfg.dynamic_plan_remainder_replanning = enabled;
+        Ok(())
+    }
+
     fn set_distributed_dynamic_bytes_per_partition(
         &mut self,
         dynamic_bytes_per_partition: usize,
@@ -1084,6 +1108,10 @@ impl DistributedExt for SessionConfig {
             #[call(set_distributed_dynamic_task_count)]
             #[expr($?;Ok(self))]
             fn with_distributed_dynamic_task_count(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+
+            #[call(set_distributed_dynamic_plan_remainder_replanning)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_dynamic_plan_remainder_replanning(mut self, enabled: bool) -> Result<Self, DataFusionError>;
 
             #[call(set_distributed_dynamic_bytes_per_partition)]
             #[expr($?;Ok(self))]
@@ -1241,6 +1269,11 @@ impl DistributedExt for SessionStateBuilder {
             #[call(set_distributed_dynamic_task_count)]
             #[expr($?;Ok(self))]
             fn with_distributed_dynamic_task_count(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_dynamic_plan_remainder_replanning(&mut self, enabled: bool) -> Result<(), DataFusionError>;
+            #[call(set_distributed_dynamic_plan_remainder_replanning)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_dynamic_plan_remainder_replanning(mut self, enabled: bool) -> Result<Self, DataFusionError>;
 
             fn set_distributed_dynamic_bytes_per_partition(&mut self, dynamic_bytes_per_partition: usize) -> Result<(), DataFusionError>;
             #[call(set_distributed_dynamic_bytes_per_partition)]
@@ -1407,6 +1440,11 @@ impl DistributedExt for SessionState {
             #[expr($?;Ok(self))]
             fn with_distributed_dynamic_task_count(mut self, enabled: bool) -> Result<Self, DataFusionError>;
 
+            fn set_distributed_dynamic_plan_remainder_replanning(&mut self, enabled: bool) -> Result<(), DataFusionError>;
+            #[call(set_distributed_dynamic_plan_remainder_replanning)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_dynamic_plan_remainder_replanning(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+
             fn set_distributed_dynamic_bytes_per_partition(&mut self, dynamic_bytes_per_partition: usize) -> Result<(), DataFusionError>;
             #[call(set_distributed_dynamic_bytes_per_partition)]
             #[expr($?;Ok(self))]
@@ -1564,6 +1602,11 @@ impl DistributedExt for SessionContext {
             #[call(set_distributed_dynamic_task_count)]
             #[expr($?;Ok(self))]
             fn with_distributed_dynamic_task_count(self, enabled: bool) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_dynamic_plan_remainder_replanning(&mut self, enabled: bool) -> Result<(), DataFusionError>;
+            #[call(set_distributed_dynamic_plan_remainder_replanning)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_dynamic_plan_remainder_replanning(self, enabled: bool) -> Result<Self, DataFusionError>;
 
             fn set_distributed_dynamic_bytes_per_partition(&mut self, dynamic_bytes_per_partition: usize) -> Result<(), DataFusionError>;
             #[call(set_distributed_dynamic_bytes_per_partition)]

@@ -11,14 +11,14 @@ use crate::stage::Stage;
 use crate::{
     DesiredTaskCountEvent, DesiredTaskCountEventResponse, DesiredTaskCountHandler,
     DistributedConfig, DistributedExt, SessionStateBuilderExt, display_plan_ascii,
-    test_utils::in_memory_channel_resolver::InMemoryWorkerResolver,
+    test_utils::in_memory_channel_resolver::{InMemoryChannelResolver, InMemoryWorkerResolver},
 };
 use crate::{NetworkBoundaryExt, TaskKey};
 #[cfg(test)]
 use datafusion::{
     common::Result,
     execution::{SessionState, context::SessionContext, session_state::SessionStateBuilder},
-    physical_plan::displayable,
+    physical_plan::{collect, displayable},
     prelude::SessionConfig,
 };
 use datafusion::{
@@ -111,6 +111,15 @@ impl TestPlan {
         df.create_physical_plan().await.unwrap()
     }
 
+    /// gets the physical plan of a query after execution
+    pub async fn execute(&self, query: &str) -> Arc<dyn ExecutionPlan> {
+        let plan = self.physical_plan(query).await;
+        collect(Arc::clone(&plan), self.ctx.task_ctx())
+            .await
+            .expect("Error executing stream");
+        plan
+    }
+
     /// get the physical plan of a query as a string
     pub async fn physical_plan_as_string(&self, query: &str) -> String {
         let plan = self.physical_plan(query).await;
@@ -145,6 +154,9 @@ pub(crate) struct TestPlanBuilder {
     prefer_hash_join: Option<bool>,
     hash_join_single_partition_threshold: Option<usize>,
     hash_join_single_partition_threshold_rows: Option<usize>,
+    dynamic_filters: bool,
+    distributed_dynamic_task_count: bool,
+    distributed_dynamic_plan_remainder_replanning: bool,
 }
 
 #[cfg(test)]
@@ -165,6 +177,9 @@ impl TestPlanBuilder {
             prefer_hash_join: None,
             hash_join_single_partition_threshold: None,
             hash_join_single_partition_threshold_rows: None,
+            dynamic_filters: true,
+            distributed_dynamic_task_count: false,
+            distributed_dynamic_plan_remainder_replanning: false,
         }
     }
 
@@ -241,6 +256,21 @@ impl TestPlanBuilder {
         self
     }
 
+    pub fn distributed_dynamic_task_count(mut self, enabled: bool) -> Self {
+        self.distributed_dynamic_task_count = enabled;
+        self
+    }
+
+    pub fn distributed_dynamic_plan_remainder_replanning(mut self, enabled: bool) -> Self {
+        self.distributed_dynamic_plan_remainder_replanning = enabled;
+        self
+    }
+
+    pub fn dynamic_filters(mut self, enabled: bool) -> Self {
+        self.dynamic_filters = enabled;
+        self
+    }
+
     fn build_config(&self) -> SessionConfig {
         let mut d_cfg = DistributedConfig {
             broadcast_joins: self.broadcast_joins,
@@ -262,6 +292,9 @@ impl TestPlanBuilder {
         if let Some(n) = self.distributed_max_tasks_per_stage {
             d_cfg.max_tasks_per_stage = n
         }
+        d_cfg.dynamic_task_count = self.distributed_dynamic_task_count;
+        d_cfg.dynamic_plan_remainder_replanning =
+            self.distributed_dynamic_plan_remainder_replanning;
 
         let mut config = SessionConfig::new();
         config.set_distributed_option_extension(d_cfg);
@@ -271,21 +304,20 @@ impl TestPlanBuilder {
         if let Some(enabled) = self.information_schema {
             config = config.with_information_schema(enabled);
         }
+        let opts = config.options_mut();
         if let Some(enabled) = self.prefer_hash_join {
-            config.options_mut().optimizer.prefer_hash_join = enabled
+            opts.optimizer.prefer_hash_join = enabled
         }
         if let Some(value) = self.hash_join_single_partition_threshold {
-            config
-                .options_mut()
-                .optimizer
-                .hash_join_single_partition_threshold = value
+            opts.optimizer.hash_join_single_partition_threshold = value
         }
         if let Some(value) = self.hash_join_single_partition_threshold_rows {
-            config
-                .options_mut()
-                .optimizer
-                .hash_join_single_partition_threshold_rows = value
+            opts.optimizer.hash_join_single_partition_threshold_rows = value
         }
+        opts.optimizer.enable_aggregate_dynamic_filter_pushdown = self.dynamic_filters;
+        opts.optimizer.enable_dynamic_filter_pushdown = self.dynamic_filters;
+        opts.optimizer.enable_join_dynamic_filter_pushdown = self.dynamic_filters;
+        opts.optimizer.enable_topk_dynamic_filter_pushdown = self.dynamic_filters;
         config
     }
 
@@ -294,7 +326,9 @@ impl TestPlanBuilder {
             .with_default_features()
             .with_config(config);
         if let Some(n) = self.num_workers {
-            state = state.with_distributed_worker_resolver(InMemoryWorkerResolver::new(n));
+            state = state
+                .with_distributed_worker_resolver(InMemoryWorkerResolver::new(n))
+                .with_distributed_channel_resolver(InMemoryChannelResolver::default());
         }
         if self.distributed_planner {
             state = state.with_distributed_planner();
@@ -339,6 +373,19 @@ impl TestPlanBuilder {
     pub async fn physical_plan_as_ascii(&self, query: &str, show_metrics: bool) -> String {
         display_plan_ascii(self.physical_plan(query).await.as_ref(), show_metrics)
     }
+
+    /// gets the physical plan of a query after execution as a string
+    pub async fn executed_plan_as_string(&self, query: &str) -> String {
+        let plan = self.build().await.execute(query).await;
+        let plan = if let Some(d_exec) = plan.downcast_ref::<DistributedExec>() {
+            // TODO: For dynamic plans, we need to this otherwise only the original un-distributed
+            //  plan is shown. This should not be the case, we should fix this.
+            d_exec.plan_for_viz().unwrap()
+        } else {
+            plan
+        };
+        displayable(plan.as_ref()).indent(true).to_string()
+    }
 }
 
 #[cfg(test)]
@@ -359,6 +406,9 @@ impl Default for TestPlanBuilder {
             prefer_hash_join: None,
             hash_join_single_partition_threshold: None,
             hash_join_single_partition_threshold_rows: None,
+            dynamic_filters: true,
+            distributed_dynamic_task_count: false,
+            distributed_dynamic_plan_remainder_replanning: false,
         }
     }
 }
