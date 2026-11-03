@@ -82,10 +82,11 @@ impl Spawner {
         let _ = self.task_tx.send(task.boxed());
     }
 
-    /// Spawns a task whose lifetime is not tied to the response stream and whose
-    /// errors do not propagate to the reposne stream.
+    /// Spawns a task that keeps running if the query fails or is cancelled.
     ///
-    /// Dropping the returned handle does not abort the task.
+    /// While the query is running, its errors propagate to the response stream, and the response
+    /// stream does not finish before the task does. Dropping the returned handle does not abort
+    /// the task.
     pub(super) fn spawn_unbounded(
         &self,
         task: impl Future<Output = Result<()>> + Send + 'static,

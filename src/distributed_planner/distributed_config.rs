@@ -3,7 +3,6 @@ use datafusion::common::{DataFusionError, extensions_options, plan_err};
 use datafusion::config::{ConfigExtension, ConfigOptions};
 use datafusion::execution::TaskContext;
 use datafusion::prelude::SessionConfig;
-use std::sync::LazyLock;
 
 extensions_options! {
     /// Configuration for the distributed planner.
