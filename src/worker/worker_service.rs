@@ -28,8 +28,6 @@ pub struct Worker {
     pub(super) version: Cow<'static, str>,
     #[cfg(feature = "integration")]
     pub(super) coordinator_channels_running: Arc<AtomicUsize>,
-    #[cfg(feature = "grpc")]
-    pub(crate) call_authorizer: Option<Arc<dyn crate::grpc::WorkerCallAuthorizer>>,
 }
 
 impl Default for Worker {
@@ -43,8 +41,6 @@ impl Default for Worker {
             version: Cow::Borrowed(""),
             #[cfg(feature = "integration")]
             coordinator_channels_running: Arc::new(AtomicUsize::new(0)),
-            #[cfg(feature = "grpc")]
-            call_authorizer: None,
         }
     }
 }

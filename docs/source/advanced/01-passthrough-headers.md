@@ -57,3 +57,12 @@ own headers (as above) rather than forwarding the whole map — both to avoid
 leaking internal metadata and because `with_distributed_passthrough_headers`
 rejects that reserved prefix.
 ```
+
+## The task key header
+
+Every gRPC call to a worker also carries `x-datafusion-distributed-task-key-query-id`
+(`grpc::TASK_KEY_QUERY_ID_HEADER`): the query id of the task the call names, as a hyphenated UUID.
+The client sets it after merging the passthrough headers, so a passthrough header of that
+name is overwritten. A tower layer in front of the worker can authorize a call by its query
+from this header without decoding the request body; the worker refuses a call that carries
+the header more than once, or with a value other than the query id of the task key in the body.

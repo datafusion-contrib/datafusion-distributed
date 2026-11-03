@@ -2,11 +2,10 @@ use super::errors::{datafusion_error_to_tonic_status, map_status_to_datafusion_e
 use super::generated::worker as pb;
 use super::metrics_proto::df_metrics_set_to_proto;
 use super::spawn_select_all::spawn_select_all;
+use super::task_key_headers::check_task_key_headers;
 
 use crate::common::{deserialize_uuid, now_ns};
-use crate::protocol::grpc::{
-    ObservabilityServiceImpl, ObservabilityServiceServer, WorkerCall, WorkerCallAuthorizer,
-};
+use crate::protocol::grpc::{ObservabilityServiceImpl, ObservabilityServiceServer};
 use crate::{
     ApplyDynamicFilter, CoordinatorToWorkerMsg, DistributedConfig, ExecuteTaskRequest, LoadInfo,
     MaybeEncoded, ProducedDynamicFilter, ProducerHead, SetPlanRequest, TaskCompletedDynamicFilters,
@@ -70,20 +69,6 @@ impl Worker {
             .max_encoding_message_size(usize::MAX)
     }
 
-    /// Sets a [WorkerCallAuthorizer] that every `CoordinatorChannel` and `ExecuteTask` call served
-    /// over gRPC must pass before it touches this worker's tasks. Without one, every call is served.
-    pub fn with_call_authorizer(mut self, authorizer: impl WorkerCallAuthorizer + 'static) -> Self {
-        self.call_authorizer = Some(Arc::new(authorizer));
-        self
-    }
-
-    async fn authorize(&self, call: WorkerCall<'_>) -> Result<(), Status> {
-        match &self.call_authorizer {
-            Some(authorizer) => authorizer.authorize(call).await,
-            None => Ok(()),
-        }
-    }
-
     /// Creates an [`ObservabilityServiceServer`] that exposes task progress and cluster
     /// worker discovery via the provided [`WorkerResolver`].
     ///
@@ -127,12 +112,7 @@ impl pb::worker_service_server::WorkerService for Worker {
         };
 
         let set_plan_request = decode_set_plan_request(set_plan_request)?;
-        let headers = metadata.into_headers();
-        self.authorize(WorkerCall::SetPlan {
-            headers: &headers,
-            task_key: &set_plan_request.task_key,
-        })
-        .await?;
+        check_task_key_headers(&metadata, &set_plan_request.task_key)?;
 
         let input_stream = body
             .map_err(map_status_to_datafusion_error)
@@ -142,7 +122,7 @@ impl pb::worker_service_server::WorkerService for Worker {
             .boxed();
 
         let CoordinatorChannelResult { task_ctx, stream } = self
-            .coordinator_channel(headers, set_plan_request, input_stream)
+            .coordinator_channel(metadata.into_headers(), set_plan_request, input_stream)
             .await
             .map_err(datafusion_error_to_tonic_status)?;
 
@@ -164,11 +144,7 @@ impl pb::worker_service_server::WorkerService for Worker {
     ) -> Result<Response<Self::ExecuteTaskStream>, Status> {
         let (metadata, _ext, body) = request.into_parts();
         let request = decode_execute_task_request(body).await?;
-        self.authorize(WorkerCall::ExecuteTask {
-            headers: &metadata.into_headers(),
-            task_key: &request.task_key,
-        })
-        .await?;
+        check_task_key_headers(&metadata, &request.task_key)?;
         let partition_range = request.target_partition_start..request.target_partition_end;
 
         let (arrow_streams, task_ctx) = self

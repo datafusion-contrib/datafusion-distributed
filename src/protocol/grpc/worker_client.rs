@@ -2,6 +2,7 @@ use super::channel_resolver::BoxCloneSyncChannel;
 use super::errors::{map_flight_to_datafusion_error, map_status_to_datafusion_error};
 use super::generated::worker as pb;
 use super::metrics_proto::metrics_set_proto_to_df;
+use super::task_key_headers::set_task_key_headers;
 use crate::common::{RetryOutcome, on_drop_stream, serialize_uuid};
 use crate::grpc::errors::tonic_status_to_datafusion_error;
 use crate::grpc::generated::worker::FlightAppMetadata;
@@ -55,6 +56,8 @@ impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSy
         metrics: ExecutionPlanMetricsSet,
         ctx: &Arc<TaskContext>,
     ) -> Result<BoxStream<'static, Result<WorkerToCoordinatorMsg>>> {
+        let mut metadata = MetadataMap::from_headers(headers);
+        set_task_key_headers(&mut metadata, &set_plan_request.task_key);
         let set_plan_request = encode_set_plan_request(set_plan_request, ctx)?;
         let plan_bytes_sent = set_plan_request.plan_proto.len();
         let task_ctx = Arc::clone(ctx);
@@ -83,7 +86,7 @@ impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSy
             biased;
             Some(error) = error_rx.recv() => return Err(error),
             response = self.coordinator_channel(Request::from_parts(
-                MetadataMap::from_headers(headers),
+                metadata,
                 Extensions::default(),
                 input_stream,
             ))
@@ -172,6 +175,8 @@ impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSy
         let elapsed_compute_clone = elapsed_compute.clone();
         MetricBuilder::new(&metrics).build(MetricValue::ElapsedCompute(elapsed_compute.clone()));
 
+        let mut metadata = MetadataMap::from_headers(headers);
+        set_task_key_headers(&mut metadata, &request.task_key);
         let target_partition_range = request.target_partition_start..request.target_partition_end;
         let request = pb::ExecuteTaskRequest {
             task_key: Some(encode_task_key(request.task_key)),
@@ -179,7 +184,6 @@ impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSy
             target_partition_end: request.target_partition_end as u64,
             producer_head: Some(encode_producer_head(request.producer_head, ctx)?),
         };
-        let metadata = MetadataMap::from_headers(headers);
 
         // The senders and receivers are unbounded queues used for multiplexing the record
         // batches sent through the single gRPC stream into one stream per partition. They
