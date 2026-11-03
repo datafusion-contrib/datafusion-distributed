@@ -5,7 +5,11 @@ but enriched with distributed execution capabilities.
 
 ## Installation
 
-The CLI can be installed from source by cloning this repository:
+```bash
+cargo install datafusion-distributed-cli
+```
+
+Or from source, by cloning this repository:
 
 ```bash
 git clone https://github.com/datafusion-contrib/datafusion-distributed
@@ -20,10 +24,10 @@ cargo install --path cli
 
 ## Usage
 
-The CLI can be invoked by running:
+The CLI is installed as `dfd`. Queries are run with:
 
 ```bash
-datafusion-distributed-cli
+dfd query
 ```
 
 The best way of trying distributed queries is by issuing queries against the parquet files in the
