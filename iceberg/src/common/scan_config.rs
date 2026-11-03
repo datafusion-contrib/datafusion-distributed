@@ -6,9 +6,12 @@ use datafusion::error::Result;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::Partitioning;
 use datafusion::physical_plan::limit::LimitStream;
-use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet};
+use datafusion::physical_plan::metrics::{
+    BaselineMetrics, ExecutionPlanMetricsSet, MetricBuilder, MetricCategory, MetricType,
+};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
-use futures::TryStreamExt;
+use futures::stream::poll_fn;
+use futures::{StreamExt, TryStreamExt};
 use iceberg::arrow::{ArrowReader, ArrowReaderBuilder};
 use iceberg::io::FileIO;
 use iceberg::scan::FileScanTaskStream;
@@ -63,13 +66,28 @@ impl ScanConfig {
         tasks: FileScanTaskStream,
         partition: usize,
     ) -> Result<SendableRecordBatchStream> {
-        let stream = self
-            .reader
-            .clone()
-            .read(tasks)
-            .map(|result| result.stream())
-            .map_err(df_err)?
-            .map_err(df_err);
+        let files_opened = MetricBuilder::new(&self.metrics)
+            .with_category(MetricCategory::Rows)
+            .counter("files_opened", partition);
+        let bytes_scanned = MetricBuilder::new(&self.metrics)
+            .with_type(MetricType::Summary)
+            .with_category(MetricCategory::Bytes)
+            .gauge("bytes_scanned", partition);
+
+        // The reader pulls a task when it starts reading that task's file. It reads ahead,
+        // so with a LIMIT this can count files that never produced output.
+        let tasks = tasks.inspect_ok(move |_| files_opened.add(1)).boxed();
+        let result = self.reader.clone().read(tasks).map_err(df_err)?;
+
+        let reader_metrics = result.metrics().clone();
+        let mut batches = result.stream().map_err(df_err);
+        let stream = poll_fn(move |cx| {
+            let poll = batches.poll_next_unpin(cx);
+            if poll.is_ready() {
+                bytes_scanned.set(reader_metrics.bytes_read() as usize);
+            }
+            poll
+        });
 
         let stream = Box::pin(RecordBatchStreamAdapter::new(
             Arc::clone(&self.schema),

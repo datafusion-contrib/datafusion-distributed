@@ -71,6 +71,13 @@ impl IcebergTestHarness {
         ))
     }
 
+    /// Executes a query and returns its plan with each node's metrics summed across tasks.
+    pub async fn plan_with_metrics(&self, sql: &str) -> Result<Arc<dyn ExecutionPlan>> {
+        let plan = self.physical_plan(sql).await?;
+        collect(Arc::clone(&plan), self.ctx.task_ctx()).await?;
+        rewrite_distributed_plan_with_metrics(plan, DistributedMetricsFormat::Aggregated).await
+    }
+
     pub async fn physical_plan(&self, sql: &str) -> Result<Arc<dyn ExecutionPlan>> {
         self.ctx.sql(sql).await?.create_physical_plan().await
     }
