@@ -1,7 +1,8 @@
 use datafusion::common::instant::Instant;
-use datafusion::common::{Result, human_readable_duration};
+use datafusion::common::{Result, human_readable_duration, internal_datafusion_err};
 use datafusion::physical_expr_common::metrics::{MetricBuilder, MetricValue};
 use datafusion::physical_plan::metrics::CustomMetricValue;
+use postcard::to_allocvec;
 use sketches_ddsketch::{Config, DDSketch};
 use std::any::Any;
 use std::borrow::Cow;
@@ -423,11 +424,8 @@ macro_rules! percentile_latency_metric {
 
             pub fn serialize_sketch(&self) -> Result<Vec<u8>> {
                 let sketch = self.inner.lock().unwrap();
-                bincode::serialize(&*sketch).map_err(|e| {
-                    datafusion::error::DataFusionError::Internal(format!(
-                        "failed to serialize DDSketch: {e}"
-                    ))
-                })
+                to_allocvec(&*sketch)
+                    .map_err(|e| internal_datafusion_err!("failed to serialize DDSketch: {e}"))
             }
 
             pub fn count(&self) -> usize {
