@@ -2,15 +2,14 @@ use super::errors::{datafusion_error_to_tonic_status, map_status_to_datafusion_e
 use super::generated::worker as pb;
 use super::metrics_proto::df_metrics_set_to_proto;
 use super::spawn_select_all::spawn_select_all;
-use super::task_key_headers::check_task_key_headers;
 
 use crate::common::{deserialize_uuid, now_ns};
 use crate::protocol::grpc::{ObservabilityServiceImpl, ObservabilityServiceServer};
 use crate::{
     ApplyDynamicFilter, CoordinatorToWorkerMsg, DistributedConfig, ExecuteTaskRequest, LoadInfo,
-    MaybeEncoded, ProducedDynamicFilter, ProducerHead, SetPlanRequest, TaskCompletedDynamicFilters,
-    TaskKey, TaskMetrics, WorkUnitBatch, WorkUnitFeedDeclaration, WorkUnitMsg, Worker,
-    WorkerResolver, WorkerToCoordinatorMsg,
+    MaybeEncoded, ProducedDynamicFilter, ProducerHead, SetPlanRequest, TASK_KEY_QUERY_ID_HEADER,
+    TaskCompletedDynamicFilters, TaskKey, TaskMetrics, WorkUnitBatch, WorkUnitFeedDeclaration,
+    WorkUnitMsg, Worker, WorkerResolver, WorkerToCoordinatorMsg,
 };
 
 use crate::worker::CoordinatorChannelResult;
@@ -30,6 +29,7 @@ use futures::stream::BoxStream;
 use futures::{StreamExt, TryStreamExt};
 use prost::Message;
 use std::sync::Arc;
+use tonic::metadata::MetadataMap;
 use tonic::{Request, Response, Status, Streaming};
 use url::Url;
 
@@ -504,6 +504,23 @@ fn garbage_collect_arrays(
     )?)
 }
 
+/// Refuses a call whose task key headers do not name the [TaskKey] decoded from its body, so a
+/// layer that authorized the headers authorized the task the worker acts on.
+fn check_task_key_headers(metadata: &MetadataMap, task_key: &TaskKey) -> Result<(), Status> {
+    let mut query_ids = metadata.get_all(TASK_KEY_QUERY_ID_HEADER).iter();
+    let Some(query_id) = query_ids.next() else {
+        return Ok(());
+    };
+    if query_ids.next().is_some()
+        || query_id.as_encoded_bytes() != task_key.query_id.to_string().as_bytes()
+    {
+        return Err(Status::invalid_argument(format!(
+            "{TASK_KEY_QUERY_ID_HEADER} must appear at most once and match the request's task key"
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -533,5 +550,28 @@ mod tests {
         };
         assert_eq!(encoded.expression_id, 42);
         assert_eq!(encoded.expression_proto, expected);
+    }
+
+    #[test]
+    fn check_task_key_headers_refuses_a_query_id_naming_another_query_or_sent_twice() {
+        let key = TaskKey {
+            query_id: uuid::Uuid::new_v4(),
+            stage_id: 1,
+            task_number: 0,
+        };
+        let check = |query_ids: &[uuid::Uuid]| {
+            let mut metadata = MetadataMap::new();
+            for query_id in query_ids {
+                metadata.append(
+                    TASK_KEY_QUERY_ID_HEADER,
+                    query_id.to_string().parse().unwrap(),
+                );
+            }
+            check_task_key_headers(&metadata, &key)
+        };
+        assert!(check(&[]).is_ok());
+        assert!(check(&[key.query_id]).is_ok());
+        assert!(check(&[uuid::Uuid::new_v4()]).is_err());
+        assert!(check(&[key.query_id, key.query_id]).is_err());
     }
 }

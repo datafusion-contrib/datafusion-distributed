@@ -4,7 +4,6 @@ mod generated;
 mod metrics_proto;
 mod observability;
 mod spawn_select_all;
-mod task_key_headers;
 mod worker_client;
 mod worker_service;
 
@@ -18,5 +17,4 @@ pub use observability::{
     ObservabilityServiceImpl, ObservabilityServiceServer, PingRequest, PingResponse, TaskProgress,
     TaskStatus, WorkerMetrics,
 };
-pub use task_key_headers::TASK_KEY_QUERY_ID_HEADER;
 pub use worker_client::create_worker_client;

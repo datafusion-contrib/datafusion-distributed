@@ -2,7 +2,6 @@ use super::channel_resolver::BoxCloneSyncChannel;
 use super::errors::{map_flight_to_datafusion_error, map_status_to_datafusion_error};
 use super::generated::worker as pb;
 use super::metrics_proto::metrics_set_proto_to_df;
-use super::task_key_headers::set_task_key_headers;
 use crate::common::{RetryOutcome, on_drop_stream, serialize_uuid};
 use crate::grpc::errors::tonic_status_to_datafusion_error;
 use crate::grpc::generated::worker::FlightAppMetadata;
@@ -11,8 +10,9 @@ use crate::{
     DistributedConfig, ExecuteTaskRequest, FirstLatencyMetric, GetWorkerInfoRequest,
     GetWorkerInfoResponse, LatencyMetricExt, LoadInfo, MaxLatencyMetric, MaybeEncoded,
     MinLatencyMetric, P50LatencyMetric, P95LatencyMetric, ProducedDynamicFilter, ProducerHead,
-    SetPlanRequest, TaskCompletedDynamicFilters, TaskDynamicFilter, TaskKey, TaskMetrics,
-    WorkUnitBatch, WorkUnitFeedDeclaration, WorkUnitMsg, WorkerChannel, WorkerToCoordinatorMsg,
+    SetPlanRequest, TASK_KEY_QUERY_ID_HEADER, TaskCompletedDynamicFilters, TaskDynamicFilter,
+    TaskKey, TaskMetrics, WorkUnitBatch, WorkUnitFeedDeclaration, WorkUnitMsg, WorkerChannel,
+    WorkerToCoordinatorMsg,
 };
 use arrow_flight::FlightData;
 use arrow_flight::decode::FlightRecordBatchStream;
@@ -43,7 +43,7 @@ use tokio::sync::Notify;
 use tokio::sync::mpsc::{UnboundedSender, channel};
 use tokio_stream::wrappers::{ReceiverStream, UnboundedReceiverStream};
 use tokio_util::sync::CancellationToken;
-use tonic::metadata::MetadataMap;
+use tonic::metadata::{AsciiMetadataValue, MetadataMap};
 use tonic::{Code, Request, Status};
 
 #[async_trait]
@@ -829,6 +829,12 @@ impl<O, F: Future<Output = O>> Future for ElapsedComputeFuture<F> {
     }
 }
 
+fn set_task_key_headers(metadata: &mut MetadataMap, task_key: &TaskKey) {
+    let query_id = AsciiMetadataValue::try_from(task_key.query_id.to_string())
+        .expect("a hyphenated UUID is a valid header value");
+    metadata.insert(TASK_KEY_QUERY_ID_HEADER, query_id);
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::worker_service::decode_producer_head;
@@ -980,5 +986,20 @@ mod tests {
         };
         assert_eq!(decoded_expression, expression.encode_to_vec());
         Ok(())
+    }
+
+    #[test]
+    fn set_task_key_headers_overwrites_a_passthrough_header_of_the_same_name() {
+        let key = TaskKey {
+            query_id: uuid::Uuid::new_v4(),
+            stage_id: 1,
+            task_number: 0,
+        };
+        let mut metadata = MetadataMap::new();
+        let passthrough = uuid::Uuid::new_v4().to_string().parse().unwrap();
+        metadata.insert(TASK_KEY_QUERY_ID_HEADER, passthrough);
+        set_task_key_headers(&mut metadata, &key);
+        let sent: Vec<_> = metadata.get_all(TASK_KEY_QUERY_ID_HEADER).iter().collect();
+        assert_eq!(sent, [key.query_id.to_string().as_str()]);
     }
 }
