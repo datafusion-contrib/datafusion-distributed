@@ -38,7 +38,7 @@ use datafusion_distributed::test_utils::work_unit_file_scan::{
 };
 use datafusion_distributed::{
     DistributedExt, DistributedMetricsFormat, NetworkBoundaryExt, SessionStateBuilderExt,
-    display_plan_ascii, rewrite_distributed_plan_with_metrics,
+    display_plan_ascii, generate_plan_dump, rewrite_distributed_plan_with_metrics,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -312,6 +312,7 @@ impl RunOpt {
                                 "=== Physical plan with metrics ===\n{}\n",
                                 display_plan_ascii(physical_plan.as_ref(), true)
                             );
+                            println!("Plan dump: {}\n", generate_plan_dump(&physical_plan)?);
                         }
 
                         bench_query.iterations.push(QueryIter {
