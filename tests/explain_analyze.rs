@@ -98,4 +98,69 @@ mod tests {
 
         Ok(())
     }
+
+    #[tokio::test]
+    async fn explain_analyze_displays_completed_dynamic_filters()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (ctx, _guard, _) = start_localhost_context(2, DefaultSessionBuilder).await;
+        let ctx = ctx
+            .with_distributed_dynamic_filter_collection(true)?
+            .with_distributed_remote_dynamic_filters(true)?;
+        register_parquet_tables(&ctx).await?;
+
+        let batches = ctx
+            .sql(
+                r#"EXPLAIN ANALYZE
+                   SELECT MIN(key)
+                   FROM (SELECT DISTINCT "MinTemp" AS key FROM weather)"#,
+            )
+            .await?
+            .collect()
+            .await?;
+        let formatted = pretty_format_batches(&batches)?.to_string();
+
+        assert_contains!(&formatted, "predicate=DynamicFilter [");
+        assert_contains!(&formatted, "MinTemp@0 <");
+        assert_not_contains!(&formatted, "DynamicFilter [ empty ]");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn explain_analyze_verbose_displays_completed_dynamic_filters_in_both_plans()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (ctx, _guard, _) = start_localhost_context(2, DefaultSessionBuilder).await;
+        let ctx = ctx
+            .with_distributed_dynamic_filter_collection(true)?
+            .with_distributed_remote_dynamic_filters(true)?;
+        register_parquet_tables(&ctx).await?;
+
+        let batches = ctx
+            .sql(
+                r#"EXPLAIN ANALYZE VERBOSE
+                   SELECT MIN(key)
+                   FROM (SELECT DISTINCT "MinTemp" AS key FROM weather)"#,
+            )
+            .await?
+            .collect()
+            .await?;
+        let plan_types = batches[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("EXPLAIN ANALYZE plan types should be strings");
+        let plans = batches[0]
+            .column(1)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("EXPLAIN ANALYZE plans should be strings");
+
+        assert_eq!(plan_types.value(0), "Plan with Metrics");
+        assert_eq!(plan_types.value(1), "Plan with Full Metrics");
+        for plan in [plans.value(0), plans.value(1)] {
+            assert_contains!(plan, "predicate=DynamicFilter [");
+            assert_contains!(plan, "MinTemp@0 <");
+            assert_not_contains!(plan, "DynamicFilter [ empty ]");
+        }
+        Ok(())
+    }
 }
