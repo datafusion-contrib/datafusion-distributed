@@ -5,6 +5,7 @@ use std::path::Path;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let repo_root = env::current_dir()?;
 
+    generate_metrics(&repo_root)?;
     generate_worker(&repo_root)?;
     generate_observability(&repo_root)?;
     generate_iceberg(&repo_root)?;
@@ -14,10 +15,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn generate_metrics(repo_root: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let proto_dir = repo_root.join("src/metrics");
+    let proto_file = proto_dir.join("metrics.proto");
+    let out_dir = proto_dir.join("generated");
+
+    fs::create_dir_all(&out_dir)?;
+
+    tonic_prost_build::configure()
+        .build_server(false)
+        .build_client(false)
+        .out_dir(out_dir)
+        .compile_protos(&[proto_file], &[proto_dir])?;
+
+    Ok(())
+}
+
 fn generate_worker(repo_root: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let proto_dir = repo_root.join("src/protocol/grpc");
     let proto_file = proto_dir.join("worker.proto");
     let out_dir = proto_dir.join("generated");
+    let metrics_proto_dir = repo_root.join("src/metrics");
 
     fs::create_dir_all(&out_dir)?;
 
@@ -30,7 +48,8 @@ fn generate_worker(repo_root: &Path) -> Result<(), Box<dyn std::error::Error>> {
             ".worker.FlightDescriptor",
             "::arrow_flight::FlightDescriptor",
         )
-        .compile_protos(&[proto_file], &[proto_dir])?;
+        .extern_path(".metrics", "crate::metrics::generated::metrics")
+        .compile_protos(&[proto_file], &[proto_dir, metrics_proto_dir])?;
 
     Ok(())
 }
