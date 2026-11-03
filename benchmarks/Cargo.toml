@@ -58,3 +58,7 @@ harness = false
 [[bench]]
 name = "transport"
 harness = false
+
+[[bench]]
+name = "planning"
+harness = false

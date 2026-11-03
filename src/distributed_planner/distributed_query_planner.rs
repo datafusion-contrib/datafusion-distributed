@@ -81,7 +81,7 @@ impl QueryPlanner for DistributedQueryPlanner {
 /// Inputs to [`AnalyzeExec`] are planned recursively. When one becomes distributed, the native
 /// node is replaced by [`DistributedAnalyzeExec`]. The future is boxed because recursive `async
 /// fn`s would otherwise have an infinitely-sized return type.
-fn create_distributed_plan(
+pub fn create_distributed_plan(
     original_plan: Arc<dyn ExecutionPlan>,
     session: &dyn Session,
 ) -> BoxFuture<'_, datafusion::common::Result<Arc<dyn ExecutionPlan>>> {

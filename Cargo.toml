@@ -54,7 +54,7 @@ crossbeam-queue = "0.3"
 sysinfo = { version = "0.30", optional = true }
 sketches-ddsketch = { version = "0.3", features = ["use_serde"] }
 num-traits = "0.2"
-bincode = "1"
+postcard = { version = "1.1", default-features = false, features = ["alloc"] }
 tonic-prost = "0.14.2"
 
 # grpc-specific features

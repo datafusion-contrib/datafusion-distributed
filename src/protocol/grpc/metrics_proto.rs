@@ -1,10 +1,11 @@
 use super::generated::worker as pb;
 use chrono::DateTime;
-use datafusion::common::internal_err;
+use datafusion::common::{internal_datafusion_err, internal_err};
 use datafusion::error::DataFusionError;
 use datafusion::physical_plan::metrics::{Count, Gauge, Label, Time, Timestamp};
 use datafusion::physical_plan::metrics::{Metric, MetricValue, MetricsSet};
 use datafusion::physical_plan::metrics::{PruningMetrics as DfPruningMetrics, RatioMetrics};
+use postcard::take_from_bytes;
 use sketches_ddsketch::DDSketch;
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -526,9 +527,7 @@ pub fn metric_proto_to_df(metric: pb::Metric) -> Result<Arc<Metric>, DataFusionE
             )))
         }
         Some(pb::metric::Value::CustomP50Latency(p)) => {
-            let sketch: DDSketch = bincode::deserialize(&p.sketch_bytes).map_err(|e| {
-                DataFusionError::Internal(format!("failed to deserialize DDSketch: {e}"))
-            })?;
+            let sketch = decode_sketch(&p.sketch_bytes)?;
             let value = P50LatencyMetric::from_sketch(sketch);
             Ok(Arc::new(Metric::new_with_labels(
                 MetricValue::Custom {
@@ -540,9 +539,7 @@ pub fn metric_proto_to_df(metric: pb::Metric) -> Result<Arc<Metric>, DataFusionE
             )))
         }
         Some(pb::metric::Value::CustomP75Latency(p)) => {
-            let sketch: DDSketch = bincode::deserialize(&p.sketch_bytes).map_err(|e| {
-                DataFusionError::Internal(format!("failed to deserialize DDSketch: {e}"))
-            })?;
+            let sketch = decode_sketch(&p.sketch_bytes)?;
             let value = P75LatencyMetric::from_sketch(sketch);
             Ok(Arc::new(Metric::new_with_labels(
                 MetricValue::Custom {
@@ -554,9 +551,7 @@ pub fn metric_proto_to_df(metric: pb::Metric) -> Result<Arc<Metric>, DataFusionE
             )))
         }
         Some(pb::metric::Value::CustomP95Latency(p)) => {
-            let sketch: DDSketch = bincode::deserialize(&p.sketch_bytes).map_err(|e| {
-                DataFusionError::Internal(format!("failed to deserialize DDSketch: {e}"))
-            })?;
+            let sketch = decode_sketch(&p.sketch_bytes)?;
             let value = P95LatencyMetric::from_sketch(sketch);
             Ok(Arc::new(Metric::new_with_labels(
                 MetricValue::Custom {
@@ -568,9 +563,7 @@ pub fn metric_proto_to_df(metric: pb::Metric) -> Result<Arc<Metric>, DataFusionE
             )))
         }
         Some(pb::metric::Value::CustomP99Latency(p)) => {
-            let sketch: DDSketch = bincode::deserialize(&p.sketch_bytes).map_err(|e| {
-                DataFusionError::Internal(format!("failed to deserialize DDSketch: {e}"))
-            })?;
+            let sketch = decode_sketch(&p.sketch_bytes)?;
             let value = P99LatencyMetric::from_sketch(sketch);
             Ok(Arc::new(Metric::new_with_labels(
                 MetricValue::Custom {
@@ -594,6 +587,16 @@ pub fn metric_proto_to_df(metric: pb::Metric) -> Result<Arc<Metric>, DataFusionE
         }
         None => internal_err!("proto metric is missing the metric field"),
     }
+}
+
+/// Decodes a [DDSketch] received from a peer, refusing bytes left over after it.
+fn decode_sketch(bytes: &[u8]) -> Result<DDSketch, DataFusionError> {
+    let (sketch, rest) = take_from_bytes(bytes)
+        .map_err(|e| internal_datafusion_err!("failed to deserialize DDSketch: {e}"))?;
+    if !rest.is_empty() {
+        return internal_err!("{} trailing bytes after DDSketch", rest.len());
+    }
+    Ok(sketch)
 }
 
 #[cfg(test)]
@@ -1101,6 +1104,27 @@ mod tests {
     }
 
     #[test]
+    fn test_latency_sketch_decode_error() {
+        let decode = |sketch_bytes: Vec<u8>| {
+            metric_proto_to_df(pb::Metric {
+                value: Some(pb::metric::Value::CustomP50Latency(pb::PercentileLatency {
+                    name: "p50_latency".to_string(),
+                    sketch_bytes,
+                })),
+                ..Default::default()
+            })
+        };
+        assert!(decode(vec![]).is_err(), "empty sketch bytes");
+        assert!(decode(vec![0xff; 16]).is_err(), "garbage sketch bytes");
+        let mut trailing = P50LatencyMetric::default().serialize_sketch().unwrap();
+        trailing.push(0);
+        assert!(
+            decode(trailing).is_err(),
+            "trailing bytes after a valid sketch"
+        );
+    }
+
+    #[test]
     fn test_default_timestamp_roundtrip() {
         let default_timestamp = Timestamp::default();
         let metric_with_default_timestamp =
@@ -1221,8 +1245,8 @@ mod tests {
         let p75 = P75LatencyMetric::default();
         let p95 = P95LatencyMetric::default();
         let p99 = P99LatencyMetric::default();
-        for _ in 0..100 {
-            let d = std::time::Duration::from_millis(10);
+        for ms in 1..=100 {
+            let d = std::time::Duration::from_millis(ms);
             p50.add_duration(d);
             p75.add_duration(d);
             p95.add_duration(d);
