@@ -51,7 +51,7 @@ pub(super) async fn prepare_static_plan(
         let mut workers = Vec::with_capacity(stage.tasks);
         for (task_i, (url, worker_tx, worker_stream)) in results.into_iter().enumerate() {
             workers.push(url);
-            stage_coordinator.worker_to_coordinator_task(task_i, worker_stream)?;
+            stage_coordinator.worker_to_coordinator_task(task_i, worker_stream);
             stage_coordinator.coordinator_to_worker_task(task_i, worker_tx)?;
         }
         stage_coordinator.seal_dynamic_filter_stage()?;

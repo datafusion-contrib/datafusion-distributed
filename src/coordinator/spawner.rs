@@ -1,5 +1,6 @@
 use datafusion::common::runtime::JoinSet;
 use datafusion::common::{Result, exec_err};
+use datafusion::error::DataFusionError;
 use datafusion::physical_plan::stream::RecordBatchReceiverStreamBuilder;
 use futures::FutureExt;
 use futures::future::BoxFuture;
@@ -14,12 +15,14 @@ pub(super) struct Spawner {
     // Cancelled when the main execution future completes or is dropped.
     query_finished: CancellationToken,
     task_tx: UnboundedSender<BoxFuture<'static, Result<()>>>,
+    error_tx: UnboundedSender<DataFusionError>,
 }
 
 impl Spawner {
     pub(super) fn new(output: &mut RecordBatchReceiverStreamBuilder) -> Self {
         let query_finished = CancellationToken::new();
         let (task_tx, mut task_rx) = unbounded_channel::<BoxFuture<'static, Result<()>>>();
+        let (error_tx, mut error_rx) = unbounded_channel::<DataFusionError>();
 
         // Supervisor task responsible for propagating errors from tasks to the main
         // query response stream. Terminates when all tasks finished, otherwise
@@ -39,6 +42,9 @@ impl Spawner {
                             }
                         }
                     }
+                    Some(err) = error_rx.recv() => {
+                        return Err(err)
+                    }
                     Some(task) = task_rx.recv() => {
                         tasks.spawn(task);
                     }
@@ -51,6 +57,7 @@ impl Spawner {
         Self {
             query_finished,
             task_tx,
+            error_tx,
         }
     }
 
@@ -79,11 +86,16 @@ impl Spawner {
     /// errors do not propagate to the reposne stream.
     ///
     /// Dropping the returned handle does not abort the task.
-    pub(super) fn spawn_unbounded<T: Send + 'static>(
+    pub(super) fn spawn_unbounded(
         &self,
-        task: impl Future<Output = T> + Send + 'static,
-    ) -> JoinHandle<T> {
+        task: impl Future<Output = Result<()>> + Send + 'static,
+    ) -> JoinHandle<()> {
+        let error_tx = self.error_tx.clone();
         #[allow(clippy::disallowed_methods)]
-        tokio::spawn(task)
+        tokio::spawn(async move {
+            if let Err(err) = task.await {
+                let _ = error_tx.send(err);
+            }
+        })
     }
 }

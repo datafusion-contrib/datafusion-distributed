@@ -19,16 +19,15 @@ use crate::stage::LocalStage;
 use crate::work_unit_feed::WorkUnitFeedRegistry;
 use crate::work_unit_feed::{build_work_unit_batch_msg, set_work_unit_send_time};
 use crate::{
-    CoordinatorToWorkerMsg, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedConfig,
-    DistributedGetterExt, DistributedTaskContext, DistributedWorkUnitFeedContext, LoadInfo,
-    LocalWorkerContext, MaybeEncoded, ProducedDynamicFilter, SetPlanRequest,
-    TaskCompletedDynamicFilters, TaskKey, TaskMetrics, WorkUnitFeedDeclaration,
-    WorkerToCoordinatorMsg, get_distributed_channel_resolver,
+    CoordinatorToWorkerMsg, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedGetterExt,
+    DistributedTaskContext, DistributedWorkUnitFeedContext, LoadInfo, LocalWorkerContext,
+    MaybeEncoded, SetPlanRequest, TaskCompletedDynamicFilters, TaskKey, TaskMetrics,
+    WorkUnitFeedDeclaration, WorkerToCoordinatorMsg, get_distributed_channel_resolver,
 };
 use datafusion::common::Result;
 use datafusion::common::instant::Instant;
 use datafusion::common::tree_node::{Transformed, TreeNodeRecursion};
-use datafusion::common::{DataFusionError, exec_err, internal_err};
+use datafusion::common::{DataFusionError, internal_err};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr_common::metrics::{ExecutionPlanMetricsSet, Label, MetricBuilder};
 use datafusion::physical_plan::metrics::Count;
@@ -39,13 +38,10 @@ use datafusion::prelude::SessionConfig;
 use futures::future::try_join_all;
 use futures::stream::BoxStream;
 use futures::{StreamExt, TryStreamExt};
-use std::panic::resume_unwind;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 use tokio::select;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio_stream::wrappers::UnboundedReceiverStream;
-use tokio_util::sync::CancellationToken;
 use url::Url;
 use uuid::Uuid;
 
@@ -283,117 +279,50 @@ impl<'a> StageCoordinator<'a> {
     }
 
     /// Spawns background tasks in charge of collecting messages sent by a worker.
-    ///
-    /// The worker->coordinator stream is read by a task that is not tied to the query, so that
-    /// final reports are still collected if the query fails or is cancelled. A query-scoped task
-    /// waits for the reader, propagating its errors and blocking the response stream until the
-    /// worker->coordinator stream ends. If the query is abandoned first, the reader keeps going
-    /// for at most [DistributedConfig::final_reports_grace_period_ms].
     pub(super) fn worker_to_coordinator_task(
         &mut self,
         task_i: usize,
         mut worker_to_coordinator_stream: BoxStream<'static, Result<WorkerToCoordinatorMsg>>,
-    ) -> Result<UnboundedReceiver<LoadInfo>> {
+    ) -> UnboundedReceiver<LoadInfo> {
         let task_key = TaskKey {
             query_id: self.query_id,
             stage_id: self.stage_id,
             task_number: task_i,
         };
-        let d_cfg = DistributedConfig::from_task_context(self.task_ctx)?;
-        let grace_period = Duration::from_millis(d_cfg.final_reports_grace_period_ms);
         let mut task_metrics = self.metrics_store.clone();
         let mut completed_dynamic_filter_store = self.completed_dynamic_filter_store.clone();
         let dynamic_filter_registry = Arc::clone(self.dynamic_filter_registry);
         let task_ctx = Arc::clone(self.task_ctx);
         let (load_info_tx, load_info_rx) = unbounded_channel();
-        let (reports_tx, mut reports_rx) = unbounded_channel::<FinalReport>();
-        let (runtime_tx, mut runtime_rx) = unbounded_channel::<RuntimeUpdate>();
         let mut load_info_tx_opt = Some(load_info_tx);
 
-        // Read from the worker -> coordinator stream.
-        let read = async move {
-            while let Some(msg) = worker_to_coordinator_stream.try_next().await? {
-                let reports_closed = match msg {
-                    WorkerToCoordinatorMsg::TaskMetrics(metrics) => {
-                        reports_tx.send(FinalReport::Metrics(metrics)).is_err()
-                    }
-                    WorkerToCoordinatorMsg::TaskCompletedDynamicFilters(filters) => reports_tx
-                        .send(FinalReport::DynamicFilters(filters))
-                        .is_err(),
-                    // The runtime handler stops when the query is abandoned, but final reports
-                    // may still follow, so keep reading.
-                    WorkerToCoordinatorMsg::ProducedDynamicFilter(filter) => {
-                        let _ = runtime_tx.send(RuntimeUpdate::DynamicFilter(filter));
-                        false
-                    }
-                    WorkerToCoordinatorMsg::LoadInfo(info) => {
-                        let _ = runtime_tx.send(RuntimeUpdate::LoadInfo(info));
-                        false
-                    }
-                    WorkerToCoordinatorMsg::LoadInfoEos => {
-                        let _ = runtime_tx.send(RuntimeUpdate::LoadInfoEos);
-                        false
-                    }
-                };
-                if reports_closed {
-                    break;
-                }
-            }
-            Ok(())
-        };
-        let abandoned = CancellationToken::new();
-        let reader =
-            self.spawner
-                .spawn_unbounded(with_grace_period(read, abandoned.clone(), grace_period));
-
-        // Fail the query if the reader fails. Dropping this task before the reader finishes, as
-        // happens when the query fails or is cancelled, starts the reader's grace period.
-        let abandoned_guard = abandoned.drop_guard();
-        self.spawner.spawn(async move {
-            let _abandoned_guard = abandoned_guard;
-            match reader.await {
-                Ok(result) => result,
-                Err(error) if error.is_panic() => resume_unwind(error.into_panic()),
-                Err(error) => exec_err!("worker->coordinator reader failed: {error}"),
-            }
-        });
-
-        // Handle runtime updates and fail the query on error.
-        self.spawner.spawn(async move {
-            while let Some(msg) = runtime_rx.recv().await {
-                match msg {
-                    RuntimeUpdate::DynamicFilter(filter) => {
-                        dynamic_filter_registry
-                            .record_dynamic_filter_update(task_key, *filter, &task_ctx)?;
-                    }
-                    RuntimeUpdate::LoadInfo(load_info) => {
-                        if let Some(tx) = &load_info_tx_opt {
-                            let _ = tx.send(load_info);
-                        }
-                    }
-                    RuntimeUpdate::LoadInfoEos => {
-                        let _ = load_info_tx_opt.take();
-                    }
-                }
-            }
-            Ok(())
-        });
-
-        // Handle reports regardless of when the query is finished.
+        // Read from the worker -> coordinator stream and fail the query on error.
         self.spawner.spawn_unbounded(async move {
-            while let Some(msg) = reports_rx.recv().await {
+            while let Some(msg) = worker_to_coordinator_stream.try_next().await? {
                 match msg {
-                    FinalReport::Metrics(v) => {
+                    WorkerToCoordinatorMsg::TaskMetrics(metrics) => {
                         if let Some(task_metrics) = task_metrics.take() {
-                            task_metrics.insert(task_key, v);
+                            task_metrics.insert(task_key, metrics);
                         }
                     }
-                    FinalReport::DynamicFilters(filters) => {
+                    WorkerToCoordinatorMsg::TaskCompletedDynamicFilters(filters) => {
                         if let Some(store) = completed_dynamic_filter_store.take() {
                             store.insert(task_key, filters);
                         }
                     }
-                }
+                    WorkerToCoordinatorMsg::ProducedDynamicFilter(filter) => {
+                        dynamic_filter_registry
+                            .record_dynamic_filter_update(task_key, *filter, &task_ctx)?;
+                    }
+                    WorkerToCoordinatorMsg::LoadInfo(info) => {
+                        if let Some(tx) = &load_info_tx_opt {
+                            let _ = tx.send(info);
+                        }
+                    }
+                    WorkerToCoordinatorMsg::LoadInfoEos => {
+                        let _ = load_info_tx_opt.take();
+                    }
+                };
             }
             // An unexecuted task sends no final reports; still complete its waits.
             if let Some(store) = task_metrics {
@@ -402,9 +331,11 @@ impl<'a> StageCoordinator<'a> {
             if let Some(store) = completed_dynamic_filter_store {
                 store.insert(task_key, TaskCompletedDynamicFilters::default());
             }
+            let _ = load_info_tx_opt.take();
+            Ok::<_, DataFusionError>(())
         });
 
-        Ok(load_info_rx)
+        load_info_rx
     }
 
     /// Spawns a background task in charge of sending messages to workers. Some things that are sent
@@ -567,36 +498,6 @@ impl<'a> StageCoordinator<'a> {
     }
 }
 
-/// Runs `fut` to completion, unless `abandoned` is cancelled first. In that case, `fut` gets at
-/// most `grace_period` more time to finish, and is dropped afterwards.
-async fn with_grace_period(
-    fut: impl Future<Output = Result<()>>,
-    abandoned: CancellationToken,
-    grace_period: Duration,
-) -> Result<()> {
-    tokio::pin!(fut);
-    select! {
-        result = &mut fut => return result,
-        _ = abandoned.cancelled() => {}
-    }
-    tokio::time::timeout(grace_period, fut)
-        .await
-        .unwrap_or(Ok(()))
-}
-
-/// [`WorkerToCoordinatorMsg`] which may arrive after the query has finished executing.
-enum FinalReport {
-    Metrics(TaskMetrics),
-    DynamicFilters(TaskCompletedDynamicFilters),
-}
-
-/// [`WorkerToCoordinatorMsg`] which occurs during execution.
-enum RuntimeUpdate {
-    DynamicFilter(Box<ProducedDynamicFilter>),
-    LoadInfo(LoadInfo),
-    LoadInfoEos,
-}
-
 struct TaskSpecializedPlan {
     plan: Arc<dyn ExecutionPlan>,
     work_unit_feed_declarations: Vec<WorkUnitFeedDeclaration>,
@@ -640,30 +541,6 @@ impl CoordinatorToWorkerMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use datafusion::common::assert_contains;
-
-    #[tokio::test]
-    async fn with_grace_period_ignores_deadline_until_abandoned() {
-        let fut = async {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            exec_err!("finished")
-        };
-        let result = with_grace_period(fut, CancellationToken::new(), Duration::ZERO).await;
-        assert_contains!(result.unwrap_err().to_string(), "finished");
-    }
-
-    #[tokio::test]
-    async fn with_grace_period_stops_after_grace_period() {
-        let abandoned = CancellationToken::new();
-        abandoned.cancel();
-        let fut = futures::future::pending::<Result<()>>();
-        let result = tokio::time::timeout(
-            Duration::from_secs(10),
-            with_grace_period(fut, abandoned, Duration::from_millis(10)),
-        )
-        .await;
-        assert!(matches!(result, Ok(Ok(()))));
-    }
 
     /// Regression test for a rustc miscompilation (present at least through
     /// 1.96, fixed in 1.98) of [`CoordinatorToWorkerMetrics::new`].

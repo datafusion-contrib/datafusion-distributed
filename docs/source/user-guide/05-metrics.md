@@ -24,10 +24,6 @@ let state = SessionStateBuilder::new()
 When enabled, each worker streams the metrics for its tasks back to the coordinator on a dedicated
 channel, so they are not lost even if the result stream is dropped early (for example by a `LIMIT`).
 
-If the query fails or is cancelled, the coordinator keeps collecting these metrics in the background
-for up to `distributed.final_reports_grace_period_ms` milliseconds (1000 by default), without delaying
-the error. Tasks that do not report in time end up with empty metrics.
-
 ## Rendering a plan with metrics
 
 These functions, all exported from the crate root, do the work:
