@@ -1,3 +1,4 @@
+use super::TASK_KEY_QUERY_ID_HEADER;
 use super::channel_resolver::BoxCloneSyncChannel;
 use super::errors::{map_flight_to_datafusion_error, map_status_to_datafusion_error};
 use super::generated::worker as pb;
@@ -42,7 +43,7 @@ use tokio::sync::Notify;
 use tokio::sync::mpsc::{UnboundedSender, channel};
 use tokio_stream::wrappers::{ReceiverStream, UnboundedReceiverStream};
 use tokio_util::sync::CancellationToken;
-use tonic::metadata::MetadataMap;
+use tonic::metadata::{AsciiMetadataValue, MetadataMap};
 use tonic::{Code, Request, Status};
 
 #[async_trait]
@@ -55,6 +56,8 @@ impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSy
         metrics: ExecutionPlanMetricsSet,
         ctx: &Arc<TaskContext>,
     ) -> Result<BoxStream<'static, Result<WorkerToCoordinatorMsg>>> {
+        let mut metadata = MetadataMap::from_headers(headers);
+        set_task_key_headers(&mut metadata, &set_plan_request.task_key);
         let set_plan_request = encode_set_plan_request(set_plan_request, ctx)?;
         let plan_bytes_sent = set_plan_request.plan_proto.len();
         let task_ctx = Arc::clone(ctx);
@@ -83,7 +86,7 @@ impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSy
             biased;
             Some(error) = error_rx.recv() => return Err(error),
             response = self.coordinator_channel(Request::from_parts(
-                MetadataMap::from_headers(headers),
+                metadata,
                 Extensions::default(),
                 input_stream,
             ))
@@ -172,6 +175,8 @@ impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSy
         let elapsed_compute_clone = elapsed_compute.clone();
         MetricBuilder::new(&metrics).build(MetricValue::ElapsedCompute(elapsed_compute.clone()));
 
+        let mut metadata = MetadataMap::from_headers(headers);
+        set_task_key_headers(&mut metadata, &request.task_key);
         let target_partition_range = request.target_partition_start..request.target_partition_end;
         let request = pb::ExecuteTaskRequest {
             task_key: Some(encode_task_key(request.task_key)),
@@ -179,7 +184,6 @@ impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSy
             target_partition_end: request.target_partition_end as u64,
             producer_head: Some(encode_producer_head(request.producer_head, ctx)?),
         };
-        let metadata = MetadataMap::from_headers(headers);
 
         // The senders and receivers are unbounded queues used for multiplexing the record
         // batches sent through the single gRPC stream into one stream per partition. They
@@ -825,6 +829,12 @@ impl<O, F: Future<Output = O>> Future for ElapsedComputeFuture<F> {
     }
 }
 
+fn set_task_key_headers(metadata: &mut MetadataMap, task_key: &TaskKey) {
+    let query_id = AsciiMetadataValue::try_from(task_key.query_id.to_string())
+        .expect("a hyphenated UUID is a valid header value");
+    metadata.insert(TASK_KEY_QUERY_ID_HEADER, query_id);
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::worker_service::decode_producer_head;
@@ -976,5 +986,20 @@ mod tests {
         };
         assert_eq!(decoded_expression, expression.encode_to_vec());
         Ok(())
+    }
+
+    #[test]
+    fn set_task_key_headers_overwrites_a_passthrough_header_of_the_same_name() {
+        let key = TaskKey {
+            query_id: uuid::Uuid::new_v4(),
+            stage_id: 1,
+            task_number: 0,
+        };
+        let mut metadata = MetadataMap::new();
+        let passthrough = uuid::Uuid::new_v4().to_string().parse().unwrap();
+        metadata.insert(TASK_KEY_QUERY_ID_HEADER, passthrough);
+        set_task_key_headers(&mut metadata, &key);
+        let sent: Vec<_> = metadata.get_all(TASK_KEY_QUERY_ID_HEADER).iter().collect();
+        assert_eq!(sent, [key.query_id.to_string().as_str()]);
     }
 }
