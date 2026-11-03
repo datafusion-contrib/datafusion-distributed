@@ -1,0 +1,157 @@
+syntax = "proto3";
+package metrics;
+
+// A Label mirrors datafusion::physical_plan::metrics::Label.
+message Label {
+  string name = 1;
+  string value = 2;
+}
+
+// A Metric is a protobuf mirror of datafusion::physical_plan::metrics::Metric.
+message Metric {
+  repeated Label labels = 1;
+  optional uint64 partition = 2;
+  oneof value {
+    OutputRows output_rows = 10;
+    ElapsedCompute elapsed_compute = 11;
+    SpillCount spill_count = 12;
+    SpilledBytes spilled_bytes = 13;
+    SpilledRows spilled_rows = 14;
+    CurrentMemoryUsage current_memory_usage = 15;
+    NamedCount count = 16;
+    NamedGauge gauge = 17;
+    NamedTime time = 18;
+    StartTimestamp start_timestamp = 19;
+    EndTimestamp end_timestamp = 20;
+    OutputBytes output_bytes = 21;
+    OutputBatches output_batches = 22;
+    NamedPruningMetrics pruning_metrics = 23;
+    NamedRatio ratio = 24;
+    MinLatency custom_min_latency = 25;
+    MaxLatency custom_max_latency = 26;
+    AvgLatency custom_avg_latency = 27;
+    FirstLatency custom_first_latency = 28;
+    BytesCount custom_bytes_count = 29;
+    PercentileLatency custom_p50_latency = 30;
+    PercentileLatency custom_p75_latency = 31;
+    PercentileLatency custom_p95_latency = 32;
+    PercentileLatency custom_p99_latency = 33;
+    MaxGauge custom_max_gauge = 34;
+    PeakMemoryUsage peak_memory_usage = 35;
+  }
+}
+
+// A MetricsSet is a protobuf mirror of datafusion::physical_plan::metrics::MetricsSet. It represents
+// a collection of metrics for one ExecutionPlan node.
+message MetricsSet {
+  repeated Metric metrics = 1;
+}
+
+message OutputRows {
+  uint64 value = 1;
+}
+
+message ElapsedCompute {
+  uint64 value = 1;
+}
+
+message SpillCount {
+  uint64 value = 1;
+}
+
+message SpilledBytes {
+  uint64 value = 1;
+}
+
+message SpilledRows {
+  uint64 value = 1;
+}
+
+message CurrentMemoryUsage {
+  uint64 value = 1;
+}
+
+message NamedCount {
+  string name = 1;
+  uint64 value = 2;
+}
+
+message NamedGauge {
+  string name = 1;
+  uint64 value = 2;
+}
+
+message PeakMemoryUsage {
+  string name = 1;
+  uint64 value = 2;
+}
+
+message NamedTime {
+  string name = 1;
+  uint64 value = 2;
+}
+
+message StartTimestamp {
+  optional int64 value = 1;
+}
+
+message EndTimestamp {
+  optional int64 value = 1;
+}
+
+message OutputBytes {
+  uint64 value = 1;
+}
+
+message OutputBatches {
+  uint64 value = 1;
+}
+
+message NamedPruningMetrics {
+  string name = 1;
+  uint64 pruned = 2;
+  uint64 matched = 3;
+}
+
+message NamedRatio {
+  string name = 1;
+  uint64 part = 2;
+  uint64 total = 3;
+}
+
+message BytesCount {
+  string name = 1;
+  uint64 value = 2;
+}
+
+message MinLatency {
+  string name = 1;
+  uint64 value = 2;
+}
+
+message MaxLatency {
+  string name = 1;
+  uint64 value = 2;
+}
+
+message AvgLatency {
+  string name = 1;
+  uint64 nanos_sum = 2;
+  uint64 count = 3;
+}
+
+message FirstLatency {
+  string name = 1;
+  uint64 value = 2;
+}
+
+message PercentileLatency {
+  string name = 1;
+  reserved 4;
+  bytes sketch_bytes = 5;
+}
+
+message MaxGauge {
+  string name = 1;
+  uint64 value = 2;
+}

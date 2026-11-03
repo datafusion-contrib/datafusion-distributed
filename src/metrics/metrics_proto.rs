@@ -1,4 +1,4 @@
-use super::generated::worker as pb;
+use crate::metrics::generated::metrics as pb;
 use chrono::DateTime;
 use datafusion::common::{internal_datafusion_err, internal_err};
 use datafusion::error::DataFusionError;

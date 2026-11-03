@@ -2,10 +2,10 @@ use super::TASK_KEY_QUERY_ID_HEADER;
 use super::channel_resolver::BoxCloneSyncChannel;
 use super::errors::{map_flight_to_datafusion_error, map_status_to_datafusion_error};
 use super::generated::worker as pb;
-use super::metrics_proto::metrics_set_proto_to_df;
 use crate::common::{RetryOutcome, on_drop_stream, serialize_uuid};
 use crate::grpc::errors::tonic_status_to_datafusion_error;
 use crate::grpc::generated::worker::FlightAppMetadata;
+use crate::metrics::metrics_set_proto_to_df;
 use crate::{
     BytesMetricExt, CoordinatorToWorkerMsg, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL,
     DistributedConfig, ExecuteTaskRequest, FirstLatencyMetric, GetWorkerInfoRequest,
