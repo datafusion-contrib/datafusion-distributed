@@ -1,3 +1,4 @@
+use super::TASK_KEY_QUERY_ID_HEADER;
 use super::errors::{datafusion_error_to_tonic_status, map_status_to_datafusion_error};
 use super::generated::worker as pb;
 use super::metrics_proto::df_metrics_set_to_proto;
@@ -7,9 +8,9 @@ use crate::common::{deserialize_uuid, now_ns};
 use crate::protocol::grpc::{ObservabilityServiceImpl, ObservabilityServiceServer};
 use crate::{
     ApplyDynamicFilter, CoordinatorToWorkerMsg, DistributedConfig, ExecuteTaskRequest, LoadInfo,
-    MaybeEncoded, ProducedDynamicFilter, ProducerHead, SetPlanRequest, TASK_KEY_QUERY_ID_HEADER,
-    TaskCompletedDynamicFilters, TaskKey, TaskMetrics, WorkUnitBatch, WorkUnitFeedDeclaration,
-    WorkUnitMsg, Worker, WorkerResolver, WorkerToCoordinatorMsg,
+    MaybeEncoded, ProducedDynamicFilter, ProducerHead, SetPlanRequest, TaskCompletedDynamicFilters,
+    TaskKey, TaskMetrics, WorkUnitBatch, WorkUnitFeedDeclaration, WorkUnitMsg, Worker,
+    WorkerResolver, WorkerToCoordinatorMsg,
 };
 
 use crate::worker::CoordinatorChannelResult;

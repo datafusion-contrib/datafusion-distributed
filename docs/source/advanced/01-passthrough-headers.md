@@ -61,7 +61,7 @@ rejects that reserved prefix.
 ## The task key header
 
 Every gRPC call to a worker also carries `x-datafusion-distributed-task-key-query-id`
-(`TASK_KEY_QUERY_ID_HEADER`): the query id of the task the call names, as a hyphenated UUID.
+(`grpc::TASK_KEY_QUERY_ID_HEADER`): the query id of the task the call names, as a hyphenated UUID.
 The client sets it after merging the passthrough headers, so a passthrough header of that
 name is overwritten. A tower layer in front of the worker can authorize a call by its query
 from this header without decoding the request body; the worker refuses a call that carries
