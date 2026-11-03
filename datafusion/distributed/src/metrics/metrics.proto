@@ -155,3 +155,28 @@ message MaxGauge {
   string name = 1;
   uint64 value = 2;
 }
+
+message StageDump {
+  uint64 stage_id = 1;
+  repeated TaskLabeledMetricsSet metrics = 2;
+  PlanDump plan_dump = 3;
+  // The number of tasks the stage ran with.
+  uint64 tasks = 4;
+  // The number of partitions the stage spans across all its tasks.
+  uint64 partitions = 5;
+}
+
+message PlanDump {
+  string display = 1;
+  repeated TaskLabeledMetricsSet metrics = 2;
+  repeated PlanDump children = 3;
+  // For network boundaries, the stage they read from. Its plan is not part of `children`.
+  StageDump input_stage = 4;
+}
+
+// The metrics of one task, or the ones that do not belong to a specific task if `task` is not set.
+// Grouping them by task keeps each metric from carrying a task label.
+message TaskLabeledMetricsSet {
+  optional uint64 task = 1;
+  MetricsSet metrics_set = 2;
+}

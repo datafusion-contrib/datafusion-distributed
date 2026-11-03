@@ -39,9 +39,10 @@ pub use execution_plans::{
 };
 pub use metrics::{
     AvgLatencyMetric, BytesCounterMetric, BytesMetricExt, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL,
-    DistributedMetricsFormat, FirstLatencyMetric, GaugeMetricExt, LatencyMetricExt, MaxGaugeMetric,
-    MaxLatencyMetric, MinLatencyMetric, P50LatencyMetric, P75LatencyMetric, P95LatencyMetric,
-    P99LatencyMetric, rewrite_distributed_plan_with_metrics,
+    DisplayPlanDumpOptions, DistributedMetricsFormat, FirstLatencyMetric, GaugeMetricExt,
+    LatencyMetricExt, MaxGaugeMetric, MaxLatencyMetric, MinLatencyMetric, P50LatencyMetric,
+    P75LatencyMetric, P95LatencyMetric, P99LatencyMetric, display_plan_dump, generate_plan_dump,
+    rewrite_distributed_plan_with_metrics,
 };
 pub use protocol::LocalWorkerContext;
 
