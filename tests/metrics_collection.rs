@@ -3,7 +3,7 @@ mod tests {
     use datafusion::catalog::memory::DataSourceExec;
     use datafusion::common::assert_not_contains;
     use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
-    use datafusion::common::{Result, assert_contains};
+    use datafusion::common::{HashMap, Result, assert_contains};
     use datafusion::execution::SessionState;
     use datafusion::physical_plan::display::DisplayableExecutionPlan;
     use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
@@ -16,14 +16,17 @@ mod tests {
         row_generator_desired_task_count_handler, row_generator_scale_up_leaf_node_handler,
     };
     use datafusion_distributed::{
-        DefaultSessionBuilder, DistributedExt, DistributedLeafExec, DistributedMetricsFormat,
-        NetworkCoalesceExec, NetworkShuffleExec, WorkerQueryContext, display_plan_ascii,
-        rewrite_distributed_plan_with_dynamic_filters, rewrite_distributed_plan_with_metrics,
+        DefaultSessionBuilder, DistributedExec, DistributedExt, DistributedLeafExec,
+        DistributedMetricsFormat, NetworkCoalesceExec, NetworkShuffleExec, TaskKey, TaskMetrics,
+        WorkerQueryContext, display_plan_ascii, rewrite_distributed_plan_with_dynamic_filters,
+        rewrite_distributed_plan_with_metrics,
     };
     use futures::TryStreamExt;
     use std::sync::Arc;
     use std::time::Duration;
     use test_case::test_case;
+
+    const COLLECTION_TIMEOUT: Duration = Duration::from_secs(10);
 
     #[test_case(DistributedMetricsFormat::Aggregated ; "aggregated_metrics")]
     #[test_case(DistributedMetricsFormat::PerTask ; "per_task_metrics")]
@@ -411,15 +414,66 @@ mod tests {
 
         let task_ctx = ctx.task_ctx();
         let plan = tokio::time::timeout(
-            Duration::from_secs(10),
+            COLLECTION_TIMEOUT,
             rewrite_distributed_plan_with_dynamic_filters(plan, &task_ctx),
         )
         .await??;
         tokio::time::timeout(
-            Duration::from_secs(10),
+            COLLECTION_TIMEOUT,
             rewrite_distributed_plan_with_metrics(plan, DistributedMetricsFormat::PerTask),
         )
         .await??;
+        Ok(())
+    }
+
+    /// Workers still report their final metrics when the query is cancelled.
+    #[tokio::test]
+    async fn metrics_collected_after_cancel() -> Result<(), Box<dyn std::error::Error>> {
+        let (ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+        register_parquet_tables(&ctx).await?;
+
+        let query = r#"SELECT "FL_DATE", count(*) FROM flights_1m GROUP BY "FL_DATE""#;
+        let plan = ctx.sql(query).await?.create_physical_plan().await?;
+        let mut stream = execute_stream(plan.clone(), ctx.task_ctx())?;
+        assert!(stream.try_next().await?.is_some());
+        // Dropping the stream before it ends cancels the query.
+        drop(stream);
+
+        let task_metrics = wait_for_task_metrics(&plan).await;
+        assert!(!task_metrics.is_empty());
+        for (task_key, metrics) in &task_metrics {
+            assert!(
+                !metrics.pre_order_plan_metrics.is_empty(),
+                "{task_key:?} reported no metrics"
+            );
+        }
+        Ok(())
+    }
+
+    /// Workers still report their final metrics when the query fails.
+    #[tokio::test]
+    async fn metrics_collected_after_failure() -> Result<(), Box<dyn std::error::Error>> {
+        let (ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+        register_parquet_tables(&ctx).await?;
+
+        // The division runs on the coordinator after the final aggregation, so every worker task
+        // has executed before the query fails.
+        let query =
+            r#"SELECT sum("Humidity3pm") / (sum("Humidity3pm") - sum("Humidity3pm")) FROM weather"#;
+        let plan = ctx.sql(query).await?.create_physical_plan().await?;
+        let result = execute_stream(plan.clone(), ctx.task_ctx())?
+            .try_collect::<Vec<_>>()
+            .await;
+        assert_contains!(result.unwrap_err().to_string(), "Divide by zero");
+
+        let task_metrics = wait_for_task_metrics(&plan).await;
+        assert!(!task_metrics.is_empty());
+        for (task_key, metrics) in &task_metrics {
+            assert!(
+                !metrics.pre_order_plan_metrics.is_empty(),
+                "{task_key:?} reported no metrics"
+            );
+        }
         Ok(())
     }
 
@@ -439,6 +493,17 @@ mod tests {
             let other_metric = node_metrics::<T2>(other, name, index);
             assert_eq!(one_metric, other_metric);
         }
+    }
+
+    /// Waits until every task of the executed `plan` has a final metrics report.
+    async fn wait_for_task_metrics(plan: &Arc<dyn ExecutionPlan>) -> HashMap<TaskKey, TaskMetrics> {
+        let d_exec = plan
+            .downcast_ref::<DistributedExec>()
+            .expect("plan root should be a DistributedExec");
+        tokio::time::timeout(COLLECTION_TIMEOUT, d_exec.wait_for_metrics())
+            .await
+            .expect("timed out waiting for task metrics")
+            .expect("metrics collection should be enabled")
     }
 
     /// Waits for all worker metrics to arrive then rewrites the plan with them.

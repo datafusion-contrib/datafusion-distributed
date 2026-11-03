@@ -21,8 +21,8 @@ use crate::work_unit_feed::{build_work_unit_batch_msg, set_work_unit_send_time};
 use crate::{
     CoordinatorToWorkerMsg, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedGetterExt,
     DistributedTaskContext, DistributedWorkUnitFeedContext, LoadInfo, LocalWorkerContext,
-    MaybeEncoded, ProducedDynamicFilter, SetPlanRequest, TaskCompletedDynamicFilters, TaskKey,
-    TaskMetrics, WorkUnitFeedDeclaration, WorkerToCoordinatorMsg, get_distributed_channel_resolver,
+    MaybeEncoded, SetPlanRequest, TaskCompletedDynamicFilters, TaskKey, TaskMetrics,
+    WorkUnitFeedDeclaration, WorkerToCoordinatorMsg, get_distributed_channel_resolver,
 };
 use datafusion::common::Result;
 use datafusion::common::instant::Instant;
@@ -294,73 +294,35 @@ impl<'a> StageCoordinator<'a> {
         let dynamic_filter_registry = Arc::clone(self.dynamic_filter_registry);
         let task_ctx = Arc::clone(self.task_ctx);
         let (load_info_tx, load_info_rx) = unbounded_channel();
-        let (reports_tx, mut reports_rx) = unbounded_channel::<FinalReport>();
-        let (runtime_tx, mut runtime_rx) = unbounded_channel::<RuntimeUpdate>();
         let mut load_info_tx_opt = Some(load_info_tx);
 
         // Read from the worker -> coordinator stream and fail the query on error.
-        self.spawner.spawn(async move {
-            while let Some(msg) = worker_to_coordinator_stream.try_next().await? {
-                let receiver_closed = match msg {
-                    WorkerToCoordinatorMsg::TaskMetrics(metrics) => {
-                        reports_tx.send(FinalReport::Metrics(metrics)).is_err()
-                    }
-                    WorkerToCoordinatorMsg::TaskCompletedDynamicFilters(filters) => reports_tx
-                        .send(FinalReport::DynamicFilters(filters))
-                        .is_err(),
-                    WorkerToCoordinatorMsg::ProducedDynamicFilter(filter) => runtime_tx
-                        .send(RuntimeUpdate::DynamicFilter(filter))
-                        .is_err(),
-                    WorkerToCoordinatorMsg::LoadInfo(info) => {
-                        runtime_tx.send(RuntimeUpdate::LoadInfo(info)).is_err()
-                    }
-                    WorkerToCoordinatorMsg::LoadInfoEos => {
-                        runtime_tx.send(RuntimeUpdate::LoadInfoEos).is_err()
-                    }
-                };
-                if receiver_closed {
-                    break;
-                }
-            }
-            Ok(())
-        });
-
-        // Handle runtime updates and fail the query on error.
-        self.spawner.spawn(async move {
-            while let Some(msg) = runtime_rx.recv().await {
-                match msg {
-                    RuntimeUpdate::DynamicFilter(filter) => {
-                        dynamic_filter_registry
-                            .record_dynamic_filter_update(task_key, *filter, &task_ctx)?;
-                    }
-                    RuntimeUpdate::LoadInfo(load_info) => {
-                        if let Some(tx) = &load_info_tx_opt {
-                            let _ = tx.send(load_info);
-                        }
-                    }
-                    RuntimeUpdate::LoadInfoEos => {
-                        let _ = load_info_tx_opt.take();
-                    }
-                }
-            }
-            Ok(())
-        });
-
-        // Handle reports regardless of when the query is finished.
         self.spawner.spawn_unbounded(async move {
-            while let Some(msg) = reports_rx.recv().await {
+            while let Some(msg) = worker_to_coordinator_stream.try_next().await? {
                 match msg {
-                    FinalReport::Metrics(v) => {
+                    WorkerToCoordinatorMsg::TaskMetrics(metrics) => {
                         if let Some(task_metrics) = task_metrics.take() {
-                            task_metrics.insert(task_key, v);
+                            task_metrics.insert(task_key, metrics);
                         }
                     }
-                    FinalReport::DynamicFilters(filters) => {
+                    WorkerToCoordinatorMsg::TaskCompletedDynamicFilters(filters) => {
                         if let Some(store) = completed_dynamic_filter_store.take() {
                             store.insert(task_key, filters);
                         }
                     }
-                }
+                    WorkerToCoordinatorMsg::ProducedDynamicFilter(filter) => {
+                        dynamic_filter_registry
+                            .record_dynamic_filter_update(task_key, *filter, &task_ctx)?;
+                    }
+                    WorkerToCoordinatorMsg::LoadInfo(info) => {
+                        if let Some(tx) = &load_info_tx_opt {
+                            let _ = tx.send(info);
+                        }
+                    }
+                    WorkerToCoordinatorMsg::LoadInfoEos => {
+                        let _ = load_info_tx_opt.take();
+                    }
+                };
             }
             // An unexecuted task sends no final reports; still complete its waits.
             if let Some(store) = task_metrics {
@@ -369,6 +331,8 @@ impl<'a> StageCoordinator<'a> {
             if let Some(store) = completed_dynamic_filter_store {
                 store.insert(task_key, TaskCompletedDynamicFilters::default());
             }
+            let _ = load_info_tx_opt.take();
+            Ok::<_, DataFusionError>(())
         });
 
         load_info_rx
@@ -532,19 +496,6 @@ impl<'a> StageCoordinator<'a> {
             dynamic_filter_remote_producer_ids,
         })
     }
-}
-
-/// [`WorkerToCoordinatorMsg`] which may arrive after the query has finished executing.
-enum FinalReport {
-    Metrics(TaskMetrics),
-    DynamicFilters(TaskCompletedDynamicFilters),
-}
-
-/// [`WorkerToCoordinatorMsg`] which occurs during execution.
-enum RuntimeUpdate {
-    DynamicFilter(Box<ProducedDynamicFilter>),
-    LoadInfo(LoadInfo),
-    LoadInfoEos,
 }
 
 struct TaskSpecializedPlan {

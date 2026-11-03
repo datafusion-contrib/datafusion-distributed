@@ -1,11 +1,13 @@
 use datafusion::common::runtime::JoinSet;
 use datafusion::common::{Result, exec_err};
+use datafusion::error::DataFusionError;
 use datafusion::physical_plan::stream::RecordBatchReceiverStreamBuilder;
 use futures::FutureExt;
 use futures::future::BoxFuture;
 use std::panic::resume_unwind;
 use tokio::select;
-use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
+use tokio::sync::mpsc::{Sender, UnboundedSender, channel, unbounded_channel};
+use tokio::task::JoinHandle;
 use tokio_util::sync::{CancellationToken, DropGuard};
 
 /// Owns query tokio task spawning and error propagation.
@@ -13,12 +15,14 @@ pub(super) struct Spawner {
     // Cancelled when the main execution future completes or is dropped.
     query_finished: CancellationToken,
     task_tx: UnboundedSender<BoxFuture<'static, Result<()>>>,
+    error_tx: Sender<DataFusionError>,
 }
 
 impl Spawner {
     pub(super) fn new(output: &mut RecordBatchReceiverStreamBuilder) -> Self {
         let query_finished = CancellationToken::new();
         let (task_tx, mut task_rx) = unbounded_channel::<BoxFuture<'static, Result<()>>>();
+        let (error_tx, mut error_rx) = channel::<DataFusionError>(1);
 
         // Supervisor task responsible for propagating errors from tasks to the main
         // query response stream. Terminates when all tasks finished, otherwise
@@ -38,6 +42,9 @@ impl Spawner {
                             }
                         }
                     }
+                    Some(err) = error_rx.recv() => {
+                        return Err(err)
+                    }
                     Some(task) = task_rx.recv() => {
                         tasks.spawn(task);
                     }
@@ -50,6 +57,7 @@ impl Spawner {
         Self {
             query_finished,
             task_tx,
+            error_tx,
         }
     }
 
@@ -74,10 +82,22 @@ impl Spawner {
         let _ = self.task_tx.send(task.boxed());
     }
 
-    /// Spawns a task whose lifetime is not tied to the response stream and whose
-    /// errors do not propagate to the reposne stream.
-    pub(super) fn spawn_unbounded(&self, task: impl Future<Output = ()> + Send + 'static) {
+    /// Spawns a task that keeps running if the query fails or is cancelled.
+    ///
+    /// While the query is running, its errors propagate to the response stream, and the response
+    /// stream does not finish before the task does. Dropping the returned handle does not abort
+    /// the task.
+    pub(super) fn spawn_unbounded(
+        &self,
+        task: impl Future<Output = Result<()>> + Send + 'static,
+    ) -> JoinHandle<()> {
+        let error_tx = self.error_tx.clone();
         #[allow(clippy::disallowed_methods)]
-        tokio::spawn(task);
+        tokio::spawn(async move {
+            if let Err(err) = task.await {
+                // Only the first error matters, and reporting it must not block cleanup.
+                let _ = error_tx.try_send(err);
+            }
+        })
     }
 }
