@@ -236,6 +236,14 @@ impl TaskCountAnnotation {
             restriction,
         })
     }
+
+    /// Sets a [TaskCountRestriction::Exact] restriction to the current
+    /// [TaskCountAnnotation::as_usize] value for the current annotation. Used the seal the task
+    /// count value to something that can no longer be changed.
+    pub(crate) fn into_sealed(mut self) -> Self {
+        self.restriction = TaskCountRestriction::Exact(NonZeroUsize::new(self.as_usize()).unwrap());
+        self
+    }
 }
 
 /// Information supplied when the planner asks a handler for a node's desired task count.
