@@ -6,7 +6,7 @@ use futures::FutureExt;
 use futures::future::BoxFuture;
 use std::panic::resume_unwind;
 use tokio::select;
-use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
+use tokio::sync::mpsc::{Sender, UnboundedSender, channel, unbounded_channel};
 use tokio::task::JoinHandle;
 use tokio_util::sync::{CancellationToken, DropGuard};
 
@@ -15,14 +15,14 @@ pub(super) struct Spawner {
     // Cancelled when the main execution future completes or is dropped.
     query_finished: CancellationToken,
     task_tx: UnboundedSender<BoxFuture<'static, Result<()>>>,
-    error_tx: UnboundedSender<DataFusionError>,
+    error_tx: Sender<DataFusionError>,
 }
 
 impl Spawner {
     pub(super) fn new(output: &mut RecordBatchReceiverStreamBuilder) -> Self {
         let query_finished = CancellationToken::new();
         let (task_tx, mut task_rx) = unbounded_channel::<BoxFuture<'static, Result<()>>>();
-        let (error_tx, mut error_rx) = unbounded_channel::<DataFusionError>();
+        let (error_tx, mut error_rx) = channel::<DataFusionError>(1);
 
         // Supervisor task responsible for propagating errors from tasks to the main
         // query response stream. Terminates when all tasks finished, otherwise
@@ -95,7 +95,8 @@ impl Spawner {
         #[allow(clippy::disallowed_methods)]
         tokio::spawn(async move {
             if let Err(err) = task.await {
-                let _ = error_tx.send(err);
+                // Only the first error matters, and reporting it must not block cleanup.
+                let _ = error_tx.try_send(err);
             }
         })
     }

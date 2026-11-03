@@ -26,6 +26,8 @@ mod tests {
     use std::time::Duration;
     use test_case::test_case;
 
+    const COLLECTION_TIMEOUT: Duration = Duration::from_secs(10);
+
     #[test_case(DistributedMetricsFormat::Aggregated ; "aggregated_metrics")]
     #[test_case(DistributedMetricsFormat::PerTask ; "per_task_metrics")]
     #[tokio::test]
@@ -412,12 +414,12 @@ mod tests {
 
         let task_ctx = ctx.task_ctx();
         let plan = tokio::time::timeout(
-            Duration::from_secs(10),
+            COLLECTION_TIMEOUT,
             rewrite_distributed_plan_with_dynamic_filters(plan, &task_ctx),
         )
         .await??;
         tokio::time::timeout(
-            Duration::from_secs(10),
+            COLLECTION_TIMEOUT,
             rewrite_distributed_plan_with_metrics(plan, DistributedMetricsFormat::PerTask),
         )
         .await??;
@@ -498,7 +500,7 @@ mod tests {
         let d_exec = plan
             .downcast_ref::<DistributedExec>()
             .expect("plan root should be a DistributedExec");
-        tokio::time::timeout(Duration::from_secs(10), d_exec.wait_for_metrics())
+        tokio::time::timeout(COLLECTION_TIMEOUT, d_exec.wait_for_metrics())
             .await
             .expect("timed out waiting for task metrics")
             .expect("metrics collection should be enabled")
