@@ -713,6 +713,32 @@ fn fanout(o_txs: &[UnboundedSender<WorkerMsg>], err: Status) {
 ///     }
 /// }
 /// ```
+///
+/// To set other limits, build the [`WorkerServiceClient`] yourself. [`WorkerChannel`] is
+/// implemented for `WorkerServiceClient<BoxCloneSyncChannel>`, so create it with `new` or
+/// `with_origin`:
+///
+/// ```rust
+/// # use datafusion::error::Result;
+/// # use url::Url;
+/// # use datafusion_distributed::{ChannelResolver, WorkerChannel, grpc};
+///
+/// struct CappedResolver {
+///     inner: grpc::DefaultChannelResolver,
+/// }
+///
+/// #[async_trait::async_trait]
+/// impl ChannelResolver for CappedResolver {
+///     async fn get_worker_client_for_url(&self, url: &Url) -> Result<Box<dyn WorkerChannel>> {
+///         let channel = self.inner.get_channel(url).await?;
+///         let client =
+///             grpc::WorkerServiceClient::new(channel).max_decoding_message_size(64 * 1024 * 1024);
+///         Ok(Box::new(client))
+///     }
+/// }
+/// ```
+///
+/// [`WorkerServiceClient`]: super::WorkerServiceClient
 pub fn create_worker_client(channel: BoxCloneSyncChannel) -> Box<dyn WorkerChannel> {
     Box::new(
         pb::worker_service_client::WorkerServiceClient::new(channel)
