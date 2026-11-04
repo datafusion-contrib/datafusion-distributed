@@ -23,8 +23,8 @@ mod tests {
           AggregateExec: mode=Final, gby=[], aggr=[count(Int64(1))]
             CoalescePartitionsExec
               AggregateExec: mode=Partial, gby=[], aggr=[count(Int64(1))]
-                FilterExec: pickup_date@2 = 2024-01-10 AND (payment_type@1 = 1 OR payment_type@1 = 2) AND trip_distance@0 >= 2, projection=[]
-                  DataSourceExec: format=iceberg, table=default.taxi, projection=[trip_distance, payment_type, pickup_date], predicate=((pickup_date = 2024-01-10) AND ((payment_type = 1) OR (payment_type = 2))) AND (trip_distance >= 2)
+                FilterExec: pickup_date@2 = 2024-01-10 AND payment_type@1 IN (SET) ([1, 2]) AND trip_distance@0 >= 2, projection=[]
+                  DataSourceExec: format=iceberg, table=default.taxi, projection=[trip_distance, payment_type, pickup_date], predicate=((pickup_date = 2024-01-10) AND (payment_type IN (1, 2))) AND (trip_distance >= 2)
         ");
         insta::assert_snapshot!(batches, @r"
         +-------+

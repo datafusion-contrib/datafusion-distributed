@@ -29,7 +29,7 @@ mod tests {
 
     // Values from the generated taxi snapshot summary.
     const TAXI_ROWS: usize = 175_000;
-    const TAXI_BYTES: usize = 5_656_412;
+    const TAXI_BYTES: usize = 5_655_782;
     // The rows across both files of the metrics table.
     const METRICS_ROWS: usize = 9;
 
@@ -270,9 +270,9 @@ mod tests {
             .set_show_statistics(true)
             .indent(true)
             .to_string();
-        insta::assert_snapshot!(display, @r"
-        CooperativeExec, statistics=[Rows=Exact(175000), Bytes=Exact(5656412), [(Col[0]:)]]
-          DataSourceExec: format=iceberg, table=default.taxi, projection=[vendor_id], statistics=[Rows=Exact(175000), Bytes=Exact(5656412), [(Col[0]:)]]
+        insta::assert_snapshot!(display, @"
+        CooperativeExec, statistics=[Rows=Exact(175000), Bytes=Exact(5655782), [(Col[0]:)]]
+          DataSourceExec: format=iceberg, table=default.taxi, projection=[vendor_id], statistics=[Rows=Exact(175000), Bytes=Exact(5655782), [(Col[0]:)]]
         ");
         Ok(())
     }
