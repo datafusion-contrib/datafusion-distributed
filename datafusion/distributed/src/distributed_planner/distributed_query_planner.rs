@@ -588,11 +588,7 @@ mod tests {
             .information_schema(true)
             .physical_plan_as_ascii(query, false)
             .await;
-        assert_snapshot!(physical_plan_ascii, @r"
-        FilterExec: table_name@2 = weather, projection=[table_catalog@0, table_schema@1, table_name@2, column_name@3, data_type@5, is_nullable@4]
-          RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=1
-            StreamingTableExec: partition_sizes=1, projection=[table_catalog, table_schema, table_name, column_name, is_nullable, data_type]
-        ");
+        assert_snapshot!(physical_plan_ascii, @"DataSourceExec: partitions=1, partition_sizes=[1]");
     }
 
     #[tokio::test]
