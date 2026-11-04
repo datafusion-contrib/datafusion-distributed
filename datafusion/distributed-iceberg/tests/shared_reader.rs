@@ -106,7 +106,7 @@ mod tests {
             .with_file_type(DataContentType::PositionDeletes)
             .with_file_format(DataFileFormat::Parquet)
             .with_partition_spec_id(0)
-            .build()?;
+            .build();
         let mut groups = Vec::new();
         for path in paths {
             let size = fs::metadata(&path)?.len();
@@ -133,11 +133,8 @@ mod tests {
     }
 
     fn field(name: &str, data_type: DataType, id: i32) -> Field {
-        Field::new(name, data_type, false).with_metadata(
-            [(PARQUET_FIELD_ID_META_KEY.to_owned(), id.to_string())]
-                .into_iter()
-                .collect(),
-        )
+        Field::new(name, data_type, false)
+            .with_metadata([(PARQUET_FIELD_ID_META_KEY.to_owned(), id.to_string())])
     }
 
     fn write_parquet(path: &str, batch: &RecordBatch) -> Result<(), Box<dyn Error>> {

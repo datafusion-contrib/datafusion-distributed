@@ -409,6 +409,7 @@ fn merge_predicates(
                 }
                 .to_owned(),
                 operands: predicates,
+                fail_on_overflow: false,
             }))),
         }),
     }
