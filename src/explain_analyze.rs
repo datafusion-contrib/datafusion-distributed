@@ -1,6 +1,6 @@
-use crate::DistributedMetricsFormat;
 use crate::common::require_one_child;
 use crate::stage::explain_analyze;
+use crate::{DistributedMetricsFormat, rewrite_distributed_plan_with_dynamic_filters};
 use datafusion::arrow::array::StringBuilder;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
@@ -20,8 +20,8 @@ use std::sync::Arc;
 
 /// Distributed counterpart of DataFusion's [`AnalyzeExec`].
 ///
-/// It drains a [`crate::DistributedExec`], waits for metrics from every worker, and returns the
-/// distributed plan with those metrics as the `EXPLAIN ANALYZE` result.
+/// It drains a [`crate::DistributedExec`], waits for worker metrics and dynamic filters, and
+/// returns the distributed plan with those runtime details as the `EXPLAIN ANALYZE` result.
 #[derive(Debug)]
 pub(crate) struct DistributedAnalyzeExec {
     input: Arc<dyn ExecutionPlan>,
@@ -91,7 +91,7 @@ impl ExecutionPlan for DistributedAnalyzeExec {
             "DistributedAnalyzeExec invalid partition. Expected 0, got {partition}"
         );
 
-        let mut input_stream = self.input.execute(0, context)?;
+        let mut input_stream = self.input.execute(0, Arc::clone(&context))?;
         let input = Arc::clone(&self.input);
         let schema = self.schema();
         let verbose = self.verbose;
@@ -102,6 +102,7 @@ impl ExecutionPlan for DistributedAnalyzeExec {
                 total_rows += batch.num_rows();
             }
 
+            let input = rewrite_distributed_plan_with_dynamic_filters(input, &context).await?;
             let plan =
                 explain_analyze(Arc::clone(&input), DistributedMetricsFormat::Aggregated).await?;
             let full_plan = match verbose {
