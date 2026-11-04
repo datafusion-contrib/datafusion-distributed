@@ -4,12 +4,14 @@ use crate::stage::{
     aggregate_by_task_id, format_each_metric_by_task, metrics_by_task_id, stage_partition_count,
 };
 use crate::{
-    DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedExec, DistributedLeafExec, NetworkBoundaryExt,
+    DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedExec, DistributedLeafExec, MaxLatencyMetric,
+    NetworkBoundaryExt, P50LatencyMetric, P75LatencyMetric, P95LatencyMetric, P99LatencyMetric,
     Stage,
 };
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use datafusion::common::{Result, exec_datafusion_err, exec_err, internal_datafusion_err};
+use datafusion::physical_expr_common::metrics::MetricValue;
 use datafusion::physical_plan::metrics::{Label, Metric, MetricsSet};
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties, displayable};
 use prost::Message;
@@ -19,6 +21,9 @@ use std::sync::Arc;
 
 /// zstd compression level for plan dumps.
 const ZSTD_LEVEL: i32 = 3;
+
+/// The identifier of the head stage that runs on the coordinator.
+const HEAD_STAGE_ID: usize = 0;
 
 /// Distributed plans can be huge, the more tasks there are, the bigger the plans get, and
 /// logging it can get prohibitive or impossible. This function produces a protobuf + zstd + base64
@@ -37,7 +42,7 @@ pub fn generate_plan_dump(plan: &Arc<dyn ExecutionPlan>) -> Result<String> {
     };
     // The head runs as a single task in the coordinator, and it does not have a stage number.
     let head = StageDump {
-        stage_id: 0,
+        stage_id: HEAD_STAGE_ID as u64,
         metrics: dump_metrics(metrics.as_ref())?,
         tasks: 1,
         partitions: plan.output_partitioning().partition_count() as u64,
@@ -89,7 +94,7 @@ pub fn display_plan_dump(plan: String, opts: DisplayPlanDumpOptions) -> Result<S
     let single_node = input_stages(&head).is_empty();
     let tree = match (opts.stage_id, &head.plan_dump) {
         // A plan without stages is a single-node plan, which is displayed as its nodes.
-        (None | Some(0), Some(plan)) if single_node => operator_tree(plan, paint)?,
+        (None | Some(HEAD_STAGE_ID), Some(plan)) if single_node => operator_tree(plan, paint)?,
         (None, _) => stage_tree(&head, None, paint)?,
         (Some(id), _) => {
             let Some(stage) = find_stage(&head, id as u64) else {
@@ -183,13 +188,15 @@ fn dump_metrics(metrics: Option<&MetricsSet>) -> Result<Vec<pb::TaskLabeledMetri
     // Metrics that do not belong to a specific task are under `None`, which goes first.
     let mut by_task: BTreeMap<Option<u64>, MetricsSet> = BTreeMap::new();
     for metric in aggregate_by_task_id(metrics).iter() {
+        let Some(value) = optimize_metric(metric.value().clone()) else {
+            continue;
+        };
         let (task, labels): (Vec<Label>, Vec<Label>) = metric
             .labels()
             .iter()
             .cloned()
             .partition(|label| label.name() == DISTRIBUTED_DATAFUSION_TASK_ID_LABEL);
         let task = task.first().and_then(|label| label.value().parse().ok());
-        let value = metric.value().clone();
         by_task
             .entry(task)
             .or_default()
@@ -210,12 +217,40 @@ fn dump_metrics(metrics: Option<&MetricsSet>) -> Result<Vec<pb::TaskLabeledMetri
         .collect()
 }
 
+/// Optimizes metrics so that they are shipped as compressed as possible over the wire.
+pub(super) fn optimize_metric(value: MetricValue) -> Option<MetricValue> {
+    [resolve_percentiles, drop_timestamps]
+        .iter()
+        .try_fold(value, |value, optimizer| optimizer(value))
+}
+
+/// Percentile metrics carry a whole sketch of the latencies they observed, which are a quarter of
+/// a dump. As the metrics in a dump are already aggregated per task, only the percentile of each
+/// sketch is displayed, so it is kept as a [MaxLatencyMetric] instead, which displays the same.
+fn resolve_percentiles(value: MetricValue) -> Option<MetricValue> {
+    let MetricValue::Custom { name, value } = value else {
+        return Some(value);
+    };
+    let any = value.as_any();
+    let is_percentile = any.is::<P50LatencyMetric>()
+        || any.is::<P75LatencyMetric>()
+        || any.is::<P95LatencyMetric>()
+        || any.is::<P99LatencyMetric>();
+    let value = match is_percentile {
+        true => Arc::new(MaxLatencyMetric::from_nanos(value.as_usize())),
+        false => value,
+    };
+    Some(MetricValue::Custom { name, value })
+}
+
+/// Start and end timestamps are not displayed.
+fn drop_timestamps(value: MetricValue) -> Option<MetricValue> {
+    (!value.is_timestamp()).then_some(value)
+}
+
 fn one_line(plan: &Arc<dyn ExecutionPlan>) -> String {
-    displayable(plan.as_ref())
-        .one_line()
-        .to_string()
-        .trim_end()
-        .to_string()
+    let display = displayable(plan.as_ref()).one_line().to_string();
+    elide_file_groups(display.trim_end())
 }
 
 /// A node of a rendered plan dump: a label followed by one line per metric, and its children.
@@ -295,7 +330,7 @@ fn stage_tree(stage: &StageDump, boundary: Option<&str>, paint: Paint) -> Result
 /// rendered on their own.
 fn operator_tree(plan: &PlanDump, paint: Paint) -> Result<Node> {
     Ok(Node {
-        label: paint.operator(&elide_file_groups(&plan.display)),
+        label: paint.operator(&plan.display),
         metrics: metric_lines(&plan.metrics, paint)?,
         children: plan
             .children
