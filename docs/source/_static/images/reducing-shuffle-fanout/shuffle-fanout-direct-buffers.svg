@@ -2,7 +2,7 @@
 <!-- Licensed to the Apache Software Foundation (ASF) under the Apache License, Version 2.0. -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 540" preserveAspectRatio="xMidYMid meet" role="img" aria-labelledby="title desc">
   <title id="title">A direct shuffle creates a route for every destination partition</title>
-  <desc id="desc">One producing task owns 16 partial output buffers. Each buffer has an animated red route into NetworkShuffleExec, followed by a separate route to its matching partition across four consuming tasks. Thirty-two network paths make the direct shuffle visibly busy.</desc>
+  <desc id="desc">One producing task owns 16 partial output buffers. Each buffer has an animated red route across a labeled network-transfer boundary into NetworkShuffleExec, followed by a separate route to its matching partition across four consuming tasks. Thirty-two network paths make the direct shuffle visibly busy.</desc>
 
   <defs>
     <marker id="arrow-red" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
@@ -26,6 +26,8 @@
       .consumer-group{fill:#ecfdf5;stroke:#16856b;stroke-width:1.2}
       .partition{fill:#fff;stroke:#16856b;stroke-width:1}
       .network{fill:#fff8eb;stroke:#d97706;stroke-width:1.5}
+      .network-boundary{stroke:#98a2b3;stroke-width:1.2;stroke-dasharray:5 5}
+      .boundary-label{fill:#667085;font-size:10px;font-weight:600;letter-spacing:.04em}
       .route{fill:none;stroke:#c2410c;stroke-width:1.4;stroke-opacity:.72;marker-end:url(#arrow-red)}
       .buffer-route{stroke-width:1.25;stroke-opacity:.65}
       .producer-route{fill:none;stroke:#667085;stroke-width:1.5;marker-end:url(#arrow-gray)}
@@ -87,7 +89,9 @@
       <rect x="265" y="413" width="82" height="16" rx="3" class="buffer"/><rect x="265" y="424" width="82" height="5" rx="2" class="fill fill-c"/><text x="306" y="425" class="tiny mono" text-anchor="middle">T3/P3</text>
     </g>
 
-    <g aria-label="16 routes from output buffers into NetworkShuffleExec">
+    <line x1="410" y1="80" x2="410" y2="432" class="network-boundary" aria-label="network transfer boundary"/>
+
+    <g aria-label="16 routes from output buffers across the network transfer boundary into NetworkShuffleExec">
       <path d="M347 94H445" class="route buffer-route flow"/>
       <path d="M347 113H445" class="route buffer-route flow flow-b"/>
       <path d="M347 132H445" class="route buffer-route flow flow-c"/>
@@ -105,12 +109,11 @@
       <path d="M347 402H445" class="route buffer-route flow flow-b"/>
       <path d="M347 421H445" class="route buffer-route flow flow-c"/>
     </g>
+    <text x="410" y="451" class="boundary-label" text-anchor="middle">network transfer</text>
 
     <rect x="445" y="80" width="130" height="352" rx="8" class="network"/>
     <text x="510" y="244" class="label mono" text-anchor="middle">Network</text>
     <text x="510" y="265" class="label mono" text-anchor="middle">ShuffleExec</text>
-    <text x="510" y="291" class="tiny" text-anchor="middle">16 arrows in</text>
-    <text x="510" y="305" class="tiny" text-anchor="middle">16 arrows out</text>
 
     <text x="802" y="58" class="heading" text-anchor="middle">16 destination partitions</text>
     <text x="802" y="72" class="tiny" text-anchor="middle">four partitions in each consuming task</text>

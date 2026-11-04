@@ -61,7 +61,7 @@ The problem also affected reliability. In repeated 60-worker TPC-H scale factor 
 Figure 2 shows one producer at T = 4 and P = 4; fanout 256 repeats this pattern 16 times.
 
 ```{figure} ../_static/images/reducing-shuffle-fanout/shuffle-fanout-direct-buffers.svg
-:alt: One producing task splits each input batch across 16 labeled output buffers. Sixteen animated red routes enter NetworkShuffleExec, then 16 more routes fan out to the matching partitions across four consuming tasks.
+:alt: One producing task splits each input batch across 16 labeled output buffers. A labeled dashed line marks the network transfer before 16 animated red routes enter NetworkShuffleExec, then 16 more routes fan out to matching partitions across four consuming tasks.
 :width: 100%
 :name: shuffle-fanout-partial-buffers
 
@@ -106,14 +106,16 @@ These runs used 12 workers with 7 CPUs each. Total runtime improved 1–7% with 
 
 We shipped the first approach as a **two-step shuffle**.
 
+Rather than add a DFD-specific repartition operator, we composed the existing `NetworkShuffleExec` with DataFusion's `RepartitionExec`. This keeps the plan close to vanilla DataFusion—a core DFD goal—while avoiding another serialized plan variant.
+
 **On the producer,** the hash maps rows to tasks, not final partitions, so `RepartitionExec` has T outputs. With T = 8 and P = 16, fanout drops from 128 to eight, a P-fold reduction. Each 8192-row batch then contributes about 1024 rows per output instead of 64, filling buffers after roughly eight inputs instead of 128.
 
 **On the consumer,** the planner injects a local `RepartitionExec` above `NetworkShuffleExec`, splitting received rows as a single-node plan would. Each consumer fetches exactly one partition from each producer.
 
 The two hashes must be independent. Without a salt they can correlate, especially when task and partition counts are powers of two, underusing some task-partition pairs. Salting the producer hash avoids that skew.
 
-```{figure} ../_static/images/reducing-shuffle-fanout/shuffle-fanout-two-step-design.svg
-:alt: One producing task creates four task buckets instead of 16 partition buckets. Four consuming tasks receive one bucket each and locally repartition it into four partitions. Animated dashes trace the two hash steps.
+```{figure} ../_static/images/reducing-shuffle-fanout/shuffle-fanout-two-step-design-routed.svg
+:alt: One producing task creates four task buckets instead of 16 partition buckets. A labeled dashed line marks the network transfer before NetworkShuffleExec. Four animated routes bend above the consuming tasks and enter them from the top, then each task locally repartitions into four partitions.
 :width: 100%
 :name: shuffle-fanout-two-step-design
 
