@@ -62,3 +62,7 @@ harness = false
 [[bench]]
 name = "planning"
 harness = false
+
+[[bench]]
+name = "metrics_collection"
+harness = false
