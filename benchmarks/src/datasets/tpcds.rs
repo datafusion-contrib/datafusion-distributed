@@ -2,12 +2,13 @@ use super::parquet_layout::{ParquetLayout, TableColumns, TableWriter};
 use super::progress::dataset_progress;
 use super::{common, output::DatasetOutput};
 use arrow::datatypes::{Field, Schema};
+use arrow::error::ArrowError;
 use arrow::record_batch::RecordBatch;
 use datafusion::common::exec_datafusion_err;
 use datafusion::error::DataFusionError;
 use indicatif::{HumanCount, ProgressBar};
 use std::sync::Arc;
-use tpcdsgen::config::Options;
+use tpcdsgen::config::SessionBuilder;
 use tpcdsgen_arrow::{
     CallCenterArrow, CatalogPageArrow, CatalogReturnsArrow, CatalogSalesArrow,
     CustomerAddressArrow, CustomerArrow, CustomerDemographicsArrow, DateDimArrow,
@@ -95,11 +96,12 @@ async fn generate_table<A>(
     progress: &ProgressBar,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
-    A: Iterator<Item = RecordBatch>,
+    A: Iterator<Item = Result<RecordBatch, ArrowError>>,
 {
     let mut writer = TableWriter::new(output, &spec.layout, table_name, table_columns(table_name));
     let mut rows = 0;
     for batch in data_source {
+        let batch = batch?;
         rows += batch.num_rows() as u64;
         progress.set_message(format!("{table_name}: {} rows", HumanCount(rows)));
         writer.write(canonical_names(batch, table_name)?).await?;
@@ -159,9 +161,9 @@ pub async fn generate_data(spec: &TpcdsSpec) -> Result<(), Box<dyn std::error::E
     if output.is_complete().await? {
         return Ok(());
     }
-    let mut options = Options::new();
-    options.scale = spec.scale_factor;
-    let session = options.to_session()?;
+    let session = SessionBuilder::new()
+        .with_scale_factor(spec.scale_factor)
+        .build()?;
 
     // One step per generated table below.
     let progress = dataset_progress(24, "tables")?;
