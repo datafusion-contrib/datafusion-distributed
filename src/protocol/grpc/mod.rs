@@ -19,6 +19,7 @@ pub const TASK_KEY_QUERY_ID_HEADER: &str = "x-datafusion-distributed-task-key-qu
 pub(crate) use channel_resolver::DEFAULT_CHANNEL_RESOLVER_PER_RUNTIME;
 
 pub use channel_resolver::{BoxCloneSyncChannel, DefaultChannelResolver};
+pub use generated::worker::worker_service_client::WorkerServiceClient;
 pub use observability::{
     GetClusterWorkersRequest, GetClusterWorkersResponse, GetTaskProgressRequest,
     GetTaskProgressResponse, ObservabilityService, ObservabilityServiceClient,
