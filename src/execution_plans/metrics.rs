@@ -127,8 +127,6 @@ mod tests {
     use datafusion::arrow::datatypes::Schema;
     use datafusion::physical_plan::empty::EmptyExec;
     use datafusion::physical_plan::metrics::{Count, Metric};
-    use std::hint::black_box;
-    use std::time::Instant;
 
     #[test]
     fn supplied_snapshot_is_authoritative_for_in_process_workers() {
