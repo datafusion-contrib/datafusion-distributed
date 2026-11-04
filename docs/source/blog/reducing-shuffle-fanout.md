@@ -15,9 +15,9 @@ categories: [features]
 :depth: 2
 ```
 
-In Distributed DataFusion (DFD), a shuffle moves rows between stages so that rows with the same key end up on the same task. When one shuffle has to feed many partitions, the producing side pays a cost for every one of them, and at high fanout that cost shows up as memory pressure and latency spikes. This post explains where the cost comes from and how we reduced it by hashing into fewer buckets. On a 60-worker cluster, that **halved aggregate runtime across the 21 TPC-H scale factor 100 queries that completed on both versions**. For background on DFD, see [Concepts](../learn/01-concepts.md).
+In Distributed DataFusion (DFD), shuffles move rows between stages so equal keys reach the same task. High fanout—one producer feeding many partitions—adds per-destination state, causing memory pressure and latency spikes. Hashing into fewer buckets **halved aggregate runtime for the 21 TPC-H scale factor 100 queries that completed on both versions** in a 60-worker cluster. For DFD background, see [Concepts](../learn/01-concepts.md).
 
-Two terms before we start. DFD splits a plan into **stages**, and each stage runs as a set of **tasks**. A **shuffle** is the boundary between one stage and the next: the tasks sending data across it are **producing tasks**, and the tasks receiving it are **consuming tasks**.
+DFD splits a plan into **stages**, each running as a set of **tasks**. A **shuffle** separates stages; its senders are **producing tasks** and its receivers are **consuming tasks**.
 
 ```{image} ../_static/images/reducing-shuffle-fanout/stages-tasks-shuffle-overview.svg
 :alt: Three distributed execution stages containing tasks, with shuffle connections carrying data between stages.
@@ -27,17 +27,17 @@ Two terms before we start. DFD splits a plan into **stages**, and each stage run
 
 ## Background
 
-A **partition**, in DataFusion, is an independent slice of a table's data: a stream of record batches that can be processed without coordinating with any other partition. That independence is what makes parallelism possible. DataFusion generally uses `datafusion.execution.target_partitions` as its target parallelism, including when scans group and split input files and ranges.
+A DataFusion **partition** is an independent stream of record batches that can be processed concurrently. `datafusion.execution.target_partitions` sets the target parallelism, including when scans group and split input files and ranges.
 
-`RepartitionExec` does more than adjust that parallelism. Before a hash aggregation or join, it enforces the distribution the operator needs: N input partitions are remapped into P non-overlapping hash partitions, so every row for a given grouping or join key reaches the same output partition while different keys can still be processed concurrently.
+Before a hash aggregation or join, `RepartitionExec` also enforces correctness: it remaps N inputs into P non-overlapping hash partitions, bringing equal grouping or join keys together while processing different keys concurrently.
 
-`NetworkShuffleExec` enforces that distribution across machines. Once a query spans more than one machine, rows with the same key need to reach the same task as well as the same partition within that task. A single-node plan already has hash-partitioned `RepartitionExec` operators immediately before the joins and aggregations that need matching keys to meet. When DFD distributes the plan, it places a shuffle directly above each of those operators.
+Across machines, `NetworkShuffleExec` extends that guarantee to tasks: equal keys must reach the same task and partition. DFD therefore places a shuffle above each hash-partitioned `RepartitionExec` preceding a join or aggregation.
 
-To move data between tasks, DFD sends record batches using Arrow IPC over Arrow Flight. Arrow IPC preserves Arrow's columnar layout on the wire, so a consuming task can reconstruct arrays without row-wise serialization or conversion. This keeps shuffle encoding overhead low rather than turning every shuffle into a serialization bottleneck.
+DFD sends record batches between tasks using Arrow IPC over Arrow Flight. IPC preserves Arrow's columnar layout, so consumers reconstruct arrays without row-wise serialization or conversion, avoiding a serialization bottleneck.
 
 ### How a shuffle maps partitions
 
-Let T be the number of consuming tasks and P the number of partitions in each task. On one machine, `RepartitionExec` fans out to P partitions. In a direct distributed shuffle, every producing task in Stage 0 instead fans out to T × P partitions across the consuming tasks in Stage 1. Figure 1 uses T = 4 and P = 4 to keep the mapping legible.
+Let T be the number of consuming tasks and P the partitions per task. `RepartitionExec` fans out to P partitions on one machine, but each producer in a direct distributed shuffle fans out to T × P. Figure 1 uses T = 4 and P = 4.
 
 ```{figure} ../_static/images/reducing-shuffle-fanout/shuffle-fanout-direct-plan.svg
 :alt: Matching plans show RepartitionExec fanning out to P partitions on one machine. In Distributed DataFusion, 16 animated red arrows enter NetworkShuffleExec and 16 leave it, with four entering the bottom of each consuming task.
@@ -46,21 +46,19 @@ Let T be the number of consuming tasks and P the number of partitions in each ta
 **Figure 1**
 ```
 
-Each producing task creates one output partition for every partition in the next stage. In the small diagram, four consuming tasks with four partitions each give every producer a fanout of 16. At production scale, eight tasks with 16 partitions each give every producer a fanout of 128. Each consuming partition then reads its slice of the data directly from the producing tasks.[^network-shuffle-layer]
+Each producer creates one output per destination partition: 16 for the 4 × 4 diagram and 128 for eight tasks with 16 partitions each. Each consuming partition reads its slice directly from the producers.[^network-shuffle-layer]
 
 ## Motivation
 
-We call the number of output partitions a producing task has to create its **fanout**. It is the number of consuming tasks times the number of partitions in each: T × P. This relationship matters: *giving the consuming stage more tasks so a query finishes faster makes every producing task fan out wider*.
+Producer **fanout** is T × P, so adding consuming tasks to finish a query faster also widens every producer. Metrics queries can have tens or hundreds of tasks, each commonly using 16, 32, or 64 partitions; 32 tasks × 32 partitions already gives each producer 1,024 outputs.
 
-Queries over metrics data can produce stages with tens or even hundreds of consuming tasks. A direct shuffle multiplies that task count by the partitions inside each task, commonly a power of two such as 16, 32, or 64. The product grows quickly: 32 consuming tasks with 32 partitions each already gives every producer 1,024 output partitions.
+Each output owns channel state, a memory reservation, a `BatchCoalescer`, and row-index buffers used to select rows from input batches. These small costs multiply with fanout: at 256, a producer holds 256 copies plus the buffered rows.
 
-The cost comes from how `RepartitionExec` works. Each output partition owns channel state, a memory reservation, a `BatchCoalescer` that buffers rows until it has enough to send a full batch onward, and row-index buffers used to take its rows from each input batch. None of these allocations is large in isolation, but they are duplicated for every output partition. At a fanout of 256, a producing task holds 256 sets of this state at once, so even the small fixed costs add up before accounting for the rows being buffered.
+This causes **memory** and **latency** problems. Each `BatchCoalescer` retains rows until its batch fills, and enough concurrent buffers caused out-of-memory failures. Splitting a default 8192-row input batch evenly across 256 outputs gives each only about 32 rows, requiring roughly 256 inputs to fill a buffer. Those small allocations retain rows and delay delivery.
 
-Two problems follow from this. The first is **memory**. Every partition's `BatchCoalescer` holds rows until a batch fills, so memory use grows with the fanout, and at high fanout it ended in out-of-memory failures. The second is **latency**. Each input batch is split across all of the output partitions, so each partition receives only a small piece of it, and the data ends up in many small allocations. For example, with the default batch size of 8192 rows and keys spread evenly, an output partition gets about 32 rows from each incoming batch, so it takes roughly 256 incoming batches before its buffer is full. Rows sit in these per-partition buffers for that long before they move on, which shows up as latency spikes.
+The problem also affected reliability. In repeated 60-worker TPC-H scale factor 100 runs, reduced fanout completed [six queries](https://github.com/datafusion-contrib/datafusion-distributed/pull/717#issuecomment-5661842281) that the baseline missed in one run and [seven](https://github.com/datafusion-contrib/datafusion-distributed/pull/717#issuecomment-5675878399) in another. In the [final comparison](https://github.com/datafusion-contrib/datafusion-distributed/pull/717#issuecomment-5780896732), only the baseline failed a query.
 
-At high enough fanout, this stopped being only a performance problem. In repeated 60-worker TPC-H scale factor 100 benchmark runs, the baseline failed to complete several queries that the reduced-fanout version completed: [six queries in one run](https://github.com/datafusion-contrib/datafusion-distributed/pull/717#issuecomment-5661842281) and [seven in another](https://github.com/datafusion-contrib/datafusion-distributed/pull/717#issuecomment-5675878399). Even the [final comparison](https://github.com/datafusion-contrib/datafusion-distributed/pull/717#issuecomment-5780896732) had one query fail only on the baseline. High fanout was therefore a reliability problem as well as a memory and latency problem.
-
-Figure 2 zooms in on one producing task. It keeps T = 4 and P = 4 so the individual buffers stay visible; a real fanout of 256 repeats the same pattern 16 times over.
+Figure 2 shows one producer at T = 4 and P = 4; fanout 256 repeats this pattern 16 times.
 
 ```{figure} ../_static/images/reducing-shuffle-fanout/shuffle-fanout-direct-buffers.svg
 :alt: One producing task splits each input batch across 16 labeled output buffers. Sixteen animated red routes enter NetworkShuffleExec, then 16 more routes fan out to the matching partitions across four consuming tasks.
@@ -74,23 +72,19 @@ Figure 2 zooms in on one producing task. It keeps T = 4 and P = 4 so the individ
 
 ### Approaches we considered
 
-The cost comes from the number of output partitions a producing task has to back with resources, so any fix has to reduce that number or reduce what each output partition costs. We considered two ways to express the same two-step design.
+Because the cost scales with producer outputs, a fix must reduce their number or per-output state. We considered two forms of the same two-step design.
 
 #### Extend the existing shuffle
 
-The first approach keeps the existing `NetworkShuffleExec` boundary but changes its routing. Instead of hashing each row into one of (consuming tasks × partitions per task) buckets, the producer hashes it into one bucket per consuming task. Each consumer then splits the rows it receives across its own partitions with a local `RepartitionExec`. With eight consuming tasks and 16 partitions per task, this takes a producing task from 128 output partitions down to eight.
+The first approach keeps `NetworkShuffleExec` but hashes each row into one bucket per consuming task instead of T × P buckets. A local `RepartitionExec` then splits each task's rows into P partitions. With eight tasks and 16 partitions each, producer fanout falls from 128 to eight.
 
-**The trade-off** is that every row is now repartitioned *twice*, once on the producer and once on the consumer. That extra work only pays for itself when the fanout is high, so we put the new behavior behind a minimum fanout.
+Every row is now repartitioned *twice*, on the producer and consumer. This only pays off at high fanout, so the behavior needs a minimum threshold.
 
 #### Rewrite eligible shuffles in a dedicated planner pass
 
-An alternative implemented the same two-step routing in a dedicated planner pass. The pass rewrote each eligible hash shuffle as a task-level `NetworkShuffleExec` followed by a local `RepartitionExec`. The network shuffle sent each row to one bucket per consuming task, and the local repartition then hashed those rows again into the task's final partitions.
+An alternative planner pass rewrote eligible hash shuffles as a task-level `NetworkShuffleExec` followed by local `RepartitionExec`. Each producer again created eight network partitions instead of 128; each consumer received one stream per producer and split them into 16 local partitions. A producer-side salt prevented task and partition assignments from correlating. This approach required a new serialized plan variant and lockstep coordinator/worker upgrades.
 
-With eight consuming tasks and 16 partitions per task, each producer created eight network partitions instead of 128. Each consuming task received one stream from each producer, then its local `RepartitionExec` split those streams across 16 local partitions. The producer-side hash included a salt so task assignment and local partition assignment would not become correlated.
-
-This version needed a new serialized plan variant, which meant coordinators and workers had to be upgraded together.
-
-To understand where the extra local repartition paid off, we benchmarked the prototype with thresholds of 128 and 256 on TPC-H.
+We benchmarked this prototype on TPC-H with thresholds of 128 and 256.
 
 <div class="blog-numbered-table">
 
@@ -104,19 +98,19 @@ To understand where the extra local repartition paid off, we benchmarked the pro
 
 <div class="table-number">Table 1</div>
 
-One detail matters when reading these results. The prototype counted fanout across the entire exchange, including every producing task. The final design instead measures how many output partitions each individual producer creates, so the prototype's threshold values are not directly comparable with the final default below.
+The prototype counted exchange-wide fanout, including every producer; the final design measures outputs per producer. Its thresholds are therefore not directly comparable with the final default below.
 
-These runs used a cluster of 12 workers with 7 CPUs each. The gains were small, between 1% and 7% in total runtime, and none of the runs regressed in total. For scale, the baseline commit itself varied by about 5% between two runs of the scale factor 10 suite, so most of this is *within noise*. A cluster with 84 CPUs in total keeps the fanout modest, which leaves little producer overhead to remove.
+These runs used 12 workers with 7 CPUs each. Total runtime improved 1–7% with no regressions, but the scale factor 10 baseline varied about 5%, putting most gains *within noise*. With only 84 CPUs, fanout and its removable overhead stayed modest.
 
 ### The final approach
 
 We shipped the first approach as a **two-step shuffle**.
 
-**On the producer,** the hash now maps each row to one of the consuming tasks, instead of to one of the consuming partitions. The producer's `RepartitionExec` therefore has one output partition per consuming task. With eight consuming tasks and 16 partitions per task, that is eight output partitions per producer instead of 128, a reduction by a factor of the number of partitions per task. Each output partition now receives an eighth of the data instead of a 128th, so with the same 8192-row batches each buffer gets about 1024 rows per incoming batch and fills after roughly eight batches instead of 128.
+**On the producer,** the hash maps rows to tasks, not final partitions, so `RepartitionExec` has T outputs. With T = 8 and P = 16, fanout drops from 128 to eight, a P-fold reduction. Each 8192-row batch then contributes about 1024 rows per output instead of 64, filling buffers after roughly eight inputs instead of 128.
 
-**On the consumer,** the planner injects a local `RepartitionExec` above `NetworkShuffleExec`. It splits the rows the task received across the task's partitions, the same kind of repartition a single-node plan already does. Each consuming task fetches exactly one partition from each producing task.
+**On the consumer,** the planner injects a local `RepartitionExec` above `NetworkShuffleExec`, splitting received rows as a single-node plan would. Each consumer fetches exactly one partition from each producer.
 
-The two hash steps need to be independent. Without a salt, their results can become correlated, especially when the task and partition counts are powers of two, leaving some task-partition combinations underused. We salt the producer-side hash to break that correlation and avoid skew across the local partitions.
+The two hashes must be independent. Without a salt they can correlate, especially when task and partition counts are powers of two, underusing some task-partition pairs. Salting the producer hash avoids that skew.
 
 ```{figure} ../_static/images/reducing-shuffle-fanout/shuffle-fanout-two-step-design.svg
 :alt: One producing task creates four task buckets instead of 16 partition buckets. Four consuming tasks receive one bucket each and locally repartition it into four partitions. Animated dashes trace the two hash steps.
@@ -126,13 +120,11 @@ The two hash steps need to be independent. Without a salt, their results can bec
 **Figure 3**
 ```
 
-The second repartition costs something, so the two-step shuffle *isn't always the right choice*. The planner uses it only when the producer-side fanout—consuming task count × partitions per task—meets a [configurable threshold](https://github.com/datafusion-contrib/datafusion-distributed/blob/6dfa394bbd32c32c74989ff13f66abc0a0419806/src/distributed_planner/distributed_config.rs#L61). The default is 128, so a shuffle with eight consuming tasks and 16 partitions per task takes the two-step path. The threshold can be tuned for different cluster sizes and workloads.
+Because the second repartition has a cost, the planner uses it only when T × P meets a [configurable threshold](https://github.com/datafusion-contrib/datafusion-distributed/blob/6dfa394bbd32c32c74989ff13f66abc0a0419806/src/distributed_planner/distributed_config.rs#L61). The default is 128, so eight tasks with 16 partitions take the two-step path; deployments can tune it for their cluster and workload.
 
 ## Benchmarks
 
-We ran all 22 TPC-H scale factor 100 queries with one warmup iteration and five measured iterations per query. The selected runs used c5n.4xlarge workers with 15 CPUs each and covered 50- and 60-worker clusters. Because the PR evolved during review, each row compares the base and PR revisions captured for that run. The revision links open the full results.
-
-The runtime and speedup columns include only queries that completed on both revisions. The **Completed** column shows the reliability result across the full suite, which matters because several base and intermediate PR revisions did not finish all 22 queries.
+We ran all 22 TPC-H scale factor 100 queries with one warmup and five measured iterations on 50- and 60-worker clusters of c5n.4xlarge instances with 15 CPUs each. As the PR evolved, each row captured its current base and PR revisions; the links contain full results. Runtime and speedup include only queries completed by both revisions, while **Completed** covers the full suite, including failures.
 
 <div class="blog-numbered-table">
 
@@ -150,19 +142,15 @@ The runtime and speedup columns include only queries that completed on both revi
 
 <div class="table-number">Table 2</div>
 
-The failures were part of the fanout problem, not just benchmark noise. As [pointed out in the PR](https://github.com/datafusion-contrib/datafusion-distributed/pull/717#issuecomment-5662537593), the wider producer fanout forced more data to accumulate before each partition reached its target batch size. That increased memory pressure until worker pods ran out of memory. Reducing the producer-side partition count let batches fill and flush sooner. In several runs, the base completed only 11 to 18 queries while the PR completed all 22.
+The failures were part of the fanout problem, not benchmark noise. As [pointed out in the PR](https://github.com/datafusion-contrib/datafusion-distributed/pull/717#issuecomment-5662537593), wider fanout retained more data while partitions filled, exhausting worker memory. Reduced fanout filled and flushed batches sooner: several baselines completed only 11–18 queries while the PR completed all 22.
 
-In the last run above, the PR completed all 22 queries while the base completed 21. **Every comparable query got faster**, from 1.08x on q6 to 2.62x on q4, and their aggregate runtime fell from 91.0 to 45.5 seconds. Query 12 failed on the base commit and completed with the change.
-
-Together, these runs show both sides of the result: reducing producer fanout lowered runtime at scale and reduced memory pressure enough for the highest-fanout queries to complete reliably.
+In the final run, the PR completed all 22 queries while the base completed 21. **Every comparable query got faster**, from 1.08x on q6 to 2.62x on q4; aggregate runtime fell from 91.0 to 45.5 seconds, and Query 12 changed from failure to completion. Reduced fanout therefore improved both runtime and reliability.
 
 ## Conclusion
 
-The cost of a distributed shuffle is not just the number of bytes sent over the network. Every producing task also pays for each output partition it manages. By routing rows to consuming tasks first and splitting them into local partitions afterward, DFD reduces that producer-side fanout from (consuming tasks × partitions per task) to just the number of consuming tasks. A salt keeps the two hash steps from becoming correlated, while the fanout threshold limits the extra local repartition to the cases where it is likely to pay off.
+Distributed shuffle cost includes per-output state, not just network bytes. Routing to T tasks before splitting into P local partitions reduces producer fanout from T × P to T, with larger gains as more outputs are avoided. A salt keeps the hashes independent, and a threshold leaves low-fanout shuffles on the direct path. In the final 60-worker run, comparable-query runtime fell from 91.0 to 45.5 seconds and Query 12 changed from failure to completion.
 
-The planner leaves low-fanout shuffles on the direct path. Once the fanout crosses the threshold and the two-step shuffle takes effect, the benefit grows with the number of output partitions a producer would otherwise manage. On the 60-worker TPC-H scale factor 100 run, aggregate runtime across the 21 queries that completed on both revisions fell from 91.0 to 45.5 seconds, and Query 12 went from failing on the base commit to completing with the change.
-
-**What's next.** The default threshold of 128 is a starting point and still needs tuning across more cluster sizes and workloads. Each `RepartitionExec` currently copies rows once while partitioning them and again while coalescing output batches. Reducing those two copies to one is the next target, tracked in [Improve RepartitionExec for better query performance](https://github.com/apache/datafusion/issues/7001#issuecomment-5801503499). DFD also does not yet support range repartitioning, so extending distributed planning beyond hash shuffles remains a separate gap.
+**What's next.** The default threshold of 128 still needs tuning across cluster sizes and workloads. `RepartitionExec` copies rows while partitioning and again while coalescing; reducing those two copies to one is tracked in [Improve RepartitionExec for better query performance](https://github.com/apache/datafusion/issues/7001#issuecomment-5801503499). DFD also lacks range repartitioning, a separate gap beyond hash shuffles.
 
 Thanks to Gene Bordegaray ([@gene-bordegaray]), Gabriel ([@gabotechs]), and Richard Baah ([@Rich-T-kid]) for the design, implementation, and reviews behind this change.
 
