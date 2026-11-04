@@ -13,10 +13,10 @@ bytes = "1"
 datafusion = { workspace = true, features = ["sql"] }
 datafusion-proto = { workspace = true }
 # Match datafusion-iceberg's iceberg-rust revision so FileScanTask has one shared type.
-iceberg-datafusion = { git = "https://github.com/apache/datafusion-iceberg.git", rev = "20327db58c7a44330366da00a34a26e866d0da4d" }
+iceberg-datafusion = { git = "https://github.com/apache/datafusion-iceberg.git", rev = "5398be196e47ef42543f6e9c72d15cad898e5143" }
 futures = "0.3"
-iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "5b82ab99aeaf50bf4f5b3b776ac9cd6380a5f3e3" }
-iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust", rev = "5b82ab99aeaf50bf4f5b3b776ac9cd6380a5f3e3", default-features = false, features = ["opendal-fs", "opendal-s3", "opendal-gcs"] }
+iceberg = { git = "https://github.com/apache/iceberg-rust.git", rev = "0d5eb123495f765ea151e78c8964919d554d4b98" }
+iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust.git", rev = "0d5eb123495f765ea151e78c8964919d554d4b98", default-features = false, features = ["opendal-fs", "opendal-s3", "opendal-gcs"] }
 datafusion-distributed = { path = "..", features = ["sql"] }
 delegate = "0.13"
 prost = "0.14.1"
@@ -28,5 +28,5 @@ tokio-stream = "0.1"
 datafusion-distributed-iceberg-test-tools = { path = "test-tools" }
 tempfile = "3"
 insta = "1"
-parquet = "59"
+parquet = "60"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
