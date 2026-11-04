@@ -18,8 +18,11 @@
       .task{fill:#eaf3ff;stroke:#1677d2;stroke-width:1.4}
       .shuffle{fill:none;stroke:#b45309;stroke-width:1.8}
       .shuffle-arrow{fill:none;stroke:#b45309;stroke-width:1.8;marker-end:url(#arrow-orange)}
+      .flow{stroke-dasharray:8 12;animation:flow 2.4s linear infinite}
       .shuffle-label{fill:#fff8eb;stroke:#d97706;stroke-width:1.1}
       .divider{stroke:#d8dee4;stroke-width:1.1}
+      @keyframes flow{to{stroke-dashoffset:-40}}
+      @media (prefers-reduced-motion:reduce){.flow{animation:none}}
     </style>
   </defs>
 
@@ -41,9 +44,9 @@
     <rect x="420" y="80" width="150" height="50" rx="6" class="task"/>
     <text x="495" y="111" class="heading" text-anchor="middle">Task G</text>
 
-    <path d="M255 230V187M405 230V187M555 230V187M705 230V187" class="shuffle"/>
-    <path d="M255 187H705" class="shuffle"/>
-    <path d="M495 187V163" class="shuffle-arrow"/>
+    <path d="M255 230V187M405 230V187M555 230V187M705 230V187" class="shuffle flow"/>
+    <path d="M255 187H705" class="shuffle flow"/>
+    <path d="M495 187V163" class="shuffle-arrow flow"/>
     <rect x="625" y="170" width="148" height="32" rx="16" class="shuffle-label"/>
     <text x="699" y="191" class="small" text-anchor="middle">SHUFFLE</text>
 
@@ -58,9 +61,9 @@
     <rect x="630" y="240" width="150" height="50" rx="6" class="task"/>
     <text x="705" y="271" class="heading" text-anchor="middle">Task F</text>
 
-    <path d="M345 390V347M645 390V347" class="shuffle"/>
-    <path d="M255 347H705" class="shuffle"/>
-    <path d="M255 347V323M405 347V323M555 347V323M705 347V323" class="shuffle-arrow"/>
+    <path d="M345 390V347M645 390V347" class="shuffle flow"/>
+    <path d="M255 347H705" class="shuffle flow"/>
+    <path d="M255 347V323M405 347V323M555 347V323M705 347V323" class="shuffle-arrow flow"/>
     <rect x="330" y="331" width="240" height="32" rx="16" class="shuffle-label"/>
     <text x="450" y="352" class="small" text-anchor="middle">SHUFFLE · producers → consumers</text>
 
