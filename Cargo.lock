@@ -2396,7 +2396,6 @@ dependencies = [
  "hyper-util",
  "insta",
  "itertools 0.14.0",
- "lz4_flex",
  "moka",
  "num-traits",
  "parquet",
@@ -2417,6 +2416,7 @@ dependencies = [
  "tower",
  "url",
  "uuid",
+ "zstd 0.13.3",
 ]
 
 [[package]]

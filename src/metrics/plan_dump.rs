@@ -17,8 +17,11 @@ use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::sync::Arc;
 
+/// zstd compression level for plan dumps.
+const ZSTD_LEVEL: i32 = 3;
+
 /// Distributed plans can be huge, the more tasks there are, the bigger the plans get, and
-/// logging it can get prohibitive or impossible. This function produces a protobuf + lz4 + base64
+/// logging it can get prohibitive or impossible. This function produces a protobuf + zstd + base64
 /// compressed representation of the plan with the metrics suitable to be used in logs that can
 /// afterward be decoded and printed using the DFD CLI.
 ///
@@ -40,7 +43,8 @@ pub fn generate_plan_dump(plan: &Arc<dyn ExecutionPlan>) -> Result<String> {
         partitions: plan.output_partitioning().partition_count() as u64,
         plan_dump: Some(Box::new(plan_dump(&plan)?)),
     };
-    let compressed = lz4_flex::compress_prepend_size(&head.encode_to_vec());
+    let compressed = zstd::encode_all(head.encode_to_vec().as_slice(), ZSTD_LEVEL)
+        .map_err(|err| internal_datafusion_err!("Failed to compress plan dump: {err}"))?;
     Ok(STANDARD.encode(compressed))
 }
 
@@ -76,8 +80,8 @@ pub fn display_plan_dump(plan: String, opts: DisplayPlanDumpOptions) -> Result<S
     let compressed = STANDARD
         .decode(plan.trim())
         .map_err(|err| exec_datafusion_err!("Plan dump is not valid base64: {err}"))?;
-    let encoded = lz4_flex::decompress_size_prepended(&compressed)
-        .map_err(|err| exec_datafusion_err!("Plan dump is not lz4-compressed: {err}"))?;
+    let encoded = zstd::decode_all(compressed.as_slice())
+        .map_err(|err| exec_datafusion_err!("Plan dump is not zstd-compressed: {err}"))?;
     let head = StageDump::decode(encoded.as_slice())
         .map_err(|err| exec_datafusion_err!("Plan dump does not contain a plan: {err}"))?;
 
