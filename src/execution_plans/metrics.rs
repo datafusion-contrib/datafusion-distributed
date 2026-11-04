@@ -206,51 +206,6 @@ mod tests {
         assert_eq!(metric.partition(), None);
     }
 
-    #[test]
-    #[ignore = "terminal metrics microbenchmark; run with --release --ignored --nocapture"]
-    fn benchmark_terminal_snapshot() {
-        for entries in [4_096, 16_384, 65_536] {
-            let metrics = counters(entries);
-            let wrapper = wrapper(metrics.clone(), metrics);
-            let mut legacy = Vec::new();
-            let mut snapshot = Vec::new();
-            for iteration in 0..4 {
-                let run_legacy = || {
-                    let start = Instant::now();
-                    drop(black_box(legacy_metrics(black_box(&wrapper))));
-                    start.elapsed()
-                };
-                let run_snapshot = || {
-                    let start = Instant::now();
-                    for _ in 0..100 {
-                        drop(black_box(black_box(&wrapper).metrics()));
-                    }
-                    start.elapsed() / 100
-                };
-                let (before, after) = if iteration % 2 == 0 {
-                    (run_legacy(), run_snapshot())
-                } else {
-                    let after = run_snapshot();
-                    (run_legacy(), after)
-                };
-                if iteration > 0 {
-                    legacy.push(before);
-                    snapshot.push(after);
-                }
-            }
-            legacy.sort();
-            snapshot.sort();
-            let before = legacy[1];
-            let after = snapshot[1];
-            eprintln!(
-                "entries={entries} legacy_ms={:.3} snapshot_ms={:.3} speedup={:.1}x (includes result clone/drop)",
-                before.as_secs_f64() * 1000.0,
-                after.as_secs_f64() * 1000.0,
-                before.as_secs_f64() / after.as_secs_f64(),
-            );
-        }
-    }
-
     fn counters(entries: usize) -> MetricsSet {
         let mut metrics = MetricsSet::new();
         for partition in 0..entries {
@@ -268,17 +223,5 @@ mod tests {
         let inner =
             MetricsWrapperExec::new(Arc::new(EmptyExec::new(Arc::new(Schema::empty()))), local);
         MetricsWrapperExec::new(Arc::new(inner), snapshot)
-    }
-
-    fn legacy_metrics(wrapper: &MetricsWrapperExec) -> MetricsSet {
-        let mut metrics = wrapper.metrics.clone();
-        for local in wrapper.inner.metrics().unwrap_or_default() {
-            if !wrapper.metrics.iter().any(|wrapped| {
-                wrapped.value() == local.value() && wrapped.partition() == local.partition()
-            }) {
-                metrics.push(local);
-            }
-        }
-        metrics
     }
 }
