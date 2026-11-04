@@ -15,8 +15,8 @@ default-members = ["datafusion/distributed"]
 resolver = "3"
 
 [workspace.dependencies]
-datafusion = { version = "55", default-features = false }
-datafusion-proto = { version = "55", default-features = false }
+datafusion = { git = "https://github.com/apache/datafusion.git", rev = "1635ed94742c1c060852bc34dc6ebb2302241c7b", default-features = false }
+datafusion-proto = { git = "https://github.com/apache/datafusion.git", rev = "1635ed94742c1c060852bc34dc6ebb2302241c7b", default-features = false }
 
 [workspace.lints.clippy]
 disallowed_types = "deny"

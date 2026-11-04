@@ -11,7 +11,7 @@ readme = "README.md"
 [dependencies]
 datafusion = { workspace = true }
 datafusion-distributed = { path = "../distributed", version = "4.0.0", features = ["avro", "integration"] }
-datafusion-cli = { version = "55", default-features = false }
+datafusion-cli = { git = "https://github.com/apache/datafusion.git", rev = "1635ed94742c1c060852bc34dc6ebb2302241c7b", default-features = false }
 tokio = { version = "1.48", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
 env_logger = "0.11"
