@@ -57,7 +57,48 @@ pub async fn rewrite_distributed_plan_with_metrics(
     let Some(metrics_collection) = distributed_exec.wait_for_metrics().await else {
         return internal_err!("metrics were enabled but the execution was not prepared");
     };
-    let task_metrics = collect_plan_metrics(&head_stage)?;
+    rewrite_with_task_metrics(distributed_exec, &head_stage, metrics_collection, format)
+}
+
+/// Same as [rewrite_distributed_plan_with_metrics], but does not wait for worker task metrics.
+/// It uses the metrics reported so far, and tasks that have not reported contribute no metrics.
+///
+/// It can be called while the plan is still executing, or after it finished, failed or was
+/// cancelled. Does nothing if the root node is not a [DistributedExec]. Returns an error if the
+/// distributed plan was not executed.
+pub fn rewrite_distributed_plan_with_available_metrics(
+    plan: Arc<dyn ExecutionPlan>,
+    format: DistributedMetricsFormat,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let Some(distributed_exec) = plan.downcast_ref::<DistributedExec>() else {
+        return Ok(plan);
+    };
+
+    if distributed_exec.metrics_store.is_none() {
+        return Ok(plan);
+    }
+
+    let head_stage = distributed_exec.head_stage()?;
+    let (Some(mut metrics_collection), Some(task_keys)) = (
+        distributed_exec.metrics_snapshot(),
+        distributed_exec.task_keys(),
+    ) else {
+        return internal_err!("metrics were enabled but the execution was not prepared");
+    };
+    // The rewrite skips tasks with empty reports, as it does for tasks that never executed.
+    for task_key in task_keys {
+        metrics_collection.entry(task_key).or_default();
+    }
+    rewrite_with_task_metrics(distributed_exec, &head_stage, metrics_collection, format)
+}
+
+fn rewrite_with_task_metrics(
+    distributed_exec: &DistributedExec,
+    head_stage: &Arc<dyn ExecutionPlan>,
+    metrics_collection: HashMap<TaskKey, TaskMetrics>,
+    format: DistributedMetricsFormat,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let task_metrics = collect_plan_metrics(head_stage)?;
 
     // Rewrite the DistributedExec's child plan with metrics.
     let dist_exec_plan_with_metrics = rewrite_local_plan_with_metrics(

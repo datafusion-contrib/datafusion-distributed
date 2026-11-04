@@ -5,7 +5,7 @@ etc.) live on each node and can be inspected after execution. In a distributed q
 runs on remote workers, so those metrics need to be gathered back to the coordinator before you can
 display them.
 
-Distributed DataFusion does this for you, and exposes two functions you can use to build your own
+Distributed DataFusion does this for you, and exposes functions you can use to build your own
 EXPLAIN ANALYZE in application code.
 
 ## Enabling collection
@@ -92,3 +92,38 @@ runtime metrics, including network-level metrics on the boundaries:
 
 > If `plan` is not a distributed plan (its root is not a `DistributedExec`),
 > `rewrite_distributed_plan_with_metrics` returns it unchanged, so it is always safe to call.
+
+## Reading the metrics reported so far
+
+`rewrite_distributed_plan_with_metrics` only returns once every worker task has reported its
+metrics. Workers report when the query ends, also when it fails or is cancelled, but a worker that
+crashes or stops responding never does.
+
+`rewrite_distributed_plan_with_available_metrics(plan, format)` is the non-blocking version. It uses
+the metrics reported so far, and tasks that have not reported contribute no metrics. For example, to
+wait a bounded time for the complete metrics and fall back to the partial ones:
+
+```rust
+use datafusion_distributed::{
+    DistributedMetricsFormat, rewrite_distributed_plan_with_available_metrics,
+    rewrite_distributed_plan_with_metrics,
+};
+use std::time::Duration;
+
+let format = DistributedMetricsFormat::Aggregated;
+let plan = match tokio::time::timeout(
+    Duration::from_secs(5),
+    rewrite_distributed_plan_with_metrics(plan.clone(), format),
+)
+.await
+{
+    Ok(rewritten) => rewritten?,
+    Err(_) => rewrite_distributed_plan_with_available_metrics(plan, format)?,
+};
+```
+
+It can also be called while the query is still running. Since workers report when the query ends,
+only the coordinator's metrics are available at that point.
+
+To see which tasks have reported, `DistributedExec::metrics_snapshot()` returns the reports received
+so far, keyed by task.
