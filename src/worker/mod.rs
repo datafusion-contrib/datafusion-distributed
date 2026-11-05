@@ -9,7 +9,7 @@ mod worker_connection_pool;
 mod worker_service;
 
 pub(crate) use single_write_multi_read::SingleWriteMultiRead;
-pub(crate) use worker_connection_pool::WorkerConnectionPool;
+pub(crate) use worker_connection_pool::{PendingTaskUrl, RemoteStageRef, WorkerConnectionPool};
 
 pub use impl_coordinator_channel::CoordinatorChannelResult;
 pub use session_builder::{

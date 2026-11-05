@@ -4,71 +4,142 @@ use crate::coordinator::query_coordinator::QueryCoordinator;
 use crate::dynamic_filtering::{
     is_remote_dynamic_filtering_enabled, orphan_dynamic_filter_consumers,
 };
-use crate::stage::RemoteStage;
+use crate::execution_plans::PendingNetworkBoundaryExec;
+use crate::stage::{LocalStage, RemoteStage};
+use crate::worker::PendingTaskUrl;
 use crate::{NetworkBoundaryExt, Stage};
-use datafusion::common::tree_node::Transformed;
-use datafusion::common::{Result, exec_err};
+use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
+use datafusion::common::{DataFusionError, HashSet, Result, exec_datafusion_err};
 use datafusion::physical_plan::ExecutionPlan;
+use futures::FutureExt;
+use futures::future::try_join_all;
 use std::sync::Arc;
+use tokio::sync::oneshot;
 
-/// Prepares the distributed plan for execution, which implies:
-/// 1. Perform some worker URL assignation, choosing either:
-///    - The workers selected by the user's [crate::RouteTaskHandler].
-///    - Randomly otherwise
-/// 2. Sending the sliced subplans to the assigned URLs. For each URL assigned to a task, a
-///    network call feeding the subplan is necessary.
-/// 3. In each network boundary, set the input plan to `None`. That way, network boundaries
-///    become nodes without children and traversing them will not go further down in.
-/// 4. Spawn a background task per worker that waits for the worker to finish and collects
-///    its metrics into [DistributedExec::task_metrics] via the coordinator channel.
 pub(super) async fn prepare_static_plan(
-    query_coordinator: &QueryCoordinator,
+    query_coordinator: &Arc<QueryCoordinator>,
     base_plan: &Arc<dyn ExecutionPlan>,
 ) -> Result<PreparedPlan> {
-    let prepared = Arc::clone(base_plan).transform_up_async(async |plan| {
-        // The following logic is just applied on network boundaries.
-        let Some(plan) = plan.as_network_boundary() else {
+    Ok(PreparedPlan {
+        head_stage: prepare_stages(query_coordinator, base_plan, true).await?,
+        plan_for_viz: Arc::clone(base_plan),
+    })
+}
+
+/// Worker plans need concrete child destinations. Only inputs consumed directly by the
+/// coordinator can remain pending, letting each task execute after its own setup succeeds.
+pub(super) async fn prepare_stages(
+    query_coordinator: &Arc<QueryCoordinator>,
+    plan: &Arc<dyn ExecutionPlan>,
+    defer_head: bool,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let mut head_stages = HashSet::new();
+    if defer_head {
+        plan.apply(|plan| {
+            if let Some(boundary) = plan.as_network_boundary() {
+                head_stages.insert(boundary.input_stage().num());
+                Ok(TreeNodeRecursion::Jump)
+            } else {
+                Ok(TreeNodeRecursion::Continue)
+            }
+        })?;
+    }
+    let prepared = Arc::clone(plan).transform_up_async(async |plan| {
+        let Some(boundary) = plan.as_network_boundary() else {
             return Ok(Transformed::no(plan));
         };
-
-        let Stage::Local(stage) = plan.input_stage() else {
-            return exec_err!("Input stage from network boundary was not in Local state");
+        let Stage::Local(stage) = boundary.input_stage() else {
+            return Ok(Transformed::no(plan));
         };
-        let dynamic_filter_anchors =
-            if is_remote_dynamic_filtering_enabled(query_coordinator.session_config())? {
-                orphan_dynamic_filter_consumers(&stage.plan)?
-            } else {
-                vec![]
-            };
-
-        let mut stage_coordinator = query_coordinator.stage_coordinator(stage);
-        let mut futures = Vec::with_capacity(stage.tasks);
-        for task_i in 0..stage.tasks {
-            futures.push(stage_coordinator.init_bidirectional_stream(task_i));
+        let anchors = if is_remote_dynamic_filtering_enabled(query_coordinator.session_config())? {
+            orphan_dynamic_filter_consumers(&stage.plan)?
+        } else {
+            vec![]
+        };
+        if head_stages.contains(&stage.num) {
+            let workers = start_pending_stage(query_coordinator, stage);
+            return Ok(Transformed::yes(Arc::new(PendingNetworkBoundaryExec::new(
+                boundary.with_input_stage(Stage::Local(stage.clone()))?,
+                workers,
+                anchors,
+                query_coordinator.spawner.query_finished(),
+            )) as Arc<dyn ExecutionPlan>));
         }
-        let results = futures::future::try_join_all(futures).await?;
-
-        let mut workers = Vec::with_capacity(stage.tasks);
-        for (task_i, (url, worker_tx, worker_stream)) in results.into_iter().enumerate() {
-            workers.push(url);
-            stage_coordinator.worker_to_coordinator_task(task_i, worker_stream);
-            stage_coordinator.coordinator_to_worker_task(task_i, worker_tx)?;
-        }
-        stage_coordinator.seal_dynamic_filter_stage()?;
-        Ok(Transformed::yes(plan.with_input_stage(Stage::Remote(
-            RemoteStage {
+        let coordinator = query_coordinator.stage_coordinator(stage);
+        let coordinator = &coordinator;
+        let workers = try_join_all((0..stage.tasks).map(|task| async move {
+            let (url, tx, stream) = coordinator.init_bidirectional_stream(task).await?;
+            coordinator.worker_to_coordinator_task(task, stream);
+            coordinator.coordinator_to_worker_task(task, tx)?;
+            Ok::<_, DataFusionError>(url)
+        }))
+        .await?;
+        coordinator.seal_dynamic_filter_stage()?;
+        Ok(Transformed::yes(boundary.with_input_stage(
+            Stage::Remote(RemoteStage {
                 query_id: stage.query_id,
                 num: stage.num,
                 workers,
                 runtime_stats: None,
-                dynamic_filter_anchors,
-            },
-        ))?))
+                dynamic_filter_anchors: anchors,
+            }),
+        )?))
     });
-    Ok(PreparedPlan {
-        head_stage: prepared.await?.data,
-        // If the plan was statically planned, the base plan is the same one that will be used for
-        // visualization.
-        plan_for_viz: Arc::clone(base_plan),
-    })
+    Ok(prepared.await?.data)
+}
+
+fn start_pending_stage(
+    query_coordinator: &Arc<QueryCoordinator>,
+    stage: &LocalStage,
+) -> Vec<PendingTaskUrl> {
+    let mut workers = Vec::with_capacity(stage.tasks);
+    let mut setups = Vec::with_capacity(stage.tasks);
+    for task in 0..stage.tasks {
+        let (tx, rx) = oneshot::channel();
+        workers.push(
+            async move {
+                rx.await
+                    .map_err(|_| Arc::new(exec_datafusion_err!("Task setup was cancelled")))?
+            }
+            .boxed()
+            .shared(),
+        );
+        // Construct cleanup before spawning: even an unpolled setup must complete report waits.
+        let reports = query_coordinator
+            .stage_coordinator(stage)
+            .pending_task_reports(task);
+        setups.push((task, tx, reports));
+    }
+    let coordinator = Arc::clone(query_coordinator);
+    let stage = stage.clone();
+    let finished = query_coordinator.spawner.query_finished();
+    query_coordinator.spawner.spawn(async move {
+        let stage_coordinator = coordinator.stage_coordinator(&stage);
+        let setup = async {
+            try_join_all(setups.into_iter().map(|(task, tx, mut reports)| {
+                let stage_coordinator = &stage_coordinator;
+                async move {
+                    let result = async {
+                        let (url, worker_tx, stream) =
+                            stage_coordinator.init_bidirectional_stream(task).await?;
+                        stage_coordinator.worker_to_coordinator_task(task, stream);
+                        reports.reader_started();
+                        stage_coordinator.coordinator_to_worker_task(task, worker_tx)?;
+                        Ok::<_, DataFusionError>(url)
+                    }
+                    .await
+                    .map_err(Arc::new);
+                    let _ = tx.send(result.clone());
+                    result.map_err(DataFusionError::Shared)
+                }
+            }))
+            .await?;
+            stage_coordinator.seal_dynamic_filter_stage()
+        };
+        tokio::select! {
+            result = setup => result,
+            _ = finished.cancelled() => Ok(()),
+        }
+    });
+    workers
 }

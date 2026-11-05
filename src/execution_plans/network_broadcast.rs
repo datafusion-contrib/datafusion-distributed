@@ -1,7 +1,7 @@
 use crate::common::require_one_child;
 use crate::distributed_planner::{NetworkBoundary, ProducerHead};
 use crate::stage::{LocalStage, Stage};
-use crate::worker::WorkerConnectionPool;
+use crate::worker::{RemoteStageRef, WorkerConnectionPool};
 use crate::{BroadcastExec, DistributedTaskContext};
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{Result, not_impl_err, plan_err};
@@ -201,6 +201,36 @@ impl DisplayAs for NetworkBroadcastExec {
     }
 }
 
+impl NetworkBroadcastExec {
+    pub(crate) fn execute_remote(
+        &self,
+        partition: usize,
+        context: Arc<TaskContext>,
+        remote_stage: RemoteStageRef<'_>,
+    ) -> Result<SendableRecordBatchStream, DataFusionError> {
+        let task_context = DistributedTaskContext::from_ctx(&context);
+        let out_partitions = self.properties.partitioning.partition_count();
+        let off = out_partitions * task_context.task_index;
+        let mut streams = Vec::with_capacity(self.input_stage.task_count());
+
+        for input_task_index in 0..self.input_stage.task_count() {
+            streams.push(self.worker_connections.execute(
+                remote_stage,
+                off..(off + self.properties.partitioning.partition_count()),
+                input_task_index,
+                off + partition,
+                self.producer_head(task_context.task_count)?,
+                &context,
+            )?);
+        }
+
+        Ok(Box::pin(RecordBatchStreamAdapter::new(
+            self.schema(),
+            futures::stream::select_all(streams),
+        )))
+    }
+}
+
 impl ExecutionPlan for NetworkBroadcastExec {
     fn name(&self) -> &str {
         "NetworkBroadcastExec"
@@ -251,27 +281,7 @@ impl ExecutionPlan for NetworkBroadcastExec {
             Stage::Local(local) => return local.execute(partition, context),
             Stage::Remote(remote_stage) => remote_stage,
         };
-
-        let task_context = DistributedTaskContext::from_ctx(&context);
-        let out_partitions = self.properties.partitioning.partition_count();
-        let off = out_partitions * task_context.task_index;
-        let mut streams = Vec::with_capacity(self.input_stage.task_count());
-
-        for input_task_index in 0..self.input_stage.task_count() {
-            streams.push(self.worker_connections.execute(
-                remote_stage,
-                off..(off + self.properties.partitioning.partition_count()),
-                input_task_index,
-                off + partition,
-                self.producer_head(task_context.task_count)?,
-                &context,
-            )?);
-        }
-
-        Ok(Box::pin(RecordBatchStreamAdapter::new(
-            self.schema(),
-            futures::stream::select_all(streams),
-        )))
+        self.execute_remote(partition, context, remote_stage.into())
     }
 
     fn metrics(&self) -> Option<MetricsSet> {

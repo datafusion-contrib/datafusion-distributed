@@ -1,4 +1,4 @@
-use crate::execution_plans::SamplerExec;
+use crate::execution_plans::{PendingNetworkBoundaryExec, SamplerExec};
 use crate::{
     BroadcastExec, MaybeEncoded, NetworkBroadcastExec, NetworkCoalesceExec, NetworkShuffleExec,
     Stage,
@@ -66,6 +66,8 @@ impl NetworkBoundaryExt for dyn ExecutionPlan {
         } else if let Some(node) = self.downcast_ref::<NetworkCoalesceExec>() {
             Some(node)
         } else if let Some(node) = self.downcast_ref::<NetworkBroadcastExec>() {
+            Some(node)
+        } else if let Some(node) = self.downcast_ref::<PendingNetworkBoundaryExec>() {
             Some(node)
         } else {
             None

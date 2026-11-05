@@ -135,6 +135,18 @@ pub(super) struct StageCoordinator<'a> {
 }
 
 impl<'a> StageCoordinator<'a> {
+    pub(super) fn pending_task_reports(&self, task_i: usize) -> PendingTaskReports {
+        PendingTaskReports {
+            task_key: TaskKey {
+                query_id: self.query_id,
+                stage_id: self.stage_id,
+                task_number: task_i,
+            },
+            metrics_store: self.metrics_store.clone(),
+            completed_dynamic_filter_store: self.completed_dynamic_filter_store.clone(),
+        }
+    }
+
     /// Sends a plan to a specific worker and sets up the bidirectional stream.
     ///
     /// Its returns are:
@@ -280,7 +292,7 @@ impl<'a> StageCoordinator<'a> {
 
     /// Spawns background tasks in charge of collecting messages sent by a worker.
     pub(super) fn worker_to_coordinator_task(
-        &mut self,
+        &self,
         task_i: usize,
         mut worker_to_coordinator_stream: BoxStream<'static, Result<WorkerToCoordinatorMsg>>,
     ) -> UnboundedReceiver<LoadInfo> {
@@ -342,7 +354,7 @@ impl<'a> StageCoordinator<'a> {
     /// to workers here are:
     /// - WorkUnits collected from [WorkUnitFeeds] present in the plan.
     pub(super) fn coordinator_to_worker_task(
-        &mut self,
+        &self,
         task_i: usize,
         tx: UnboundedSender<CoordinatorToWorkerMsg>,
     ) -> Result<()> {
@@ -495,6 +507,31 @@ impl<'a> StageCoordinator<'a> {
             work_unit_feed_declarations,
             dynamic_filter_remote_producer_ids,
         })
+    }
+}
+
+/// Completes report waits if setup ends before a worker report reader owns them.
+pub(super) struct PendingTaskReports {
+    task_key: TaskKey,
+    metrics_store: Option<Arc<Store<TaskMetrics>>>,
+    completed_dynamic_filter_store: Option<Arc<Store<TaskCompletedDynamicFilters>>>,
+}
+
+impl PendingTaskReports {
+    pub(super) fn reader_started(&mut self) {
+        self.metrics_store = None;
+        self.completed_dynamic_filter_store = None;
+    }
+}
+
+impl Drop for PendingTaskReports {
+    fn drop(&mut self) {
+        if let Some(store) = self.metrics_store.take() {
+            store.insert(self.task_key, TaskMetrics::default());
+        }
+        if let Some(store) = self.completed_dynamic_filter_store.take() {
+            store.insert(self.task_key, TaskCompletedDynamicFilters::default());
+        }
     }
 }
 
