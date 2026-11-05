@@ -2090,7 +2090,7 @@ dependencies = [
  "itertools 0.15.0",
  "liblzma",
  "log",
- "object_store 0.14.2",
+ "object_store",
  "parking_lot 0.13.0",
  "parquet",
  "sqlparser",
@@ -2120,7 +2120,7 @@ dependencies = [
  "futures",
  "itertools 0.15.0",
  "log",
- "object_store 0.14.2",
+ "object_store",
  "parking_lot 0.13.0",
  "tokio",
 ]
@@ -2144,7 +2144,7 @@ dependencies = [
  "futures",
  "itertools 0.15.0",
  "log",
- "object_store 0.14.2",
+ "object_store",
  "percent-encoding",
 ]
 
@@ -2167,7 +2167,7 @@ dependencies = [
  "futures",
  "log",
  "mimalloc",
- "object_store 0.14.2",
+ "object_store",
  "parking_lot 0.13.0",
  "parquet",
  "regex",
@@ -2194,7 +2194,7 @@ dependencies = [
  "libc",
  "log",
  "num-traits",
- "object_store 0.14.2",
+ "object_store",
  "parquet",
  "recursive",
  "sqlparser",
@@ -2240,7 +2240,7 @@ dependencies = [
  "itertools 0.15.0",
  "liblzma",
  "log",
- "object_store 0.14.2",
+ "object_store",
  "parking_lot 0.13.0",
  "pin-project-lite",
  "rand 0.9.5",
@@ -2270,7 +2270,7 @@ dependencies = [
  "datafusion-session",
  "futures",
  "itertools 0.15.0",
- "object_store 0.14.2",
+ "object_store",
  "tokio",
 ]
 
@@ -2293,7 +2293,7 @@ dependencies = [
  "datafusion-physical-plan",
  "datafusion-session",
  "futures",
- "object_store 0.14.2",
+ "object_store",
  "tokio",
 ]
 
@@ -2315,7 +2315,7 @@ dependencies = [
  "datafusion-proto-models",
  "datafusion-session",
  "futures",
- "object_store 0.14.2",
+ "object_store",
  "regex",
  "tokio",
 ]
@@ -2338,7 +2338,7 @@ dependencies = [
  "datafusion-proto-models",
  "datafusion-session",
  "futures",
- "object_store 0.14.2",
+ "object_store",
  "tokio",
  "tokio-stream",
 ]
@@ -2369,7 +2369,7 @@ dependencies = [
  "futures",
  "itertools 0.15.0",
  "log",
- "object_store 0.14.2",
+ "object_store",
  "parking_lot 0.13.0",
  "parquet",
  "tokio",
@@ -2434,7 +2434,7 @@ dependencies = [
  "env_logger",
  "futures",
  "indicatif",
- "object_store 0.14.2",
+ "object_store",
  "parquet",
  "reqwest 0.12.28",
  "serde",
@@ -2554,7 +2554,7 @@ dependencies = [
  "futures",
  "log",
  "mimalloc",
- "object_store 0.13.2",
+ "object_store",
  "openssl",
  "serde",
  "sketches-ddsketch",
@@ -2584,7 +2584,7 @@ dependencies = [
  "datafusion-physical-expr-common",
  "futures",
  "log",
- "object_store 0.14.2",
+ "object_store",
  "parking_lot 0.13.0",
  "parquet",
  "pin-project-lite",
@@ -2654,7 +2654,7 @@ dependencies = [
  "hex",
  "itertools 0.15.0",
  "log",
- "md-5 0.11.0",
+ "md-5",
  "memchr",
  "num-traits",
  "rand 0.9.5",
@@ -2927,7 +2927,7 @@ dependencies = [
  "datafusion-physical-plan",
  "datafusion-proto-common",
  "datafusion-proto-models",
- "object_store 0.14.2",
+ "object_store",
  "prost",
 ]
 
@@ -4831,16 +4831,6 @@ checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
 
 [[package]]
 name = "md-5"
-version = "0.10.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf"
-dependencies = [
- "cfg-if",
- "digest 0.10.7",
-]
-
-[[package]]
-name = "md-5"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "69b6441f590336821bb897fb28fc622898ccceb1d6cea3fde5ea86b090c4de98"
@@ -5176,44 +5166,6 @@ dependencies = [
 
 [[package]]
 name = "object_store"
-version = "0.13.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "622acbc9100d3c10e2ee15804b0caa40e55c933d5aa53814cd520805b7958a49"
-dependencies = [
- "async-trait",
- "base64 0.22.1",
- "bytes",
- "chrono",
- "form_urlencoded",
- "futures-channel",
- "futures-core",
- "futures-util",
- "http 1.5.0",
- "http-body-util",
- "humantime",
- "hyper",
- "itertools 0.14.0",
- "md-5 0.10.6",
- "parking_lot 0.12.5",
- "percent-encoding",
- "quick-xml 0.39.4",
- "rand 0.10.2",
- "reqwest 0.12.28",
- "ring",
- "serde",
- "serde_json",
- "serde_urlencoded",
- "thiserror 2.0.20",
- "tokio",
- "tracing",
- "url",
- "walkdir",
- "wasm-bindgen-futures",
- "web-time",
-]
-
-[[package]]
-name = "object_store"
 version = "0.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f1796bc93603f78c5760a69f2d58badc9618d22adade0a95385bb2adbae4eb94"
@@ -5233,11 +5185,11 @@ dependencies = [
  "humantime",
  "hyper",
  "itertools 0.15.0",
- "md-5 0.11.0",
+ "md-5",
  "nix 0.31.3",
  "parking_lot 0.12.5",
  "percent-encoding",
- "quick-xml 0.41.0",
+ "quick-xml",
  "rand 0.10.2",
  "reqwest 0.13.5",
  "rustls-pki-types",
@@ -5310,9 +5262,9 @@ dependencies = [
  "http 1.5.0",
  "jiff",
  "log",
- "md-5 0.11.0",
+ "md-5",
  "percent-encoding",
- "quick-xml 0.41.0",
+ "quick-xml",
  "reqsign-core",
  "serde",
  "serde_json",
@@ -5405,7 +5357,7 @@ dependencies = [
  "log",
  "opendal-core",
  "percent-encoding",
- "quick-xml 0.41.0",
+ "quick-xml",
  "reqsign-core",
  "reqsign-file-read-tokio",
  "reqsign-google",
@@ -5425,9 +5377,9 @@ dependencies = [
  "crc-fast",
  "http 1.5.0",
  "log",
- "md-5 0.11.0",
+ "md-5",
  "opendal-core",
- "quick-xml 0.41.0",
+ "quick-xml",
  "reqsign-aws-v4",
  "reqsign-core",
  "reqsign-file-read-tokio",
@@ -5634,7 +5586,7 @@ dependencies = [
  "num-bigint 0.5.1",
  "num-integer",
  "num-traits",
- "object_store 0.14.2",
+ "object_store",
  "ring",
  "seq-macro",
  "simdutf8",
@@ -6063,16 +6015,6 @@ checksum = "5a651516ddc9168ebd67b24afd085a718be02f8858fe406591b013d101ce2f40"
 
 [[package]]
 name = "quick-xml"
-version = "0.39.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cdcc8dd4e2f670d309a5f0e83fe36dfdc05af317008fea29144da1a2ac858e5e"
-dependencies = [
- "memchr",
- "serde",
-]
-
-[[package]]
-name = "quick-xml"
 version = "0.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e660451e55124f798a69a5af3f49ccfbefbd41910eefd25caf2393e1f3473ec1"
@@ -6490,7 +6432,7 @@ dependencies = [
  "http 1.5.0",
  "log",
  "percent-encoding",
- "quick-xml 0.41.0",
+ "quick-xml",
  "reqsign-core",
  "rust-ini",
  "serde",
@@ -6508,7 +6450,7 @@ dependencies = [
  "bytes",
  "http 1.5.0",
  "log",
- "quick-xml 0.41.0",
+ "quick-xml",
  "reqsign-aws-core",
  "reqsign-core",
  "serde",
@@ -6579,7 +6521,6 @@ dependencies = [
  "bytes",
  "encoding_rs",
  "futures-core",
- "futures-util",
  "h2",
  "http 1.5.0",
  "http-body 1.1.0",
@@ -6594,9 +6535,6 @@ dependencies = [
  "native-tls",
  "percent-encoding",
  "pin-project-lite",
- "quinn",
- "rustls",
- "rustls-native-certs",
  "rustls-pki-types",
  "serde",
  "serde_json",
@@ -6604,15 +6542,12 @@ dependencies = [
  "sync_wrapper",
  "tokio",
  "tokio-native-tls",
- "tokio-rustls",
- "tokio-util",
  "tower",
  "tower-http",
  "tower-service",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
- "wasm-streams 0.4.2",
  "web-sys",
 ]
 
@@ -6651,7 +6586,7 @@ dependencies = [
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
- "wasm-streams 0.5.0",
+ "wasm-streams",
  "web-sys",
 ]
 
@@ -6771,7 +6706,6 @@ checksum = "6725596c3f2c3a0aef021139e145d4eafe314a6623e4680ca83852b2c67ab2ba"
 dependencies = [
  "aws-lc-rs",
  "once_cell",
- "ring",
  "rustls-pki-types",
  "rustls-webpki",
  "subtle",
@@ -8344,19 +8278,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "81941cd78d0c92026c33e5e01312845a4cb1e9af3407f9134b100dd03144103e"
 dependencies = [
  "unicode-ident",
-]
-
-[[package]]
-name = "wasm-streams"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15053d8d85c7eccdbefef60f06769760a563c7f0a9d6902a13d35c7800b0ad65"
-dependencies = [
- "futures-util",
- "js-sys",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
 ]
 
 [[package]]
