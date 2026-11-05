@@ -62,7 +62,7 @@ mod tests {
           SortPreservingMergeExec: [pickup_at@2 ASC NULLS LAST, vendor_id@0 ASC NULLS LAST], fetch=3
             SortExec: TopK(fetch=3), expr=[pickup_at@2 ASC NULLS LAST, vendor_id@0 ASC NULLS LAST], preserve_partitioning=[true]
               FilterExec: pickup_date@3 = 2024-01-10, projection=[vendor_id@0, pickup_location_id@2, pickup_at@1]
-                DataSourceExec: format=iceberg, table=default.taxi, projection=[vendor_id, pickup_at, pickup_location_id, pickup_date], predicate=pickup_date = 2024-01-10
+                DataSourceExec: format=iceberg, table=default.taxi, projection=[vendor_id, pickup_at, pickup_location_id, pickup_date], predicate=pickup_date = 2024-01-10, dynamic_filters=DynamicFilter [ empty ]
         ");
         insta::assert_snapshot!(batches, @r"
         +-----------+--------------------+
@@ -126,7 +126,7 @@ mod tests {
         SortPreservingMergeExec: [pickup_at@1 ASC NULLS LAST, vendor_id@0 ASC NULLS LAST, pickup_location_id@5 ASC NULLS LAST], fetch=1
           SortExec: TopK(fetch=1), expr=[pickup_at@1 ASC NULLS LAST, vendor_id@0 ASC NULLS LAST, pickup_location_id@5 ASC NULLS LAST], preserve_partitioning=[true]
             FilterExec: pickup_date@12 = 2024-01-10
-              DataSourceExec: format=iceberg, table=default.taxi, projection=[vendor_id, pickup_at, dropoff_at, passenger_count, trip_distance, pickup_location_id, dropoff_location_id, payment_type, fare_amount, tip_amount, tolls_amount, total_amount, pickup_date], predicate=pickup_date = 2024-01-10
+              DataSourceExec: format=iceberg, table=default.taxi, projection=[vendor_id, pickup_at, dropoff_at, passenger_count, trip_distance, pickup_location_id, dropoff_location_id, payment_type, fare_amount, tip_amount, tolls_amount, total_amount, pickup_date], predicate=pickup_date = 2024-01-10, dynamic_filters=DynamicFilter [ empty ]
         ");
         insta::assert_snapshot!(batches, @r"
         +-----------+---------------------+---------------------+-----------------+---------------+--------------------+---------------------+--------------+-------------+------------+--------------+--------------+-------------+

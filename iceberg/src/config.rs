@@ -18,6 +18,8 @@ extensions_options! {
         pub column_stats_enabled: bool, default = false
         /// Discover and retain file tasks during physical planning instead of execution.
         pub eager_file_planning: bool, default = false
+        /// Whether to enable dynamic filtering.
+        pub dynamic_filtering_enabled: bool, default = false
     }
 }
 

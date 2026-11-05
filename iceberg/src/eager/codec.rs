@@ -95,16 +95,17 @@ impl PhysicalExtensionCodec for EagerIcebergCodec {
                     .collect::<Result<Vec<_>>>()
             })
             .collect::<Result<Vec<_>>>()?;
-        Ok(DataSourceExec::from_data_source(
-            EagerIcebergDataSource::from_file_groups(
-                scan.schema,
-                groups,
-                scan.iceberg_file_io,
-                scan.iceberg_runtime,
-                scan.fetch,
-                ctx,
-            )?,
-        ))
+        let mut source = EagerIcebergDataSource::from_file_groups(
+            scan.schema,
+            groups,
+            scan.iceberg_file_io,
+            scan.iceberg_runtime,
+            scan.fetch,
+            ctx,
+        )?;
+        source.scan.filters = scan.filters;
+        source.scan.dynamic_filtering_enabled = scan.dynamic_filtering_enabled;
+        Ok(DataSourceExec::from_data_source(source))
     }
 
     fn try_encode(
@@ -175,14 +176,24 @@ impl EagerIcebergCodec {
             proto.custom_file_io.as_deref(),
             ctx,
         )?;
-        Ok(ScanConfig::new(
+        // Decode with the plan's converter, so a filter keeps sharing its state with the
+        // operator that fills it in when both run in the same task.
+        let filters = proto
+            .filters
+            .as_ref()
+            .map(|filters| proto_converter.proto_to_physical_expr(filters, &schema, &decode_ctx))
+            .transpose()?;
+        let mut scan = ScanConfig::new(
             schema,
             partitioning,
             fetch,
             iceberg_file_io,
             self.iceberg_runtime.clone(),
             ctx,
-        ))
+        );
+        scan.filters = filters;
+        scan.dynamic_filtering_enabled = proto.dynamic_filtering_enabled;
+        Ok(scan)
     }
 
     fn encode_config(
@@ -203,6 +214,13 @@ impl EagerIcebergCodec {
             fetch: source.fetch().map(|value| value as u64),
             storage_properties: file_io.properties,
             custom_file_io: file_io.custom,
+            filters: source
+                .scan
+                .filters
+                .as_ref()
+                .map(|filters| proto_converter.physical_expr_to_proto(filters, self))
+                .transpose()?,
+            dynamic_filtering_enabled: source.scan.dynamic_filtering_enabled,
         })
     }
 }
