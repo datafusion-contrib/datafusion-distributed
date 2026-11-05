@@ -126,9 +126,9 @@ impl LazyIcebergDataSource {
 impl DataSource for LazyIcebergDataSource {
     fn apply_expressions(
         &self,
-        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
     ) -> Result<TreeNodeRecursion> {
-        Ok(TreeNodeRecursion::Continue)
+        self.scan.apply_expressions(f)
     }
 
     fn open(
@@ -149,20 +149,20 @@ impl DataSource for LazyIcebergDataSource {
 
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "format=iceberg")?;
-        let Some(feed) = self.feed.inner() else {
-            return Ok(());
-        };
-        write!(f, ", table={}", feed.iceberg_table.identifier())?;
-        if let Some(projection) = &feed.projection {
-            write!(f, ", projection=[{}]", projection.join(", "))?;
+        // Workers' copies have no feed, but still show their dynamic filters.
+        if let Some(feed) = self.feed.inner() {
+            write!(f, ", table={}", feed.iceberg_table.identifier())?;
+            if let Some(projection) = &feed.projection {
+                write!(f, ", projection=[{}]", projection.join(", "))?;
+            }
+            if let Some(predicate) = &feed.predicates {
+                write!(f, ", predicate={predicate}")?;
+            }
+            if let Some(fetch) = self.scan.fetch {
+                write!(f, ", fetch={fetch}")?;
+            }
         }
-        if let Some(predicate) = &feed.predicates {
-            write!(f, ", predicate={predicate}")?;
-        }
-        if let Some(fetch) = self.scan.fetch {
-            write!(f, ", fetch={fetch}")?;
-        }
-        Ok(())
+        self.scan.fmt_dynamic_filters(f)
     }
 
     fn output_partitioning(&self) -> Partitioning {
@@ -212,12 +212,17 @@ impl DataSource for LazyIcebergDataSource {
         filters: Vec<Arc<dyn PhysicalExpr>>,
         _config: &ConfigOptions,
     ) -> Result<FilterPushdownPropagation<Arc<dyn DataSource>>> {
-        // TODO: Allow this DataSource to be pushed down filters. Some filters might be more
-        //  straight forward to accept, like simple predicates, but some others might require
-        //  a bit more work, like dynamic filters.
-        Ok(FilterPushdownPropagation::with_parent_pushdown_result(
-            vec![PushedDown::No; filters.len()],
-        ))
+        // The scan keeps the filters but doesn't apply them, so DataFusion still checks every row.
+        let result = FilterPushdownPropagation::with_parent_pushdown_result(vec![
+            PushedDown::No;
+            filters.len()
+        ]);
+        if filters.is_empty() {
+            return Ok(result);
+        }
+        let mut source = self.clone();
+        source.scan.push_filters(filters);
+        Ok(result.with_updated_node(Arc::new(source)))
     }
 
     fn try_pushdown_sort(
