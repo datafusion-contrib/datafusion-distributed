@@ -248,6 +248,7 @@ impl<'a> StageCoordinator<'a> {
             task_ctx: self.task_ctx,
             metrics: self.metrics_set,
             worker_resolver: worker_resolver.as_ref(),
+            stage_plan: self.plan,
             task_specialized_plan: &plan,
             task_key,
             task_count: self.task_count,
