@@ -115,18 +115,11 @@ fn stage_metrics(
                 stage.num
             );
         };
-        for metric in task_metrics.task_metrics.iter() {
-            let mut labels = metric.labels().to_vec();
-            labels.push(Label::new(
-                DISTRIBUTED_DATAFUSION_TASK_ID_LABEL,
-                task_number.to_string(),
-            ));
-            all_metrics.push(Arc::new(Metric::new_with_labels(
-                metric.value().clone(),
-                metric.partition(),
-                labels,
-            )));
-        }
+        extend_with_task_id_label(
+            &mut all_metrics,
+            &task_metrics.task_metrics,
+            &task_id_label(task_number as u64),
+        );
     }
     Ok(all_metrics)
 }
@@ -134,48 +127,47 @@ fn stage_metrics(
 /// Extra information for rewriting local plans.
 #[derive(Default)]
 pub struct RewriteCtx {
-    /// Used to rename metrics for the current task.
-    pub task_id: Option<u64>,
+    /// Label added to every metric of the current task.
+    task_id_label: Option<Label>,
 }
 
 impl RewriteCtx {
     pub(crate) fn from_task_id(task_id: u64) -> RewriteCtx {
         RewriteCtx {
-            task_id: Some(task_id),
+            task_id_label: Some(task_id_label(task_id)),
         }
     }
 
-    /// Rewrites the [MetricsSet] depending on the context.
-    pub(crate) fn maybe_rewrite_node_metrics(&self, node_metrics: MetricsSet) -> MetricsSet {
-        if let Some(task_id) = self.task_id {
-            return annotate_metrics_set_with_task_id(node_metrics, task_id);
+    /// Appends `node_metrics` to `out`, rewritten depending on the context.
+    pub(crate) fn extend_node_metrics(&self, out: &mut MetricsSet, node_metrics: &MetricsSet) {
+        match &self.task_id_label {
+            Some(label) => extend_with_task_id_label(out, node_metrics, label),
+            None => out.extend(node_metrics.iter().cloned()),
         }
-        node_metrics
     }
 }
 
-/// Adds task id labels to all metrics in the provided [MetricsSet].
-///
-/// TODO: This re-allocates the vec of metrics by creating a new [MetricsSet]. It also
-/// reallocates the labels vec for each metric. Can we avoid this?
-/// See https://github.com/apache/datafusion/issues/19959
-pub fn annotate_metrics_set_with_task_id(metrics_set: MetricsSet, task_id: u64) -> MetricsSet {
-    let mut result = MetricsSet::new();
+/// Builds the label identifying metrics of `task_id`. Its value is reference counted, so cloning
+/// it for every metric of the task does not allocate.
+fn task_id_label(task_id: u64) -> Label {
+    Label::new(DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, task_id.to_string())
+}
 
-    for metric in metrics_set.iter() {
-        let mut labels = metric.labels().to_vec();
-        labels.push(Label::new(
-            DISTRIBUTED_DATAFUSION_TASK_ID_LABEL,
-            task_id.to_string(),
-        ));
-        result.push(Arc::new(Metric::new_with_labels(
+/// Appends every metric in `metrics` to `out`, adding `task_id_label` to its labels.
+///
+/// TODO: This allocates a new [Metric] and labels vec for each metric. Can we avoid this?
+/// See https://github.com/apache/datafusion/issues/19959
+fn extend_with_task_id_label(out: &mut MetricsSet, metrics: &MetricsSet, task_id_label: &Label) {
+    out.extend(metrics.iter().map(|metric| {
+        let mut labels = Vec::with_capacity(metric.labels().len() + 1);
+        labels.extend_from_slice(metric.labels());
+        labels.push(task_id_label.clone());
+        Arc::new(Metric::new_with_labels(
             metric.value().clone(),
             metric.partition(),
             labels,
-        )));
-    }
-
-    result
+        ))
+    }));
 }
 
 /// Rewrites a local plan with metrics, stopping at network boundaries.
@@ -202,9 +194,8 @@ pub fn rewrite_local_plan_with_metrics(
             if idx >= metrics.len() {
                 return internal_err!("not enough metrics provided to rewrite plan");
             }
-            let mut node_metrics = metrics[idx].clone();
-
-            node_metrics = ctx.maybe_rewrite_node_metrics(node_metrics);
+            let mut node_metrics = MetricsSet::new();
+            ctx.extend_node_metrics(&mut node_metrics, &metrics[idx]);
 
             idx += 1;
             Ok(Transformed::new(
@@ -280,6 +271,7 @@ pub fn stage_metrics_rewriter(
             continue; // The task was never executed, so there are no plan metrics to rewrite.
         }
 
+        let rewrite_ctx = format.to_rewrite_ctx(task_id as u64);
         let mut per_task_counter = 0usize;
         stage.plan.apply_with_dt_ctx(d_ctx, |node, _ctx| {
             if per_task_counter >= task_metrics.pre_order_plan_metrics.len() {
@@ -289,15 +281,12 @@ pub fn stage_metrics_rewriter(
                 );
             }
 
-            let mut node_metrics = task_metrics.pre_order_plan_metrics[per_task_counter].clone();
-            let rewrite_ctx = format.to_rewrite_ctx(task_id as u64);
-            node_metrics = rewrite_ctx.maybe_rewrite_node_metrics(node_metrics);
-
             let id = Arc::as_ptr(node) as *const () as usize;
             let entry = node_metrics_map.entry(id).or_default();
-            for metric in node_metrics.iter().map(Arc::clone) {
-                entry.push(metric);
-            }
+            rewrite_ctx.extend_node_metrics(
+                entry,
+                &task_metrics.pre_order_plan_metrics[per_task_counter],
+            );
 
             per_task_counter += 1;
             Ok(TreeNodeRecursion::Continue)
@@ -328,7 +317,7 @@ mod tests {
     use crate::metrics::DISTRIBUTED_DATAFUSION_TASK_ID_LABEL;
     use crate::metrics::task_metrics_rewriter::MetricsWrapperExec;
     use crate::metrics::task_metrics_rewriter::{
-        annotate_metrics_set_with_task_id, stage_metrics_rewriter,
+        extend_with_task_id_label, stage_metrics_rewriter, task_id_label,
     };
     use crate::metrics::{DistributedMetricsFormat, rewrite_distributed_plan_with_metrics};
     use crate::stage::LocalStage;
@@ -552,7 +541,7 @@ mod tests {
                     // Add task ids labels. We expect the actual metrics to be annotated by the
                     // rewriter when using DistributedMetricsFormat::PerTask
                     expected_metrics_set =
-                        annotate_metrics_set_with_task_id(expected_metrics_set, task_id as u64);
+                        annotate_metrics_set_with_task_id(&expected_metrics_set, task_id as u64);
                 }
                 assert!(metrics_set_eq(&actual_metrics_set, &expected_metrics_set));
             }
@@ -673,7 +662,7 @@ mod tests {
         )));
 
         let task_id = 42;
-        let annotated = annotate_metrics_set_with_task_id(metrics_set, task_id);
+        let annotated = annotate_metrics_set_with_task_id(&metrics_set, task_id);
 
         // Verify we have one metric
         assert_eq!(annotated.iter().count(), 1);
@@ -698,5 +687,12 @@ mod tests {
         assert_eq!(labels[0].value(), "scan");
         assert_eq!(labels[1].name(), DISTRIBUTED_DATAFUSION_TASK_ID_LABEL);
         assert_eq!(labels[1].value(), "42");
+    }
+
+    /// Adds task id labels to all metrics in the provided [MetricsSet].
+    fn annotate_metrics_set_with_task_id(metrics_set: &MetricsSet, task_id: u64) -> MetricsSet {
+        let mut result = MetricsSet::new();
+        extend_with_task_id_label(&mut result, metrics_set, &task_id_label(task_id));
+        result
     }
 }

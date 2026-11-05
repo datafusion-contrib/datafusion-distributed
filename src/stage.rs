@@ -452,26 +452,19 @@ fn display_inner_distributed_leaf(
 /// task id labels in all metrics.
 fn aggregate_by_task_id(metrics: &MetricsSet) -> MetricsSet {
     // Key: (metric_name, Option<task_id>)
-    let mut map: HashMap<(String, Option<String>), Metric> = HashMap::new();
+    let mut map: HashMap<(&str, Option<&str>), Metric> = HashMap::new();
 
     for metric in metrics.iter() {
-        let name = metric.value().name().to_string();
-        let task_id = metric
-            .labels()
-            .iter()
-            .find(|l| l.name() == DISTRIBUTED_DATAFUSION_TASK_ID_LABEL)
-            .map(|l| l.value().to_string());
+        let task_id = find_task_id_label(metric);
 
-        let key = (name, task_id.clone());
+        let key = (metric.value().name(), task_id.map(|l| l.value()));
 
         map.entry(key)
             .and_modify(|accum| {
                 accum.value_mut().aggregate(metric.value());
             })
             .or_insert_with(|| {
-                let labels = task_id
-                    .map(|id| vec![Label::new(DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, id)])
-                    .unwrap_or_default();
+                let labels = task_id.cloned().into_iter().collect();
                 let mut accum = Metric::new_with_labels(
                     metric.value().new_empty(),
                     None, // no partition
@@ -495,24 +488,16 @@ fn aggregate_by_task_id(metrics: &MetricsSet) -> MetricsSet {
 /// will be no task ids. For a distributed plan, it's expected that the metrics rewriter populated
 /// task id labels in all metrics.
 fn sorted_for_display_by_task_id(metrics: MetricsSet) -> MetricsSet {
-    let mut vec: Vec<Arc<Metric>> = metrics.iter().cloned().collect();
-    vec.sort_unstable_by_key(|metric| {
-        let task_id = metric
-            .labels()
-            .iter()
-            .find(|l| l.name() == DISTRIBUTED_DATAFUSION_TASK_ID_LABEL)
-            .and_then(|l| l.value().parse::<u64>().ok());
-        (
-            metric.value().display_sort_key(),
-            metric.value().name().to_owned(),
-            task_id,
-        )
-    });
-    let mut result = MetricsSet::new();
-    for m in vec {
-        result.push(m);
-    }
-    result
+    let mut keyed: Vec<_> = metrics
+        .iter()
+        .map(|m| {
+            let task_id = find_task_id_label(m).and_then(|l| l.value().parse::<u64>().ok());
+            let key = (m.value().display_sort_key(), m.value().name(), task_id);
+            (key, m)
+        })
+        .collect();
+    keyed.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    keyed.into_iter().map(|(_, m)| Arc::clone(m)).collect()
 }
 
 /// Formats metrics grouped by name, collapsing each metric's per-task values into a
@@ -532,14 +517,10 @@ fn format_metrics_by_task(metrics: &MetricsSet) -> String {
     // Metrics are sorted by (name, task_id), so entries sharing a name are contiguous. Fold each
     // name into a single group, then render task-labeled values as a `{task_id:value, ...}` map and
     // task-less values (non-distributed plans) as a bare `value`.
-    let mut groups: Vec<(String, bool, Vec<String>)> = Vec::new();
+    let mut groups: Vec<(&str, bool, Vec<String>)> = Vec::new();
     for m in sorted.iter() {
-        let name = m.value().name().to_string();
-        let task_id = m
-            .labels()
-            .iter()
-            .find(|l| l.name() == DISTRIBUTED_DATAFUSION_TASK_ID_LABEL)
-            .map(|l| l.value());
+        let name = m.value().name();
+        let task_id = find_task_id_label(m).map(|l| l.value());
         let entry = match task_id {
             Some(id) => format!("{id}:{}", m.value()),
             None => m.value().to_string(),
@@ -569,17 +550,22 @@ fn metrics_suffix(formatted: Option<String>) -> String {
     }
 }
 
+/// Returns the [DISTRIBUTED_DATAFUSION_TASK_ID_LABEL] label of `metric`, if any.
+fn find_task_id_label(metric: &Metric) -> Option<&Label> {
+    metric
+        .labels()
+        .iter()
+        .find(|l| l.name() == DISTRIBUTED_DATAFUSION_TASK_ID_LABEL)
+}
+
 /// Splits a [MetricsSet] into a map from task index to the metrics belonging to that task.
 /// Only metrics that carry a [DISTRIBUTED_DATAFUSION_TASK_ID_LABEL] are included; metrics without
 /// that label are dropped. Returns an empty map when no task-labelled metrics are present.
 fn metrics_by_task_id(metrics: &MetricsSet) -> HashMap<usize, MetricsSet> {
     let mut map: HashMap<usize, MetricsSet> = HashMap::new();
     for metric in metrics.iter() {
-        let Some(task_id) = metric
-            .labels()
-            .iter()
-            .find(|l| l.name() == DISTRIBUTED_DATAFUSION_TASK_ID_LABEL)
-            .and_then(|l| l.value().parse::<usize>().ok())
+        let Some(task_id) =
+            find_task_id_label(metric).and_then(|l| l.value().parse::<usize>().ok())
         else {
             continue;
         };
