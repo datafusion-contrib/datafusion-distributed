@@ -370,6 +370,24 @@ pub trait DistributedExt: Sized {
     /// Same as [DistributedExt::with_distributed_metrics_collection] but with an in-place mutation.
     fn set_distributed_metrics_collection(&mut self, enabled: bool) -> Result<(), DataFusionError>;
 
+    /// Aggregates each plan node's metrics per task on the workers before sending them to the
+    /// coordinator, instead of sending one value per partition. This keeps metrics collection
+    /// cheap for plans with many partitions, at the cost of not exposing per-partition worker
+    /// metrics in [rewrite_distributed_plan_with_metrics]. Enabled by default.
+    ///
+    /// [rewrite_distributed_plan_with_metrics]: crate::rewrite_distributed_plan_with_metrics
+    fn with_distributed_aggregate_metrics_on_workers_before_collection(
+        self,
+        enabled: bool,
+    ) -> Result<Self, DataFusionError>;
+
+    /// Same as [DistributedExt::with_distributed_aggregate_metrics_on_workers_before_collection] but with an in-place
+    /// mutation.
+    fn set_distributed_aggregate_metrics_on_workers_before_collection(
+        &mut self,
+        enabled: bool,
+    ) -> Result<(), DataFusionError>;
+
     /// Collects completed dynamic filters from worker tasks so they can be displayed in the
     /// distributed plan. This does not enable or disable dynamic filtering during execution.
     fn with_distributed_dynamic_filter_collection(
@@ -846,6 +864,15 @@ impl DistributedExt for SessionConfig {
         Ok(())
     }
 
+    fn set_distributed_aggregate_metrics_on_workers_before_collection(
+        &mut self,
+        enabled: bool,
+    ) -> Result<(), DataFusionError> {
+        let d_cfg = DistributedConfig::from_config_options_mut(self.options_mut())?;
+        d_cfg.aggregate_metrics_on_workers_before_collection = enabled;
+        Ok(())
+    }
+
     fn set_distributed_dynamic_filter_collection(
         &mut self,
         enabled: bool,
@@ -1027,6 +1054,10 @@ impl DistributedExt for SessionConfig {
             #[expr($?;Ok(self))]
             fn with_distributed_metrics_collection(mut self, enabled: bool) -> Result<Self, DataFusionError>;
 
+            #[call(set_distributed_aggregate_metrics_on_workers_before_collection)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_aggregate_metrics_on_workers_before_collection(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+
             #[call(set_distributed_dynamic_filter_collection)]
             #[expr($?;Ok(self))]
             fn with_distributed_dynamic_filter_collection(mut self, enabled: bool) -> Result<Self, DataFusionError>;
@@ -1164,6 +1195,11 @@ impl DistributedExt for SessionStateBuilder {
             #[call(set_distributed_metrics_collection)]
             #[expr($?;Ok(self))]
             fn with_distributed_metrics_collection(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_aggregate_metrics_on_workers_before_collection(&mut self, enabled: bool) -> Result<(), DataFusionError>;
+            #[call(set_distributed_aggregate_metrics_on_workers_before_collection)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_aggregate_metrics_on_workers_before_collection(mut self, enabled: bool) -> Result<Self, DataFusionError>;
 
             fn set_distributed_dynamic_filter_collection(&mut self, enabled: bool) -> Result<(), DataFusionError>;
             #[call(set_distributed_dynamic_filter_collection)]
@@ -1330,6 +1366,11 @@ impl DistributedExt for SessionState {
             #[expr($?;Ok(self))]
             fn with_distributed_metrics_collection(mut self, enabled: bool) -> Result<Self, DataFusionError>;
 
+            fn set_distributed_aggregate_metrics_on_workers_before_collection(&mut self, enabled: bool) -> Result<(), DataFusionError>;
+            #[call(set_distributed_aggregate_metrics_on_workers_before_collection)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_aggregate_metrics_on_workers_before_collection(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+
             fn set_distributed_dynamic_filter_collection(&mut self, enabled: bool) -> Result<(), DataFusionError>;
             #[call(set_distributed_dynamic_filter_collection)]
             #[expr($?;Ok(self))]
@@ -1487,6 +1528,11 @@ impl DistributedExt for SessionContext {
             #[call(set_distributed_metrics_collection)]
             #[expr($?;Ok(self))]
             fn with_distributed_metrics_collection(self, enabled: bool) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_aggregate_metrics_on_workers_before_collection(&mut self, enabled: bool) -> Result<(), DataFusionError>;
+            #[call(set_distributed_aggregate_metrics_on_workers_before_collection)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_aggregate_metrics_on_workers_before_collection(self, enabled: bool) -> Result<Self, DataFusionError>;
 
             fn set_distributed_dynamic_filter_collection(&mut self, enabled: bool) -> Result<(), DataFusionError>;
             #[call(set_distributed_dynamic_filter_collection)]
