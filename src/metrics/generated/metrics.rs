@@ -232,3 +232,39 @@ pub struct MaxGauge {
     #[prost(uint64, tag = "2")]
     pub value: u64,
 }
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct StageDump {
+    #[prost(uint64, tag = "1")]
+    pub stage_id: u64,
+    #[prost(message, repeated, tag = "2")]
+    pub metrics: ::prost::alloc::vec::Vec<TaskLabeledMetricsSet>,
+    #[prost(message, optional, boxed, tag = "3")]
+    pub plan_dump: ::core::option::Option<::prost::alloc::boxed::Box<PlanDump>>,
+    /// The number of tasks the stage ran with.
+    #[prost(uint64, tag = "4")]
+    pub tasks: u64,
+    /// The number of partitions the stage spans across all its tasks.
+    #[prost(uint64, tag = "5")]
+    pub partitions: u64,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PlanDump {
+    #[prost(string, tag = "1")]
+    pub display: ::prost::alloc::string::String,
+    #[prost(message, repeated, tag = "2")]
+    pub metrics: ::prost::alloc::vec::Vec<TaskLabeledMetricsSet>,
+    #[prost(message, repeated, tag = "3")]
+    pub children: ::prost::alloc::vec::Vec<PlanDump>,
+    /// For network boundaries, the stage they read from. Its plan is not part of `children`.
+    #[prost(message, optional, boxed, tag = "4")]
+    pub input_stage: ::core::option::Option<::prost::alloc::boxed::Box<StageDump>>,
+}
+/// The metrics of one task, or the ones that do not belong to a specific task if `task` is not set.
+/// Grouping them by task keeps each metric from carrying a task label.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct TaskLabeledMetricsSet {
+    #[prost(uint64, optional, tag = "1")]
+    pub task: ::core::option::Option<u64>,
+    #[prost(message, optional, tag = "2")]
+    pub metrics_set: ::core::option::Option<MetricsSet>,
+}
