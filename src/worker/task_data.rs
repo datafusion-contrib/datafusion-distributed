@@ -1,12 +1,17 @@
 use crate::common::OnceLockResult;
 use crate::common::now_ns;
-use crate::{MaxLatencyMetric, ProducerHead, TaskCompletedDynamicFilters, TaskMetrics};
+use crate::{
+    MaxLatencyMetric, ProducerHead, TaskCompletedDynamicFilters, TaskMetrics, TaskOutcome,
+};
+use datafusion::arrow::array::RecordBatch;
 use datafusion::common::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::metrics::{Metric, MetricValue, MetricsSet};
+use futures::{Stream, StreamExt, TryStreamExt, future, stream};
 use std::borrow::Cow;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::oneshot;
 
@@ -30,6 +35,52 @@ pub struct TaskData {
     /// associated to a specific node, they are global to the task, like the time at which the plan
     /// was fed by the coordinator to the worker.
     pub(super) task_data_metrics: Arc<TaskDataMetrics>,
+    /// Records how the task's partition streams end, to report the task's [TaskOutcome].
+    pub(super) outcome_tracker: Arc<TaskOutcomeTracker>,
+}
+
+/// Records the first error and the number of finished partition streams of a task.
+#[derive(Debug, Default)]
+pub(super) struct TaskOutcomeTracker {
+    first_error: OnceLock<Arc<DataFusionError>>,
+    finished_partitions: AtomicUsize,
+}
+
+impl TaskOutcomeTracker {
+    /// Wraps a partition stream to record its errors and its end. Errors are passed on as
+    /// [DataFusionError::Shared], so that the tracker can keep a reference to them.
+    pub(super) fn track(
+        self: &Arc<Self>,
+        stream: impl Stream<Item = Result<RecordBatch>> + Send + 'static,
+    ) -> impl Stream<Item = Result<RecordBatch>> + Send + 'static {
+        let on_error = Arc::clone(self);
+        let on_end = Arc::clone(self);
+        let end_marker = stream::once(async move {
+            on_end.finished_partitions.fetch_add(1, Ordering::Release);
+            None
+        });
+        stream
+            .map_err(move |err| {
+                let err = match err {
+                    DataFusionError::Shared(err) => err,
+                    err => Arc::new(err),
+                };
+                let _ = on_error.first_error.set(Arc::clone(&err));
+                DataFusionError::Shared(err)
+            })
+            .chain(end_marker.filter_map(future::ready))
+    }
+
+    /// Returns the outcome of a task whose final plan has `partition_count` partitions.
+    pub(super) fn outcome(&self, partition_count: usize) -> TaskOutcome<'_> {
+        if let Some(err) = self.first_error.get() {
+            TaskOutcome::Failed(err)
+        } else if self.finished_partitions.load(Ordering::Acquire) == partition_count {
+            TaskOutcome::Succeeded
+        } else {
+            TaskOutcome::Incomplete
+        }
+    }
 }
 
 pub(crate) const PLAN_ADDED_AT_METRIC: &str = "plan_added_at";

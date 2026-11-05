@@ -31,8 +31,7 @@ pub use events::{
     DesiredTaskCountHandler, RouteTaskEvent, RouteTaskEventResponse, RouteTaskHandler,
     ScaleUpLeafNodeEvent, ScaleUpLeafNodeEventResponse, ScaleUpLeafNodeHandler,
     TaskCountAnnotation, TaskFinishedEvent, TaskFinishedEventResponse, TaskFinishedHandler,
-    WorkerPlanRewriteEvent, WorkerPlanRewriteEventResponse, WorkerPlanRewriteHandler,
-    WorkerStreamExecutedEvent, WorkerStreamExecutedEventResponse, WorkerStreamExecutedHandler,
+    TaskOutcome, WorkerPlanRewriteEvent, WorkerPlanRewriteEventResponse, WorkerPlanRewriteHandler,
 };
 pub use execution_plans::{
     BroadcastExec, DistributedLeafExec, NetworkBroadcastExec, NetworkCoalesceExec,

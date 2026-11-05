@@ -5,7 +5,6 @@ mod route_tasks;
 mod scale_up_leaf_node;
 mod task_finished;
 mod worker_plan_rewrite;
-mod worker_stream_executed;
 
 pub(crate) use defaults::{
     RandomRouteTaskHandler, SingleTaskChildUrlRouteTaskHandler,
@@ -26,12 +25,10 @@ pub use scale_up_leaf_node::{
     ScaleUpLeafNodeEvent, ScaleUpLeafNodeEventResponse, ScaleUpLeafNodeHandler,
 };
 pub(crate) use task_finished::TaskFinishedHandlers;
-pub use task_finished::{TaskFinishedEvent, TaskFinishedEventResponse, TaskFinishedHandler};
+pub use task_finished::{
+    TaskFinishedEvent, TaskFinishedEventResponse, TaskFinishedHandler, TaskOutcome,
+};
 pub(crate) use worker_plan_rewrite::WorkerPlanRewriteHandlers;
 pub use worker_plan_rewrite::{
     WorkerPlanRewriteEvent, WorkerPlanRewriteEventResponse, WorkerPlanRewriteHandler,
-};
-pub(crate) use worker_stream_executed::WorkerStreamExecutedHandlers;
-pub use worker_stream_executed::{
-    WorkerStreamExecutedEvent, WorkerStreamExecutedEventResponse, WorkerStreamExecutedHandler,
 };

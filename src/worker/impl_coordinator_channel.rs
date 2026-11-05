@@ -124,6 +124,7 @@ impl Worker {
                     false => Arc::new(std::sync::Mutex::new(None)),
                 },
                 task_data_metrics: Arc::new(TaskDataMetrics::new(request.query_start_time_ns)),
+                outcome_tracker: Default::default(),
             })
         };
 
@@ -257,18 +258,15 @@ impl Worker {
                 };
                 let task_data_metrics = &task_data.task_data_metrics;
                 task_data_metrics.mark_execution_finished();
-                // Task-scoped metrics (not tied to any plan node) contributed by every
-                // registered TaskFinishedHandler, e.g. a task's peak memory usage. Computed here,
-                // synchronously, right as the task finishes — unconditionally, per
-                // TaskFinishedHandler's documented contract: it runs whenever a task finishes,
-                // not only when metrics collection happens to be enabled. A handler may rely on
-                // this for teardown (e.g. unregistering external per-task state) that must
-                // happen exactly once per task regardless of whether metrics are collected.
+                let outcome = task_data
+                    .outcome_tracker
+                    .outcome(plan.properties().partitioning.partition_count());
                 let task_finished_metrics = TaskFinishedHandlers::handle(
                     plan,
                     key,
                     d_ctx,
                     task_finished_task_ctx.session_config(),
+                    outcome,
                 );
                 if let Some(metrics_tx) = metrics_tx {
                     send_metrics_via_channel(
@@ -436,10 +434,7 @@ fn build_task_completed_dynamic_filters(
 /// Collects metrics from the plan in pre-order traversal order and sends them via the
 /// coordinator channel oneshot.
 ///
-/// `task_finished_metrics` are the task-scoped metrics (not tied to any plan node) contributed
-/// by every registered [`crate::TaskFinishedHandler`]; they are appended to
-/// `task_data_metrics`'s own built-in metrics here, not inside `TaskDataMetrics` itself —
-/// `TaskDataMetrics` keeps its original, narrow shape and does not need to know about handlers.
+/// `task_finished_metrics` are appended to the task's built-in metrics.
 fn send_metrics_via_channel(
     metrics_tx: Sender<TaskMetrics>,
     plan: &Arc<dyn ExecutionPlan>,

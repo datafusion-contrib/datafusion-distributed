@@ -118,6 +118,8 @@ A few more worker capabilities have their own pages:
 
 - [Worker plan rewrite handlers](../advanced/03-plan-hooks.md) — run worker-local rewrites on each decoded plan
   before it executes.
+- [Task finished handlers](../advanced/03-plan-hooks.md#task-finished-handlers) — observe how
+  each task ended and report task-scoped metrics.
 - [Worker versioning](../advanced/07-worker-versioning.md) — tag workers with a version and
   route queries only to compatible workers during rolling deployments.
 - [Propagating config extensions](../advanced/02-config-extensions.md) — make your custom
