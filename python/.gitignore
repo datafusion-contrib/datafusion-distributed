@@ -1,0 +1,5 @@
+/.venv/
+/.pytest_cache/
+/target/
+/datafusion_distributed/*.so
+**/__pycache__/
