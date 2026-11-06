@@ -31,7 +31,6 @@ use http::HeaderMap;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::mpsc::channel;
-use tokio::sync::oneshot::Sender;
 use tokio::sync::{oneshot, watch};
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -159,6 +158,8 @@ impl Worker {
         let mut work_unit_senders = Some(remote_work_unit_feed_registry.senders);
         let task_data_entries = Arc::clone(&self.task_data_entries);
         let dynamic_filter_task_ctx = Arc::clone(&task_data.task_ctx);
+        let d_cfg = DistributedConfig::from_session_config(task_data.task_ctx.session_config())?;
+        let aggregate_metrics = d_cfg.aggregate_metrics_on_workers_before_collection;
 
         // This tokio task takes ownership of the final-report senders that keep the
         // worker->coordinator stream alive. As soon as this task ends, the runtime metrics and
@@ -256,7 +257,21 @@ impl Worker {
                 let task_data_metrics = &task_data.task_data_metrics;
                 task_data_metrics.mark_execution_finished();
                 if let Some(metrics_tx) = metrics_tx {
-                    send_metrics_via_channel(metrics_tx, plan, d_ctx, task_data_metrics);
+                    let mut pre_order_plan_metrics = vec![];
+                    let _ = plan.apply_with_dt_ctx(d_ctx, |node, _| {
+                        let metrics = node.metrics().unwrap_or_default();
+                        pre_order_plan_metrics.push(match aggregate_metrics {
+                            true => metrics.aggregate_by_name(),
+                            false => metrics,
+                        });
+                        Ok(TreeNodeRecursion::Continue)
+                    });
+
+                    // Ignore send errors — the coordinator channel may have been dropped (e.g. query cancelled).
+                    let _ = metrics_tx.send(TaskMetrics {
+                        pre_order_plan_metrics,
+                        task_metrics: task_data_metrics.to_metrics_set(),
+                    });
                 }
                 if let Some(dynamic_filters_tx) = dynamic_filters_tx {
                     // TODO(#686): handle error
@@ -410,27 +425,6 @@ fn build_task_completed_dynamic_filters(
         });
     }
     Ok(TaskCompletedDynamicFilters { filters })
-}
-
-/// Collects metrics from the plan in pre-order traversal order and sends them via the
-/// coordinator channel oneshot.
-fn send_metrics_via_channel(
-    metrics_tx: Sender<TaskMetrics>,
-    plan: &Arc<dyn ExecutionPlan>,
-    dt_ctx: DistributedTaskContext,
-    task_data_metrics: &Arc<TaskDataMetrics>,
-) {
-    let mut pre_order_plan_metrics = vec![];
-    let _ = plan.apply_with_dt_ctx(dt_ctx, |node, _| {
-        pre_order_plan_metrics.push(node.metrics().unwrap_or_default());
-        Ok(TreeNodeRecursion::Continue)
-    });
-
-    // Ignore send errors — the coordinator channel may have been dropped (e.g. query cancelled).
-    let _ = metrics_tx.send(TaskMetrics {
-        pre_order_plan_metrics,
-        task_metrics: task_data_metrics.to_metrics_set(),
-    });
 }
 
 #[cfg(test)]

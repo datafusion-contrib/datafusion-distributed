@@ -29,6 +29,11 @@ extensions_options! {
         /// Propagate collected metrics from all nodes in the plan across network boundaries
         /// so that they can be reconstructed on the head node of the plan.
         pub collect_metrics: bool, default = true
+        /// Aggregate each plan node's metrics per task on the workers before sending them to the
+        /// coordinator, instead of sending one value per partition. When disabled, per-partition
+        /// worker metrics are available in `rewrite_distributed_plan_with_metrics`, at a cost
+        /// that grows with the partition count.
+        pub aggregate_metrics_on_workers_before_collection: bool, default = true
         /// Collect completed dynamic filters from worker tasks so that they can be displayed in
         /// the distributed plan. This does not control whether dynamic filtering is used during
         /// query execution.
