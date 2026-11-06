@@ -97,6 +97,20 @@ impl DistributedExec {
         Some(task_metrics.wait_for(&task_keys_for_plan(plan)).await)
     }
 
+    /// Returns the metrics that worker tasks have reported so far, without waiting for the rest.
+    /// Tasks that have not reported yet are absent from the result.
+    pub fn metrics_snapshot(&self) -> Option<HashMap<TaskKey, TaskMetrics>> {
+        let task_metrics = self.metrics_store.as_ref()?;
+        self.prepared_plan.get()?;
+        Some(task_metrics.snapshot())
+    }
+
+    /// Keys of every worker task in the prepared plan, whether or not it has reported.
+    pub(crate) fn task_keys(&self) -> Option<Vec<TaskKey>> {
+        let plan = &self.prepared_plan.get()?.plan_for_viz;
+        Some(task_keys_for_plan(plan))
+    }
+
     /// Waits until all worker tasks have reported their completed dynamic filters back via
     /// the coordinator channel if dynamic filter collection is enabled.
     pub(crate) async fn wait_for_dynamic_filters(

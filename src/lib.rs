@@ -41,7 +41,8 @@ pub use metrics::{
     AvgLatencyMetric, BytesCounterMetric, BytesMetricExt, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL,
     DistributedMetricsFormat, FirstLatencyMetric, GaugeMetricExt, LatencyMetricExt, MaxGaugeMetric,
     MaxLatencyMetric, MinLatencyMetric, P50LatencyMetric, P75LatencyMetric, P95LatencyMetric,
-    P99LatencyMetric, rewrite_distributed_plan_with_metrics,
+    P99LatencyMetric, rewrite_distributed_plan_with_available_metrics,
+    rewrite_distributed_plan_with_metrics,
 };
 pub use protocol::LocalWorkerContext;
 

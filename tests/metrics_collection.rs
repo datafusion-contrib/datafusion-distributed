@@ -18,8 +18,8 @@ mod tests {
     use datafusion_distributed::{
         DefaultSessionBuilder, DistributedExec, DistributedExt, DistributedLeafExec,
         DistributedMetricsFormat, NetworkCoalesceExec, NetworkShuffleExec, TaskKey, TaskMetrics,
-        WorkerQueryContext, display_plan_ascii, rewrite_distributed_plan_with_dynamic_filters,
-        rewrite_distributed_plan_with_metrics,
+        WorkerQueryContext, display_plan_ascii, rewrite_distributed_plan_with_available_metrics,
+        rewrite_distributed_plan_with_dynamic_filters, rewrite_distributed_plan_with_metrics,
     };
     use futures::TryStreamExt;
     use std::sync::Arc;
@@ -423,6 +423,73 @@ mod tests {
             rewrite_distributed_plan_with_metrics(plan, DistributedMetricsFormat::PerTask),
         )
         .await??;
+        Ok(())
+    }
+
+    /// While the query runs no worker has reported, and the rewrite with the available metrics
+    /// still returns. Only the coordinator's nodes have metrics.
+    #[tokio::test]
+    async fn available_metrics_while_query_runs() -> Result<(), Box<dyn std::error::Error>> {
+        let (ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+        register_parquet_tables(&ctx).await?;
+
+        let query = r#"SELECT "FL_DATE", count(*) FROM flights_1m GROUP BY "FL_DATE""#;
+        let plan = ctx.sql(query).await?.create_physical_plan().await?;
+        let mut stream = execute_stream(plan.clone(), ctx.task_ctx())?;
+        assert!(stream.try_next().await?.is_some());
+
+        // Workers report their metrics when the query ends, so none has reported yet.
+        let d_exec = plan
+            .downcast_ref::<DistributedExec>()
+            .expect("plan root should be a DistributedExec");
+        assert_eq!(d_exec.metrics_snapshot().map(|m| m.len()), Some(0));
+
+        let plan = rewrite_distributed_plan_with_available_metrics(
+            plan,
+            DistributedMetricsFormat::Aggregated,
+        )?;
+        let display = display_plan_ascii(plan.as_ref(), true);
+        let coordinator_node = display
+            .lines()
+            .find(|l| l.contains("NetworkCoalesceExec"))
+            .expect("expected a NetworkCoalesceExec on the coordinator");
+        assert_contains!(coordinator_node, "metrics=[output_rows=");
+        let worker_node = display
+            .lines()
+            .find(|l| l.contains("AggregateExec: mode=Partial"))
+            .expect("expected a partial AggregateExec on the workers");
+        assert_contains!(worker_node, "metrics=[]");
+
+        drop(stream);
+        Ok(())
+    }
+
+    /// Once every worker has reported, the rewrite with the available metrics matches the one
+    /// that waits for them.
+    #[tokio::test]
+    async fn available_metrics_after_query_ends() -> Result<(), Box<dyn std::error::Error>> {
+        let (ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+        register_parquet_tables(&ctx).await?;
+
+        let query = r#"SELECT "FL_DATE", count(*) FROM flights_1m GROUP BY "FL_DATE""#;
+        let plan = ctx.sql(query).await?.create_physical_plan().await?;
+        execute_stream(plan.clone(), ctx.task_ctx())?
+            .try_collect::<Vec<_>>()
+            .await?;
+
+        let waited = tokio::time::timeout(
+            COLLECTION_TIMEOUT,
+            rewrite_distributed_plan_with_metrics(plan.clone(), DistributedMetricsFormat::PerTask),
+        )
+        .await??;
+        let available = rewrite_distributed_plan_with_available_metrics(
+            plan,
+            DistributedMetricsFormat::PerTask,
+        )?;
+        assert_eq!(
+            display_plan_ascii(available.as_ref(), true),
+            display_plan_ascii(waited.as_ref(), true)
+        );
         Ok(())
     }
 
