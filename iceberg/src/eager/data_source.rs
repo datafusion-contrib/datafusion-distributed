@@ -10,6 +10,7 @@ use datafusion::physical_expr::projection::ProjectionExprs;
 use datafusion::physical_expr::{EquivalenceProperties, Partitioning, PhysicalExpr};
 use datafusion::physical_plan::DisplayFormatType;
 use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
+use datafusion_distributed::instrument_scan;
 use futures::StreamExt;
 use iceberg::io::FileIO;
 use iceberg::scan::FileScanTask;
@@ -151,17 +152,20 @@ impl DataSource for EagerIcebergDataSource {
     fn open(
         &self,
         partition: usize,
-        _context: Arc<TaskContext>,
+        context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        let count = self.planned_partition_tasks(partition)?.len();
-        let source = self.clone();
-        let tasks = futures::stream::iter(0..count)
-            .map(move |offset| {
-                Ok(source.files.tasks()[source.partitions[partition][offset]].clone())
-            })
-            .boxed();
-        self.scan.open(tasks, partition)
+        instrument_scan("iceberg", partition, &context, &self.scan.metrics, || {
+            let count = self.planned_partition_tasks(partition)?.len();
+            let source = self.clone();
+            let tasks = futures::stream::iter(0..count)
+                .map(move |offset| {
+                    Ok(source.files.tasks()[source.partitions[partition][offset]].clone())
+                })
+                .boxed();
+            self.scan.open(tasks, partition)
+        })
     }
+
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(
             f,

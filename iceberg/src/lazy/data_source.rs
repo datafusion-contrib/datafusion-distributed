@@ -13,7 +13,7 @@ use datafusion::physical_expr::{Partitioning, PhysicalSortExpr};
 use datafusion::physical_plan::filter_pushdown::{FilterPushdownPropagation, PushedDown};
 use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
 use datafusion::physical_plan::{DisplayFormatType, SortOrderPushdownResult};
-use datafusion_distributed::WorkUnitFeed;
+use datafusion_distributed::{WorkUnitFeed, instrument_scan};
 use futures::StreamExt;
 use iceberg::spec::SnapshotRef;
 
@@ -136,15 +136,17 @@ impl DataSource for LazyIcebergDataSource {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        let feed = self
-            .feed
-            .feed(partition, Arc::clone(&context))?
-            .map(|work_unit_or_err| match work_unit_or_err {
-                Ok(work_unit) => work_unit.into_task().map_err(iceberg_err),
-                Err(err) => Err(iceberg_err(err)),
-            })
-            .boxed();
-        self.scan.open(feed, partition)
+        instrument_scan("iceberg", partition, &context, &self.scan.metrics, || {
+            let feed = self
+                .feed
+                .feed(partition, Arc::clone(&context))?
+                .map(|work_unit_or_err| match work_unit_or_err {
+                    Ok(work_unit) => work_unit.into_task().map_err(iceberg_err),
+                    Err(err) => Err(iceberg_err(err)),
+                })
+                .boxed();
+            self.scan.open(feed, partition)
+        })
     }
 
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
