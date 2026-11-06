@@ -14,10 +14,12 @@ mod tests {
     use datafusion::physical_plan::metrics::{Count, ExecutionPlanMetricsSet, MetricBuilder};
     use datafusion::physical_plan::{ExecutionPlan, RecordBatchStream, collect};
     use datafusion_distributed::{
-        DistributedExt, DistributedMetricsFormat, ScanInstrumentation,
-        ScanInstrumentationExtension, ScanOpen, rewrite_distributed_plan_with_metrics,
+        DistributedExt, DistributedMetricsFormat, rewrite_distributed_plan_with_metrics,
     };
-    use datafusion_distributed_iceberg::{EagerIcebergDataSource, IcebergExt};
+    use datafusion_distributed_iceberg::{
+        EagerIcebergDataSource, IcebergExt, ScanInstrumentation, ScanInstrumentationExtension,
+        ScanOpen,
+    };
     use datafusion_distributed_iceberg_test_tools::{IcebergTestHarness, create_taxi_table};
     use futures::{Stream, TryStreamExt};
 
@@ -166,7 +168,6 @@ mod tests {
     impl ScanInstrumentation for RecordingInstrumentation {
         fn instrument(
             &self,
-            source: &str,
             partition: usize,
             _: &TaskContext,
             metrics: &ExecutionPlanMetricsSet,
@@ -176,7 +177,7 @@ mod tests {
                 self.errors.fetch_add(1, Ordering::Relaxed);
             })?;
             let rows = MetricBuilder::new(metrics)
-                .with_new_label("source", source.to_owned())
+                .with_new_label("source", "iceberg")
                 .counter("observed_rows", partition);
             Ok(Box::pin(ObservedStream {
                 input,

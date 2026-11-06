@@ -1,5 +1,6 @@
 use crate::common::scan_config::ScanConfig;
 use crate::eager::planned_files::PlannedFiles;
+use crate::scan_instrumentation::instrument_scan;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{Statistics, exec_err};
@@ -10,7 +11,6 @@ use datafusion::physical_expr::projection::ProjectionExprs;
 use datafusion::physical_expr::{EquivalenceProperties, Partitioning, PhysicalExpr};
 use datafusion::physical_plan::DisplayFormatType;
 use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
-use datafusion_distributed::instrument_scan;
 use futures::StreamExt;
 use iceberg::io::FileIO;
 use iceberg::scan::FileScanTask;
@@ -154,7 +154,7 @@ impl DataSource for EagerIcebergDataSource {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        instrument_scan("iceberg", partition, &context, &self.scan.metrics, || {
+        instrument_scan(partition, &context, &self.scan.metrics, || {
             let count = self.planned_partition_tasks(partition)?.len();
             let source = self.clone();
             let tasks = futures::stream::iter(0..count)

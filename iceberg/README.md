@@ -130,12 +130,12 @@ separate optional byte field; a receiver without a matching codec returns an err
 
 ## Scan instrumentation
 
-Both eager and lazy Iceberg sources support DataFusion Distributed's
+Both eager and lazy Iceberg sources support this crate's
 `ScanInstrumentationExtension`, installed through `SessionConfig::with_extension`.
-The hook receives the source identity (`"iceberg"`), partition, task context,
+The hook receives the partition, task context,
 source metrics set, and a callback that opens the partition. See the
-[`ScanInstrumentationExtension` example](../src/metrics/scan_instrumentation.rs)
-for a reusable application metric helper.
+[`ScanInstrumentationExtension` example](src/scan_instrumentation.rs)
+for an application metric helper.
 
 Install the extension in every executing session, including worker sessions.
 The hook is resolved when the source opens, so it survives plan serialization

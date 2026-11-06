@@ -1,6 +1,7 @@
 use crate::common::scan_config::{ScanConfig, stats_from_snapshot};
 use std::sync::Arc;
 
+use crate::scan_instrumentation::instrument_scan;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{ColumnStatistics, Statistics};
 use datafusion::config::ConfigOptions;
@@ -13,7 +14,7 @@ use datafusion::physical_expr::{Partitioning, PhysicalSortExpr};
 use datafusion::physical_plan::filter_pushdown::{FilterPushdownPropagation, PushedDown};
 use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
 use datafusion::physical_plan::{DisplayFormatType, SortOrderPushdownResult};
-use datafusion_distributed::{WorkUnitFeed, instrument_scan};
+use datafusion_distributed::WorkUnitFeed;
 use futures::StreamExt;
 use iceberg::spec::SnapshotRef;
 
@@ -136,7 +137,7 @@ impl DataSource for LazyIcebergDataSource {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        instrument_scan("iceberg", partition, &context, &self.scan.metrics, || {
+        instrument_scan(partition, &context, &self.scan.metrics, || {
             let feed = self
                 .feed
                 .feed(partition, Arc::clone(&context))?
