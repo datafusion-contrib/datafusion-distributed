@@ -1,5 +1,6 @@
 use crate::coordinator::DistributedExec;
 use chrono::{DateTime, Utc};
+use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::metrics::{Count, Metric, MetricValue, MetricsSet, Time, Timestamp};
 use std::sync::Arc;
@@ -9,6 +10,57 @@ pub async fn wait_for_all_metrics(plan: &Arc<dyn ExecutionPlan>) {
     if let Some(dist_exec) = plan.downcast_ref::<DistributedExec>() {
         let _ = dist_exec.wait_for_metrics().await;
     }
+}
+
+/// Looks for an [ExecutionPlan] that matches the provided type parameter `T1` in
+/// the left node and `T2` in the right node and compares its metrics.
+/// There might be more than one, so `index` determines which one is compared.
+///
+/// If the two root nodes contain a child T with different metrics, the assertion fails.
+pub fn assert_metrics_equal<T1: ExecutionPlan + 'static, T2: ExecutionPlan + 'static>(
+    names: impl IntoIterator<Item = &'static str>,
+    one: &Arc<dyn ExecutionPlan>,
+    other: &Arc<dyn ExecutionPlan>,
+    index: usize,
+) {
+    for name in names.into_iter() {
+        let one_metric = node_metrics::<T1>(one, name, index);
+        let other_metric = node_metrics::<T2>(other, name, index);
+        assert_eq!(one_metric, other_metric);
+    }
+}
+
+/// Sums the values of the metrics named `metric_name` on the `index`th node of type `T`.
+pub fn node_metrics<T: ExecutionPlan + 'static>(
+    plan: &Arc<dyn ExecutionPlan>,
+    metric_name: &str,
+    mut index: usize,
+) -> usize {
+    let mut metrics = None;
+    plan.clone()
+        .transform_down(|plan| {
+            if plan.name() == T::static_name() {
+                metrics = plan.metrics();
+                if index == 0 {
+                    return Ok(Transformed::new(plan, false, TreeNodeRecursion::Stop));
+                }
+                index -= 1;
+            }
+            Ok(Transformed::no(plan))
+        })
+        .unwrap();
+    let metrics =
+        metrics.unwrap_or_else(|| panic!("Could not find metrics for plan {}", T::static_name()));
+    let summed = metrics
+        .iter()
+        .filter(|v| v.value().name().starts_with(metric_name))
+        .map(|v| v.value().as_usize())
+        .sum();
+    assert!(
+        summed > 0,
+        "Sum of metric values is 0. Either the metric {metric_name} is not present or the test is too trivial"
+    );
+    summed
 }
 
 /// creates a "distinct" set of metrics from the provided seed

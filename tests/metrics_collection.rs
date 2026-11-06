@@ -2,7 +2,6 @@
 mod tests {
     use datafusion::catalog::memory::DataSourceExec;
     use datafusion::common::assert_not_contains;
-    use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
     use datafusion::common::{HashMap, Result, assert_contains};
     use datafusion::execution::SessionState;
     use datafusion::physical_plan::display::DisplayableExecutionPlan;
@@ -10,6 +9,7 @@ mod tests {
     use datafusion::physical_plan::{ExecutionPlan, execute_stream};
     use datafusion::prelude::SessionContext;
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
+    use datafusion_distributed::test_utils::metrics::{assert_metrics_equal, node_metrics};
     use datafusion_distributed::test_utils::parquet::register_parquet_tables;
     use datafusion_distributed::test_utils::test_work_unit_feed::{
         RowGeneratorExec, TestWorkUnitFeedExecCodec, TestWorkUnitFeedFunction,
@@ -477,24 +477,6 @@ mod tests {
         Ok(())
     }
 
-    /// Looks for an [ExecutionPlan] that matches the provided type parameter `T1` in
-    /// the left node and `T2` in the right node and compares its metrics.
-    /// There might be more than one, so `index` determines which one is compared.
-    ///
-    /// If the two root nodes contain a child T with different metrics, the assertion fails.
-    fn assert_metrics_equal<T1: ExecutionPlan + 'static, T2: ExecutionPlan + 'static>(
-        names: impl IntoIterator<Item = &'static str>,
-        one: &Arc<dyn ExecutionPlan>,
-        other: &Arc<dyn ExecutionPlan>,
-        index: usize,
-    ) {
-        for name in names.into_iter() {
-            let one_metric = node_metrics::<T1>(one, name, index);
-            let other_metric = node_metrics::<T2>(other, name, index);
-            assert_eq!(one_metric, other_metric);
-        }
-    }
-
     /// Waits until every task of the executed `plan` has a final metrics report.
     async fn wait_for_task_metrics(plan: &Arc<dyn ExecutionPlan>) -> HashMap<TaskKey, TaskMetrics> {
         let d_exec = plan
@@ -537,38 +519,6 @@ mod tests {
             .await?;
 
         Ok((s_physical, d_physical))
-    }
-
-    fn node_metrics<T: ExecutionPlan + 'static>(
-        plan: &Arc<dyn ExecutionPlan>,
-        metric_name: &str,
-        mut index: usize,
-    ) -> usize {
-        let mut metrics = None;
-        plan.clone()
-            .transform_down(|plan| {
-                if plan.name() == T::static_name() {
-                    metrics = plan.metrics();
-                    if index == 0 {
-                        return Ok(Transformed::new(plan, false, TreeNodeRecursion::Stop));
-                    }
-                    index -= 1;
-                }
-                Ok(Transformed::no(plan))
-            })
-            .unwrap();
-        let metrics = metrics
-            .unwrap_or_else(|| panic!("Could not find metrics for plan {}", T::static_name()));
-        let summed = metrics
-            .iter()
-            .filter(|v| v.value().name().starts_with(metric_name))
-            .map(|v| v.value().as_usize())
-            .sum();
-        assert!(
-            summed > 0,
-            "Sum of metric values is 0. Either the metric {metric_name} is not present or the test is too trivial"
-        );
-        summed
     }
 
     fn disable_dynamic_filters(ctx: &SessionContext) {
