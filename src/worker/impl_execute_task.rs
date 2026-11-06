@@ -35,6 +35,7 @@ impl Worker {
         task_data.task_data_metrics.mark_execution_started_once();
 
         let plan = task_data.plan(request.producer_head)?;
+        let outcome_tracker = task_data.outcome_tracker;
         let task_ctx = task_data.task_ctx;
         let partition_count = plan.properties().partitioning.partition_count();
         let plan_name = plan.name();
@@ -50,7 +51,7 @@ impl Worker {
                 );
             }
 
-            let stream = plan.execute(partition, Arc::clone(&task_ctx))?;
+            let stream = outcome_tracker.track(plan.execute(partition, Arc::clone(&task_ctx))?);
             let stream_schema = plan.schema();
 
             streams.push(Box::pin(RecordBatchStreamAdapter::new(stream_schema, stream)) as _);

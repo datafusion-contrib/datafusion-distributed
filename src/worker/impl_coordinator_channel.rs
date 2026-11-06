@@ -5,7 +5,7 @@ use crate::dynamic_filtering::{
     apply_dynamic_filter_update, discover_dynamic_filter_consumers,
     discover_dynamic_filter_producers,
 };
-use crate::events::{WorkerPlanRewriteEvent, WorkerPlanRewriteHandlers};
+use crate::events::{TaskFinishedHandlers, WorkerPlanRewriteEvent, WorkerPlanRewriteHandlers};
 use crate::execution_plans::SamplerExec;
 use crate::protocol::LocalWorkerContext;
 use crate::work_unit_feed::{RemoteWorkUnitFeedRegistry, set_work_unit_received_time};
@@ -122,6 +122,7 @@ impl Worker {
                     false => Arc::new(std::sync::Mutex::new(None)),
                 },
                 task_data_metrics: Arc::new(TaskDataMetrics::new(request.query_start_time_ns)),
+                outcome_tracker: Default::default(),
             })
         };
 
@@ -158,6 +159,7 @@ impl Worker {
         let mut work_unit_senders = Some(remote_work_unit_feed_registry.senders);
         let task_data_entries = Arc::clone(&self.task_data_entries);
         let dynamic_filter_task_ctx = Arc::clone(&task_data.task_ctx);
+        let task_finished_task_ctx = Arc::clone(&task_data.task_ctx);
         let d_cfg = DistributedConfig::from_session_config(task_data.task_ctx.session_config())?;
         let aggregate_metrics = d_cfg.aggregate_metrics_on_workers_before_collection;
 
@@ -256,6 +258,16 @@ impl Worker {
                 };
                 let task_data_metrics = &task_data.task_data_metrics;
                 task_data_metrics.mark_execution_finished();
+                let outcome = task_data
+                    .outcome_tracker
+                    .outcome(plan.properties().partitioning.partition_count());
+                let task_finished_metrics = TaskFinishedHandlers::handle(
+                    plan,
+                    key,
+                    d_ctx,
+                    task_finished_task_ctx.session_config(),
+                    outcome,
+                );
                 if let Some(metrics_tx) = metrics_tx {
                     let mut pre_order_plan_metrics = vec![];
                     let _ = plan.apply_with_dt_ctx(d_ctx, |node, _| {
@@ -267,10 +279,13 @@ impl Worker {
                         Ok(TreeNodeRecursion::Continue)
                     });
 
+                    let mut task_metrics = task_data_metrics.to_metrics_set();
+                    task_metrics.extend(task_finished_metrics);
+
                     // Ignore send errors — the coordinator channel may have been dropped (e.g. query cancelled).
                     let _ = metrics_tx.send(TaskMetrics {
                         pre_order_plan_metrics,
-                        task_metrics: task_data_metrics.to_metrics_set(),
+                        task_metrics,
                     });
                 }
                 if let Some(dynamic_filters_tx) = dynamic_filters_tx {
