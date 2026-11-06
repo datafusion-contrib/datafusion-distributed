@@ -1,5 +1,6 @@
 use crate::common::require_one_child;
 use crate::distributed_planner::{NetworkBoundary, ProducerHead};
+use crate::execution_plans::common::validate_input_properties;
 use crate::stage::{LocalStage, Stage};
 use crate::worker::WorkerConnectionPool;
 use crate::{BroadcastExec, DistributedTaskContext};
@@ -125,18 +126,23 @@ pub struct NetworkBroadcastExec {
 }
 
 impl NetworkBroadcastExec {
-    pub(crate) fn from_stage(input_stage: Stage, input_properties: Arc<PlanProperties>) -> Self {
+    pub(crate) fn try_from_stage(
+        input_stage: Stage,
+        input_properties: Vec<Arc<PlanProperties>>,
+    ) -> Result<Self> {
+        let input_properties =
+            validate_input_properties(&input_properties, input_stage.task_count())?;
         let input_partition_count = input_properties.partitioning.partition_count();
         let properties = Arc::new(
-            PlanProperties::clone(&input_properties)
+            PlanProperties::clone(input_properties)
                 .with_partitioning(Partitioning::UnknownPartitioning(input_partition_count)),
         );
 
-        Self {
+        Ok(Self {
             properties,
             worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
             input_stage,
-        }
+        })
     }
 
     /// Creates a new [NetworkBroadcastExec] fed by the provided [BroadcastExec]. The input plan
@@ -146,20 +152,18 @@ impl NetworkBroadcastExec {
             return plan_err!("The input of a NetworkBroadcastExec can only be a BroadcastExec");
         }
 
-        let input_properties = Arc::clone(input.properties());
-        Ok(Self::from_stage(
-            Stage::Local(LocalStage {
-                // At this point, query_id and num are just placeholders that will be filled by
-                // prepare_network_boundaries.rs. Users are not expected to provide valid values for
-                // these two parameters.
-                query_id: Uuid::nil(),
-                num: 0,
-                plan: input,
-                tasks: producer_tasks,
-                metrics_set: Default::default(),
-            }),
-            input_properties,
-        ))
+        let input_stage = LocalStage {
+            // At this point, query_id and num are just placeholders that will be filled by
+            // prepare_network_boundaries.rs. Users are not expected to provide valid values for
+            // these two parameters.
+            query_id: Uuid::nil(),
+            num: 0,
+            plan: input,
+            tasks: producer_tasks,
+            metrics_set: Default::default(),
+        };
+        let input_properties = input_stage.task_properties()?;
+        Self::try_from_stage(Stage::Local(input_stage), input_properties)
     }
 }
 

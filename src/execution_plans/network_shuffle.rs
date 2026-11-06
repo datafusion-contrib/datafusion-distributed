@@ -1,6 +1,8 @@
 use crate::common::require_one_child;
 use crate::distributed_planner::ProducerHead;
-use crate::execution_plans::common::{salted_partitioning, scale_partitioning};
+use crate::execution_plans::common::{
+    salted_partitioning, scale_partitioning, validate_input_properties,
+};
 use crate::stage::{LocalStage, Stage};
 use crate::worker::WorkerConnectionPool;
 use crate::{DistributedTaskContext, MaybeEncoded, NetworkBoundary};
@@ -157,7 +159,20 @@ impl NetworkShuffleExec {
         }
     }
 
-    pub(crate) fn from_stage(input_stage: Stage, input_properties: Arc<PlanProperties>) -> Self {
+    pub(crate) fn try_from_stage(
+        input_stage: Stage,
+        input_properties: Vec<Arc<PlanProperties>>,
+    ) -> Result<Self> {
+        let first = validate_input_properties(&input_properties, input_stage.task_count())?;
+        if input_properties
+            .iter()
+            .any(|props| props.partitioning != first.partitioning)
+        {
+            return plan_err!(
+                "NetworkShuffleExec requires the same partitioning in every input task"
+            );
+        }
+        let input_properties = first;
         let producer_partitioning = input_properties.partitioning.clone();
         let properties = Arc::new(PlanProperties::new(
             input_properties.equivalence_properties().clone(),
@@ -165,13 +180,13 @@ impl NetworkShuffleExec {
             EmissionType::Incremental,
             Boundedness::Bounded,
         ));
-        Self {
+        Ok(Self {
             properties,
             producer_partitioning,
             worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
             input_stage,
             mode: ShuffleMode::Direct,
-        }
+        })
     }
 
     /// Returns a copy of this node switched to [ShuffleMode::TwoPhase]. The advertised
@@ -206,20 +221,18 @@ impl NetworkShuffleExec {
             return plan_err!("The input of a NetworkShuffleExec must be hash partitioned");
         }
 
-        let input_properties = Arc::clone(input.properties());
-        Ok(Self::from_stage(
-            Stage::Local(LocalStage {
-                // At this point, query_id and num are just placeholders that will be filled by
-                // prepare_network_boundaries.rs. Users are not expected to provide valid values for
-                // these two parameters.
-                query_id: Uuid::nil(),
-                num: 0,
-                plan: input,
-                tasks: producer_tasks,
-                metrics_set: Default::default(),
-            }),
-            input_properties,
-        ))
+        let input_stage = LocalStage {
+            // At this point, query_id and num are just placeholders that will be filled by
+            // prepare_network_boundaries.rs. Users are not expected to provide valid values for
+            // these two parameters.
+            query_id: Uuid::nil(),
+            num: 0,
+            plan: input,
+            tasks: producer_tasks,
+            metrics_set: Default::default(),
+        };
+        let input_properties = input_stage.task_properties()?;
+        Self::try_from_stage(Stage::Local(input_stage), input_properties)
     }
 }
 

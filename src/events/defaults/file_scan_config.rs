@@ -9,8 +9,9 @@ use datafusion::common::plan_err;
 use datafusion::datasource::physical_plan::{FileGroup, FileGroupPartitioner, FileScanConfig};
 use datafusion::datasource::source::DataSource;
 use datafusion::error::Result;
-use datafusion::physical_expr::Partitioning;
+use datafusion::physical_expr::{Partitioning, RangePartitioning};
 use datafusion::physical_plan::ExecutionPlanProperties;
+use std::iter::repeat_n;
 use std::sync::Arc;
 
 pub(crate) fn file_scan_config_desired_task_count(
@@ -21,6 +22,14 @@ pub(crate) fn file_scan_config_desired_task_count(
     let file_scan: &FileScanConfig = dse.data_source().downcast_ref()?;
 
     let d_cfg = DistributedConfig::from_session_config(cfg).ok()?;
+
+    if matches!(
+        file_scan.output_partitioning,
+        Some(Partitioning::Range(_) | Partitioning::Hash(_, _))
+    ) {
+        let tasks = file_scan.file_groups.len() as f64 / cfg.target_partitions().max(1) as f64;
+        return Some(Ok(DesiredTaskCountEventResponse::soft(tasks)));
+    }
 
     let mut total_bytes = 0;
     for file_group in &file_scan.file_groups {
@@ -45,9 +54,9 @@ pub(crate) fn file_scan_config_scale_up_leaf_node(
     let partition_count = ev.plan.output_partitioning().partition_count();
 
     let is_sorted = file_scan.eq_properties().output_ordering().is_some();
-    let is_pre_partitioned = !matches!(
-        file_scan.output_partitioning(),
-        Partitioning::UnknownPartitioning(_) | Partitioning::RoundRobinBatch(_)
+    let is_pre_partitioned = matches!(
+        file_scan.output_partitioning,
+        Some(Partitioning::Range(_) | Partitioning::Hash(_, _))
     );
     let supports_byte_range_partitioning = !file_scan.file_compression_type.is_compressed()
         && file_scan.file_source.supports_repartitioning();
@@ -67,6 +76,66 @@ pub(crate) fn file_scan_config_scale_up_leaf_node(
     let mut file_scans = vec![file_scan_template; ev.task_count];
 
     match (is_sorted, supports_repartitioning) {
+        (_, false) if is_pre_partitioned => {
+            // Assign whole, contiguous partitions, preserving every file in each group.
+            let base = partition_count / ev.task_count;
+            let extra = partition_count % ev.task_count;
+            for (task, scan) in file_scans.iter_mut().enumerate() {
+                let mut start = task * base + task.min(extra);
+                let mut end = start + base + usize::from(task < extra);
+                let (offset, width) = if let Some(Partitioning::Range(range)) =
+                    &file_scan.output_partitioning
+                {
+                    // Keep the unbounded final partition in the last task, after any empty tasks.
+                    start = start.min(partition_count - 1);
+                    end = if task + 1 == ev.task_count {
+                        partition_count
+                    } else {
+                        end.min(partition_count - 1)
+                    };
+                    let width = partition_count.div_ceil(ev.task_count);
+                    let boundary = |i| {
+                        if i == 0 {
+                            range.start_bound()
+                        } else {
+                            range.split_points().get(i - 1).or(range.end_bound())
+                        }
+                    };
+                    let (lower, upper) = (boundary(start), boundary(end));
+                    let mut splits = range
+                        .split_points()
+                        .iter()
+                        .skip(start)
+                        .take((end - start).saturating_sub(1))
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    let mut offset = 0;
+                    if end - start < width {
+                        let Some(bound) = upper.or(lower) else {
+                            return Some(plan_err!("Cannot pad a range without a finite boundary"));
+                        };
+                        if upper.is_some() {
+                            splits.resize(width - 1, bound.clone());
+                        } else {
+                            offset = width - (end - start);
+                            splits.splice(0..0, repeat_n(bound.clone(), offset));
+                        }
+                    }
+                    // FileScanConfig stores unprojected keys; DataSourceExec exposes projected keys.
+                    scan.output_partitioning = Some(Partitioning::Range(ok_or_some_err!(
+                        RangePartitioning::try_new(range.ordering().clone(), splits)
+                            .and_then(|range| range.try_with_bounds(lower.cloned(), upper.cloned()))
+                    )));
+                    (offset, width)
+                } else {
+                    // Hash partition IDs retain the original modulus.
+                    (start, partition_count)
+                };
+                scan.file_groups.resize(width, FileGroup::default());
+                scan.file_groups[offset..offset + end - start]
+                    .clone_from_slice(&file_scan.file_groups[start..end]);
+            }
+        }
         // does not support repartitioning
         (_, false) => {
             let all_partitioned_files = file_scan

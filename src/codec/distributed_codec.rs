@@ -758,6 +758,7 @@ fn new_network_coalesce_tasks_exec(
         )),
         worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
         input_stage,
+        task_partitionings: None,
     }
 }
 
