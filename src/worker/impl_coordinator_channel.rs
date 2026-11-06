@@ -449,9 +449,7 @@ fn send_metrics_via_channel(
     });
 
     let mut task_metrics = task_data_metrics.to_metrics_set();
-    for metric in task_finished_metrics.iter() {
-        task_metrics.push(Arc::clone(metric));
-    }
+    task_metrics.extend(task_finished_metrics);
 
     // Ignore send errors — the coordinator channel may have been dropped (e.g. query cancelled).
     let _ = metrics_tx.send(TaskMetrics {

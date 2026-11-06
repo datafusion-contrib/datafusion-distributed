@@ -1,5 +1,5 @@
 use super::common::EventHandlerChain;
-use datafusion::error::DataFusionError;
+use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::config::SessionConfig;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::metrics::MetricsSet;
@@ -62,30 +62,21 @@ impl TaskFinishedEventResponse {
 /// The handler is not `async`: it runs inline as the task finishes, so it must not wait on I/O.
 pub trait TaskFinishedHandler: Send + Sync + 'static {
     /// Returns the metrics to contribute for this task.
-    fn handle(
-        &self,
-        ev: TaskFinishedEvent<'_>,
-    ) -> datafusion::common::Result<TaskFinishedEventResponse>;
+    fn handle(&self, ev: TaskFinishedEvent<'_>) -> Result<TaskFinishedEventResponse>;
 }
 
 impl<F> TaskFinishedHandler for F
 where
     F: Send + Sync + 'static,
-    F: for<'a> Fn(TaskFinishedEvent<'a>) -> datafusion::common::Result<TaskFinishedEventResponse>,
+    F: for<'a> Fn(TaskFinishedEvent<'a>) -> Result<TaskFinishedEventResponse>,
 {
-    fn handle(
-        &self,
-        ev: TaskFinishedEvent<'_>,
-    ) -> datafusion::common::Result<TaskFinishedEventResponse> {
+    fn handle(&self, ev: TaskFinishedEvent<'_>) -> Result<TaskFinishedEventResponse> {
         self(ev)
     }
 }
 
 impl TaskFinishedHandler for Arc<dyn TaskFinishedHandler> {
-    fn handle(
-        &self,
-        ev: TaskFinishedEvent<'_>,
-    ) -> datafusion::common::Result<TaskFinishedEventResponse> {
+    fn handle(&self, ev: TaskFinishedEvent<'_>) -> Result<TaskFinishedEventResponse> {
         self.as_ref().handle(ev)
     }
 }
@@ -113,9 +104,7 @@ impl TaskFinishedHandlers {
                 outcome,
             };
             if let Ok(response) = handler.handle(ev) {
-                for metric in response.metrics.iter() {
-                    metrics.push(Arc::clone(metric));
-                }
+                metrics.extend(response.metrics);
             }
         }
         metrics
