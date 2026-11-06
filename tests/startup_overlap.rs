@@ -24,8 +24,7 @@ mod tests {
     use datafusion_distributed::{
         DistributedExec, DistributedExt, MappedWorkerSessionBuilderExt, NetworkBoundaryExt,
         NetworkCoalesceExec, RouteTaskEvent, RouteTaskEventResponse, RouteTaskHandler, Stage,
-        WorkerQueryContext, WorkerSessionBuilder, WorkerToCoordinatorMsg,
-        rewrite_distributed_plan_with_dynamic_filters,
+        WorkerQueryContext, WorkerToCoordinatorMsg, rewrite_distributed_plan_with_dynamic_filters,
     };
     use futures::{StreamExt, TryStreamExt, stream};
     use tokio::time::{sleep, timeout};
@@ -37,10 +36,15 @@ mod tests {
     #[tokio::test]
     async fn static_scan_returns_output_before_sibling_setup() -> Result<()> {
         let gate = SetupGate::default();
-        let ctx = context(build_state)
-            .await
+        let ctx = context(start_in_memory_context(2, build_state).await)
             .with_distributed_dynamic_task_count(false)?
             .with_distributed_route_task_handler(gate.clone());
+        ctx.state_ref()
+            .write()
+            .config_mut()
+            .options_mut()
+            .execution
+            .target_partitions = 2;
         let mut output = ctx.sql(SCAN).await?.execute_stream().await?;
 
         let first = timeout(WAIT, output.try_next()).await.unwrap()?.unwrap();
@@ -61,10 +65,15 @@ mod tests {
     #[tokio::test]
     async fn adaptive_scan_returns_output_before_sibling_setup() -> Result<()> {
         let gate = SetupGate::default();
-        let ctx = context(build_state)
-            .await
+        let ctx = context(start_in_memory_context(2, build_state).await)
             .with_distributed_dynamic_task_count(true)?
             .with_distributed_route_task_handler(gate.clone());
+        ctx.state_ref()
+            .write()
+            .config_mut()
+            .options_mut()
+            .execution
+            .target_partitions = 2;
         let mut output = ctx.sql(SCAN).await?.execute_stream().await?;
 
         let first = timeout(WAIT, output.try_next()).await.unwrap()?.unwrap();
@@ -85,10 +94,15 @@ mod tests {
     #[tokio::test]
     async fn adaptive_shuffle_samples_before_sibling_setup() -> Result<()> {
         let gate = SetupGate::default();
-        let ctx = context(build_state)
-            .await
+        let ctx = context(start_in_memory_context(2, build_state).await)
             .with_distributed_dynamic_task_count(true)?
             .with_distributed_route_task_handler(gate.clone());
+        ctx.state_ref()
+            .write()
+            .config_mut()
+            .options_mut()
+            .execution
+            .target_partitions = 2;
         let query = ctx
             .sql("SELECT task_index FROM url_emitter(2, 2, 'scan') GROUP BY task_index")
             .await?;
@@ -110,11 +124,16 @@ mod tests {
             fail: true,
             ..Default::default()
         };
-        let ctx = context(build_state)
-            .await
+        let ctx = context(start_in_memory_context(2, build_state).await)
             .with_distributed_dynamic_task_count(false)?
             .with_distributed_metrics_collection(true)?
             .with_distributed_route_task_handler(gate.clone());
+        ctx.state_ref()
+            .write()
+            .config_mut()
+            .options_mut()
+            .execution
+            .target_partitions = 2;
         let plan = ctx.sql(SCAN).await?.create_physical_plan().await?;
         let mut output = execute_stream(Arc::clone(&plan), ctx.task_ctx())?;
 
@@ -133,12 +152,17 @@ mod tests {
     #[tokio::test]
     async fn worker_response_error_after_output_finishes_reports() -> Result<()> {
         let response_error = ResponseErrorGate::default();
-        let ctx = context(build_state)
-            .await
+        let ctx = context(start_in_memory_context(2, build_state).await)
             .with_distributed_dynamic_task_count(false)?
             .with_distributed_metrics_collection(true)?
             .with_distributed_dynamic_filter_collection(true)?
             .with_distributed_route_task_handler(response_error.clone());
+        ctx.state_ref()
+            .write()
+            .config_mut()
+            .options_mut()
+            .execution
+            .target_partitions = 2;
         let plan = ctx.sql(SCAN).await?.create_physical_plan().await?;
         let mut output = execute_stream(Arc::clone(&plan), ctx.task_ctx())?;
 
@@ -175,11 +199,16 @@ mod tests {
     #[tokio::test]
     async fn dropping_output_cancels_pending_setup_and_finishes_metrics() -> Result<()> {
         let gate = SetupGate::default();
-        let ctx = context(build_state)
-            .await
+        let ctx = context(start_in_memory_context(2, build_state).await)
             .with_distributed_dynamic_task_count(true)?
             .with_distributed_metrics_collection(true)?
             .with_distributed_route_task_handler(gate.clone());
+        ctx.state_ref()
+            .write()
+            .config_mut()
+            .options_mut()
+            .execution
+            .target_partitions = 2;
         let plan = ctx.sql(SCAN).await?.create_physical_plan().await?;
         let mut output = execute_stream(Arc::clone(&plan), ctx.task_ctx())?;
 
@@ -199,11 +228,16 @@ mod tests {
             wait_for_sibling: true,
             ..Default::default()
         };
-        let ctx = context(build_state)
-            .await
+        let ctx = context(start_in_memory_context(2, build_state).await)
             .with_distributed_dynamic_task_count(false)?
             .with_distributed_metrics_collection(true)?
             .with_distributed_route_task_handler(gate.clone());
+        ctx.state_ref()
+            .write()
+            .config_mut()
+            .options_mut()
+            .execution
+            .target_partitions = 2;
         let plan = ctx
             .sql(&format!("{SCAN} LIMIT 1"))
             .await?
@@ -225,10 +259,15 @@ mod tests {
     async fn adaptive_nested_coalesce_has_concrete_worker_destinations() -> Result<()> {
         let gate = SetupGate::default();
         gate.release.cancel();
-        let ctx = context(build_state)
-            .await
+        let ctx = context(start_in_memory_context(2, build_state).await)
             .with_distributed_dynamic_task_count(true)?
             .with_distributed_route_task_handler(gate.clone());
+        ctx.state_ref()
+            .write()
+            .config_mut()
+            .options_mut()
+            .execution
+            .target_partitions = 2;
         let query = ctx
             .sql(
                 "SELECT task_index FROM url_emitter(2, 2, 'scan') WHERE task_index = \
@@ -259,10 +298,15 @@ mod tests {
                     let worker = build_state.map(move |builder| {
                         Ok(builder.with_scalar_functions(vec![udf.clone()]).build())
                     });
-                    let ctx = context(worker)
-                        .await
+                    let ctx = context(start_in_memory_context(2, worker).await)
                         .with_distributed_dynamic_task_count(adaptive)?
                         .with_distributed_route_task_handler(gate.clone());
+                    ctx.state_ref()
+                        .write()
+                        .config_mut()
+                        .options_mut()
+                        .execution
+                        .target_partitions = 2;
                     ctx.register_udf(cpu_work(None));
                     let plan = ctx
                         .sql("SELECT cpu_work(task_index) FROM url_emitter(2, 2, 'scan')")
@@ -331,18 +375,11 @@ mod tests {
         )
     }
 
-    async fn context(builder: impl WorkerSessionBuilder + Send + Sync + 'static) -> SessionContext {
-        let mut ctx = start_in_memory_context(2, builder).await;
+    fn context(mut ctx: SessionContext) -> SessionContext {
         ctx.set_distributed_desired_task_count_handler(url_emitter_desired_task_count);
         ctx.set_distributed_scale_up_leaf_node_handler(url_emitter_scale_up_leaf_node);
         ctx.set_distributed_user_codec(URLEmitterExtensionCodec);
         ctx.register_udtf("url_emitter", Arc::new(URLEmitterFunction));
-        ctx.state_ref()
-            .write()
-            .config_mut()
-            .options_mut()
-            .execution
-            .target_partitions = 2;
         ctx
     }
 
