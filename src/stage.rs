@@ -1,7 +1,7 @@
 use crate::coordinator::DistributedExec;
 use crate::execution_plans::{DistributedLeafExec, NetworkCoalesceExec};
 use crate::metrics::DISTRIBUTED_DATAFUSION_TASK_ID_LABEL;
-use datafusion::common::{HashMap, Statistics, config_err};
+use datafusion::common::{DataFusionError, HashMap, Statistics, config_err};
 use datafusion::common::{exec_err, plan_err};
 use datafusion::error::Result;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
@@ -12,9 +12,12 @@ use datafusion::physical_plan::{
     ColumnStatistics, ExecutionPlan, ExecutionPlanProperties, StatisticsArgs, StatisticsContext,
     displayable,
 };
+use futures::future::{BoxFuture, Shared};
 use itertools::Either;
 use std::collections::VecDeque;
+use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 use url::Url;
 use uuid::Uuid;
 
@@ -111,12 +114,52 @@ pub struct RemoteStage {
     pub query_id: Uuid,
     /// Our stage number
     pub num: usize,
-    /// The worker URLs to which queries should be issued.
-    pub workers: Vec<Url>,
+    /// The worker locations to which queries should be issued.
+    pub workers: Vec<WorkerLocation>,
     /// Statistics collected at runtime, if any.
     pub runtime_stats: Option<Arc<Statistics>>,
     /// Dynamic-filter consumers retained after the stage's plan is moved to its workers.
     pub dynamic_filter_anchors: Vec<Arc<dyn PhysicalExpr>>,
+}
+
+/// A task's selected worker URL or its in-progress routing result.
+/// Pending locations stay in the coordinator; worker plans require ready locations.
+#[derive(Clone)]
+pub enum WorkerLocation {
+    /// A successfully connected worker selected by the task-routing handler.
+    Ready(Url),
+    /// A coordinator-consumed task whose routing is still in progress.
+    Pending {
+        /// The shared result of task setup, including connection-aware routing.
+        url: Shared<BoxFuture<'static, Result<Url, Arc<DataFusionError>>>>,
+        /// Cancels location resolution and result-stream setup when the query ends.
+        query_finished: CancellationToken,
+    },
+}
+
+impl WorkerLocation {
+    /// Returns a concrete URL, or an error for a pending location.
+    pub fn ready_url(&self) -> Result<&Url> {
+        match self {
+            Self::Ready(url) => Ok(url),
+            Self::Pending { .. } => exec_err!("Worker location is pending"),
+        }
+    }
+}
+
+impl From<Url> for WorkerLocation {
+    fn from(url: Url) -> Self {
+        Self::Ready(url)
+    }
+}
+
+impl Debug for WorkerLocation {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ready(url) => f.debug_tuple("Ready").field(url).finish(),
+            Self::Pending { .. } => f.write_str("Pending"),
+        }
+    }
 }
 
 impl Stage {
@@ -236,7 +279,6 @@ impl DistributedTaskContext {
 use crate::{DistributedMetricsFormat, NetworkShuffleExec, rewrite_distributed_plan_with_metrics};
 use crate::{NetworkBoundary, NetworkBoundaryExt};
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::common::DataFusionError;
 use datafusion::common::stats::Precision;
 use datafusion::physical_expr::Partitioning;
 /// Be able to display a nice tree for stages.

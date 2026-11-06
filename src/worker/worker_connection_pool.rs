@@ -1,21 +1,24 @@
 use crate::common::on_drop_stream;
 use crate::distributed_planner::ProducerHead;
 use crate::passthrough_headers::get_passthrough_headers;
-use crate::stage::RemoteStage;
+use crate::stage::{RemoteStage, WorkerLocation};
 use crate::{ExecuteTaskRequest, LocalWorkerContext, TaskKey, get_distributed_channel_resolver};
 use dashmap::DashMap;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::common::runtime::SpawnedTask;
-use datafusion::common::{DataFusionError, Result, internal_datafusion_err, internal_err};
+use datafusion::common::{
+    DataFusionError, Result, exec_err, internal_datafusion_err, internal_err,
+};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr_common::metrics::ExecutionPlanMetricsSet;
 use datafusion::physical_plan::metrics::MetricBuilder;
-use futures::future::{BoxFuture, Shared};
+use futures::future::{BoxFuture, Shared, ready};
 use futures::stream::BoxStream;
 use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt};
 use std::fmt::{Debug, Formatter};
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
+use tokio::select;
 
 /// Manages connections to remote workers.
 /// - Handles a range of partitions at a time in other to give the chance to [crate::WorkerChannel]
@@ -65,8 +68,18 @@ impl WorkerConnectionPool {
         producer_head: ProducerHead,
         ctx: &Arc<TaskContext>,
     ) -> Result<BoxStream<'static, Result<RecordBatch>>> {
-        let Some(target_url) = input_stage.workers.get(target_task).cloned() else {
-            internal_err!("input_stage.workers[{target_task}] out of range.")?
+        let worker = input_stage.workers.get(target_task).ok_or_else(|| {
+            internal_datafusion_err!("input stage task {target_task} out of range")
+        })?;
+        let (destination, query_finished) = match worker {
+            WorkerLocation::Ready(url) => (ready(Ok(url.clone())).left_future(), None),
+            WorkerLocation::Pending {
+                url,
+                query_finished,
+            } => (
+                url.clone().map_err(DataFusionError::Shared).right_future(),
+                Some(query_finished.clone()),
+            ),
         };
         let task_key = TaskKey {
             query_id: input_stage.query_id,
@@ -106,38 +119,49 @@ impl WorkerConnectionPool {
             //
             // Note that this does not start polling the returned streams, it just instantiates them.
             let streams_task = SpawnedTask::spawn(async move {
-                let request = ExecuteTaskRequest {
-                    task_key,
-                    target_partition_start: target_partitions.start,
-                    target_partition_end: target_partitions.end,
-                    producer_head,
+                let setup = async move {
+                    let target_url = destination.await?;
+                    let request = ExecuteTaskRequest {
+                        task_key,
+                        target_partition_start: target_partitions.start,
+                        target_partition_end: target_partitions.end,
+                        producer_head,
+                    };
+                    let mut client = match LocalWorkerContext::from_ctx(&ctx) {
+                        Some(lw) if lw.self_url == target_url => {
+                            local_connections_used.add(1);
+                            Ok(lw.to_worker_channel())
+                        }
+                        _ => {
+                            let ch_resolver = get_distributed_channel_resolver(ctx.as_ref());
+                            ch_resolver.get_worker_client_for_url(&target_url).await
+                        }
+                    }?;
+                    let headers = get_passthrough_headers(ctx.session_config());
+                    let streams = client.execute_task(headers, request, metrics, &ctx).await?;
+                    if streams.len() != task_slots.len() {
+                        return internal_err!(
+                            "Worker returned {} streams for {} partitions",
+                            streams.len(),
+                            task_slots.len()
+                        );
+                    }
+                    for (slot, stream) in task_slots.iter().zip(streams) {
+                        let mut slot = slot.lock().unwrap();
+                        if !slot.closed {
+                            slot.stream = Some(stream);
+                        }
+                    }
+                    Ok(())
                 };
-                let mut client = match LocalWorkerContext::from_ctx(&ctx) {
-                    Some(lw) if lw.self_url == target_url => {
-                        local_connections_used.add(1);
-                        Ok(lw.to_worker_channel())
-                    }
-                    _ => {
-                        let ch_resolver = get_distributed_channel_resolver(ctx.as_ref());
-                        ch_resolver.get_worker_client_for_url(&target_url).await
-                    }
-                }?;
-                let headers = get_passthrough_headers(ctx.session_config());
-                let streams = client.execute_task(headers, request, metrics, &ctx).await?;
-                if streams.len() != task_slots.len() {
-                    return internal_err!(
-                        "Worker returned {} streams for {} partitions",
-                        streams.len(),
-                        task_slots.len()
-                    );
+                match query_finished {
+                    Some(query_finished) => select! {
+                        biased;
+                        _ = query_finished.cancelled() => exec_err!("Query finished during task setup"),
+                        result = setup => result,
+                    },
+                    None => setup.await,
                 }
-                for (slot, stream) in task_slots.iter().zip(streams) {
-                    let mut slot = slot.lock().unwrap();
-                    if !slot.closed {
-                        slot.stream = Some(stream);
-                    }
-                }
-                Ok(())
             });
 
             let ready = async move {
@@ -341,7 +365,7 @@ mod tests {
             let stage = RemoteStage {
                 query_id,
                 num: 0,
-                workers: vec![worker.url.clone()],
+                workers: vec![worker.url.clone().into()],
                 runtime_stats: None,
                 dynamic_filter_anchors: vec![],
             };

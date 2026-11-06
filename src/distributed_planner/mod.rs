@@ -14,7 +14,8 @@ mod statistics;
 pub use distributed_config::DistributedConfig;
 pub use distributed_query_planner::create_distributed_plan;
 pub(crate) use inject_network_boundaries::{
-    InjectNetworkBoundaryContext, NetworkBoundaryBuilderResult, inject_network_boundaries,
+    InjectNetworkBoundaryContext, NetworkBoundaryBuilder, NetworkBoundaryBuilderResult,
+    inject_network_boundaries,
 };
 pub use network_boundary::{NetworkBoundary, NetworkBoundaryExt, ProducerHead};
 pub use session_state_builder_ext::SessionStateBuilderExt;

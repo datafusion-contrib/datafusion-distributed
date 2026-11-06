@@ -216,6 +216,21 @@ impl<'a> InjectNetworkBoundaryContext<'a> {
         Ok(*task_count)
     }
 
+    /// Retains annotations when stage preparation replaces nodes without changing topology.
+    pub(crate) fn copy_task_counts(
+        &self,
+        original: &Arc<dyn ExecutionPlan>,
+        prepared: &Arc<dyn ExecutionPlan>,
+    ) -> Result<()> {
+        self.set_task_count(prepared, self.task_count(original)?);
+        if !original.is_network_boundary() {
+            for (original, prepared) in original.children().into_iter().zip(prepared.children()) {
+                self.copy_task_counts(original, prepared)?;
+            }
+        }
+        Ok(())
+    }
+
     fn fetch_add_stage_id(&self) -> usize {
         self.stage_id.fetch_add(1, Ordering::Acquire)
     }
