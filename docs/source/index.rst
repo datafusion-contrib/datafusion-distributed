@@ -89,6 +89,7 @@ side of the screen for the answer.
    advanced/06-worker-routing
    advanced/07-worker-versioning
    advanced/08-adaptive-query-execution
+   advanced/09-sibling-topk
 
 .. toctree::
    :maxdepth: 1
