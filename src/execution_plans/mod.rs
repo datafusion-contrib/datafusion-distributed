@@ -6,7 +6,6 @@ mod metrics;
 mod network_broadcast;
 mod network_coalesce;
 mod network_shuffle;
-mod pending_network_boundary;
 mod sampler;
 
 #[cfg(any(test, feature = "integration"))]
@@ -19,5 +18,4 @@ pub(crate) use metrics::MetricsWrapperExec;
 pub use network_broadcast::NetworkBroadcastExec;
 pub use network_coalesce::NetworkCoalesceExec;
 pub use network_shuffle::{NetworkShuffleExec, PRODUCER_SALT_DEFAULT, ShuffleMode};
-pub(crate) use pending_network_boundary::PendingNetworkBoundaryExec;
 pub use sampler::SamplerExec;

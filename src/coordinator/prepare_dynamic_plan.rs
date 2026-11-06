@@ -10,7 +10,7 @@ use crate::dynamic_filtering::{
     is_remote_dynamic_filtering_enabled, orphan_dynamic_filter_consumers,
 };
 use crate::execution_plans::SamplerExec;
-use crate::stage::{LocalStage, RemoteStage};
+use crate::stage::{LocalStage, RemoteStage, WorkerLocation};
 use crate::{
     BytesCounterMetric, CoordinatorToWorkerMsg, LoadInfo, MaxGaugeMetric, NetworkBoundaryExt,
     NetworkCoalesceExec, Stage, TaskCountAnnotation,
@@ -152,7 +152,7 @@ impl NetworkBoundaryBuilder for DynamicPlanBuilder<'_> {
             input_stage: Stage::Remote(RemoteStage {
                 query_id: input_stage.query_id,
                 num: input_stage.num,
-                workers,
+                workers: workers.into_iter().map(WorkerLocation::from).collect(),
                 runtime_stats: Some(Arc::new(stats)),
                 dynamic_filter_anchors,
             }),

@@ -471,7 +471,15 @@ mod tests {
         async fn route(&self, event: RouteTaskEvent<'_>) -> Result<RouteTaskEventResponse> {
             event.task_specialized_plan.apply(|node| {
                 if let Some(boundary) = node.as_network_boundary() {
-                    assert!(matches!(boundary.input_stage(), Stage::Remote(_)));
+                    let Stage::Remote(stage) = boundary.input_stage() else {
+                        panic!("worker plans require a remote input stage");
+                    };
+                    assert!(
+                        stage
+                            .workers
+                            .iter()
+                            .all(|worker| worker.ready_url().is_ok())
+                    );
                 }
                 if node.is::<NetworkCoalesceExec>() {
                     self.nested_coalesces.fetch_add(1, Ordering::Relaxed);

@@ -247,11 +247,11 @@ impl ExecutionPlan for NetworkBroadcastExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream, DataFusionError> {
-        if let Stage::Local(local) = &self.input_stage
-            && !self.worker_connections.has_pending_workers()
-        {
-            return local.execute(partition, context);
-        }
+        let remote_stage = match &self.input_stage {
+            Stage::Local(local) => return local.execute(partition, context),
+            Stage::Remote(remote_stage) => remote_stage,
+        };
+
         let task_context = DistributedTaskContext::from_ctx(&context);
         let out_partitions = self.properties.partitioning.partition_count();
         let off = out_partitions * task_context.task_index;
@@ -259,7 +259,7 @@ impl ExecutionPlan for NetworkBroadcastExec {
 
         for input_task_index in 0..self.input_stage.task_count() {
             streams.push(self.worker_connections.execute(
-                &self.input_stage,
+                remote_stage,
                 off..(off + self.properties.partitioning.partition_count()),
                 input_task_index,
                 off + partition,

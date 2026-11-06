@@ -319,14 +319,14 @@ impl ExecutionPlan for NetworkShuffleExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream, DataFusionError> {
-        if let Stage::Local(local) = &self.input_stage
-            && !self.worker_connections.has_pending_workers()
-        {
-            return local.execute(partition, context);
-        }
+        let remote_stage = match &self.input_stage {
+            Stage::Local(local) => return local.execute(partition, context),
+            Stage::Remote(remote_stage) => remote_stage,
+        };
+
         let task_context = DistributedTaskContext::from_ctx(&context);
         let task_index = task_context.task_index;
-        let producer_task_count = self.input_stage.task_count();
+        let producer_task_count = remote_stage.workers.len();
 
         let schema = self.schema();
         let mut streams: Vec<SendableRecordBatchStream> =
@@ -340,7 +340,7 @@ impl ExecutionPlan for NetworkShuffleExec {
                 let mut streams = Vec::with_capacity(producer_task_count);
                 for input_task_index in 0..producer_task_count {
                     let stream = self.worker_connections.execute(
-                        &self.input_stage,
+                        remote_stage,
                         off..(off + partition_count),
                         input_task_index,
                         global_partition,
@@ -356,7 +356,7 @@ impl ExecutionPlan for NetworkShuffleExec {
             } else {
                 // TwoPhase: each consumer task reads from exactly one producer task.
                 let stream = self.worker_connections.execute(
-                    &self.input_stage,
+                    remote_stage,
                     task_index..task_index + 1,
                     partition,
                     task_index,

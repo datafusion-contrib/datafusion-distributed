@@ -172,8 +172,9 @@ impl RouteTaskHandler for SingleTaskChildUrlRouteTaskHandler {
 
                 if let Stage::Remote(remote) = nb.input_stage()
                     && remote.workers.len() == 1
+                    && let Ok(url) = remote.workers[0].ready_url()
                 {
-                    single_stage_url = Some(remote.workers[0].clone());
+                    single_stage_url = Some(url.clone());
                     return Ok(TreeNodeRecursion::Stop);
                 }
 

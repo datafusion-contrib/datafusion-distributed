@@ -4,10 +4,8 @@ use crate::coordinator::query_coordinator::QueryCoordinator;
 use crate::dynamic_filtering::{
     is_remote_dynamic_filtering_enabled, orphan_dynamic_filter_consumers,
 };
-use crate::execution_plans::PendingNetworkBoundaryExec;
 use crate::stage::{LocalStage, RemoteStage};
-use crate::worker::PendingTaskUrl;
-use crate::{NetworkBoundaryExt, Stage};
+use crate::{NetworkBoundaryExt, Stage, WorkerLocation};
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{DataFusionError, HashSet, Result, exec_datafusion_err};
 use datafusion::physical_plan::ExecutionPlan;
@@ -56,26 +54,21 @@ pub(super) async fn prepare_stages(
         } else {
             vec![]
         };
-        if head_stages.contains(&stage.num) {
-            let workers = start_pending_stage(query_coordinator, stage);
-            return Ok(Transformed::yes(
-                Arc::new(PendingNetworkBoundaryExec::try_new(
-                    boundary.with_input_stage(Stage::Local(stage.clone()))?,
-                    workers,
-                    anchors,
-                    query_coordinator.spawner.query_finished(),
-                )?) as Arc<dyn ExecutionPlan>,
-            ));
-        }
-        let workers =
-            try_join_all((0..stage.tasks).map(|task| query_coordinator.start_task(stage, task)))
-                .await?
-                .into_iter()
-                .map(|(url, ..)| url)
-                .collect();
-        query_coordinator
-            .stage_coordinator(stage)
-            .seal_dynamic_filter_stage()?;
+        let workers = if head_stages.contains(&stage.num) {
+            start_pending_stage(query_coordinator, stage)
+        } else {
+            let workers = try_join_all(
+                (0..stage.tasks).map(|task| query_coordinator.start_task(stage, task)),
+            )
+            .await?
+            .into_iter()
+            .map(|(url, ..)| url.into())
+            .collect();
+            query_coordinator
+                .stage_coordinator(stage)
+                .seal_dynamic_filter_stage()?;
+            workers
+        };
         Ok(Transformed::yes(boundary.with_input_stage(
             Stage::Remote(RemoteStage {
                 query_id: stage.query_id,
@@ -92,19 +85,20 @@ pub(super) async fn prepare_stages(
 fn start_pending_stage(
     query_coordinator: &Arc<QueryCoordinator>,
     stage: &LocalStage,
-) -> Vec<PendingTaskUrl> {
+) -> Vec<WorkerLocation> {
     let mut workers = Vec::with_capacity(stage.tasks);
     let mut setups = Vec::with_capacity(stage.tasks);
     for task in 0..stage.tasks {
         let (tx, rx) = oneshot::channel();
-        workers.push(
-            async move {
+        workers.push(WorkerLocation::Pending {
+            url: async move {
                 rx.await
                     .map_err(|_| Arc::new(exec_datafusion_err!("Task setup was cancelled")))?
             }
             .boxed()
             .shared(),
-        );
+            query_finished: query_coordinator.spawner.query_finished(),
+        });
         setups.push((tx, query_coordinator.start_task(stage, task)));
     }
     let coordinator = Arc::clone(query_coordinator);

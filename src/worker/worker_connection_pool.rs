@@ -1,7 +1,7 @@
 use crate::common::on_drop_stream;
 use crate::distributed_planner::ProducerHead;
 use crate::passthrough_headers::get_passthrough_headers;
-use crate::stage::Stage;
+use crate::stage::{RemoteStage, WorkerLocation};
 use crate::{ExecuteTaskRequest, LocalWorkerContext, TaskKey, get_distributed_channel_resolver};
 use dashmap::DashMap;
 use datafusion::arrow::array::RecordBatch;
@@ -19,8 +19,6 @@ use std::fmt::{Debug, Formatter};
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
 use tokio::select;
-use tokio_util::sync::CancellationToken;
-use url::Url;
 
 /// Manages connections to remote workers.
 /// - Handles a range of partitions at a time in other to give the chance to [crate::WorkerChannel]
@@ -31,14 +29,7 @@ use url::Url;
 /// - Lazily initializes connections per remote worker and requested partition range.
 pub(crate) struct WorkerConnectionPool {
     lazy_stream_groups: Vec<DashMap<Range<usize>, StreamGroup>>,
-    pending_workers: Option<Arc<PendingWorkers>>,
     pub(crate) metrics: ExecutionPlanMetricsSet,
-}
-
-/// Coordinator-local destinations may still be routing; wire plans always contain resolved URLs.
-struct PendingWorkers {
-    workers: Vec<PendingTaskUrl>,
-    query_finished: CancellationToken,
 }
 
 /// Slots exist before asynchronous connection setup, so dropping a consumer can cancel
@@ -58,66 +49,41 @@ struct StreamSlot {
 /// Just some boilerplate for a shared future.
 type SharedBoxFuture<T> = Shared<BoxFuture<'static, Result<T, Arc<DataFusionError>>>>;
 
-pub(crate) type PendingTaskUrl = SharedBoxFuture<Url>;
-
 impl WorkerConnectionPool {
     /// Builds a new [WorkerConnectionPool] with as many empty slots for worker stream entries as
     /// the provided `input_tasks`.
     pub(crate) fn new(input_tasks: usize) -> Self {
         Self {
             lazy_stream_groups: (0..input_tasks).map(|_| Default::default()).collect(),
-            pending_workers: None,
             metrics: ExecutionPlanMetricsSet::default(),
         }
     }
 
-    pub(crate) fn new_pending(
-        workers: Vec<PendingTaskUrl>,
-        query_finished: CancellationToken,
-    ) -> Self {
-        let input_tasks = workers.len();
-        Self {
-            pending_workers: Some(Arc::new(PendingWorkers {
-                workers,
-                query_finished,
-            })),
-            ..Self::new(input_tasks)
-        }
-    }
-
-    pub(crate) fn has_pending_workers(&self) -> bool {
-        self.pending_workers.is_some()
-    }
-
     pub(crate) fn execute(
         &self,
-        input_stage: &Stage,
+        input_stage: &RemoteStage,
         target_partitions: Range<usize>,
         target_task: usize,
         target_partition: usize,
         producer_head: ProducerHead,
         ctx: &Arc<TaskContext>,
     ) -> Result<BoxStream<'static, Result<RecordBatch>>> {
-        let (destination, query_finished) = if let Some(pending) = &self.pending_workers {
-            let destination = pending.workers.get(target_task).cloned().ok_or_else(|| {
-                internal_datafusion_err!("input stage task {target_task} out of range")
-            })?;
-            (
-                destination.map_err(DataFusionError::Shared).left_future(),
-                Some(pending.query_finished.clone()),
-            )
-        } else {
-            let Stage::Remote(stage) = input_stage else {
-                return internal_err!("A local stage requires pending worker destinations");
-            };
-            let destination = stage.workers.get(target_task).cloned().ok_or_else(|| {
-                internal_datafusion_err!("input stage task {target_task} out of range")
-            })?;
-            (ready(Ok(destination)).right_future(), None)
+        let worker = input_stage.workers.get(target_task).ok_or_else(|| {
+            internal_datafusion_err!("input stage task {target_task} out of range")
+        })?;
+        let (destination, query_finished) = match worker {
+            WorkerLocation::Ready(url) => (ready(Ok(url.clone())).left_future(), None),
+            WorkerLocation::Pending {
+                url,
+                query_finished,
+            } => (
+                url.clone().map_err(DataFusionError::Shared).right_future(),
+                Some(query_finished.clone()),
+            ),
         };
         let task_key = TaskKey {
-            query_id: input_stage.query_id(),
-            stage_id: input_stage.num(),
+            query_id: input_stage.query_id,
+            stage_id: input_stage.num,
             task_number: target_task,
         };
         let bdr = || MetricBuilder::new(&self.metrics);
@@ -277,10 +243,7 @@ impl Debug for WorkerConnectionPool {
 
 impl Clone for WorkerConnectionPool {
     fn clone(&self) -> Self {
-        Self {
-            pending_workers: self.pending_workers.clone(),
-            ..Self::new(self.lazy_stream_groups.len())
-        }
+        Self::new(self.lazy_stream_groups.len())
     }
 }
 
@@ -288,7 +251,6 @@ impl Clone for WorkerConnectionPool {
 mod tests {
     use super::*;
     use crate::grpc::DefaultChannelResolver;
-    use crate::stage::RemoteStage;
     use crate::worker::test_utils::worker_handles::TcpWorkerHandle;
     use crate::{DistributedConfig, DistributedExt};
     use datafusion::arrow::array::Int32Array;
@@ -376,7 +338,7 @@ mod tests {
     struct Fixture {
         pool: WorkerConnectionPool,
         ctx: Arc<TaskContext>,
-        stage: Stage,
+        stage: RemoteStage,
         _worker: TcpWorkerHandle,
     }
 
@@ -400,13 +362,13 @@ mod tests {
                 .with_distributed_channel_resolver(DefaultChannelResolver::default())
                 .with_distributed_worker_connection_buffer_budget_bytes(128)?
                 .task_ctx();
-            let stage = Stage::Remote(RemoteStage {
+            let stage = RemoteStage {
                 query_id,
                 num: 0,
-                workers: vec![worker.url.clone()],
+                workers: vec![worker.url.clone().into()],
                 runtime_stats: None,
                 dynamic_filter_anchors: vec![],
-            });
+            };
             Ok(Self {
                 pool: WorkerConnectionPool::new(1),
                 ctx,

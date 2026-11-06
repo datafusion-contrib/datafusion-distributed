@@ -270,11 +270,11 @@ impl ExecutionPlan for NetworkCoalesceExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        if let Stage::Local(local) = &self.input_stage
-            && !self.worker_connections.has_pending_workers()
-        {
-            return local.execute(partition, context);
-        }
+        let remote_stage = match &self.input_stage {
+            Stage::Local(local) => return local.execute(partition, context),
+            Stage::Remote(remote_stage) => remote_stage,
+        };
+
         let task_context = DistributedTaskContext::from_ctx(&context);
         if task_context.task_index >= task_context.task_count {
             return exec_err!(
@@ -328,7 +328,7 @@ impl ExecutionPlan for NetworkCoalesceExec {
         let target_task = group.start_task + input_task_offset;
 
         let stream = self.worker_connections.execute(
-            &self.input_stage,
+            remote_stage,
             0..partitions_per_task,
             target_task,
             target_partition,
