@@ -125,12 +125,9 @@ impl NetworkBoundaryBuilder for DynamicPlanBuilder<'_> {
                 vec![]
             };
         let futures = (0..input_stage.tasks).map(|task_i| {
-            let input_stage = &input_stage;
+            let setup = self.query_coordinator.start_task(&input_stage, task_i);
             async move {
-                let coordinator = self.query_coordinator.stage_coordinator(input_stage);
-                let (url, tx, stream) = coordinator.init_bidirectional_stream(task_i).await?;
-                let load_info = coordinator.worker_to_coordinator_task(task_i, stream);
-                coordinator.coordinator_to_worker_task(task_i, tx.clone())?;
+                let (url, tx, load_info) = setup.await?;
                 let _ = tx.send(CoordinatorToWorkerMsg::KickOffSampling);
                 Ok::<_, DataFusionError>((url, UnboundedReceiverStream::new(load_info)))
             }

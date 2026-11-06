@@ -65,16 +65,15 @@ pub(super) async fn prepare_stages(
                 query_coordinator.spawner.query_finished(),
             )) as Arc<dyn ExecutionPlan>));
         }
-        let coordinator = query_coordinator.stage_coordinator(stage);
-        let coordinator = &coordinator;
-        let workers = try_join_all((0..stage.tasks).map(|task| async move {
-            let (url, tx, stream) = coordinator.init_bidirectional_stream(task).await?;
-            coordinator.worker_to_coordinator_task(task, stream);
-            coordinator.coordinator_to_worker_task(task, tx)?;
-            Ok::<_, DataFusionError>(url)
-        }))
-        .await?;
-        coordinator.seal_dynamic_filter_stage()?;
+        let workers =
+            try_join_all((0..stage.tasks).map(|task| query_coordinator.start_task(stage, task)))
+                .await?
+                .into_iter()
+                .map(|(url, ..)| url)
+                .collect();
+        query_coordinator
+            .stage_coordinator(stage)
+            .seal_dynamic_filter_stage()?;
         Ok(Transformed::yes(boundary.with_input_stage(
             Stage::Remote(RemoteStage {
                 query_id: stage.query_id,
@@ -104,11 +103,7 @@ fn start_pending_stage(
             .boxed()
             .shared(),
         );
-        // Construct cleanup before spawning: even an unpolled setup must complete report waits.
-        let reports = query_coordinator
-            .stage_coordinator(stage)
-            .pending_task_reports(task);
-        setups.push((task, tx, reports));
+        setups.push((tx, query_coordinator.start_task(stage, task)));
     }
     let coordinator = Arc::clone(query_coordinator);
     let stage = stage.clone();
@@ -116,22 +111,10 @@ fn start_pending_stage(
     query_coordinator.spawner.spawn(async move {
         let stage_coordinator = coordinator.stage_coordinator(&stage);
         let setup = async {
-            try_join_all(setups.into_iter().map(|(task, tx, mut reports)| {
-                let stage_coordinator = &stage_coordinator;
-                async move {
-                    let result = async {
-                        let (url, worker_tx, stream) =
-                            stage_coordinator.init_bidirectional_stream(task).await?;
-                        stage_coordinator.worker_to_coordinator_task(task, stream);
-                        reports.reader_started();
-                        stage_coordinator.coordinator_to_worker_task(task, worker_tx)?;
-                        Ok::<_, DataFusionError>(url)
-                    }
-                    .await
-                    .map_err(Arc::new);
-                    let _ = tx.send(result.clone());
-                    result.map_err(DataFusionError::Shared)
-                }
+            try_join_all(setups.into_iter().map(|(tx, setup)| async move {
+                let result = setup.await.map(|(url, ..)| url).map_err(Arc::new);
+                let _ = tx.send(result.clone());
+                result.map_err(DataFusionError::Shared)
             }))
             .await?;
             stage_coordinator.seal_dynamic_filter_stage()

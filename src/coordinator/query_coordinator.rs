@@ -99,8 +99,6 @@ impl QueryCoordinator {
             task_ctx: &self.task_ctx,
             metrics_set: &self.metrics,
             metrics: &self.coordinator_to_worker_metrics,
-            metrics_store: &self.metrics_store,
-            completed_dynamic_filter_store: &self.completed_dynamic_filter_store,
             dynamic_filter_registry: &self.dynamic_filter_registry,
             spawner: &self.spawner,
         }
@@ -109,6 +107,39 @@ impl QueryCoordinator {
     /// Returns the [SessionConfig] for the current query.
     pub(super) fn session_config(&self) -> &SessionConfig {
         self.task_ctx.session_config()
+    }
+
+    /// Builds task startup with report cleanup owned even before its first poll.
+    pub(super) fn start_task(
+        self: &Arc<Self>,
+        stage: &LocalStage,
+        task_i: usize,
+    ) -> impl Future<
+        Output = Result<(
+            Url,
+            UnboundedSender<CoordinatorToWorkerMsg>,
+            UnboundedReceiver<LoadInfo>,
+        )>,
+    > + Send
+    + 'static {
+        let reports = TaskReports {
+            task_key: TaskKey {
+                query_id: stage.query_id,
+                stage_id: stage.num,
+                task_number: task_i,
+            },
+            metrics_store: self.metrics_store.clone(),
+            completed_dynamic_filter_store: self.completed_dynamic_filter_store.clone(),
+        };
+        let coordinator = Arc::clone(self);
+        let stage = stage.clone();
+        async move {
+            let stage_coordinator = coordinator.stage_coordinator(&stage);
+            let (url, tx, stream) = stage_coordinator.init_bidirectional_stream(task_i).await?;
+            let load_info = stage_coordinator.worker_to_coordinator_task(stream, reports);
+            stage_coordinator.coordinator_to_worker_task(task_i, tx.clone())?;
+            Ok((url, tx, load_info))
+        }
     }
 }
 
@@ -128,32 +159,18 @@ pub(super) struct StageCoordinator<'a> {
     task_ctx: &'a Arc<TaskContext>,
     metrics_set: &'a ExecutionPlanMetricsSet,
     metrics: &'a CoordinatorToWorkerMetrics,
-    metrics_store: &'a Option<Arc<Store<TaskMetrics>>>,
-    completed_dynamic_filter_store: &'a Option<Arc<Store<TaskCompletedDynamicFilters>>>,
     dynamic_filter_registry: &'a Arc<DynamicFilterRegistry>,
     spawner: &'a Spawner,
 }
 
 impl<'a> StageCoordinator<'a> {
-    pub(super) fn pending_task_reports(&self, task_i: usize) -> PendingTaskReports {
-        PendingTaskReports {
-            task_key: TaskKey {
-                query_id: self.query_id,
-                stage_id: self.stage_id,
-                task_number: task_i,
-            },
-            metrics_store: self.metrics_store.clone(),
-            completed_dynamic_filter_store: self.completed_dynamic_filter_store.clone(),
-        }
-    }
-
     /// Sends a plan to a specific worker and sets up the bidirectional stream.
     ///
     /// Its returns are:
     /// - The worker URL in which the task got allocated
     /// - The coordinator-to-worker stream for producing messages that reach the worker.
     /// - The worker-to-coordinator stream for receiving messages from the worker.
-    pub(super) async fn init_bidirectional_stream(
+    async fn init_bidirectional_stream(
         &self,
         task_i: usize,
     ) -> Result<(
@@ -291,18 +308,12 @@ impl<'a> StageCoordinator<'a> {
     }
 
     /// Spawns background tasks in charge of collecting messages sent by a worker.
-    pub(super) fn worker_to_coordinator_task(
+    fn worker_to_coordinator_task(
         &self,
-        task_i: usize,
         mut worker_to_coordinator_stream: BoxStream<'static, Result<WorkerToCoordinatorMsg>>,
+        mut reports: TaskReports,
     ) -> UnboundedReceiver<LoadInfo> {
-        let task_key = TaskKey {
-            query_id: self.query_id,
-            stage_id: self.stage_id,
-            task_number: task_i,
-        };
-        let mut task_metrics = self.metrics_store.clone();
-        let mut completed_dynamic_filter_store = self.completed_dynamic_filter_store.clone();
+        let task_key = reports.task_key;
         let dynamic_filter_registry = Arc::clone(self.dynamic_filter_registry);
         let task_ctx = Arc::clone(self.task_ctx);
         let (load_info_tx, load_info_rx) = unbounded_channel();
@@ -313,12 +324,12 @@ impl<'a> StageCoordinator<'a> {
             while let Some(msg) = worker_to_coordinator_stream.try_next().await? {
                 match msg {
                     WorkerToCoordinatorMsg::TaskMetrics(metrics) => {
-                        if let Some(task_metrics) = task_metrics.take() {
+                        if let Some(task_metrics) = reports.metrics_store.take() {
                             task_metrics.insert(task_key, metrics);
                         }
                     }
                     WorkerToCoordinatorMsg::TaskCompletedDynamicFilters(filters) => {
-                        if let Some(store) = completed_dynamic_filter_store.take() {
+                        if let Some(store) = reports.completed_dynamic_filter_store.take() {
                             store.insert(task_key, filters);
                         }
                     }
@@ -336,14 +347,6 @@ impl<'a> StageCoordinator<'a> {
                     }
                 };
             }
-            // An unexecuted task sends no final reports; still complete its waits.
-            if let Some(store) = task_metrics {
-                store.insert(task_key, TaskMetrics::default());
-            }
-            if let Some(store) = completed_dynamic_filter_store {
-                store.insert(task_key, TaskCompletedDynamicFilters::default());
-            }
-            let _ = load_info_tx_opt.take();
             Ok::<_, DataFusionError>(())
         });
 
@@ -353,7 +356,7 @@ impl<'a> StageCoordinator<'a> {
     /// Spawns a background task in charge of sending messages to workers. Some things that are sent
     /// to workers here are:
     /// - WorkUnits collected from [WorkUnitFeeds] present in the plan.
-    pub(super) fn coordinator_to_worker_task(
+    fn coordinator_to_worker_task(
         &self,
         task_i: usize,
         tx: UnboundedSender<CoordinatorToWorkerMsg>,
@@ -510,21 +513,14 @@ impl<'a> StageCoordinator<'a> {
     }
 }
 
-/// Completes report waits if setup ends before a worker report reader owns them.
-pub(super) struct PendingTaskReports {
+/// Completes missing report waits when setup or its worker response reader ends.
+struct TaskReports {
     task_key: TaskKey,
     metrics_store: Option<Arc<Store<TaskMetrics>>>,
     completed_dynamic_filter_store: Option<Arc<Store<TaskCompletedDynamicFilters>>>,
 }
 
-impl PendingTaskReports {
-    pub(super) fn reader_started(&mut self) {
-        self.metrics_store = None;
-        self.completed_dynamic_filter_store = None;
-    }
-}
-
-impl Drop for PendingTaskReports {
+impl Drop for TaskReports {
     fn drop(&mut self) {
         if let Some(store) = self.metrics_store.take() {
             store.insert(self.task_key, TaskMetrics::default());

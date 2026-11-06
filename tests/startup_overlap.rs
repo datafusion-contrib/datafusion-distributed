@@ -25,8 +25,9 @@ mod tests {
         DistributedExec, DistributedExt, MappedWorkerSessionBuilderExt, NetworkBoundaryExt,
         NetworkCoalesceExec, RouteTaskEvent, RouteTaskEventResponse, RouteTaskHandler, Stage,
         WorkerQueryContext, WorkerSessionBuilder, WorkerToCoordinatorMsg,
+        rewrite_distributed_plan_with_dynamic_filters,
     };
-    use futures::{StreamExt, TryStreamExt};
+    use futures::{StreamExt, TryStreamExt, stream};
     use tokio::time::{sleep, timeout};
     use tokio_util::sync::CancellationToken;
 
@@ -126,6 +127,48 @@ mod tests {
             .unwrap_err();
         assert_contains!(error.to_string(), "injected setup failure");
         assert_terminal_metrics(&plan).await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn worker_response_error_after_output_finishes_reports() -> Result<()> {
+        let response_error = ResponseErrorGate::default();
+        let ctx = context(build_state)
+            .await
+            .with_distributed_dynamic_task_count(false)?
+            .with_distributed_metrics_collection(true)?
+            .with_distributed_dynamic_filter_collection(true)?
+            .with_distributed_route_task_handler(response_error.clone());
+        let plan = ctx.sql(SCAN).await?.create_physical_plan().await?;
+        let mut output = execute_stream(Arc::clone(&plan), ctx.task_ctx())?;
+
+        let first = timeout(WAIT, output.try_next()).await.unwrap()?.unwrap();
+        assert!(matches!(task_indices(&[first]).as_slice(), [0] | [1]));
+        response_error.release.cancel();
+        let error = timeout(WAIT, output.try_collect::<Vec<_>>())
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_contains!(error.to_string(), "injected worker response error");
+
+        let distributed = plan.downcast_ref::<DistributedExec>().unwrap();
+        let reports = timeout(WAIT, distributed.wait_for_metrics())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reports.len(), 2);
+        assert!(
+            reports
+                .values()
+                .all(|report| report.pre_order_plan_metrics.is_empty())
+        );
+        let task_ctx = ctx.task_ctx();
+        timeout(
+            WAIT,
+            rewrite_distributed_plan_with_dynamic_filters(plan, &task_ctx),
+        )
+        .await
+        .unwrap()?;
         Ok(())
     }
 
@@ -334,6 +377,35 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(reports.len(), 2);
+    }
+
+    #[derive(Clone, Default)]
+    struct ResponseErrorGate {
+        release: CancellationToken,
+    }
+
+    #[async_trait]
+    impl RouteTaskHandler for ResponseErrorGate {
+        async fn handle(
+            &self,
+            event: RouteTaskEvent<'_>,
+        ) -> Option<Result<RouteTaskEventResponse>> {
+            Some(
+                UrlEmitterRouteTaskHandler
+                    .handle(event)
+                    .await?
+                    .map(|mut response| {
+                        let release = self.release.clone();
+                        let error = stream::once(async move {
+                            release.cancelled().await;
+                            exec_err!("injected worker response error")
+                        });
+                        response.worker_to_coordinator_stream =
+                            error.chain(response.worker_to_coordinator_stream).boxed();
+                        response
+                    }),
+            )
+        }
     }
 
     #[derive(Clone, Default)]
