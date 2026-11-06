@@ -25,11 +25,7 @@ mod tests {
         let physical_distributed_str = display_plan_ascii(physical_distributed.as_ref(), false);
 
         assert_snapshot!(physical_distributed_str,
-            @r"
-        FilterExec: table_name@2 = weather, projection=[table_catalog@0, table_schema@1, table_name@2, column_name@3, data_type@5, is_nullable@4]
-          RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=1
-            StreamingTableExec: partition_sizes=1, projection=[table_catalog, table_schema, table_name, column_name, is_nullable, data_type]
-        ",
+            @"DataSourceExec: partitions=1, partition_sizes=[1]",
         );
 
         let batches_distributed = pretty_format_batches(

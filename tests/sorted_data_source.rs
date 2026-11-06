@@ -149,19 +149,19 @@ mod tests {
         let (plan, result) = CsvTest::new(SORTED_CSV)
             .query("SELECT value, count(*) AS n FROM records GROUP BY value ORDER BY value")
             .await?;
-        assert_snapshot!(plan, @r"
+        assert_snapshot!(plan, @"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [value@0 ASC NULLS LAST]
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
         └──────────────────────────────────────────────────
           ┌───── Stage 2 ── tasks=2, partitions=2
           │ ProjectionExec: expr=[value@0 as value, count(Int64(1))@1 as n]
-          │   AggregateExec: mode=FinalPartitioned, gby=[value@0 as value], aggr=[count(Int64(1))], ordering_mode=Sorted
+          │   AggregateExec: mode=FinalPartitioned, gby=[value@0 as value], aggr=[count(Int64(1))], group_clustering_mode=Full
           │     [Stage 1] => NetworkShuffleExec: output_partitions=2, input_tasks=2, sort_exprs=[value@0 ASC NULLS LAST]
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=2, partitions=4
             │ RepartitionExec: partitioning=Hash([value@0], 4), input_partitions=2, preserve_order=true, sort_exprs=value@0 ASC NULLS LAST
-            │   AggregateExec: mode=Partial, gby=[value@0 as value], aggr=[count(Int64(1))], ordering_mode=Sorted
+            │   AggregateExec: mode=Partial, gby=[value@0 as value], aggr=[count(Int64(1))], group_clustering_mode=Full
             │     DistributedLeafExec:
             │       t0: DataSourceExec: file_groups={2 groups: [[testdata/sorted_csv/0.csv:<int>..<int>], [testdata/sorted_csv/1.csv:<int>..<int>]]}, projection=[value], output_ordering=[value@0 ASC NULLS LAST], file_type=csv, has_header=true
             │       t1: DataSourceExec: file_groups={2 groups: [[testdata/sorted_csv/0.csv:<int>..<int>], [testdata/sorted_csv/1.csv:<int>..<int>]]}, projection=[value], output_ordering=[value@0 ASC NULLS LAST], file_type=csv, has_header=true
@@ -198,20 +198,20 @@ mod tests {
             .adaptive(true)
             .query("SELECT value, count(*) AS n FROM records GROUP BY value ORDER BY value")
             .await?;
-        assert_snapshot!(plan, @r"
+        assert_snapshot!(plan, @"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [value@0 ASC NULLS LAST]
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
         └──────────────────────────────────────────────────
           ┌───── Stage 2 ── tasks=2, partitions=2
           │ ProjectionExec: expr=[value@0 as value, count(Int64(1))@1 as n]
-          │   AggregateExec: mode=FinalPartitioned, gby=[value@0 as value], aggr=[count(Int64(1))], ordering_mode=Sorted
+          │   AggregateExec: mode=FinalPartitioned, gby=[value@0 as value], aggr=[count(Int64(1))], group_clustering_mode=Full
           │     [Stage 1] => NetworkShuffleExec: output_partitions=2, input_tasks=2, sort_exprs=[value@0 ASC NULLS LAST]
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=2, partitions=4
             │ RepartitionExec: partitioning=Hash([value@0], 4), input_partitions=2, preserve_order=true, sort_exprs=value@0 ASC NULLS LAST
             │   SamplerExec: partitions=2
-            │     AggregateExec: mode=Partial, gby=[value@0 as value], aggr=[count(Int64(1))], ordering_mode=Sorted
+            │     AggregateExec: mode=Partial, gby=[value@0 as value], aggr=[count(Int64(1))], group_clustering_mode=Full
             │       DistributedLeafExec:
             │         t0: DataSourceExec: file_groups={2 groups: [[testdata/sorted_csv/0.csv:<int>..<int>], [testdata/sorted_csv/1.csv:<int>..<int>]]}, projection=[value], output_ordering=[value@0 ASC NULLS LAST], file_type=csv, has_header=true
             │         t1: DataSourceExec: file_groups={2 groups: [[testdata/sorted_csv/0.csv:<int>..<int>], [testdata/sorted_csv/1.csv:<int>..<int>]]}, projection=[value], output_ordering=[value@0 ASC NULLS LAST], file_type=csv, has_header=true
@@ -248,20 +248,20 @@ mod tests {
             .two_step_shuffle(true)
             .query("SELECT value, count(*) AS n FROM records GROUP BY value ORDER BY value")
             .await?;
-        assert_snapshot!(plan, @r"
+        assert_snapshot!(plan, @"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [value@0 ASC NULLS LAST]
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
         └──────────────────────────────────────────────────
           ┌───── Stage 2 ── tasks=2, partitions=2
           │ ProjectionExec: expr=[value@0 as value, count(Int64(1))@1 as n]
-          │   AggregateExec: mode=FinalPartitioned, gby=[value@0 as value], aggr=[count(Int64(1))], ordering_mode=Sorted
+          │   AggregateExec: mode=FinalPartitioned, gby=[value@0 as value], aggr=[count(Int64(1))], group_clustering_mode=Full
           │     RepartitionExec: partitioning=Hash([value@0], 2), input_partitions=2, preserve_order=true, sort_exprs=value@0 ASC NULLS LAST
           │       [Stage 1] => NetworkShuffleExec: output_partitions=2, input_tasks=2, sort_exprs=[value@0 ASC NULLS LAST]
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=2, partitions=2
             │ RepartitionExec: partitioning=Hash([value@0, 5871781006564002453], 2), input_partitions=2, preserve_order=true, sort_exprs=value@0 ASC NULLS LAST
-            │   AggregateExec: mode=Partial, gby=[value@0 as value], aggr=[count(Int64(1))], ordering_mode=Sorted
+            │   AggregateExec: mode=Partial, gby=[value@0 as value], aggr=[count(Int64(1))], group_clustering_mode=Full
             │     DistributedLeafExec:
             │       t0: DataSourceExec: file_groups={2 groups: [[testdata/sorted_csv/0.csv:<int>..<int>], [testdata/sorted_csv/1.csv:<int>..<int>]]}, projection=[value], output_ordering=[value@0 ASC NULLS LAST], file_type=csv, has_header=true
             │       t1: DataSourceExec: file_groups={2 groups: [[testdata/sorted_csv/0.csv:<int>..<int>], [testdata/sorted_csv/1.csv:<int>..<int>]]}, projection=[value], output_ordering=[value@0 ASC NULLS LAST], file_type=csv, has_header=true
@@ -299,21 +299,21 @@ mod tests {
             .two_step_shuffle(true)
             .query("SELECT value, count(*) AS n FROM records GROUP BY value ORDER BY value")
             .await?;
-        assert_snapshot!(plan, @r"
+        assert_snapshot!(plan, @"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [value@0 ASC NULLS LAST]
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
         └──────────────────────────────────────────────────
           ┌───── Stage 2 ── tasks=2, partitions=2
           │ ProjectionExec: expr=[value@0 as value, count(Int64(1))@1 as n]
-          │   AggregateExec: mode=FinalPartitioned, gby=[value@0 as value], aggr=[count(Int64(1))], ordering_mode=Sorted
+          │   AggregateExec: mode=FinalPartitioned, gby=[value@0 as value], aggr=[count(Int64(1))], group_clustering_mode=Full
           │     RepartitionExec: partitioning=Hash([value@0], 2), input_partitions=2, preserve_order=true, sort_exprs=value@0 ASC NULLS LAST
           │       [Stage 1] => NetworkShuffleExec: output_partitions=2, input_tasks=2, sort_exprs=[value@0 ASC NULLS LAST]
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=2, partitions=2
             │ RepartitionExec: partitioning=Hash([value@0, 5871781006564002453], 2), input_partitions=2, preserve_order=true, sort_exprs=value@0 ASC NULLS LAST
             │   SamplerExec: partitions=2
-            │     AggregateExec: mode=Partial, gby=[value@0 as value], aggr=[count(Int64(1))], ordering_mode=Sorted
+            │     AggregateExec: mode=Partial, gby=[value@0 as value], aggr=[count(Int64(1))], group_clustering_mode=Full
             │       DistributedLeafExec:
             │         t0: DataSourceExec: file_groups={2 groups: [[testdata/sorted_csv/0.csv:<int>..<int>], [testdata/sorted_csv/1.csv:<int>..<int>]]}, projection=[value], output_ordering=[value@0 ASC NULLS LAST], file_type=csv, has_header=true
             │         t1: DataSourceExec: file_groups={2 groups: [[testdata/sorted_csv/0.csv:<int>..<int>], [testdata/sorted_csv/1.csv:<int>..<int>]]}, projection=[value], output_ordering=[value@0 ASC NULLS LAST], file_type=csv, has_header=true
