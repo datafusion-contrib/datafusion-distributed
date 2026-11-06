@@ -27,6 +27,7 @@ mod tests {
     use datafusion::arrow::array::{Int32Array, StringArray};
     use datafusion::arrow::record_batch::RecordBatch;
     use futures::StreamExt;
+    use itertools::Itertools;
 
     use crate::coordinator::DistributedExec;
     use crate::test_utils::in_memory_channel_resolver::{
@@ -194,6 +195,14 @@ mod tests {
                 count_plan_nodes_up_to_network_boundary(stage_plan),
                 "Mismatch between collected metrics and actual nodes for {expected_task_key:?}"
             );
+
+            // Workers aggregate each node's metrics before sending them: one value per metric
+            // name, not one per partition.
+            for node_metrics in &actual_metrics.pre_order_plan_metrics {
+                let names = node_metrics.iter().map(|m| m.value().name()).collect_vec();
+                assert_eq!(names.len(), names.iter().unique().count(), "{names:?}");
+                assert!(node_metrics.iter().all(|m| m.partition().is_none()));
+            }
         }
     }
 
