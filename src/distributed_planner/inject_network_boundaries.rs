@@ -1,3 +1,4 @@
+use crate::distributed_planner::calculate_cost;
 use crate::distributed_planner::insert_broadcast::is_left_broadcast_safe;
 use crate::events::{
     DesiredTaskCountEvent, DesiredTaskCountHandlers, ScaleUpLeafNodeEvent, ScaleUpLeafNodeHandlers,
@@ -23,7 +24,8 @@ use datafusion::physical_plan::joins::{
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion::physical_plan::{
-    ChildrenPropertiesMode, ExecutionPlan, PlanProperties, ReplaceChildrenOptions,
+    ChildrenPropertiesMode, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
+    ReplaceChildrenOptions,
 };
 use datafusion::prelude::SessionConfig;
 use std::any::TypeId;
@@ -214,6 +216,21 @@ impl<'a> InjectNetworkBoundaryContext<'a> {
             );
         };
         Ok(*task_count)
+    }
+
+    /// Reconciles the stage's existing task-count hints and restrictions with AQE's compute budget.
+    /// Used both when checking whether a query can stay local and after runtime sampling.
+    pub(crate) fn task_count_with_cpu_cost(
+        &self,
+        plan: &Arc<dyn ExecutionPlan>,
+        cpu_cost: usize,
+    ) -> Result<TaskCountAnnotation> {
+        let compute_based_task_count = cpu_cost as f64
+            / self.d_cfg.dynamic_bytes_per_partition.max(1) as f64
+            / plan.output_partitioning().partition_count().max(1) as f64;
+        let compute_based_task_count = compute_based_task_count.min(self.max_tasks()? as f64);
+        self.task_count(plan)?
+            .merge(TaskCountAnnotation::soft(compute_based_task_count))
     }
 
     fn fetch_add_stage_id(&self) -> usize {
@@ -683,9 +700,20 @@ impl NetworkBoundaryBuilder for CardinalityBasedNetworkBoundaryBuilder {
         nb_type: TypeId,
         nb_ctx: &'a InjectNetworkBoundaryContext<'a>,
     ) -> Result<NetworkBoundaryBuilderResult> {
-        let tc = nb_ctx.task_count(&input_stage.plan)?;
+        let tc = if nb_ctx.d_cfg.dynamic_task_count {
+            // This is the planning-time locality check, before AQE can sample any stages.
+            // Include its compute budget so a small scan with expensive operators can
+            // still enter adaptive execution. Local child stages retain their plans here,
+            // so the estimate conservatively includes their costs as well.
+            let cost = calculate_cost(&input_stage.plan)?;
+            nb_ctx
+                .task_count_with_cpu_cost(&input_stage.plan, *cost.cpu.get_value().unwrap_or(&0))?
+        } else {
+            nb_ctx.task_count(&input_stage.plan)?
+        };
         input_stage.plan =
             nb_ctx.propagate_task_count_until_network_boundaries(&input_stage.plan, tc)?;
+        input_stage.tasks = tc.as_usize();
         let input_properties = Arc::clone(input_stage.plan.properties());
 
         if nb_type == TypeId::of::<NetworkCoalesceExec>() {
