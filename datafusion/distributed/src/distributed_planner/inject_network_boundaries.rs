@@ -220,12 +220,17 @@ impl<'a> InjectNetworkBoundaryContext<'a> {
         plan: Arc<dyn ExecutionPlan>,
         f: impl FnOnce(Arc<dyn ExecutionPlan>) -> Result<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        let task_count = self.task_count(&plan).ok();
-        let mut plan = f(plan)?;
-        if let Some(task_count) = task_count {
-            plan = self.plan_with_task_count(plan, task_count);
-        }
-        Ok(plan)
+        let task_count_opt = {
+            let key = plan_ptr_key(&plan);
+            let lock = self.task_counts.lock().expect("task counts mutex poisoned");
+            lock.get(&key).map(|(v, _)| *v)
+        };
+        let plan = f(plan)?;
+
+        Ok(match task_count_opt {
+            Some(task_count) => self.plan_with_task_count(plan, task_count),
+            None => plan,
+        })
     }
 
     pub(crate) fn task_count(&self, plan: &Arc<dyn ExecutionPlan>) -> Result<TaskCountAnnotation> {
@@ -255,7 +260,7 @@ fn plan_ptr_key(plan: &Arc<dyn ExecutionPlan>) -> usize {
 /// (or [InjectNetworkBoundaryContext::set_task_count] on the way through) so the returned node has
 /// a recorded task count. Callers downstream depend on this invariant.
 async fn _inject_network_boundaries(
-    plan: Arc<dyn ExecutionPlan>,
+    mut plan: Arc<dyn ExecutionPlan>,
     parent: Option<&Arc<dyn ExecutionPlan>>,
     nb_ctx: &InjectNetworkBoundaryContext<'_>,
 ) -> Result<Transformed<Arc<dyn ExecutionPlan>>> {
@@ -275,18 +280,20 @@ async fn _inject_network_boundaries(
         )));
     }
     let processed_children = futures::future::try_join_all(futures).await?;
-    let plan = nb_ctx.plan_with_inherited_task_count(plan, |plan| {
-        let children = processed_children
-            .iter()
-            .map(|v| Arc::clone(&v.data))
-            .collect();
-        plan.replace_children(
-            children,
-            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
-        )
-    })?;
+    let any_children_transformed = processed_children.iter().any(|v| v.transformed);
+    let any_children_stopped = processed_children.iter().any(|v| v.tnr == Stop);
+    let processed_children: Vec<_> = processed_children.into_iter().map(|v| v.data).collect();
 
-    if processed_children.iter().any(|v| v.tnr == Stop) {
+    if any_children_transformed {
+        plan = nb_ctx.plan_with_inherited_task_count(plan, |plan| {
+            plan.replace_children(
+                processed_children.clone(),
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            )
+        })?;
+    }
+
+    if any_children_stopped {
         return Ok(Transformed::new(plan, true, Stop));
     }
 
@@ -311,7 +318,7 @@ async fn _inject_network_boundaries(
         let mut load: f64 = 0.0;
         let mut min: Option<NonZeroUsize> = None;
         for processed_child in &processed_children {
-            let child_count = nb_ctx.task_count(&processed_child.data)?;
+            let child_count = nb_ctx.task_count(processed_child)?;
             load += match child_count.restriction {
                 TaskCountRestriction::Exact(count) => child_count.soft.min(count.get() as f64),
                 _ => child_count
@@ -347,7 +354,7 @@ async fn _inject_network_boundaries(
         // sides have one output partition).
         let mut task_count = TaskCountAnnotation::exact(NonZeroUsize::MIN, 0.0);
         for processed_child in &processed_children {
-            task_count = task_count.merge(nb_ctx.task_count(&processed_child.data)?)?
+            task_count = task_count.merge(nb_ctx.task_count(processed_child)?)?
         }
         task_count
     } else if let Some(node) = plan.downcast_ref::<NestedLoopJoinExec>()
@@ -364,7 +371,7 @@ async fn _inject_network_boundaries(
         // sides have one output partition).
         let mut task_count = TaskCountAnnotation::exact(NonZeroUsize::MIN, 0.0);
         for processed_child in &processed_children {
-            task_count = task_count.merge(nb_ctx.task_count(&processed_child.data)?)?
+            task_count = task_count.merge(nb_ctx.task_count(processed_child)?)?
         }
         task_count
     } else if plan.is::<CrossJoinExec>() && !broadcast_joins_enabled {
@@ -373,7 +380,7 @@ async fn _inject_network_boundaries(
         // broadcasts are unavailable.
         let mut task_count = TaskCountAnnotation::exact(NonZeroUsize::MIN, 0.0);
         for processed_child in &processed_children {
-            task_count = task_count.merge(nb_ctx.task_count(&processed_child.data)?)?
+            task_count = task_count.merge(nb_ctx.task_count(processed_child)?)?
         }
         task_count
     } else {
@@ -383,7 +390,7 @@ async fn _inject_network_boundaries(
             .map(|v| v.task_count)
             .unwrap_or(TaskCountAnnotation::soft(0.0));
         for processed_child in &processed_children {
-            task_count = task_count.merge(nb_ctx.task_count(&processed_child.data)?)?
+            task_count = task_count.merge(nb_ctx.task_count(processed_child)?)?
         }
         task_count
     };
@@ -475,13 +482,12 @@ async fn _inject_network_boundaries(
         // We've just finished walking the head stage's subplan. Run a final propagation so
         // every node in the head stage (which never crossed a stage boundary on the way up)
         // gets its task count recorded.
-        let plan = nb_ctx.propagate_task_count_until_network_boundaries(&plan, task_count)?;
-        Ok(Transformed::yes(plan))
+        nb_ctx.propagate_task_count_until_network_boundaries(&plan, task_count)
     } else {
         // If this is not the root node, and it's also not a network boundary, then we don't need
         // to do anything else.
         let plan = nb_ctx.plan_with_task_count(plan, task_count);
-        Ok(Transformed::yes(plan))
+        Ok(Transformed::new(plan, any_children_transformed, Continue))
     }
 }
 
@@ -523,7 +529,7 @@ impl InjectNetworkBoundaryContext<'_> {
         &self,
         plan: &Arc<dyn ExecutionPlan>,
         task_count: TaskCountAnnotation,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
+    ) -> Result<Transformed<Arc<dyn ExecutionPlan>>> {
         let task_count = task_count.into_sealed();
         // Remote network boundaries have no children, but still need shuffle preparation.
         if plan.children().is_empty() && !plan.is_network_boundary() {
@@ -533,7 +539,10 @@ impl InjectNetworkBoundaryContext<'_> {
                 session_config: self.cfg,
             };
             match ScaleUpLeafNodeHandlers::handle(ev) {
-                None => Ok(self.plan_with_task_count(Arc::clone(plan), task_count)),
+                None => {
+                    let plan = self.plan_with_task_count(Arc::clone(plan), task_count);
+                    Ok(Transformed::no(plan))
+                }
                 Some(response) => {
                     // The scaled up subtree may contain more than 1 node.
                     let scaled_up = response?.plan;
@@ -541,7 +550,8 @@ impl InjectNetworkBoundaryContext<'_> {
                         self.set_task_count(plan, task_count);
                         Ok(Continue)
                     })?;
-                    Ok(self.plan_with_task_count(scaled_up, task_count))
+                    let plan = self.plan_with_task_count(scaled_up, task_count);
+                    Ok(Transformed::yes(plan))
                 }
             }
 
@@ -571,11 +581,13 @@ impl InjectNetworkBoundaryContext<'_> {
                         // NetworkShuffleExec below.
                         .with_preserve_order(),
                     ) as Arc<dyn ExecutionPlan>;
-                    return Ok(self.plan_with_task_count(consumer_repartition, task_count));
+                    let plan = self.plan_with_task_count(consumer_repartition, task_count);
+                    return Ok(Transformed::yes(plan));
                 }
             }
             // Just annotate the network boundary and stop recursion here.
-            Ok(self.plan_with_task_count(Arc::clone(plan), task_count))
+            let plan = self.plan_with_task_count(Arc::clone(plan), task_count);
+            Ok(Transformed::no(plan))
 
         // Finalize a pre-inserted ChildrenIsolatorUnionExec.
         } else if plan.is::<ChildrenIsolatorUnionExec>() {
@@ -613,24 +625,35 @@ impl InjectNetworkBoundaryContext<'_> {
                 new_children
                     .push(self.propagate_task_count_until_network_boundaries(child, task_count)?);
             }
-            let c_i_union = Arc::new(c_i_union).replace_children(
-                new_children,
-                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
-            )?;
-            Ok(self.plan_with_task_count(c_i_union, task_count))
+            let mut c_i_union = Arc::new(c_i_union) as Arc<dyn ExecutionPlan>;
+            if new_children.iter().any(|v| v.transformed) {
+                c_i_union = c_i_union.replace_children(
+                    new_children.into_iter().map(|v| v.data).collect(),
+                    ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+                )?;
+            }
+            let plan = self.plan_with_task_count(c_i_union, task_count);
+            Ok(Transformed::yes(plan))
 
         // Handle middle nodes.
         } else {
-            let mut new_children = Vec::with_capacity(plan.children().len());
-            for child in plan.children() {
-                new_children
-                    .push(self.propagate_task_count_until_network_boundaries(child, task_count)?);
+            let new_children = plan
+                .children()
+                .into_iter()
+                .map(|child| self.propagate_task_count_until_network_boundaries(child, task_count))
+                .collect::<Result<Vec<_>>>()?;
+
+            if new_children.iter().any(|v| v.transformed) {
+                let plan = Arc::clone(plan).replace_children(
+                    new_children.into_iter().map(|v| v.data).collect(),
+                    ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+                )?;
+                let plan = self.plan_with_task_count(plan, task_count);
+                Ok(Transformed::yes(plan))
+            } else {
+                let plan = self.plan_with_task_count(Arc::clone(plan), task_count);
+                Ok(Transformed::no(plan))
             }
-            let plan = Arc::clone(plan).replace_children(
-                new_children,
-                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
-            )?;
-            Ok(self.plan_with_task_count(plan, task_count))
         }
     }
 }
@@ -726,8 +749,9 @@ impl NetworkBoundaryBuilder for CardinalityBasedNetworkBoundaryBuilder {
         nb_ctx: &'a InjectNetworkBoundaryContext<'a>,
     ) -> Result<NetworkBoundaryBuilderResult> {
         let tc = nb_ctx.task_count(&input_stage.plan)?;
-        input_stage.plan =
-            nb_ctx.propagate_task_count_until_network_boundaries(&input_stage.plan, tc)?;
+        input_stage.plan = nb_ctx
+            .propagate_task_count_until_network_boundaries(&input_stage.plan, tc)?
+            .data;
         let input_properties = Arc::clone(input_stage.plan.properties());
 
         if nb_type == TypeId::of::<NetworkCoalesceExec>() {

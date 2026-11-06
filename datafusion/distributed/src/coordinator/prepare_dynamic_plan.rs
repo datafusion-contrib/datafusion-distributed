@@ -108,8 +108,9 @@ impl NetworkBoundaryBuilder for DynamicPlanBuilder<'_> {
         // Propagate the final task_count inferred based on runtime statistics and compute cost.
         // Here is where leaf nodes are scaled up by ScaleUpLeafNodeHandler, and the
         // plan is finally left ready for distribution.
-        input_stage.plan =
-            nb_ctx.propagate_task_count_until_network_boundaries(&input_stage.plan, task_count)?;
+        input_stage.plan = nb_ctx
+            .propagate_task_count_until_network_boundaries(&input_stage.plan, task_count)?
+            .data;
         input_stage.tasks = task_count.as_usize();
         // In order to infer the compute the cost of the stage above this one, here a sampler
         // is injected to gather runtime statistics.
