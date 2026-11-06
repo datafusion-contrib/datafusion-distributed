@@ -27,6 +27,10 @@ name = "dynamic_filtering"
 path = "tests/dynamic_filtering/main.rs"
 required-features = ["integration"]
 
+[[example]]
+name = "sibling_topk"
+required-features = ["integration"]
+
 [dependencies]
 chrono = { version = "0.4.44" }
 datafusion = { workspace = true, features = [
