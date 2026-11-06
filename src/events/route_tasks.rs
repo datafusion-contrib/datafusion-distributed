@@ -22,6 +22,14 @@ pub struct RouteTaskEvent<'a> {
     pub task_key: TaskKey,
     /// Number of tasks of the stage to which the assigned task belongs.
     pub task_count: usize,
+    /// The coordinator's unspecialized stage plan at routing time.
+    ///
+    /// This includes every task variant and union branch in the stage. Child stages remain
+    /// behind network boundaries. The plan is available for both static and dynamic task
+    /// counts, after the stage's task count has been resolved. Adaptive execution may finalize
+    /// output partitioning later, once downstream task counts are known. Stage-level observers
+    /// can use `task_key.task_number == 0` to observe it once per stage routing attempt.
+    pub stage_plan: &'a Arc<dyn ExecutionPlan>,
     /// The exact plan variant that will be sent for this task.
     pub task_specialized_plan: &'a Arc<dyn ExecutionPlan>,
     /// Establishes a coordinator-to-worker connection for a candidate URL. Users are expected
