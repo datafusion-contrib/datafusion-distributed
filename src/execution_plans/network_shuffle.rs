@@ -2,7 +2,7 @@ use crate::common::require_one_child;
 use crate::distributed_planner::ProducerHead;
 use crate::execution_plans::common::{salted_partitioning, scale_partitioning};
 use crate::stage::{LocalStage, Stage};
-use crate::worker::{RemoteStageRef, WorkerConnectionPool};
+use crate::worker::WorkerConnectionPool;
 use crate::{DistributedTaskContext, MaybeEncoded, NetworkBoundary};
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{Result, not_impl_err, plan_err};
@@ -273,92 +273,6 @@ impl DisplayAs for NetworkShuffleExec {
     }
 }
 
-impl NetworkShuffleExec {
-    pub(crate) fn execute_remote(
-        &self,
-        partition: usize,
-        context: Arc<TaskContext>,
-        remote_stage: RemoteStageRef<'_>,
-    ) -> Result<SendableRecordBatchStream, DataFusionError> {
-        let task_context = DistributedTaskContext::from_ctx(&context);
-        let task_index = task_context.task_index;
-        let producer_task_count = remote_stage.task_count();
-
-        let schema = self.schema();
-        let mut streams: Vec<SendableRecordBatchStream> =
-            if matches!(self.mode, ShuffleMode::Direct) {
-                // Read global partition task_index*partition_count+p from all producer tasks.
-                // All partitions for this consumer task share the same range key so the connection
-                // pool returns the same cached stream group for every partition call.
-                let partition_count = self.properties.partitioning.partition_count();
-                let off = task_index * partition_count;
-                let global_partition = off + partition;
-                let mut streams = Vec::with_capacity(producer_task_count);
-                for input_task_index in 0..producer_task_count {
-                    let stream = self.worker_connections.execute(
-                        remote_stage,
-                        off..(off + partition_count),
-                        input_task_index,
-                        global_partition,
-                        self.producer_head(task_context.task_count)?,
-                        &context,
-                    )?;
-                    streams.push(
-                        Box::pin(RecordBatchStreamAdapter::new(schema.clone(), stream))
-                            as SendableRecordBatchStream,
-                    );
-                }
-                streams
-            } else {
-                // TwoPhase: each consumer task reads from exactly one producer task.
-                let stream = self.worker_connections.execute(
-                    remote_stage,
-                    task_index..task_index + 1,
-                    partition,
-                    task_index,
-                    self.producer_head(task_context.task_count)?,
-                    &context,
-                )?;
-                vec![
-                    Box::pin(RecordBatchStreamAdapter::new(schema.clone(), stream))
-                        as SendableRecordBatchStream,
-                ]
-            };
-
-        if streams.is_empty() {
-            return Ok(Box::pin(EmptyRecordBatchStream::new(self.schema())));
-        }
-        // When there is only one input task stream, no merging or interleaving is needed.
-        if streams.len() == 1 {
-            return Ok(streams.pop().unwrap());
-        }
-
-        if let Some(ordering) = self.properties.output_ordering()
-            && !ordering.is_empty()
-        {
-            let reservation = MemoryConsumer::new(format!("NetworkShuffleExec[{partition}]"))
-                .register(&context.runtime_env().memory_pool);
-            let batch_size = context.session_config().batch_size();
-            // StreamingMergeBuilder requires BaselineMetrics (panics if not provided).
-            // Pass an isolated metrics set to avoid double-counting into worker_connections.metrics.
-            let metrics = BaselineMetrics::new(&ExecutionPlanMetricsSet::new(), partition);
-            StreamingMergeBuilder::new()
-                .with_streams(streams)
-                .with_schema(self.schema())
-                .with_expressions(ordering)
-                .with_metrics(metrics)
-                .with_batch_size(batch_size)
-                .with_reservation(reservation)
-                .build()
-        } else {
-            Ok(Box::pin(RecordBatchStreamAdapter::new(
-                self.schema(),
-                futures::stream::select_all(streams),
-            )))
-        }
-    }
-}
-
 impl ExecutionPlan for NetworkShuffleExec {
     fn name(&self) -> &str {
         "NetworkShuffleExec"
@@ -405,11 +319,87 @@ impl ExecutionPlan for NetworkShuffleExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream, DataFusionError> {
-        let remote_stage = match &self.input_stage {
-            Stage::Local(local) => return local.execute(partition, context),
-            Stage::Remote(remote_stage) => remote_stage,
-        };
-        self.execute_remote(partition, context, remote_stage.into())
+        if let Stage::Local(local) = &self.input_stage
+            && !self.worker_connections.has_pending_workers()
+        {
+            return local.execute(partition, context);
+        }
+        let task_context = DistributedTaskContext::from_ctx(&context);
+        let task_index = task_context.task_index;
+        let producer_task_count = self.input_stage.task_count();
+
+        let schema = self.schema();
+        let mut streams: Vec<SendableRecordBatchStream> =
+            if matches!(self.mode, ShuffleMode::Direct) {
+                // Read global partition task_index*partition_count+p from all producer tasks.
+                // All partitions for this consumer task share the same range key so the connection
+                // pool returns the same cached stream group for every partition call.
+                let partition_count = self.properties.partitioning.partition_count();
+                let off = task_index * partition_count;
+                let global_partition = off + partition;
+                let mut streams = Vec::with_capacity(producer_task_count);
+                for input_task_index in 0..producer_task_count {
+                    let stream = self.worker_connections.execute(
+                        &self.input_stage,
+                        off..(off + partition_count),
+                        input_task_index,
+                        global_partition,
+                        self.producer_head(task_context.task_count)?,
+                        &context,
+                    )?;
+                    streams.push(
+                        Box::pin(RecordBatchStreamAdapter::new(schema.clone(), stream))
+                            as SendableRecordBatchStream,
+                    );
+                }
+                streams
+            } else {
+                // TwoPhase: each consumer task reads from exactly one producer task.
+                let stream = self.worker_connections.execute(
+                    &self.input_stage,
+                    task_index..task_index + 1,
+                    partition,
+                    task_index,
+                    self.producer_head(task_context.task_count)?,
+                    &context,
+                )?;
+                vec![
+                    Box::pin(RecordBatchStreamAdapter::new(schema.clone(), stream))
+                        as SendableRecordBatchStream,
+                ]
+            };
+
+        if streams.is_empty() {
+            return Ok(Box::pin(EmptyRecordBatchStream::new(self.schema())));
+        }
+        // When there is only one input task stream, no merging or interleaving is needed.
+        if streams.len() == 1 {
+            return Ok(streams.pop().unwrap());
+        }
+
+        if let Some(ordering) = self.properties.output_ordering()
+            && !ordering.is_empty()
+        {
+            let reservation = MemoryConsumer::new(format!("NetworkShuffleExec[{partition}]"))
+                .register(&context.runtime_env().memory_pool);
+            let batch_size = context.session_config().batch_size();
+            // StreamingMergeBuilder requires BaselineMetrics (panics if not provided).
+            // Pass an isolated metrics set to avoid double-counting into worker_connections.metrics.
+            let metrics = BaselineMetrics::new(&ExecutionPlanMetricsSet::new(), partition);
+            StreamingMergeBuilder::new()
+                .with_streams(streams)
+                .with_schema(self.schema())
+                .with_expressions(ordering)
+                .with_metrics(metrics)
+                .with_batch_size(batch_size)
+                .with_reservation(reservation)
+                .build()
+        } else {
+            Ok(Box::pin(RecordBatchStreamAdapter::new(
+                self.schema(),
+                futures::stream::select_all(streams),
+            )))
+        }
     }
 
     fn metrics(&self) -> Option<MetricsSet> {

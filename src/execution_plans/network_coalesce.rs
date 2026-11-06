@@ -3,7 +3,7 @@ use crate::common::require_one_child;
 use crate::distributed_planner::{NetworkBoundary, ProducerHead};
 use crate::execution_plans::common::scale_partitioning_props;
 use crate::stage::{LocalStage, Stage};
-use crate::worker::{RemoteStageRef, WorkerConnectionPool};
+use crate::worker::WorkerConnectionPool;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{exec_err, not_impl_err, plan_err};
 use datafusion::error::Result;
@@ -224,13 +224,57 @@ impl DisplayAs for NetworkCoalesceExec {
     }
 }
 
-impl NetworkCoalesceExec {
-    pub(crate) fn execute_remote(
+impl ExecutionPlan for NetworkCoalesceExec {
+    fn name(&self) -> &str {
+        "NetworkCoalesceExec"
+    }
+
+    fn properties(&self) -> &Arc<PlanProperties> {
+        &self.properties
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        match &self.input_stage.local_plan() {
+            Some(v) => vec![v],
+            None => vec![],
+        }
+    }
+
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        apply_expression_roots(self.input_stage.dynamic_filter_anchors().iter(), f)
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let mut self_clone = self.as_ref().clone();
+        match &mut self_clone.input_stage {
+            Stage::Local(local) => {
+                local.plan = require_one_child(children)?;
+            }
+            Stage::Remote(_) => {
+                if !children.is_empty() {
+                    not_impl_err!("NetworkBoundary cannot accept children")?
+                }
+            }
+        }
+        Ok(Arc::new(self_clone))
+    }
+
+    fn execute(
         &self,
         partition: usize,
         context: Arc<TaskContext>,
-        remote_stage: RemoteStageRef<'_>,
     ) -> Result<SendableRecordBatchStream> {
+        if let Stage::Local(local) = &self.input_stage
+            && !self.worker_connections.has_pending_workers()
+        {
+            return local.execute(partition, context);
+        }
         let task_context = DistributedTaskContext::from_ctx(&context);
         if task_context.task_index >= task_context.task_count {
             return exec_err!(
@@ -284,7 +328,7 @@ impl NetworkCoalesceExec {
         let target_task = group.start_task + input_task_offset;
 
         let stream = self.worker_connections.execute(
-            remote_stage,
+            &self.input_stage,
             0..partitions_per_task,
             target_task,
             target_partition,
@@ -296,60 +340,6 @@ impl NetworkCoalesceExec {
             self.schema(),
             stream,
         )))
-    }
-}
-
-impl ExecutionPlan for NetworkCoalesceExec {
-    fn name(&self) -> &str {
-        "NetworkCoalesceExec"
-    }
-
-    fn properties(&self) -> &Arc<PlanProperties> {
-        &self.properties
-    }
-
-    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-        match &self.input_stage.local_plan() {
-            Some(v) => vec![v],
-            None => vec![],
-        }
-    }
-
-    fn apply_expressions(
-        &self,
-        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
-    ) -> Result<TreeNodeRecursion> {
-        apply_expression_roots(self.input_stage.dynamic_filter_anchors().iter(), f)
-    }
-
-    fn with_new_children(
-        self: Arc<Self>,
-        children: Vec<Arc<dyn ExecutionPlan>>,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
-        let mut self_clone = self.as_ref().clone();
-        match &mut self_clone.input_stage {
-            Stage::Local(local) => {
-                local.plan = require_one_child(children)?;
-            }
-            Stage::Remote(_) => {
-                if !children.is_empty() {
-                    not_impl_err!("NetworkBoundary cannot accept children")?
-                }
-            }
-        }
-        Ok(Arc::new(self_clone))
-    }
-
-    fn execute(
-        &self,
-        partition: usize,
-        context: Arc<TaskContext>,
-    ) -> Result<SendableRecordBatchStream> {
-        let remote_stage = match &self.input_stage {
-            Stage::Local(local) => return local.execute(partition, context),
-            Stage::Remote(remote_stage) => remote_stage,
-        };
-        self.execute_remote(partition, context, remote_stage.into())
     }
 
     fn metrics(&self) -> Option<MetricsSet> {

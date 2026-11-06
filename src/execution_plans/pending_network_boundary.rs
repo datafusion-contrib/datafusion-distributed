@@ -1,5 +1,5 @@
 use crate::distributed_planner::{NetworkBoundary, ProducerHead};
-use crate::worker::{PendingTaskUrl, RemoteStageRef};
+use crate::worker::{PendingTaskUrl, WorkerConnectionPool};
 use crate::{NetworkBroadcastExec, NetworkCoalesceExec, NetworkShuffleExec, Stage};
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{Result, internal_err};
@@ -18,24 +18,48 @@ use tokio_util::sync::CancellationToken;
 /// Boundaries inside worker plans keep concrete destinations and never use this wrapper.
 pub(crate) struct PendingNetworkBoundaryExec {
     boundary: Arc<dyn NetworkBoundary>,
-    workers: Vec<PendingTaskUrl>,
     dynamic_filter_anchors: Vec<Arc<dyn PhysicalExpr>>,
-    query_finished: CancellationToken,
 }
 
 impl PendingNetworkBoundaryExec {
-    pub(crate) fn new(
+    pub(crate) fn try_new(
         boundary: Arc<dyn NetworkBoundary>,
         workers: Vec<PendingTaskUrl>,
         dynamic_filter_anchors: Vec<Arc<dyn PhysicalExpr>>,
         query_finished: CancellationToken,
-    ) -> Self {
-        Self {
-            boundary,
-            workers,
-            dynamic_filter_anchors,
-            query_finished,
+    ) -> Result<Self> {
+        let Stage::Local(stage) = boundary.input_stage() else {
+            return internal_err!("A pending network boundary requires a local stage");
+        };
+        if stage.tasks != workers.len() {
+            return internal_err!(
+                "Pending network boundary has {} workers for {} tasks",
+                workers.len(),
+                stage.tasks
+            );
         }
+        let worker_connections = WorkerConnectionPool::new_pending(workers, query_finished);
+        let plan: &dyn ExecutionPlan = boundary.as_ref();
+        let boundary: Arc<dyn NetworkBoundary> =
+            if let Some(plan) = plan.downcast_ref::<NetworkCoalesceExec>() {
+                let mut plan = plan.clone();
+                plan.worker_connections = worker_connections;
+                Arc::new(plan)
+            } else if let Some(plan) = plan.downcast_ref::<NetworkShuffleExec>() {
+                let mut plan = plan.clone();
+                plan.worker_connections = worker_connections;
+                Arc::new(plan)
+            } else if let Some(plan) = plan.downcast_ref::<NetworkBroadcastExec>() {
+                let mut plan = plan.clone();
+                plan.worker_connections = worker_connections;
+                Arc::new(plan)
+            } else {
+                return internal_err!("Unsupported pending network boundary");
+            };
+        Ok(Self {
+            boundary,
+            dynamic_filter_anchors,
+        })
     }
 }
 
@@ -43,7 +67,7 @@ impl Debug for PendingNetworkBoundaryExec {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PendingNetworkBoundaryExec")
             .field("boundary", &self.boundary)
-            .field("tasks", &self.workers.len())
+            .field("tasks", &self.boundary.input_stage().task_count())
             .finish()
     }
 }
@@ -103,24 +127,7 @@ impl ExecutionPlan for PendingNetworkBoundaryExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        let stage = self.input_stage();
-        let pending = RemoteStageRef::Pending {
-            query_id: stage.query_id(),
-            num: stage.num(),
-            workers: &self.workers,
-            query_finished: &self.query_finished,
-        };
-        let boundary: &dyn ExecutionPlan = self.boundary.as_ref();
-        if let Some(boundary) = boundary.downcast_ref::<NetworkCoalesceExec>() {
-            return boundary.execute_remote(partition, context, pending);
-        }
-        if let Some(boundary) = boundary.downcast_ref::<NetworkShuffleExec>() {
-            return boundary.execute_remote(partition, context, pending);
-        }
-        if let Some(boundary) = boundary.downcast_ref::<NetworkBroadcastExec>() {
-            return boundary.execute_remote(partition, context, pending);
-        }
-        internal_err!("Unsupported pending network boundary")
+        self.boundary.execute(partition, context)
     }
 
     fn metrics(&self) -> Option<MetricsSet> {

@@ -58,12 +58,14 @@ pub(super) async fn prepare_stages(
         };
         if head_stages.contains(&stage.num) {
             let workers = start_pending_stage(query_coordinator, stage);
-            return Ok(Transformed::yes(Arc::new(PendingNetworkBoundaryExec::new(
-                boundary.with_input_stage(Stage::Local(stage.clone()))?,
-                workers,
-                anchors,
-                query_coordinator.spawner.query_finished(),
-            )) as Arc<dyn ExecutionPlan>));
+            return Ok(Transformed::yes(
+                Arc::new(PendingNetworkBoundaryExec::try_new(
+                    boundary.with_input_stage(Stage::Local(stage.clone()))?,
+                    workers,
+                    anchors,
+                    query_coordinator.spawner.query_finished(),
+                )?) as Arc<dyn ExecutionPlan>,
+            ));
         }
         let workers =
             try_join_all((0..stage.tasks).map(|task| query_coordinator.start_task(stage, task)))
