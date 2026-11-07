@@ -1,5 +1,6 @@
 use crate::common::scan_config::ScanConfig;
 use crate::eager::planned_files::PlannedFiles;
+use crate::scan_instrumentation::instrument_scan;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{Statistics, exec_err};
@@ -151,17 +152,20 @@ impl DataSource for EagerIcebergDataSource {
     fn open(
         &self,
         partition: usize,
-        _context: Arc<TaskContext>,
+        context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        let count = self.planned_partition_tasks(partition)?.len();
-        let source = self.clone();
-        let tasks = futures::stream::iter(0..count)
-            .map(move |offset| {
-                Ok(source.files.tasks()[source.partitions[partition][offset]].clone())
-            })
-            .boxed();
-        self.scan.open(tasks, partition)
+        instrument_scan(partition, &context, &self.scan.metrics, || {
+            let count = self.planned_partition_tasks(partition)?.len();
+            let source = self.clone();
+            let tasks = futures::stream::iter(0..count)
+                .map(move |offset| {
+                    Ok(source.files.tasks()[source.partitions[partition][offset]].clone())
+                })
+                .boxed();
+            self.scan.open(tasks, partition)
+        })
     }
+
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(
             f,

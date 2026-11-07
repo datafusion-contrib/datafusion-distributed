@@ -1,6 +1,7 @@
 use crate::common::scan_config::{ScanConfig, stats_from_snapshot};
 use std::sync::Arc;
 
+use crate::scan_instrumentation::instrument_scan;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{ColumnStatistics, Statistics};
 use datafusion::config::ConfigOptions;
@@ -136,15 +137,17 @@ impl DataSource for LazyIcebergDataSource {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        let feed = self
-            .feed
-            .feed(partition, Arc::clone(&context))?
-            .map(|work_unit_or_err| match work_unit_or_err {
-                Ok(work_unit) => work_unit.into_task().map_err(iceberg_err),
-                Err(err) => Err(iceberg_err(err)),
-            })
-            .boxed();
-        self.scan.open(feed, partition)
+        instrument_scan(partition, &context, &self.scan.metrics, || {
+            let feed = self
+                .feed
+                .feed(partition, Arc::clone(&context))?
+                .map(|work_unit_or_err| match work_unit_or_err {
+                    Ok(work_unit) => work_unit.into_task().map_err(iceberg_err),
+                    Err(err) => Err(iceberg_err(err)),
+                })
+                .boxed();
+            self.scan.open(feed, partition)
+        })
     }
 
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {

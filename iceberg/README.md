@@ -127,3 +127,25 @@ let state = state.with_iceberg_integration(IcebergIntegrationOptions {
 Register compatible codecs on coordinators and workers. With no custom codec,
 scans retain the existing storage-properties encoding. Custom payloads use a
 separate optional byte field; a receiver without a matching codec returns an error.
+
+## Scan instrumentation
+
+Both eager and lazy Iceberg sources support this crate's
+`ScanInstrumentationExtension`, installed through `SessionConfig::with_extension`.
+The hook receives the partition, task context,
+source metrics set, and a callback that opens the partition. See the
+[`ScanInstrumentationExtension` example](src/scan_instrumentation.rs)
+for an application metric helper.
+
+Install the extension in every executing session, including worker sessions.
+The hook is resolved when the source opens, so it survives plan serialization
+without serializing application callbacks or adding an execution-plan wrapper.
+Metrics registered in the supplied set use the existing distributed collection.
+Uninstrumented sessions retain their existing behavior.
+
+The returned stream has applied source-level limits. Observe that stream for
+rows, batches, and Arrow byte counts; these are not storage bytes read. A stream
+wrapper can measure completion, errors, and cancellation, and attach application
+context while polling. Stream lifetime includes consumer backpressure and is
+not individual storage-request latency. Opening errors can be observed around
+the callback. Instrumentation must preserve the source's results and errors.

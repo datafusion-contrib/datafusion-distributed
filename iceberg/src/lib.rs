@@ -13,6 +13,7 @@ mod file_io_codec;
 mod iceberg_ext;
 mod lazy;
 mod proto;
+mod scan_instrumentation;
 mod table_provider;
 
 pub use config::IcebergConfig;
@@ -25,6 +26,7 @@ pub use iceberg_ext::IcebergIntegrationOptions;
 pub use lazy::IcebergWorkUnitFeed;
 pub use lazy::LazyIcebergCodec;
 pub use lazy::LazyIcebergDataSource;
+pub use scan_instrumentation::{ScanInstrumentation, ScanInstrumentationExtension, ScanOpen};
 pub use table_provider::IcebergCatalogTableProvider;
 pub use table_provider::IcebergStaticTableProvider;
 pub use table_provider::IcebergTableProviderFactory;
