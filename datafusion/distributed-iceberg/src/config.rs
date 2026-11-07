@@ -18,7 +18,9 @@ extensions_options! {
         pub column_stats_enabled: bool, default = false
         /// Discover and retain file tasks during physical planning instead of execution.
         pub eager_file_planning: bool, default = false
-        /// (Experimental) Whether to enable dynamic filtering.
+        /// (Experimental) Whether Iceberg scans are consumers of the dynamic filters pushed
+        /// into them, so joins and aggregates compute those filters. Scans don't skip data
+        /// with them yet.
         pub dynamic_filtering_enabled: bool, default = false
     }
 }
