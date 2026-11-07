@@ -90,6 +90,14 @@ statistics and task-size estimates. Selected-file column statistics remain a
 separate change. Task-local eager variants and decoded plans report unknown
 statistics rather than applying whole-snapshot aggregates to a subset.
 
+Both scans keep the filters DataFusion pushes into them, including the dynamic
+filters that joins, top-N sorts and aggregates compute while the query runs. Scans
+return `PushedDown::No` for these filters, so DataFusion still checks every row. `EXPLAIN`
+shows the dynamic ones on the scan as `dynamic_filters=`. A join or aggregate only
+computes a dynamic filter when a scan below it is a consumer of that filter. Enable
+`iceberg.dynamic_filtering_enabled` to make Iceberg scans consumers of the dynamic
+filters pushed into them. Scans don't skip data with these filters yet.
+
 ```bash
 cargo test -p datafusion-distributed-iceberg -p datafusion-distributed-iceberg-test-tools
 ```

@@ -103,16 +103,26 @@ impl PhysicalExtensionCodec for LazyIcebergCodec {
             proto.custom_file_io.as_deref(),
             ctx,
         )?;
+        // Decode with the plan's converter, so a filter keeps sharing its state with the
+        // operator that fills it in when both run in the same task.
+        let filters = proto
+            .filters
+            .as_ref()
+            .map(|filters| proto_converter.proto_to_physical_expr(filters, &schema, &decode_ctx))
+            .transpose()?;
+        let mut scan = ScanConfig::new(
+            schema,
+            partitioning,
+            fetch,
+            iceberg_file_io,
+            self.iceberg_runtime.clone(),
+            ctx,
+        );
+        scan.filters = filters;
+        scan.dynamic_filtering_enabled = proto.dynamic_filtering_enabled;
 
         Ok(DataSourceExec::from_data_source(LazyIcebergDataSource {
-            scan: ScanConfig::new(
-                schema,
-                partitioning,
-                fetch,
-                iceberg_file_io,
-                self.iceberg_runtime.clone(),
-                ctx,
-            ),
+            scan,
             column_stats: None,
             table_snapshot: None,
             feed,
@@ -150,6 +160,13 @@ impl PhysicalExtensionCodec for LazyIcebergCodec {
             fetch: source.scan.fetch.map(|value| value as u64),
             storage_properties: file_io.properties,
             custom_file_io: file_io.custom,
+            filters: source
+                .scan
+                .filters
+                .as_ref()
+                .map(|filters| proto_converter.physical_expr_to_proto(filters, self))
+                .transpose()?,
+            dynamic_filtering_enabled: source.scan.dynamic_filtering_enabled,
         };
         proto.encode(buf).map_err(|error| {
             proto_error(format!("failed to encode LazyIcebergDataSource: {error}"))
@@ -161,12 +178,17 @@ impl PhysicalExtensionCodec for LazyIcebergCodec {
 mod tests {
     use datafusion::common::Statistics;
     use datafusion::datasource::source::DataSource;
+    use datafusion::logical_expr::Operator;
+    use datafusion::physical_expr::PhysicalExpr;
+    use datafusion::physical_expr::expressions::{BinaryExpr, Column, lit};
+    use datafusion::prelude::SessionConfig;
     use datafusion_distributed_iceberg_test_tools::create_taxi_table;
     use datafusion_proto::physical_plan::DefaultPhysicalProtoConverter;
     use iceberg::io::{FileIOBuilder, LocalFsStorageFactory};
     use iceberg::table::Table;
 
     use super::*;
+    use crate::IcebergConfig;
     use crate::common::df_err;
     use crate::table_provider::scan::{IcebergDataSourceOptions, plan_scan};
 
@@ -186,6 +208,10 @@ mod tests {
             .runtime(iceberg::Runtime::current())
             .build()
             .map_err(df_err)?;
+        let config = SessionConfig::new().with_option_extension(IcebergConfig {
+            dynamic_filtering_enabled: true,
+            ..Default::default()
+        });
         let options = IcebergDataSourceOptions {
             fetch: Some(10),
             ..Default::default()
@@ -194,9 +220,23 @@ mod tests {
             table,
             taxi.schema()?,
             options,
-            Arc::new(TaskContext::default()),
+            Arc::new(TaskContext::default().with_session_config(config.clone())),
         )
         .await?;
+        let fare_over_ten: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new_with_schema(
+                "fare_amount",
+                taxi.schema()?.as_ref(),
+            )?),
+            Operator::Gt,
+            lit(10.0),
+        ));
+        let pushed =
+            iceberg_source(&plan)?.try_pushdown_filters(vec![fare_over_ten], config.options())?;
+        let Some(pushed_source) = pushed.updated_node else {
+            return internal_err!("the scan should keep the filter it was offered");
+        };
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(DataSourceExec::new(pushed_source));
         let codec =
             LazyIcebergCodec::new(Arc::new(LocalFsStorageFactory), iceberg::Runtime::current());
         let proto_converter = DefaultPhysicalProtoConverter {};
@@ -231,6 +271,11 @@ mod tests {
             decoded.partition_statistics(None)?.as_ref(),
             &Statistics::new_unknown(&decoded.scan.schema)
         );
+        let Some(filters) = &decoded.scan.filters else {
+            return internal_err!("the decoded scan should keep the filter");
+        };
+        insta::assert_snapshot!(filters, @"fare_amount@8 > 10");
+        assert!(decoded.scan.dynamic_filtering_enabled);
         Ok(())
     }
 
