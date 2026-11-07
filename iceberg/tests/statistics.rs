@@ -322,6 +322,65 @@ mod tests {
         Ok(())
     }
 
+    // DataFusion answers count(*) without scanning when the row count is exact. With
+    // delete files, `total-records` (9) is more than the rows a scan returns (7), so the
+    // count must be inexact and the query must scan.
+    #[tokio::test]
+    async fn count_star_scans_when_position_deletes_exist() -> Result<(), Box<dyn Error>> {
+        let (mut table, files) = create_metrics_table().await?;
+        // Delete rows 0 and 2 of the first data file, leaving 7 of the 9 rows.
+        table
+            .position_deletes()
+            .file([(&files[0], 0), (&files[0], 2)])
+            .commit()
+            .await?;
+        let harness = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
+            .with_table(table)
+            .with_config_option("iceberg.eager_file_planning", false)
+            .build()
+            .await?;
+
+        let stats = query_statistics(&harness, "SELECT * FROM metrics").await?;
+        // The 9 written rows, now only an upper bound.
+        assert_eq!(stats.num_rows, Precision::Inexact(METRICS_ROWS));
+        assert!(matches!(stats.total_byte_size, Precision::Inexact(_)));
+
+        let (plan, batches) = harness.query("SELECT count(*) FROM metrics").await?;
+        insta::assert_snapshot!(plan, @"
+        ProjectionExec: expr=[count(Int64(1))@0 as count(*)]
+          AggregateExec: mode=Final, gby=[], aggr=[count(Int64(1))]
+            CoalescePartitionsExec
+              AggregateExec: mode=Partial, gby=[], aggr=[count(Int64(1))]
+                DataSourceExec: format=iceberg, table=default.metrics, projection=[]
+        ");
+        insta::assert_snapshot!(batches, @"
+        +----------+
+        | count(*) |
+        +----------+
+        | 7        |
+        +----------+
+        ");
+        Ok(())
+    }
+
+    // Without `total-delete-files`, the snapshot may have deletes, so its totals are
+    // only upper bounds.
+    #[tokio::test]
+    async fn snapshot_without_delete_file_count_has_inexact_statistics() -> Result<()> {
+        let harness = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
+            .with_table(create_taxi_table().await?)
+            .with_metadata(metadata_without_delete_file_total)
+            .build()
+            .await?;
+        let stats = query_statistics(&harness, "SELECT * FROM taxi").await?;
+
+        assert_eq!(stats.num_rows, Precision::Inexact(TAXI_ROWS));
+        assert_eq!(stats.total_byte_size, Precision::Inexact(TAXI_BYTES));
+        Ok(())
+    }
+
     // Observe the query's output statistics, including projection and propagation.
     async fn query_statistics(harness: &IcebergTestHarness, sql: &str) -> Result<Arc<Statistics>> {
         let plan = harness.physical_plan(sql).await?;
@@ -350,6 +409,31 @@ mod tests {
             .metadata
     }
 
+    // The taxi snapshot, with every summary property except `total-delete-files`.
+    fn metadata_without_delete_file_total(metadata: &TableMetadata) -> TableMetadata {
+        let current = metadata.current_snapshot().expect("taxi has a snapshot");
+        let mut additional_properties = current.summary().additional_properties.clone();
+        additional_properties.remove("total-delete-files");
+        let snapshot = Snapshot::builder()
+            .with_snapshot_id(current.snapshot_id())
+            .with_parent_snapshot_id(current.parent_snapshot_id())
+            .with_sequence_number(current.sequence_number())
+            .with_timestamp_ms(current.timestamp_ms())
+            .with_manifest_list(current.manifest_list())
+            .schema_id_opt(current.schema_id())
+            .with_summary(Summary {
+                operation: Operation::Append,
+                additional_properties,
+            })
+            .build();
+        without_snapshots(metadata)
+            .set_branch_snapshot(snapshot, MAIN_BRANCH)
+            .expect("taxi snapshot can be added")
+            .build()
+            .expect("taxi metadata is valid")
+            .metadata
+    }
+
     fn historical_taxi_metadata(metadata: &TableMetadata) -> TableMetadata {
         let current = metadata.current_snapshot().expect("taxi has a snapshot");
         // The summary totals are synthetic; the manifest still describes the full taxi data.
@@ -365,6 +449,8 @@ mod tests {
                 additional_properties: [
                     ("total-records".to_string(), "42".to_string()),
                     ("total-files-size".to_string(), "4242".to_string()),
+                    // Real writers always set this; without it the totals are inexact.
+                    ("total-delete-files".to_string(), "0".to_string()),
                 ]
                 .into_iter()
                 .collect(),

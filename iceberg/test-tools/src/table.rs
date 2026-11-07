@@ -14,8 +14,8 @@ use iceberg::table::Table;
 use iceberg::{Catalog, MetadataLocation, TableCreation, TableIdent};
 use tempfile::TempDir;
 
-use crate::Append;
 use crate::error::df_err;
+use crate::{Append, PositionDeletes};
 
 /// Describes a new table, which [`TableBuilder::create`] then creates.
 ///
@@ -168,6 +168,11 @@ impl FixtureTable {
     /// Starts a commit that appends data files.
     pub fn append(&mut self) -> Append<'_> {
         Append::new(self)
+    }
+
+    /// Starts a commit adding position-delete files to a version 2 table.
+    pub fn position_deletes(&mut self) -> PositionDeletes<'_> {
+        PositionDeletes::new(self)
     }
 
     /// Makes `metadata` the table's current metadata.
