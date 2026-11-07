@@ -9,7 +9,7 @@ use datafusion::common::plan_err;
 use datafusion::datasource::physical_plan::{FileGroup, FileGroupPartitioner, FileScanConfig};
 use datafusion::datasource::source::DataSource;
 use datafusion::error::Result;
-use datafusion::physical_expr::Partitioning;
+use datafusion::physical_expr::{Partitioning, RangePartitioning};
 use datafusion::physical_plan::ExecutionPlanProperties;
 use std::sync::Arc;
 
@@ -19,6 +19,12 @@ pub(crate) fn file_scan_config_desired_task_count(
     let cfg = ev.session_config;
     let dse: &DataSourceExec = ev.plan.downcast_ref()?;
     let file_scan: &FileScanConfig = dse.data_source().downcast_ref()?;
+
+    let target_partitions = cfg.target_partitions().max(1) as f64;
+    if is_pre_partitioned(file_scan) {
+        let task_count = ev.plan.output_partitioning().partition_count() as f64 / target_partitions;
+        return Some(Ok(DesiredTaskCountEventResponse::desired(task_count)));
+    }
 
     let d_cfg = DistributedConfig::from_session_config(cfg).ok()?;
 
@@ -30,7 +36,6 @@ pub(crate) fn file_scan_config_desired_task_count(
     }
 
     let bytes_per_partition = d_cfg.file_scan_config_bytes_per_partition.max(1) as f64;
-    let target_partitions = cfg.target_partitions().max(1) as f64;
     let task_count = total_bytes as f64 / bytes_per_partition / target_partitions;
 
     Some(Ok(DesiredTaskCountEventResponse::soft(task_count)))
@@ -45,10 +50,7 @@ pub(crate) fn file_scan_config_scale_up_leaf_node(
     let partition_count = ev.plan.output_partitioning().partition_count();
 
     let is_sorted = file_scan.eq_properties().output_ordering().is_some();
-    let is_pre_partitioned = !matches!(
-        file_scan.output_partitioning(),
-        Partitioning::UnknownPartitioning(_) | Partitioning::RoundRobinBatch(_)
-    );
+    let is_pre_partitioned = is_pre_partitioned(file_scan);
     let supports_byte_range_partitioning = !file_scan.file_compression_type.is_compressed()
         && file_scan.file_source.supports_repartitioning();
     let supports_repartitioning = supports_byte_range_partitioning && !is_pre_partitioned;
@@ -67,6 +69,51 @@ pub(crate) fn file_scan_config_scale_up_leaf_node(
     let mut file_scans = vec![file_scan_template; ev.task_count];
 
     match (is_sorted, supports_repartitioning) {
+        (_, false) if is_pre_partitioned => {
+            // Assign contiguous partition ranges to tasks. Do not split, merge, or re-arrange
+            // partitions. If a user configured their data source to be partitioned, then respect
+            // that configuration.
+            let partitions_per_task = partition_count / ev.task_count;
+            let extra_partitions = partition_count % ev.task_count;
+            let mut start = 0;
+            for (task, scan) in file_scans.iter_mut().enumerate() {
+                let end = start + partitions_per_task + usize::from(task < extra_partitions);
+                let (offset, count) =
+                    if let Some(Partitioning::Range(range)) = &file_scan.output_partitioning {
+                        // Sometimes a split point must be re-used.
+                        //
+                        // For example, imagine we have 13 partitions distributed across
+                        // 4 tasks with 4 partitiosn each. The partitions are A–M,
+                        // with boundaries 10, 20, …, 120.
+                        //
+                        // Task 0: [ A |10| B |20| C |30| D ]     splits: [10, 20, 30]
+                        // Task 1: [ E |50| F |60| G |70| - ]     splits: [50, 60, 70]
+                        // Task 2: [ H |80| I |90| J |100| - ]    splits: [80, 90, 100]
+                        // Task 3: [ - |100| K |110| L |120| M ]  splits: [100, 110, 120]
+                        //
+                        // The split point 100 is re-used.
+                        //
+                        // TODO: Consider improving this upstream so split points do not need
+                        // to be re-used. https://github.com/apache/datafusion/issues/26509
+                        let count = partition_count.div_ceil(ev.task_count);
+                        let offset = start.min(partition_count - count);
+                        scan.output_partitioning = Some(Partitioning::Range(ok_or_some_err!(
+                            RangePartitioning::try_new(
+                                range.ordering().clone(),
+                                range.split_points()[offset..offset + count - 1].to_vec(),
+                            )
+                        )));
+                        (offset, count)
+                    } else {
+                        // Hash partition IDs must retain the original modulus.
+                        (0, partition_count)
+                    };
+                scan.file_groups.resize(count, FileGroup::default());
+                scan.file_groups[start - offset..end - offset]
+                    .clone_from_slice(&file_scan.file_groups[start..end]);
+                start = end;
+            }
+        }
         // does not support repartitioning
         (_, false) => {
             let all_partitioned_files = file_scan
@@ -141,6 +188,13 @@ pub(crate) fn file_scan_config_scale_up_leaf_node(
     Some(Ok(ScaleUpLeafNodeEventResponse::new(Arc::new(
         distributed_leaf,
     ))))
+}
+
+fn is_pre_partitioned(file_scan: &FileScanConfig) -> bool {
+    matches!(
+        file_scan.output_partitioning(),
+        Partitioning::Hash(_, _) | Partitioning::Range(_)
+    )
 }
 
 fn rebalance_round_robin<T>(items: Vec<T>, target_groups: usize) -> Vec<Vec<T>> {
