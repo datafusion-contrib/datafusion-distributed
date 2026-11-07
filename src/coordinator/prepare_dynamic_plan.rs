@@ -37,6 +37,9 @@ pub(super) async fn prepare_dynamic_plan(
 
     let head_stage = inject_network_boundaries(
         Arc::clone(base_plan),
+        // TODO: Inject here a plan remainder replanner for reshaping the topology of the plan based on the runtime
+        //  collected statistics.
+        Ok,
         |mut input_stage: LocalStage, nb_type: TypeId, nb_ctx: &InjectNetworkBoundaryContext| {
             let mut metrics = MetricsSet::new();
 
@@ -79,7 +82,8 @@ pub(super) async fn prepare_dynamic_plan(
             // Here is where leaf nodes are scaled up by ScaleUpLeafNodeHandler, and the
             // plan is finally left ready for distribution.
             input_stage.plan = nb_ctx
-                .propagate_task_count_until_network_boundaries(&input_stage.plan, task_count)?;
+                .propagate_task_count_until_network_boundaries(&input_stage.plan, task_count)?
+                .data;
             input_stage.tasks = task_count.as_usize();
             // In order to infer the compute the cost of the stage above this one, here a sampler
             // is injected to gather runtime statistics.
