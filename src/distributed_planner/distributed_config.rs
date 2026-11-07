@@ -67,6 +67,9 @@ extensions_options! {
         /// Maximum number of times the coordinator retries establishing a coordinator channel
         /// after the initial dial fails with a retryable error. Set to 0 to disable retries.
         pub max_coordinator_channel_retries: usize, default = 3
+        /// Optional seed for the default random task-routing handler. When set, initial worker
+        /// selection and failover order are reproducible for the same stage and task numbers.
+        pub random_route_seed: Option<u64>, default = None
         /// Initial delay, in milliseconds, before retrying a coordinator channel on the same
         /// worker. The delay doubles after each same-worker retry.
         pub coordinator_channel_retry_initial_backoff_ms: u64, default = 100

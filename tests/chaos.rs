@@ -293,6 +293,7 @@ mod tests {
         let worker_resolver = LocalHostWorkerResolver::new(ports.clone());
         let mut distributed_config = DistributedConfig::default();
         distributed_config.max_coordinator_channel_retries = 5;
+        distributed_config.random_route_seed = Some(cfg.seed);
         let state = SessionStateBuilder::new()
             .with_default_features()
             .with_distributed_option_extension(distributed_config)
