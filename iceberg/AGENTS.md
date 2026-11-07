@@ -27,6 +27,10 @@
   snapshots can show them. `create_taxi_table` generates a deterministic,
   synthetic stand-in for NYC taxi trips: 7 days × 25,000 rows,
   identity-partitioned on `pickup_date`, one file per day.
+- Add version 2 position-delete fixtures with
+  `table.position_deletes().file([(&data_files[0], 0), (&data_files[1], 3)]).commit()`.
+  Each group writes one delete file; referenced data files must share a partition.
+  Use the returned descriptors when tests need to inspect delete files.
 - Prefer integration tests over unit tests when possible. Each isolated feature
   should have its own dedicated file in `tests/`.
 - Tests are executable documentation. A reviewer should understand the scenario,
