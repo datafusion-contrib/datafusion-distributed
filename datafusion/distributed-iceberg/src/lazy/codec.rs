@@ -208,6 +208,10 @@ mod tests {
             .runtime(iceberg::Runtime::current())
             .build()
             .map_err(df_err)?;
+        let config = SessionConfig::new().with_option_extension(IcebergConfig {
+            dynamic_filtering_enabled: true,
+            ..Default::default()
+        });
         let options = IcebergDataSourceOptions {
             fetch: Some(10),
             ..Default::default()
@@ -216,9 +220,23 @@ mod tests {
             table,
             taxi.schema()?,
             options,
-            Arc::new(TaskContext::default()),
+            Arc::new(TaskContext::default().with_session_config(config.clone())),
         )
         .await?;
+        let fare_over_ten: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new_with_schema(
+                "fare_amount",
+                taxi.schema()?.as_ref(),
+            )?),
+            Operator::Gt,
+            lit(10.0),
+        ));
+        let pushed =
+            iceberg_source(&plan)?.try_pushdown_filters(vec![fare_over_ten], config.options())?;
+        let Some(pushed_source) = pushed.updated_node else {
+            return internal_err!("the scan should keep the filter it was offered");
+        };
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(DataSourceExec::new(pushed_source));
         let codec =
             LazyIcebergCodec::new(Arc::new(LocalFsStorageFactory), iceberg::Runtime::current());
         let proto_converter = DefaultPhysicalProtoConverter {};
@@ -253,50 +271,6 @@ mod tests {
             decoded.partition_statistics(None)?.as_ref(),
             &Statistics::new_unknown(&decoded.scan.schema)
         );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn roundtrips_pushed_filters_and_whether_the_scan_reports_them() -> Result<()> {
-        let taxi = create_taxi_table().await?;
-        let config = SessionConfig::new().with_option_extension(IcebergConfig {
-            dynamic_filtering_enabled: true,
-            ..Default::default()
-        });
-        let plan = plan_scan(
-            taxi.table().clone(),
-            taxi.schema()?,
-            Default::default(),
-            Arc::new(TaskContext::default().with_session_config(config.clone())),
-        )
-        .await?;
-        let fare_over_ten: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
-            Arc::new(Column::new_with_schema(
-                "fare_amount",
-                taxi.schema()?.as_ref(),
-            )?),
-            Operator::Gt,
-            lit(10.0),
-        ));
-        let pushed =
-            iceberg_source(&plan)?.try_pushdown_filters(vec![fare_over_ten], config.options())?;
-        let Some(source) = pushed.updated_node else {
-            return internal_err!("the scan should keep the filter it was offered");
-        };
-
-        let codec =
-            LazyIcebergCodec::new(Arc::new(LocalFsStorageFactory), iceberg::Runtime::current());
-        let proto_converter = DefaultPhysicalProtoConverter {};
-        let mut buf = Vec::new();
-        codec.try_encode(
-            Arc::new(DataSourceExec::new(source)),
-            &mut buf,
-            &proto_converter,
-        )?;
-        let decoded_plan =
-            codec.try_decode(&buf, &[], &TaskContext::default(), &proto_converter)?;
-        let decoded = iceberg_source(&decoded_plan)?;
-
         let Some(filters) = &decoded.scan.filters else {
             return internal_err!("the decoded scan should keep the filter");
         };
