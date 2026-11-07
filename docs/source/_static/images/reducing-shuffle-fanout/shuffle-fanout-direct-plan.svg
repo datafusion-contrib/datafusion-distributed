@@ -1,0 +1,168 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Licensed to the Apache Software Foundation (ASF) under the Apache License, Version 2.0. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 525" preserveAspectRatio="xMidYMid meet" role="img" aria-labelledby="title desc">
+  <title id="title">Single-node and distributed repartitioning</title>
+  <desc id="desc">Two matching plans. On one machine, RepartitionExec maps rows to P partitions. In Distributed DataFusion, 16 animated red arrows enter NetworkShuffleExec and 16 arrows leave it, with four entering the bottom of each consuming task.</desc>
+
+  <defs>
+    <marker id="arrow-gray" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0 0L8 4L0 8Z" fill="#667085"/>
+    </marker>
+    <marker id="arrow-red" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0 0L8 4L0 8Z" fill="#c2410c"/>
+    </marker>
+    <style>
+      .scene{font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+      .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+      .section{fill:#57606a;font-size:13px;font-weight:700;letter-spacing:.08em}
+      .heading{fill:#24292f;font-size:16px;font-weight:700}
+      .label{fill:#3d444d;font-size:13px}
+      .small{fill:#667085;font-size:11px}
+      .tiny{fill:#57606a;font-size:9px}
+      .panel{fill:#fbfcfe;stroke:#d8dee4;stroke-width:1.2}
+      .operator{fill:#fff;stroke:#afb8c1;stroke-width:1.3}
+      .repartition{fill:#eef6ff;stroke:#1677d2;stroke-width:1.5}
+      .producer{fill:#eaf3ff;stroke:#1677d2;stroke-width:1.4}
+      .consumer{fill:#ecfdf5;stroke:#16856b;stroke-width:1.3}
+      .partition{fill:#fff8eb;stroke:#d97706;stroke-width:1}
+      .network{fill:#fff8eb;stroke:#d97706;stroke-width:1.4}
+      .route{fill:none;stroke:#667085;stroke-width:1.6;marker-end:url(#arrow-gray)}
+      .network-route{fill:none;stroke:#c2410c;stroke-width:1.7;marker-end:url(#arrow-red)}
+      .shuffle-input-route{stroke-width:1.25}
+      .partition-route{stroke-width:1.45}
+      .flow{stroke-dasharray:8 12;animation:flow 2.2s linear infinite}
+      .flow-b{animation-delay:-.55s}.flow-c{animation-delay:-1.1s}.flow-d{animation-delay:-1.65s}
+      @keyframes flow{to{stroke-dashoffset:-40}}
+      @media (prefers-reduced-motion:reduce){.flow{animation:none}}
+    </style>
+  </defs>
+
+  <g class="scene">
+    <rect width="1000" height="525" fill="#fff"/>
+    <text x="30" y="30" class="section">HOW REPARTITIONING SCALES</text>
+    <text x="970" y="30" class="small" text-anchor="end">T = consuming tasks · P = partitions per task</text>
+
+    <rect x="25" y="50" width="950" height="165" rx="10" class="panel"/>
+    <text x="45" y="78" class="heading">One machine · fanout = P</text>
+
+    <rect x="45" y="100" width="135" height="76" rx="7" class="operator"/>
+    <text x="112.5" y="128" class="label" text-anchor="middle">input</text>
+    <text x="112.5" y="149" class="small" text-anchor="middle">N partitions</text>
+    <path d="M180 138H225" class="route flow"/>
+
+    <rect x="225" y="100" width="180" height="76" rx="7" class="repartition"/>
+    <text x="315" y="128" class="label mono" text-anchor="middle">RepartitionExec</text>
+    <text x="315" y="149" class="small mono" text-anchor="middle">hash(key) → P</text>
+    <path d="M405 138H465" class="route flow"/>
+
+    <g transform="translate(465 96)">
+      <text x="74" y="-6" class="small" text-anchor="middle">P output partitions</text>
+      <rect x="0" y="10" width="145" height="22" rx="4" class="partition"/>
+      <rect x="0" y="36" width="145" height="22" rx="4" class="partition"/>
+      <rect x="0" y="62" width="145" height="22" rx="4" class="partition"/>
+      <rect x="0" y="88" width="145" height="22" rx="4" class="partition"/>
+      <text x="72.5" y="25" class="tiny mono" text-anchor="middle">P0</text>
+      <text x="72.5" y="51" class="tiny mono" text-anchor="middle">P1</text>
+      <text x="72.5" y="77" class="tiny mono" text-anchor="middle">P2</text>
+      <text x="72.5" y="103" class="tiny mono" text-anchor="middle">P3</text>
+    </g>
+    <path d="M610 138H675" class="route flow"/>
+    <rect x="675" y="100" width="180" height="76" rx="7" class="operator"/>
+    <text x="765" y="128" class="label" text-anchor="middle">Aggregate / Join</text>
+    <text x="765" y="149" class="small" text-anchor="middle">matching keys meet</text>
+
+    <rect x="25" y="230" width="950" height="270" rx="10" class="panel"/>
+    <text x="45" y="258" class="heading">Distributed · fanout per producer = T × P</text>
+
+    <rect x="45" y="278" width="145" height="135" rx="7" class="producer"/>
+    <text x="117.5" y="321" class="label" text-anchor="middle">Stage 0</text>
+    <text x="117.5" y="345" class="heading" text-anchor="middle">producing task</text>
+    <text x="117.5" y="369" class="small" text-anchor="middle">N input partitions</text>
+    <path d="M190 345H225" class="route flow"/>
+
+    <rect x="225" y="278" width="175" height="135" rx="7" class="repartition"/>
+    <text x="312.5" y="321" class="label mono" text-anchor="middle">RepartitionExec</text>
+    <text x="312.5" y="345" class="small mono" text-anchor="middle">hash(key) → T × P</text>
+    <text x="312.5" y="369" class="small" text-anchor="middle">4 × 4 = 16 outputs</text>
+
+    <g aria-label="16 arrows entering NetworkShuffleExec">
+      <path d="M400 286H445" class="network-route shuffle-input-route flow"/>
+      <path d="M400 294H445" class="network-route shuffle-input-route flow flow-b"/>
+      <path d="M400 302H445" class="network-route shuffle-input-route flow flow-c"/>
+      <path d="M400 310H445" class="network-route shuffle-input-route flow flow-d"/>
+      <path d="M400 318H445" class="network-route shuffle-input-route flow flow-b"/>
+      <path d="M400 326H445" class="network-route shuffle-input-route flow flow-c"/>
+      <path d="M400 334H445" class="network-route shuffle-input-route flow flow-d"/>
+      <path d="M400 342H445" class="network-route shuffle-input-route flow"/>
+      <path d="M400 350H445" class="network-route shuffle-input-route flow flow-c"/>
+      <path d="M400 358H445" class="network-route shuffle-input-route flow flow-d"/>
+      <path d="M400 366H445" class="network-route shuffle-input-route flow"/>
+      <path d="M400 374H445" class="network-route shuffle-input-route flow flow-b"/>
+      <path d="M400 382H445" class="network-route shuffle-input-route flow flow-d"/>
+      <path d="M400 390H445" class="network-route shuffle-input-route flow"/>
+      <path d="M400 398H445" class="network-route shuffle-input-route flow flow-b"/>
+      <path d="M400 406H445" class="network-route shuffle-input-route flow flow-c"/>
+    </g>
+
+    <rect x="445" y="278" width="125" height="135" rx="7" class="network"/>
+    <text x="507.5" y="328" class="small mono" text-anchor="middle">Network</text>
+    <text x="507.5" y="347" class="small mono" text-anchor="middle">ShuffleExec</text>
+    <text x="507.5" y="374" class="tiny" text-anchor="middle">16 arrows in</text>
+    <text x="507.5" y="389" class="tiny" text-anchor="middle">16 arrows out</text>
+
+    <g transform="translate(600 278)">
+      <text x="170" y="-8" class="small" text-anchor="middle">Stage 1 · T = 4 consuming tasks</text>
+      <g transform="translate(0 0)">
+        <rect width="80" height="135" rx="7" class="consumer"/>
+        <text x="40" y="24" class="heading" text-anchor="middle">T0</text>
+        <rect x="12" y="35" width="56" height="16" rx="3" class="partition"/><rect x="12" y="55" width="56" height="16" rx="3" class="partition"/><rect x="12" y="75" width="56" height="16" rx="3" class="partition"/><rect x="12" y="95" width="56" height="16" rx="3" class="partition"/>
+        <text x="40" y="47" class="tiny mono" text-anchor="middle">P0</text><text x="40" y="67" class="tiny mono" text-anchor="middle">P1</text><text x="40" y="87" class="tiny mono" text-anchor="middle">P2</text><text x="40" y="107" class="tiny mono" text-anchor="middle">P3</text>
+        <text x="40" y="127" class="tiny" text-anchor="middle">aggregate / join</text>
+      </g>
+      <g transform="translate(85 0)">
+        <rect width="80" height="135" rx="7" class="consumer"/>
+        <text x="40" y="24" class="heading" text-anchor="middle">T1</text>
+        <rect x="12" y="35" width="56" height="16" rx="3" class="partition"/><rect x="12" y="55" width="56" height="16" rx="3" class="partition"/><rect x="12" y="75" width="56" height="16" rx="3" class="partition"/><rect x="12" y="95" width="56" height="16" rx="3" class="partition"/>
+        <text x="40" y="47" class="tiny mono" text-anchor="middle">P0</text><text x="40" y="67" class="tiny mono" text-anchor="middle">P1</text><text x="40" y="87" class="tiny mono" text-anchor="middle">P2</text><text x="40" y="107" class="tiny mono" text-anchor="middle">P3</text>
+        <text x="40" y="127" class="tiny" text-anchor="middle">aggregate / join</text>
+      </g>
+      <g transform="translate(170 0)">
+        <rect width="80" height="135" rx="7" class="consumer"/>
+        <text x="40" y="24" class="heading" text-anchor="middle">T2</text>
+        <rect x="12" y="35" width="56" height="16" rx="3" class="partition"/><rect x="12" y="55" width="56" height="16" rx="3" class="partition"/><rect x="12" y="75" width="56" height="16" rx="3" class="partition"/><rect x="12" y="95" width="56" height="16" rx="3" class="partition"/>
+        <text x="40" y="47" class="tiny mono" text-anchor="middle">P0</text><text x="40" y="67" class="tiny mono" text-anchor="middle">P1</text><text x="40" y="87" class="tiny mono" text-anchor="middle">P2</text><text x="40" y="107" class="tiny mono" text-anchor="middle">P3</text>
+        <text x="40" y="127" class="tiny" text-anchor="middle">aggregate / join</text>
+      </g>
+      <g transform="translate(255 0)">
+        <rect width="80" height="135" rx="7" class="consumer"/>
+        <text x="40" y="24" class="heading" text-anchor="middle">T3</text>
+        <rect x="12" y="35" width="56" height="16" rx="3" class="partition"/><rect x="12" y="55" width="56" height="16" rx="3" class="partition"/><rect x="12" y="75" width="56" height="16" rx="3" class="partition"/><rect x="12" y="95" width="56" height="16" rx="3" class="partition"/>
+        <text x="40" y="47" class="tiny mono" text-anchor="middle">P0</text><text x="40" y="67" class="tiny mono" text-anchor="middle">P1</text><text x="40" y="87" class="tiny mono" text-anchor="middle">P2</text><text x="40" y="107" class="tiny mono" text-anchor="middle">P3</text>
+        <text x="40" y="127" class="tiny" text-anchor="middle">aggregate / join</text>
+      </g>
+    </g>
+
+    <g aria-label="16 arrows leaving NetworkShuffleExec, four routed to the bottom of each consuming task">
+      <path d="M452 413C452 426 614 426 614 413" class="network-route partition-route flow"/>
+      <path d="M459 413C459 438 631 438 631 413" class="network-route partition-route flow flow-b"/>
+      <path d="M466 413C466 450 648 450 648 413" class="network-route partition-route flow flow-c"/>
+      <path d="M473 413C473 462 665 462 665 413" class="network-route partition-route flow flow-d"/>
+
+      <path d="M480 413C480 427 699 427 699 413" class="network-route partition-route flow flow-b"/>
+      <path d="M487 413C487 439 716 439 716 413" class="network-route partition-route flow flow-c"/>
+      <path d="M494 413C494 451 733 451 733 413" class="network-route partition-route flow flow-d"/>
+      <path d="M501 413C501 463 750 463 750 413" class="network-route partition-route flow"/>
+
+      <path d="M508 413C508 428 784 428 784 413" class="network-route partition-route flow flow-c"/>
+      <path d="M515 413C515 440 801 440 801 413" class="network-route partition-route flow flow-d"/>
+      <path d="M522 413C522 452 818 452 818 413" class="network-route partition-route flow"/>
+      <path d="M529 413C529 464 835 464 835 413" class="network-route partition-route flow flow-b"/>
+
+      <path d="M536 413C536 429 869 429 869 413" class="network-route partition-route flow flow-d"/>
+      <path d="M543 413C543 441 886 441 886 413" class="network-route partition-route flow"/>
+      <path d="M550 413C550 453 903 453 903 413" class="network-route partition-route flow flow-b"/>
+      <path d="M557 413C557 465 920 465 920 413" class="network-route partition-route flow flow-c"/>
+    </g>
+    <text x="770" y="485" class="small" text-anchor="middle">16 arrows out · 4 per consuming task</text>
+  </g>
+</svg>
