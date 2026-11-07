@@ -33,6 +33,7 @@ The following settings affect AQE decisions:
 | Setting                                   | Default | Effect                                                                                                                                                                                       |
 |-------------------------------------------|--------:|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `distributed.dynamic_task_count`          | `false` | Enables runtime task-count selection.                                                                                                                                                        |
+| `distributed.dynamic_plan_remainder_replanning` | `false` | Re-plans the part of the plan not yet sent to workers using runtime statistics, for example swapping JOIN sides. Requires `dynamic_task_count`. Configure it with `with_distributed_dynamic_plan_remainder_replanning`. |
 | `distributed.dynamic_bytes_per_partition` |  16 MiB | Sets the compute-cost budget per output partition. Lower values generally produce more tasks; higher values produce fewer. Configure it with `with_distributed_dynamic_bytes_per_partition`. |
 
 ## Custom data sources
