@@ -92,13 +92,11 @@ statistics rather than applying whole-snapshot aggregates to a subset.
 
 Both scans keep the filters DataFusion pushes into them, including the dynamic
 filters that joins, top-N sorts and aggregates fill in while the query runs. Scans
-answer that they don't apply them, so DataFusion still checks every row. `EXPLAIN`
-shows the dynamic ones on the scan as `dynamic_filters=`. Enable `iceberg.dynamic_filtering_enabled` to
-report those filters to the joins and aggregates that produce them, which fill a
-dynamic filter in only when something consumes it. Scans don't skip data with them
-yet. Workers don't see `iceberg.*` settings, so the plan carries the coordinator's
-value to them. Enable it only once every worker runs a version that supports it: an
-older worker can fail a query whose scan reports a dynamic filter.
+return `PushedDown::No` for these filters, so DataFusion still checks every row. `EXPLAIN`
+shows the dynamic ones on the scan as `dynamic_filters=`. 
+Joins and aggregates only fill the dynamic filters if there is a consumer for them -
+enabling `iceberg.dynamic_filtering_enabled` informs the producers 
+that the scan will consume them.
 
 ```bash
 cargo test -p datafusion-distributed-iceberg -p datafusion-distributed-iceberg-test-tools
