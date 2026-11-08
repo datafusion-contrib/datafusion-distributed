@@ -619,6 +619,21 @@ pub trait DistributedExt: Sized {
         dynamic_bytes_per_partition: usize,
     ) -> Result<(), DataFusionError>;
 
+    /// Fraction of a stage's partitions that need to report sampled bytes before the dynamic
+    /// task count allocator estimates the stage's runtime statistics. Higher values delay
+    /// execution longer while sampling, but produce more precise estimations.
+    fn with_distributed_dynamic_bytes_ready_sample_percentage(
+        self,
+        dynamic_bytes_ready_sample_percentage: f64,
+    ) -> Result<Self, DataFusionError>;
+
+    /// Same as [DistributedExt::with_distributed_dynamic_bytes_ready_sample_percentage] but with
+    /// an in-place mutation.
+    fn set_distributed_dynamic_bytes_ready_sample_percentage(
+        &mut self,
+        dynamic_bytes_ready_sample_percentage: f64,
+    ) -> Result<(), DataFusionError>;
+
     /// Target throughput in bytes per partition per second used by the dynamic task count
     /// allocator to decide how many tasks to assign to each stage based on runtime statistics.
     fn with_distributed_local_worker_context(
@@ -1038,6 +1053,15 @@ impl DistributedExt for SessionConfig {
         Ok(())
     }
 
+    fn set_distributed_dynamic_bytes_ready_sample_percentage(
+        &mut self,
+        dynamic_bytes_ready_sample_percentage: f64,
+    ) -> Result<(), DataFusionError> {
+        let d_cfg = DistributedConfig::from_config_options_mut(self.options_mut())?;
+        d_cfg.dynamic_bytes_ready_sample_percentage = dynamic_bytes_ready_sample_percentage;
+        Ok(())
+    }
+
     fn set_distributed_local_worker_context(&mut self, local_worker_context: LocalWorkerContext) {
         self.set_extension(Arc::new(local_worker_context));
     }
@@ -1165,6 +1189,10 @@ impl DistributedExt for SessionConfig {
             #[call(set_distributed_dynamic_bytes_per_partition)]
             #[expr($?;Ok(self))]
             fn with_distributed_dynamic_bytes_per_partition(mut self, dynamic_bytes_per_partition: usize) -> Result<Self, DataFusionError>;
+
+            #[call(set_distributed_dynamic_bytes_ready_sample_percentage)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_dynamic_bytes_ready_sample_percentage(mut self, dynamic_bytes_ready_sample_percentage: f64) -> Result<Self, DataFusionError>;
 
             #[call(set_distributed_local_worker_context)]
             #[expr($;self)]
@@ -1332,6 +1360,11 @@ impl DistributedExt for SessionStateBuilder {
             #[call(set_distributed_dynamic_bytes_per_partition)]
             #[expr($?;Ok(self))]
             fn with_distributed_dynamic_bytes_per_partition(mut self, dynamic_bytes_per_partition: usize) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_dynamic_bytes_ready_sample_percentage(&mut self, dynamic_bytes_ready_sample_percentage: f64) -> Result<(), DataFusionError>;
+            #[call(set_distributed_dynamic_bytes_ready_sample_percentage)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_dynamic_bytes_ready_sample_percentage(mut self, dynamic_bytes_ready_sample_percentage: f64) -> Result<Self, DataFusionError>;
 
             fn set_distributed_local_worker_context(&mut self, local_worker_context: LocalWorkerContext);
             #[call(set_distributed_local_worker_context)]
@@ -1508,6 +1541,11 @@ impl DistributedExt for SessionState {
             #[expr($?;Ok(self))]
             fn with_distributed_dynamic_bytes_per_partition(mut self, dynamic_bytes_per_partition: usize) -> Result<Self, DataFusionError>;
 
+            fn set_distributed_dynamic_bytes_ready_sample_percentage(&mut self, dynamic_bytes_ready_sample_percentage: f64) -> Result<(), DataFusionError>;
+            #[call(set_distributed_dynamic_bytes_ready_sample_percentage)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_dynamic_bytes_ready_sample_percentage(mut self, dynamic_bytes_ready_sample_percentage: f64) -> Result<Self, DataFusionError>;
+
             fn set_distributed_local_worker_context(&mut self, local_worker_context: LocalWorkerContext);
             #[call(set_distributed_local_worker_context)]
             #[expr($;self)]
@@ -1675,6 +1713,11 @@ impl DistributedExt for SessionContext {
             #[call(set_distributed_dynamic_bytes_per_partition)]
             #[expr($?;Ok(self))]
             fn with_distributed_dynamic_bytes_per_partition(self, dynamic_bytes_per_partition: usize) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_dynamic_bytes_ready_sample_percentage(&mut self, dynamic_bytes_ready_sample_percentage: f64) -> Result<(), DataFusionError>;
+            #[call(set_distributed_dynamic_bytes_ready_sample_percentage)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_dynamic_bytes_ready_sample_percentage(self, dynamic_bytes_ready_sample_percentage: f64) -> Result<Self, DataFusionError>;
 
             fn set_distributed_local_worker_context(&mut self, local_worker_context: LocalWorkerContext);
             #[call(set_distributed_local_worker_context)]

@@ -143,8 +143,12 @@ impl NetworkBoundaryBuilder for DynamicPlanBuilder<'_> {
         let (stats, consumer_tc) = if nb_type == TypeId::of::<NetworkCoalesceExec>() {
             (None, TaskCountAnnotation::exact(NonZeroUsize::MIN, 0.0))
         } else {
-            let (stats, new_metrics) =
-                gather_runtime_statistics(load_info_rxs, &input_stage.plan).await?;
+            let (stats, new_metrics) = gather_runtime_statistics(
+                load_info_rxs,
+                &input_stage.plan,
+                nb_ctx.d_cfg.dynamic_bytes_ready_sample_percentage,
+            )
+            .await?;
             metrics.extend(new_metrics);
             // returning Desired(0) here is our way to tell the planner that we don't care
             // about the task count assigned to the network boundary in the consumer stage,
@@ -230,11 +234,10 @@ impl PlanReconstructor {
 async fn gather_runtime_statistics(
     per_task_load_info_stream: Vec<impl Stream<Item = LoadInfo> + Unpin>,
     plan: &Arc<dyn ExecutionPlan>,
+    // Fraction of partitions with non-zero sampled bytes that need to report before considering
+    // that there's enough samples collected to make a final decision.
+    bytes_ready_sample_percentage: f64,
 ) -> Result<(Statistics, MetricsSet)> {
-    /// How many LoadInfo samples with non-zero sampled bytes should be gathered before considering
-    /// that there's enough samples collected to make a final decision. The higher this value is,
-    /// the more execution is delayed because of sample collection, but better sampling precision.
-    const BYTES_READY_SAMPLE_PERCENTAGE: f32 = 0.2;
     /// If the leaf nodes in the provided `plan` do not provide any row count estimation, there's
     /// no way for us here to estimate the % of completion of the stage during sampling. This is
     /// the default % of completion for those cases.
@@ -246,8 +249,8 @@ async fn gather_runtime_statistics(
     };
     let n_cols = sampler.schema().fields.len();
 
-    fn apply_pct(value: usize, pct: f32) -> usize {
-        (value as f32 * pct).round() as usize
+    fn apply_pct(value: usize, pct: f64) -> usize {
+        (value as f64 * pct).round() as usize
     }
 
     let partitions_per_task = sampler.partition_samplers.len();
@@ -280,7 +283,7 @@ async fn gather_runtime_statistics(
 
         // Short circuit if we collected enough bytes_ready measurements.
         if partitions_with_bytes_ready_done
-            >= apply_pct(total_partitions, BYTES_READY_SAMPLE_PERCENTAGE).max(1)
+            >= apply_pct(total_partitions, bytes_ready_sample_percentage).max(1)
         {
             break;
         }
