@@ -3,7 +3,7 @@
 use super::SingleWriteMultiRead;
 use super::worker_service::ResultTaskData;
 use crate::TaskKey;
-use std::collections::HashMap;
+use datafusion::common::HashMap;
 use std::sync::{Arc, Mutex};
 
 pub(crate) type TaskEntry = Arc<SingleWriteMultiRead<ResultTaskData>>;

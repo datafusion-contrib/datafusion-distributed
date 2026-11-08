@@ -7,10 +7,10 @@ use crate::grpc::{GetClusterWorkersRequest, GetClusterWorkersResponse};
 use crate::protocol::grpc::generated::worker as worker_pb;
 use crate::worker::{ActiveTasks, SingleWriteMultiRead, TaskData};
 use crate::{TaskKey, WorkerResolver};
+use datafusion::common::HashMap;
 use datafusion::error::DataFusionError;
 use datafusion::physical_plan::ExecutionPlan;
 use moka::future::Cache;
-use std::collections::HashMap;
 use std::sync::Arc;
 #[cfg(feature = "system-metrics")]
 use std::time::Duration;

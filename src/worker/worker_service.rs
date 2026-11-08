@@ -3,11 +3,11 @@ use crate::worker::active_tasks::{ActiveTasks, TaskEntry};
 use crate::worker::{SingleWriteMultiRead, WorkerSessionBuilder};
 use crate::{DefaultSessionBuilder, TaskData, TaskKey};
 use datafusion::common::DataFusionError;
+#[cfg(any(test, feature = "integration"))]
+use datafusion::common::HashSet;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use moka::future::Cache;
 use std::borrow::Cow;
-#[cfg(any(test, feature = "integration"))]
-use std::collections::HashSet;
 use std::sync::Arc;
 #[cfg(feature = "integration")]
 use std::sync::atomic::{AtomicUsize, Ordering};
