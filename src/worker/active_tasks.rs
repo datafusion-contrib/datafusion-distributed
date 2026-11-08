@@ -19,6 +19,7 @@ struct ActiveTask {
 }
 
 impl ActiveTasks {
+    #[cfg(any(test, feature = "grpc", feature = "integration"))]
     pub(crate) fn snapshot(&self) -> Vec<(TaskKey, TaskEntry)> {
         self.entries
             .lock()
