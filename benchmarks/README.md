@@ -159,6 +159,23 @@ and convert again. When choosing `--output`, keep the
 `<benchmark>_iceberg` directory in the path so that `run` can select the
 queries.
 
+#### Iceberg session options
+
+`dfbench-iceberg run` sets any `iceberg.*` option from an environment variable.
+The variable is the option name in uppercase with dots replaced by underscores,
+as for `DATAFUSION_*` options:
+
+```shell
+ICEBERG_ROW_SELECTION_ENABLED=true \
+  cargo run -p datafusion-distributed-iceberg-benchmarks --release -- run \
+  --workers 2 --dataset $ICEBERG
+```
+
+This sets `iceberg.row_selection_enabled`. The variables apply to the
+coordinator and to every local worker. An unknown option or an invalid value
+stops the run with an error. Any `ICEBERG_*` variable in the environment is read
+this way.
+
 Run each representation with its format-specific binary, then compare them with
 `dfbench`:
 
