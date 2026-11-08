@@ -79,10 +79,10 @@ impl Worker {
         &self,
         worker_resolver: Arc<dyn WorkerResolver + Send + Sync>,
     ) -> ObservabilityServiceServer<ObservabilityServiceImpl> {
-        ObservabilityServiceServer::new(ObservabilityServiceImpl::new(
-            self.task_data_entries.clone(),
-            worker_resolver,
-        ))
+        ObservabilityServiceServer::new(
+            ObservabilityServiceImpl::new(self.task_data_entries.clone(), worker_resolver)
+                .with_active_tasks(self.active_tasks.clone()),
+        )
     }
 }
 

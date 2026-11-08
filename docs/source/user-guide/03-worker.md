@@ -82,7 +82,9 @@ covered in
 
 ## Task lifetime
 
-The coordinator keeps a control channel open for each task. When that channel
+The coordinator keeps a control channel open for each task. The registered plan
+remains available while that channel is open, including when a consumer has not
+requested a partition for longer than the idle cache interval. When that channel
 ends, the worker sends any final reports and releases its cached plan and session
 context. Partition streams and task contexts already returned to consumers keep
 their own references until their owners release them.

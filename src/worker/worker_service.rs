@@ -1,10 +1,13 @@
 use crate::protocol::LocalWorkerContext;
+use crate::worker::active_tasks::{ActiveTasks, TaskEntry};
 use crate::worker::{SingleWriteMultiRead, WorkerSessionBuilder};
 use crate::{DefaultSessionBuilder, TaskData, TaskKey};
 use datafusion::common::DataFusionError;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use moka::future::Cache;
 use std::borrow::Cow;
+#[cfg(any(test, feature = "integration"))]
+use std::collections::HashSet;
 use std::sync::Arc;
 #[cfg(feature = "integration")]
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -23,6 +26,7 @@ pub struct Worker {
     /// the stored task resources; time-to-idle eviction provides fallback cleanup for entries
     /// left by abandoned setup requests.
     pub(crate) task_data_entries: Arc<TaskDataEntries>,
+    pub(crate) active_tasks: ActiveTasks,
     pub(super) session_builder: Arc<dyn WorkerSessionBuilder + Send + Sync>,
     pub(crate) max_message_size: Option<usize>,
     pub(super) version: Cow<'static, str>,
@@ -36,6 +40,7 @@ impl Default for Worker {
         Self {
             runtime: Arc::new(RuntimeEnv::default()),
             task_data_entries: Arc::new(cache),
+            active_tasks: ActiveTasks::default(),
             session_builder: Arc::new(DefaultSessionBuilder),
             max_message_size: Some(usize::MAX),
             version: Cow::Borrowed(""),
@@ -46,6 +51,17 @@ impl Default for Worker {
 }
 
 impl Worker {
+    pub(super) async fn task_entry(&self, key: TaskKey) -> TaskEntry {
+        if let Some(entry) = self.active_tasks.get(&key) {
+            return entry;
+        }
+        let entry = self
+            .task_data_entries
+            .get_with(key, async { Default::default() })
+            .await;
+        self.active_tasks.get(&key).unwrap_or(entry)
+    }
+
     /// Builds a [Worker] with a custom [WorkerSessionBuilder]. Use this
     /// method whenever you need to add custom stuff to the `SessionContext` that executes the query.
     pub fn from_session_builder(
@@ -107,7 +123,12 @@ impl Worker {
         // Use `run_pending_tasks()` to migigate inaccuracy from potential stale
         // `entry_count()` task data.
         self.task_data_entries.run_pending_tasks().await;
-        self.task_data_entries.entry_count() as usize
+        self.task_data_entries
+            .iter()
+            .map(|(key, _)| *key)
+            .chain(self.active_tasks.snapshot().into_iter().map(|(key, _)| key))
+            .collect::<HashSet<_>>()
+            .len()
     }
 
     /// Returns the number of live worker-to-coordinator streams.

@@ -1,3 +1,4 @@
+mod active_tasks;
 mod impl_coordinator_channel;
 mod impl_execute_task;
 mod session_builder;
@@ -8,6 +9,7 @@ pub(crate) mod test_utils;
 mod worker_connection_pool;
 mod worker_service;
 
+pub(crate) use active_tasks::ActiveTasks;
 pub(crate) use single_write_multi_read::SingleWriteMultiRead;
 pub(crate) use worker_connection_pool::WorkerConnectionPool;
 

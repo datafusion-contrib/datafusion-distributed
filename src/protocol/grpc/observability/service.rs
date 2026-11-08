@@ -5,11 +5,12 @@ use super::{
 use crate::common::serialize_uuid;
 use crate::grpc::{GetClusterWorkersRequest, GetClusterWorkersResponse};
 use crate::protocol::grpc::generated::worker as worker_pb;
-use crate::worker::{SingleWriteMultiRead, TaskData};
+use crate::worker::{ActiveTasks, SingleWriteMultiRead, TaskData};
 use crate::{TaskKey, WorkerResolver};
 use datafusion::error::DataFusionError;
 use datafusion::physical_plan::ExecutionPlan;
 use moka::future::Cache;
+use std::collections::HashMap;
 use std::sync::Arc;
 #[cfg(feature = "system-metrics")]
 use std::time::Duration;
@@ -23,6 +24,7 @@ type ResultTaskData = Result<TaskData, Arc<DataFusionError>>;
 
 pub struct ObservabilityServiceImpl {
     task_data_entries: Arc<Cache<TaskKey, Arc<SingleWriteMultiRead<ResultTaskData>>>>,
+    active_tasks: ActiveTasks,
     worker_resolver: Arc<dyn WorkerResolver + Send + Sync>,
     #[cfg(feature = "system-metrics")]
     system: watch::Receiver<WorkerMetrics>,
@@ -71,10 +73,16 @@ impl ObservabilityServiceImpl {
         }
         Self {
             task_data_entries,
+            active_tasks: ActiveTasks::default(),
             worker_resolver,
             #[cfg(feature = "system-metrics")]
             system: rx,
         }
+    }
+
+    pub(crate) fn with_active_tasks(mut self, active_tasks: ActiveTasks) -> Self {
+        self.active_tasks = active_tasks;
+        self
     }
 }
 
@@ -90,9 +98,13 @@ impl ObservabilityService for ObservabilityServiceImpl {
     ) -> Result<Response<GetTaskProgressResponse>, Status> {
         let mut tasks = Vec::new();
 
-        for entry in self.task_data_entries.iter() {
-            let (internal_key, task_data_cell) = entry;
-
+        let mut entries: HashMap<_, _> = self
+            .task_data_entries
+            .iter()
+            .map(|(key, value)| (*key, value))
+            .collect();
+        entries.extend(self.active_tasks.snapshot());
+        for (internal_key, task_data_cell) in entries {
             // Only include initialized tasks
             if let Some(Ok(task_data)) = task_data_cell.read_now() {
                 let output_rows = output_rows_from_plan(&task_data.base_plan);

@@ -20,10 +20,7 @@ impl Worker {
         &self,
         request: ExecuteTaskRequest,
     ) -> Result<(Vec<SendableRecordBatchStream>, Arc<TaskContext>)> {
-        let entry = self
-            .task_data_entries
-            .get_with(request.task_key, async { Default::default() })
-            .await;
+        let entry = self.task_entry(request.task_key).await;
 
         // Other request is responsible for writing the plan that belongs to this TaskKey, so
         // we'll resolve immediately if it was already there, or wait until it's ready.

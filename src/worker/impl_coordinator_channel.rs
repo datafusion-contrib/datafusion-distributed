@@ -53,10 +53,9 @@ impl Worker {
     ) -> Result<CoordinatorChannelResult> {
         let key = request.task_key;
 
-        let entry = self
-            .task_data_entries
-            .get_with(key, async { Default::default() })
-            .await;
+        // A live coordinator channel owns its slot even when no consumer has read it recently.
+        let cached_entry = self.task_entry(key).await;
+        let (entry, registration) = self.active_tasks.register(key, cached_entry);
 
         let mut remote_work_unit_feed_registry = RemoteWorkUnitFeedRegistry::default();
         for decl in request.work_unit_feed_declarations {
@@ -177,6 +176,7 @@ impl Worker {
         //    channel, and then that channel is closed.
         #[allow(clippy::disallowed_methods)]
         tokio::spawn(async move {
+            let _registration = registration;
             let mut stream = stream.map_ok(set_work_unit_received_time);
             while let Some(Ok(msg)) = stream.next().await {
                 match msg {
@@ -446,11 +446,100 @@ fn build_task_completed_dynamic_filters(
 mod tests {
     use super::*;
     use crate::TaskKey;
+    use crate::{ExecuteTaskRequest, ProducerHead};
     use datafusion::arrow::datatypes::Schema;
     use datafusion::physical_plan::placeholder_row::PlaceholderRowExec;
+    use moka::future::Cache;
     use std::time::Duration;
+    use test_case::test_case;
     use url::Url;
     use uuid::Uuid;
+
+    const IDLE_EXPIRY: Duration = Duration::from_millis(25);
+
+    #[test_case(false; "one_coordinator")]
+    #[test_case(true; "older_coordinator_closed")]
+    #[tokio::test]
+    async fn live_coordinator_preserves_idle_plan(close_older: bool) -> Result<()> {
+        let worker = Worker {
+            task_data_entries: Arc::new(Cache::builder().time_to_idle(IDLE_EXPIRY).build()),
+            ..Worker::default()
+        };
+        let key = TaskKey {
+            query_id: Uuid::new_v4(),
+            stage_id: 0,
+            task_number: 0,
+        };
+        let (mut control, mut response) = register_idle_task(&worker, key).await?;
+        if close_older {
+            let (replacement_control, replacement_response) =
+                register_idle_task(&worker, key).await?;
+            drop(control);
+            response.stream.try_for_each(|_| async { Ok(()) }).await?;
+            control = replacement_control;
+            response = replacement_response;
+        }
+
+        tokio::time::sleep(IDLE_EXPIRY * 2).await;
+        assert_eq!(worker.tasks_running().await, 1);
+        let (mut streams, context) = tokio::time::timeout(
+            Duration::from_secs(1),
+            worker.execute_task(ExecuteTaskRequest {
+                task_key: key,
+                target_partition_start: 0,
+                target_partition_end: 1,
+                producer_head: ProducerHead::None,
+            }),
+        )
+        .await
+        .expect("an idle registered plan must remain available")?;
+        let batches = streams.remove(0).try_collect::<Vec<_>>().await?;
+        assert_eq!(
+            batches.iter().map(|batch| batch.num_rows()).sum::<usize>(),
+            1
+        );
+        drop(context);
+        let context = Arc::downgrade(&response.task_ctx);
+        drop(response.task_ctx);
+        drop(control);
+        response.stream.try_for_each(|_| async { Ok(()) }).await?;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while context.strong_count() != 0 || worker.tasks_running().await != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("coordinator closure must release the registered plan");
+        Ok(())
+    }
+
+    async fn register_idle_task(
+        worker: &Worker,
+        key: TaskKey,
+    ) -> Result<(
+        tokio::sync::mpsc::Sender<CoordinatorToWorkerMsg>,
+        CoordinatorChannelResult,
+    )> {
+        let (control, incoming) = channel(1);
+        let response = worker
+            .coordinator_channel(
+                HeaderMap::new(),
+                SetPlanRequest {
+                    task_key: key,
+                    task_count: 1,
+                    plan: MaybeEncoded::Decoded(Arc::new(PlaceholderRowExec::new(Arc::new(
+                        Schema::empty(),
+                    )))),
+                    dynamic_filter_remote_producer_ids: vec![],
+                    work_unit_feed_declarations: vec![],
+                    target_worker_url: Url::parse("http://worker.test").unwrap(),
+                    query_start_time_ns: 0,
+                },
+                ReceiverStream::new(incoming).boxed(),
+            )
+            .await?;
+        Ok((control, response))
+    }
 
     #[tokio::test]
     async fn coordinator_eos_releases_unexecuted_task() -> Result<()> {
