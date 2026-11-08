@@ -30,10 +30,11 @@ let state = SessionStateBuilder::new()
 
 The following settings affect AQE decisions:
 
-| Setting                                   | Default | Effect                                                                                                                                                                                       |
-|-------------------------------------------|--------:|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `distributed.dynamic_task_count`          | `false` | Enables runtime task-count selection.                                                                                                                                                        |
-| `distributed.dynamic_bytes_per_partition` |  16 MiB | Sets the compute-cost budget per output partition. Lower values generally produce more tasks; higher values produce fewer. Configure it with `with_distributed_dynamic_bytes_per_partition`. |
+| Setting                                             | Default | Effect                                                                                                                                                                                                                                                                                                    |
+|-----------------------------------------------------|--------:|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `distributed.dynamic_task_count`                    | `false` | Enables runtime task-count selection.                                                                                                                                                                                                                                                                     |
+| `distributed.dynamic_bytes_per_partition`           |  16 MiB | Sets the compute-cost budget per output partition. Lower values generally produce more tasks; higher values produce fewer. Configure it with `with_distributed_dynamic_bytes_per_partition`.                                                                                                              |
+| `distributed.dynamic_bytes_ready_sample_percentage` |   `0.2` | Sets the fraction of a stage's partitions that must report sampled bytes before its runtime statistics are estimated. Higher values delay execution longer but produce more precise estimates; `1.0` samples every partition. Configure it with `with_distributed_dynamic_bytes_ready_sample_percentage`. |
 
 ## Custom data sources
 
