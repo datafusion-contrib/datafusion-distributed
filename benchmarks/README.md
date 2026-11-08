@@ -159,6 +159,42 @@ and convert again. When choosing `--output`, keep the
 `<benchmark>_iceberg` directory in the path so that `run` can select the
 queries.
 
+#### Partitioned TPC-DS
+
+`--partitioned` writes the standard partitioned TPC-DS layout that Spark
+(spark-sql-perf) and Trino use. These fact tables are partitioned by an
+identity transform on their date key. All other tables stay unpartitioned.
+
+| table | partition column |
+|---|---|
+| store_sales | ss_sold_date_sk |
+| store_returns | sr_returned_date_sk |
+| catalog_sales | cs_sold_date_sk |
+| catalog_returns | cr_returned_date_sk |
+| web_sales | ws_sold_date_sk |
+| web_returns | wr_returned_date_sk |
+| inventory | inv_date_sk |
+
+```shell
+DATASET=$(cargo run -p datafusion-distributed-benchmarks --release -- prepare-tpcds --scale-factor 10)
+ICEBERG=$(cargo run -p datafusion-distributed-iceberg-benchmarks --release -- prepare \
+  --input $DATASET --partitioned)
+```
+
+The flag only accepts TPC-DS input. Rows with a null date key are kept in a
+partition of their own. The default output path has `partitioned=true` before
+`target_file_size`, beside the unpartitioned dataset:
+
+```
+testdata/tpcds_iceberg/scale_factor=10/.../sorted=false/partitioned=true/target_file_size=1099511627776/
+```
+
+Each partitioned table is written through one stream, so a partition gets one
+data file, or one per `--target-file-size` of data. Source file boundaries do
+not apply. A table has about as many files as it has distinct date keys.
+All partitions of a table are open while it is written, so memory use grows
+with the number of date keys.
+
 #### Iceberg session options
 
 `dfbench-iceberg run` sets any `iceberg.*` option from an environment variable.
