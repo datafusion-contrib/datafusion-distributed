@@ -517,7 +517,7 @@ mod tests {
         worker: &Worker,
         key: TaskKey,
     ) -> Result<(
-        tokio::sync::mpsc::Sender<CoordinatorToWorkerMsg>,
+        tokio::sync::mpsc::Sender<Result<CoordinatorToWorkerMsg>>,
         CoordinatorChannelResult,
     )> {
         let (control, incoming) = channel(1);
