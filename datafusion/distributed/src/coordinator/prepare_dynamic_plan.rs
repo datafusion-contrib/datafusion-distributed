@@ -40,7 +40,7 @@ pub(super) async fn prepare_dynamic_plan(
         Arc::clone(base_plan),
         // TODO: Inject here a plan remainder replanner for reshaping the topology of the plan based on the runtime
         //  collected statistics.
-        Ok,
+        |plan, _nb_ctx| Ok(plan),
         DynamicPlanBuilder {
             query_coordinator,
             plans_for_viz: &plans_for_viz,

@@ -146,7 +146,10 @@ use uuid::Uuid;
 /// directly above a boundary) has a task count recorded.
 pub(crate) async fn inject_network_boundaries(
     mut plan: Arc<dyn ExecutionPlan>,
-    remainder_replanner: impl Fn(Arc<dyn ExecutionPlan>) -> Result<Arc<dyn ExecutionPlan>>,
+    remainder_replanner: impl Fn(
+        Arc<dyn ExecutionPlan>,
+        &InjectNetworkBoundaryContext,
+    ) -> Result<Arc<dyn ExecutionPlan>>,
     nb_builder: impl NetworkBoundaryBuilder + Send + Sync,
     session_cfg: &SessionConfig,
 ) -> Result<Arc<dyn ExecutionPlan>> {
@@ -163,7 +166,7 @@ pub(crate) async fn inject_network_boundaries(
     let mut keep_transforming = true;
     while keep_transforming {
         let result = _inject_network_boundaries(plan, None, &ctx).await?;
-        plan = remainder_replanner(result.data)?;
+        plan = remainder_replanner(result.data, &ctx)?;
         // The _inject_network_boundaries pass needed to stop because it injected network
         // boundaries, therefore, there might be more network boundaries to inject in a new pass.
         keep_transforming = matches!(result.tnr, Stop);
