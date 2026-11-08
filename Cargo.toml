@@ -1,118 +1,21 @@
 [workspace]
 members = [
-    "benchmarks",
-    "benchmarks/remote-worker",
-    "cli",
-    "console",
-    "iceberg",
-    "iceberg/benchmarks",
-    "iceberg/test-tools",
+    "datafusion/distributed",
+    "datafusion/distributed-benchmarks",
+    "datafusion/distributed-cli",
+    "datafusion/distributed-console",
+    "datafusion/distributed-iceberg",
+    "datafusion/distributed-iceberg-benchmarks",
+    "datafusion/distributed-iceberg-test-tools",
+    "datafusion/distributed-remote-worker",
 ]
+# Plain `cargo build`/`cargo test` from the repository root target the core library.
+default-members = ["datafusion/distributed"]
+resolver = "3"
 
 [workspace.dependencies]
 datafusion = { version = "55", default-features = false }
 datafusion-proto = { version = "55", default-features = false }
-
-[package]
-name = "datafusion-distributed"
-version = "4.0.0"
-edition = "2024"
-description = "Framework for enhancing Apache DataFusion with distributed capabilities"
-license = "Apache-2.0"
-documentation = "https://datafusion-contrib.github.io/datafusion-distributed/"
-repository = "https://github.com/datafusion-contrib/datafusion-distributed"
-
-[[test]]
-name = "dynamic_filtering"
-path = "tests/dynamic_filtering/main.rs"
-required-features = ["integration"]
-
-[dependencies]
-chrono = { version = "0.4.44" }
-datafusion = { workspace = true, features = [
-  "unicode_expressions",
-  "datetime_expressions",
-] }
-datafusion-proto = { workspace = true }
-async-trait = "0.1.89"
-tokio = { version = "1.48", features = ["full"] }
-http = "1.3.1"
-itertools = "0.14.0"
-futures = "0.3.31"
-url = "2.5.7"
-uuid = "1.19"
-delegate = "0.13.4"
-dashmap = "6.0.1"
-prost = "0.14.1"
-rand = "0.9"
-bytes = "1.11"
-pin-project = "1.1.10"
-tokio-stream = { version = "0.1.17", features = ["sync"] }
-tokio-util = "0.7"
-moka = { version = "0.12", features = ["sync", "future"] }
-crossbeam-queue = "0.3"
-sysinfo = { version = "0.30", optional = true }
-sketches-ddsketch = { version = "0.3", features = ["use_serde"] }
-num-traits = "0.2"
-postcard = { version = "1.1", default-features = false, features = ["alloc"] }
-tonic-prost = "0.14.2"
-
-# grpc-specific features
-arrow-flight = { version = "59", optional = true }
-arrow-select = { version = "59", optional = true }
-arrow-ipc = { version = "59", features = ["zstd"], optional = true }
-tonic = { version = "0.14.1", features = ["transport"], optional = true }
-tower = { version = "0.5.2", optional = true }
-
-# integration_tests deps
-insta = { version = "1.46.0", features = ["filters"], optional = true }
-parquet = { version = "59", optional = true }
-arrow = { version = "59", optional = true, features = ["test_utils"] }
-hyper-util = { version = "0.1.16", optional = true }
-
-[features]
-default = ["grpc", "parquet", "sql"]
-
-# Both are in the default set, so nothing changes for consumers who do not opt out.
-# They exist so that an embedder which never reads parquet files and never parses SQL
-# can skip the parquet and sqlparser stacks with `default-features = false`.
-parquet = ["datafusion/parquet", "datafusion-proto/parquet"]
-sql = ["datafusion/sql"]
-avro = ["datafusion/avro"]
-grpc = [
-    "arrow-flight",
-    "arrow-select",
-    "arrow-ipc",
-    "tonic",
-    "tower"
-]
-
-integration = ["insta", "dep:parquet", "arrow", "hyper-util", "grpc", "parquet", "sql"]
-
-system-metrics = ["sysinfo"]
-
-tpch = ["integration"]
-tpcds = ["integration"]
-clickbench = ["integration"]
-slow-tests = []
-chaos-tests = []
-sysinfo = ["dep:sysinfo"]
-
-[dev-dependencies]
-datafusion-distributed-benchmarks = { path = "benchmarks" }
-# The crate's own tests drive `SessionContext::sql` and register parquet tables, so they need
-# both features regardless of which ones a consumer selects. Requesting them here keeps
-# `--no-default-features` test runs compiling without forcing either on library consumers.
-datafusion = { workspace = true, features = ["parquet", "sql"] }
-datafusion-proto = { workspace = true, features = ["parquet"] }
-structopt = "0.3"
-insta = { version = "1.46.0", features = ["filters"] }
-parquet = "59"
-arrow = { version = "59", features = ["test_utils"] }
-tokio-stream = { version = "0.1.17", features = ["sync"] }
-hyper-util = "0.1.16"
-pretty_assertions = "1.4"
-test-case = "3.3.1"
 
 [workspace.lints.clippy]
 disallowed_types = "deny"

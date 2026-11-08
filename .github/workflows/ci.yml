@@ -20,7 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
-      - run: cargo build
+      - run: cargo build -p datafusion-distributed
 
   clippy:
     runs-on: ubuntu-latest
@@ -38,7 +38,7 @@ jobs:
         with:
           lfs: true
       - uses: ./.github/actions/setup
-      - run: cargo test --features integration
+      - run: cargo test -p datafusion-distributed --features integration
 
   tpch-correctness-test:
     runs-on: ubuntu-latest
@@ -49,7 +49,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
-      - run: cargo test --features tpch --test tpch_correctness_test
+      - run: cargo test -p datafusion-distributed --features tpch --test tpch_correctness_test
         env:
           ADAPTIVE: ${{ matrix.planning_mode == 'adaptive' }}
 
@@ -62,7 +62,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
-      - run: cargo test --features tpch --test tpch_sorted_correctness_test
+      - run: cargo test -p datafusion-distributed --features tpch --test tpch_sorted_correctness_test
         env:
           ADAPTIVE: ${{ matrix.planning_mode == 'adaptive' }}
 
@@ -71,14 +71,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
-      - run: cargo test --features tpch --test tpch_plans_test
+      - run: cargo test -p datafusion-distributed --features tpch --test tpch_plans_test
 
   tpch-sorted-plans-test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
-      - run: cargo test --features tpch --test tpch_sorted_plans_test
+      - run: cargo test -p datafusion-distributed --features tpch --test tpch_sorted_plans_test
 
   tpcds-correctness-test:
     runs-on: ubuntu-latest
@@ -90,7 +90,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
-      - run: cargo test --features tpcds --test tpcds_correctness_test shard${{ matrix.shard }}
+      - run: cargo test -p datafusion-distributed --features tpcds --test tpcds_correctness_test shard${{ matrix.shard }}
         env:
           ADAPTIVE: ${{ matrix.planning_mode == 'adaptive' }}
 
@@ -99,7 +99,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
-      - run: cargo test --features tpcds --test tpcds_plans_test
+      - run: cargo test -p datafusion-distributed --features tpcds --test tpcds_plans_test
 
   clickbench-correctness-test:
     runs-on: ubuntu-latest
@@ -114,7 +114,7 @@ jobs:
         with:
           path: testdata/clickbench_parquet/
           key: "clickbench_parquet"
-      - run: cargo test --features clickbench --test clickbench_correctness_test
+      - run: cargo test -p datafusion-distributed --features clickbench --test clickbench_correctness_test
         env:
           ADAPTIVE: ${{ matrix.planning_mode == 'adaptive' }}
 
@@ -127,7 +127,7 @@ jobs:
         with:
           path: testdata/clickbench_parquet/
           key: "clickbench_parquet"
-      - run: cargo test --features clickbench --test clickbench_plans_test
+      - run: cargo test -p datafusion-distributed --features clickbench --test clickbench_plans_test
 
   iceberg-test:
     runs-on: ubuntu-latest
@@ -145,7 +145,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
-      - run: cargo test --features tpch,chaos-tests --test chaos
+      - run: cargo test -p datafusion-distributed --features tpch,chaos-tests --test chaos
         env:
           ADAPTIVE: ${{ matrix.planning_mode == 'adaptive' }}
 

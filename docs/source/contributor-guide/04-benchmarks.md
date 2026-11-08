@@ -6,7 +6,7 @@ write new benchmarks.
 ## Micro benchmarks
 
 When contributing performance improvements to very specific pieces of code,
-prefer using the existing micro-benches in `benchmarks/benches`.
+prefer using the existing micro-benches in `datafusion/distributed-benchmarks/benches`.
 
 If there's no benchmark that exercises the code path you are aiming to improve,
 consider creating a separate PR adding the necessary benchmark first, following
@@ -30,7 +30,7 @@ DATASET=$(cargo run -p datafusion-distributed-benchmarks --release -- prepare-tp
 
 This might take a while. It prints the dataset's path under `testdata/`, which records every
 generation parameter, and nothing else on stdout. See the
-[benchmarks README](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/benchmarks/README.md)
+[benchmarks README](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/datafusion/distributed-benchmarks/README.md)
 for the available layout options.
 
 ### Running Benchmarks
@@ -48,7 +48,7 @@ to measure the impact of a PR is to first run the benchmarks on `main`, and then
 on the PR branch.
 
 More information about these benchmarks can be found in
-the [benchmarks README](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/benchmarks/README.md).
+the [benchmarks README](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/datafusion/distributed-benchmarks/README.md).
 
 ## Remote Benchmarks
 

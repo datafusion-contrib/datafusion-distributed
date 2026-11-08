@@ -1,0 +1,24 @@
+[package]
+name = "datafusion-distributed-console"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+datafusion = { workspace = true }
+structopt = "0.3"
+color-eyre = "0.6.5"
+crossterm = "0.29.0"
+futures = "0.3.31"
+ratatui = "0.30.0"
+tokio = { version = "1.49.0", features = ["full"] }
+tonic = "0.14.2"
+datafusion-distributed = { path = "../distributed", features = ["integration", "system-metrics"] }
+url = "2.5.7"
+tokio-stream = "0.1.18"
+
+[dev-dependencies]
+arrow = "59"
+async-trait = "0.1.89"
+datafusion-distributed-benchmarks = { path = "../distributed-benchmarks" }
+futures = "0.3.31"
+url = "2.5.7"

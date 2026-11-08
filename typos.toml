@@ -21,7 +21,7 @@ extend-exclude = [
     # External ClickBench benchmark queries with dataset-defined identifiers we don't control
     "testdata/clickbench/",
     # Generated protobuf / gRPC code
-    "src/protocol/grpc/generated/",
+    "datafusion/distributed/src/protocol/grpc/generated/",
     # Code generator crate (operates on external schemas)
     "codegen/",
 ]
