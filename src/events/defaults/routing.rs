@@ -17,16 +17,18 @@ use url::Url;
 
 /// Assigns a task to a random URL from the registered [WorkerResolver].
 pub(crate) struct RandomRouteTaskHandler {
-    seed: Option<u64>,
+    seed: u64,
 }
 
 impl RandomRouteTaskHandler {
     pub(crate) fn new(seed: Option<u64>) -> Self {
-        Self { seed }
+        Self {
+            seed: seed.unwrap_or_else(rand::random),
+        }
     }
 
-    fn retry_seed(&self, key: &TaskKey) -> Option<[u8; 32]> {
-        self.seed.map(|_| routing_seed(key, self.seed, true))
+    fn retry_seed(&self, key: &TaskKey) -> [u8; 32] {
+        routing_seed(key, self.seed, true)
     }
 }
 
@@ -54,7 +56,7 @@ async fn dial_with_failover(
     dialer: &dyn CoordinatorToWorkerDialer,
     url: Url,
     mut retry_urls: Vec<Url>,
-    retry_seed: Option<[u8; 32]>,
+    retry_seed: [u8; 32],
     metrics: &ExecutionPlanMetricsSet,
     d_cfg: &DistributedConfig,
 ) -> Result<RouteTaskEventResponse> {
@@ -123,11 +125,8 @@ async fn dial_with_failover(
     }
 }
 
-fn shuffle_retry_urls<T>(urls: &mut [T], seed: Option<[u8; 32]>) {
-    match seed {
-        Some(seed) => urls.shuffle(&mut StdRng::from_seed(seed)),
-        None => urls.shuffle(&mut rand::rng()),
-    }
+fn shuffle_retry_urls<T>(urls: &mut [T], seed: [u8; 32]) {
+    urls.shuffle(&mut StdRng::from_seed(seed));
 }
 
 fn same_url_retry_backoff(
@@ -149,7 +148,7 @@ fn same_url_retry_backoff(
 /// Successive task numbers rotate through the list from that offset.
 fn stage_contiguous_rand_offset<T>(
     key: &TaskKey,
-    explicit_seed: Option<u64>,
+    seed: u64,
     list: impl IntoIterator<Item = T>,
 ) -> Option<T> {
     let list = list.into_iter().collect::<Vec<_>>();
@@ -157,18 +156,15 @@ fn stage_contiguous_rand_offset<T>(
         return None;
     }
 
-    let mut rng = StdRng::from_seed(routing_seed(key, explicit_seed, false));
+    let mut rng = StdRng::from_seed(routing_seed(key, seed, false));
     let start = rng.random_range(0..list.len());
     let index = (start + key.task_number % list.len()) % list.len();
     list.into_iter().nth(index)
 }
 
-fn routing_seed(key: &TaskKey, explicit_seed: Option<u64>, include_task: bool) -> [u8; 32] {
+fn routing_seed(key: &TaskKey, base_seed: u64, include_task: bool) -> [u8; 32] {
     let mut seed = [0; 32];
-    match explicit_seed {
-        Some(explicit_seed) => seed[..8].copy_from_slice(&explicit_seed.to_le_bytes()),
-        None => seed[..16].copy_from_slice(key.query_id.as_bytes()),
-    }
+    seed[..8].copy_from_slice(&base_seed.to_le_bytes());
     seed[16..24].copy_from_slice(&(key.stage_id as u64).to_le_bytes());
     if include_task {
         seed[24..].copy_from_slice(&(key.task_number as u64).to_le_bytes());
