@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::backend::BenchmarkBackend;
-use crate::datasets::{clickbench, tpcds, tpch};
+use crate::datasets::{clickbench, dataset_suite, tpcds, tpch};
 use crate::local_workers::LocalWorkers;
 use crate::results::{BenchResult, BenchmarkRun, QueryIter, dataset_path};
 use crate::stats::stats_estimation_q_error;
@@ -41,7 +41,7 @@ use datafusion_distributed::{
     display_plan_ascii, rewrite_distributed_plan_with_metrics,
 };
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use structopt::StructOpt;
@@ -126,20 +126,6 @@ pub struct RunOpt {
     /// on the consumer side.
     #[structopt(long = "two-step-shuffle-fanout-threshold", default_value = "128")]
     two_step_shuffle_fanout_threshold: usize,
-}
-
-/// The query suite of a dataset path such as `tpch_parquet/scale_factor=1/...`: the benchmark
-/// name in its last component that is not a `key=value` parameter.
-fn dataset_suite(dataset: &str) -> &str {
-    let suite = Path::new(dataset)
-        .components()
-        .rev()
-        .filter_map(|component| component.as_os_str().to_str())
-        .find(|name| !name.contains('='))
-        .unwrap_or("");
-    suite
-        .split_once('_')
-        .map_or(suite, |(suite, _format)| suite)
 }
 
 fn queries_for_dataset(dataset: &str) -> Result<Vec<(String, String)>, DataFusionError> {

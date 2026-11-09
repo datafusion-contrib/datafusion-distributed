@@ -2,20 +2,27 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use datafusion::arrow::compute::cast;
+use datafusion::arrow::compute::{cast, partition as equal_value_runs};
+use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::{DataFusionError, exec_datafusion_err, exec_err};
+use datafusion::execution::TaskContext;
 
 use datafusion::execution::context::SessionContext;
+use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
-use datafusion::prelude::ParquetReadOptions;
+use datafusion::prelude::{ParquetReadOptions, ident};
 use datafusion_distributed_benchmarks::datasets::output::DatasetOutput;
+use datafusion_distributed_benchmarks::datasets::{dataset_suite, table_columns};
 use datafusion_distributed_iceberg::IcebergIntegrationOptions;
 use datafusion_distributed_iceberg::iceberg;
 use futures::StreamExt;
+use iceberg::arrow::RecordBatchPartitionSplitter;
 use iceberg::arrow::{arrow_schema_to_schema_auto_assign_ids, schema_to_arrow_schema};
 use iceberg::memory::{MEMORY_CATALOG_WAREHOUSE, MemoryCatalogBuilder};
-use iceberg::spec::DataFileFormat;
+use iceberg::spec::DataFile;
+use iceberg::spec::{DataFileFormat, Transform, UnboundPartitionField, UnboundPartitionSpec};
+use iceberg::table::Table;
 use iceberg::transaction::{ApplyTransactionAction, Transaction};
 use iceberg::writer::base_writer::data_file_writer::DataFileWriterBuilder;
 use iceberg::writer::file_writer::ParquetWriterBuilder;
@@ -23,6 +30,8 @@ use iceberg::writer::file_writer::location_generator::{
     DefaultFileNameGenerator, DefaultLocationGenerator,
 };
 use iceberg::writer::file_writer::rolling_writer::RollingFileWriterBuilder;
+use iceberg::writer::partitioning::PartitioningWriter;
+use iceberg::writer::partitioning::clustered_writer::ClusteredWriter;
 use iceberg::writer::{IcebergWriter, IcebergWriterBuilder};
 use iceberg::{Catalog, CatalogBuilder, NamespaceIdent, TableCreation};
 use parquet::file::properties::WriterProperties;
@@ -36,27 +45,37 @@ type CatalogProperties = std::collections::HashMap<String, String>;
 /// The dataset directory used for the Iceberg representation of `input`:
 /// `<root>/tpch_parquet/<key>=<value>/...` becomes
 /// `<root>/tpch_iceberg/<key>=<value>/.../target_file_size=<bytes>`, so the path records every
-/// parameter of both the Parquet generation and the conversion.
+/// parameter of both the Parquet generation and the conversion. A partitioned conversion adds
+/// `partitioned=true` before `target_file_size`, so that it sits beside the unpartitioned dataset
+/// and not inside it. Unpartitioned paths are unchanged.
 pub(super) fn output_path(
     input: &Path,
     target_file_size: usize,
+    partitioned: bool,
 ) -> Result<PathBuf, DataFusionError> {
     let input = input.to_string_lossy();
     let Some((root, parameters)) = input.rsplit_once("_parquet/") else {
         return exec_err!("{input} is not a <benchmark>_parquet dataset; pass --output");
     };
     let parameters = parameters.trim_end_matches('/');
+    let partitioning = if partitioned { "partitioned=true/" } else { "" };
     Ok(PathBuf::from(format!(
-        "{root}_iceberg/{parameters}/target_file_size={target_file_size}"
+        "{root}_iceberg/{parameters}/{partitioning}target_file_size={target_file_size}"
     )))
 }
 
-/// Converts prepared local Parquet tables, independently of their query suite.
-/// Data is streamed one input file at a time; completion is marked last.
+/// How much memory the conversion uses before sorting a partitioned table spills to disk. Spill
+/// files go to the system's temporary directory, which `TMPDIR` sets.
+const SORT_MEMORY_LIMIT: usize = 4 * 1024 * 1024 * 1024;
+
+/// Converts prepared local Parquet tables. Unpartitioned tables are streamed one input file at a
+/// time. With `partitioned`, each table that the dataset's benchmark declares a partition column
+/// for is sorted by that column and streamed through one writer. Completion is marked last.
 pub(super) async fn convert_parquet_to_iceberg(
     source_dir: &Path,
     output: &DatasetOutput,
     target_file_size: usize,
+    partitioned: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if target_file_size == 0 {
         return Err("target file size must be greater than zero".into());
@@ -68,7 +87,7 @@ pub(super) async fn convert_parquet_to_iceberg(
         return Ok(());
     }
 
-    let tables = fs::read_dir(source_dir)?
+    let table_dirs = fs::read_dir(source_dir)?
         .map(|entry| entry.map(|entry| entry.path()))
         .collect::<Result<Vec<_>, _>>()?
         .into_iter()
@@ -81,8 +100,32 @@ pub(super) async fn convert_parquet_to_iceberg(
                     .starts_with(b".")
         })
         .collect::<Vec<_>>();
-    if tables.is_empty() {
+    if table_dirs.is_empty() {
         return Err("conversion requires a non-empty Parquet dataset".into());
+    }
+    let source = source_dir.to_string_lossy();
+    let suite = dataset_suite(&source);
+    let mut tables = Vec::with_capacity(table_dirs.len());
+    for table_path in table_dirs {
+        let table_name = table_path
+            .file_name()
+            .unwrap()
+            .to_str()
+            .ok_or("Table name is not valid UTF-8")?
+            .to_string();
+        let partition_column = if partitioned {
+            table_columns(suite, &table_name)?.partition_column
+        } else {
+            None
+        };
+        tables.push((table_path, table_name, partition_column));
+    }
+    if partitioned && tables.iter().all(|(_, _, column)| column.is_none()) {
+        return Err(exec_datafusion_err!(
+            "--partitioned found no table to partition: {suite} declares no partition column for \
+             the tables in {source}"
+        )
+        .into());
     }
     let catalog = MemoryCatalogBuilder::default()
         .with_storage_factory(IcebergIntegrationOptions::default().storage_factory)
@@ -99,23 +142,30 @@ pub(super) async fn convert_parquet_to_iceberg(
     // One stream per input file preserves the source file boundaries unless rolling
     // is requested. Execution-time partition counts are unrelated to conversion.
     let config = datafusion::prelude::SessionConfig::new().with_target_partitions(1);
-    let ctx = SessionContext::new_with_config(config);
+    let runtime = RuntimeEnvBuilder::new()
+        .with_memory_limit(SORT_MEMORY_LIMIT, 1.0)
+        .build_arc()?;
+    let ctx = SessionContext::new_with_config_rt(config, runtime);
 
-    for table_path in tables {
-        let table_name = table_path
-            .file_name()
-            .unwrap()
-            .to_str()
-            .ok_or("Table name is not valid UTF-8")?;
-        let plans = parquet_file_plans(&ctx, &table_path).await?;
+    for (table_path, table_name, partition_column) in tables {
+        let files = parquet_files(&table_path)?;
+        let plans = match partition_column {
+            Some(column) if !files.is_empty() => {
+                vec![sorted_parquet_plan(&ctx, files, column).await?]
+            }
+            _ => parquet_file_plans(&ctx, files).await?,
+        };
         write_table(
             &catalog,
             &namespace,
-            table_name,
+            &table_name,
             plans,
             ctx.task_ctx(),
             output,
-            target_file_size,
+            TableLayout {
+                target_file_size,
+                partition_column,
+            },
         )
         .await?;
     }
@@ -123,19 +173,46 @@ pub(super) async fn convert_parquet_to_iceberg(
     Ok(())
 }
 
+/// How one table's data files are laid out.
+struct TableLayout {
+    target_file_size: usize,
+    /// The identity partition column, or none for an unpartitioned table.
+    partition_column: Option<&'static str>,
+}
+
 async fn write_table(
     catalog: &impl Catalog,
     namespace: &NamespaceIdent,
     table_name: &str,
     plans: Vec<Arc<dyn ExecutionPlan>>,
-    task_ctx: Arc<datafusion::execution::TaskContext>,
+    task_ctx: Arc<TaskContext>,
     output: &DatasetOutput,
-    target_file_size: usize,
+    layout: TableLayout,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let TableLayout {
+        target_file_size,
+        partition_column,
+    } = layout;
     let Some(first_plan) = plans.first() else {
-        return Err(format!("Parquet table {table_name} contains no files").into());
+        return Err(exec_datafusion_err!("Parquet table {table_name} contains no files").into());
     };
     let iceberg_schema = arrow_schema_to_schema_auto_assign_ids(first_plan.schema().as_ref())?;
+    let mut partition_spec = UnboundPartitionSpec::builder();
+    if let Some(column) = partition_column {
+        let Some(source) = iceberg_schema.field_by_name(column) else {
+            return Err(exec_datafusion_err!(
+                "cannot partition {table_name} by {column}: no such column"
+            )
+            .into());
+        };
+        partition_spec = partition_spec.add_partition_field(
+            UnboundPartitionField::builder()
+                .source_ids(vec![source.id])
+                .name(column.to_string())
+                .transform(Transform::Identity)
+                .build()?,
+        )?;
+    }
     let table_location = format!("{}/{table_name}", output.location());
     let table = catalog
         .create_table(
@@ -144,49 +221,36 @@ async fn write_table(
                 .name(table_name.to_string())
                 .location(table_location)
                 .schema(iceberg_schema)
+                .partition_spec(partition_spec.build())
                 .build(),
         )
         .await?;
     let arrow_schema_with_ids = Arc::new(schema_to_arrow_schema(
         table.metadata().current_schema().as_ref(),
     )?);
-    let mut data_files = Vec::new();
 
-    let mut file_index = 0;
-    for plan in plans {
-        for partition in 0..plan.output_partitioning().partition_count() {
-            let parquet_writer = ParquetWriterBuilder::new(
-                WriterProperties::builder().build(),
-                table.metadata().current_schema().clone(),
-            );
-            let rolling_writer = RollingFileWriterBuilder::new(
-                parquet_writer,
-                target_file_size,
-                table.file_io().clone(),
-                DefaultLocationGenerator::new(table.metadata())?,
-                DefaultFileNameGenerator::new(
-                    format!("{table_name}-{file_index}"),
-                    None,
-                    DataFileFormat::Parquet,
-                ),
-            );
-            file_index += 1;
-            let mut writer = DataFileWriterBuilder::new(rolling_writer)
-                .build(None)
-                .await?;
-            let mut stream = plan.execute(partition, Arc::clone(&task_ctx))?;
-            while let Some(batch) = stream.next().await {
-                let batch = batch?;
-                writer
-                    .write(align_batch_schema(
-                        batch,
-                        Arc::clone(&arrow_schema_with_ids),
-                    )?)
-                    .await?;
-            }
-            data_files.extend(writer.close().await?);
-        }
-    }
+    let data_files = if let Some(column) = partition_column {
+        write_partitioned(
+            &table,
+            table_name,
+            &plans,
+            &task_ctx,
+            &arrow_schema_with_ids,
+            target_file_size,
+            column,
+        )
+        .await?
+    } else {
+        write_unpartitioned(
+            &table,
+            table_name,
+            &plans,
+            &task_ctx,
+            &arrow_schema_with_ids,
+            target_file_size,
+        )
+        .await?
+    };
 
     let tx = Transaction::new(&table);
     let action = tx.fast_append().add_data_files(data_files);
@@ -199,6 +263,115 @@ async fn write_table(
         )
         .await?;
     Ok(())
+}
+
+fn rolling_writer_builder(
+    table: &Table,
+    file_name_prefix: String,
+    target_file_size: usize,
+) -> Result<
+    RollingFileWriterBuilder<
+        ParquetWriterBuilder,
+        DefaultLocationGenerator,
+        DefaultFileNameGenerator,
+    >,
+    Box<dyn std::error::Error>,
+> {
+    Ok(RollingFileWriterBuilder::new(
+        ParquetWriterBuilder::new(
+            WriterProperties::builder().build(),
+            table.metadata().current_schema().clone(),
+        ),
+        target_file_size,
+        table.file_io().clone(),
+        DefaultLocationGenerator::new(table.metadata())?,
+        DefaultFileNameGenerator::new(file_name_prefix, None, DataFileFormat::Parquet),
+    ))
+}
+
+/// One writer per input file keeps the source file boundaries.
+async fn write_unpartitioned(
+    table: &Table,
+    table_name: &str,
+    plans: &[Arc<dyn ExecutionPlan>],
+    task_ctx: &Arc<TaskContext>,
+    arrow_schema_with_ids: &SchemaRef,
+    target_file_size: usize,
+) -> Result<Vec<DataFile>, Box<dyn std::error::Error>> {
+    let mut data_files = Vec::new();
+    let mut file_index = 0;
+    for plan in plans {
+        for partition in 0..plan.output_partitioning().partition_count() {
+            let rolling_writer = rolling_writer_builder(
+                table,
+                format!("{table_name}-{file_index}"),
+                target_file_size,
+            )?;
+            file_index += 1;
+            let mut writer = DataFileWriterBuilder::new(rolling_writer)
+                .build(None)
+                .await?;
+            let mut stream = plan.execute(partition, Arc::clone(task_ctx))?;
+            while let Some(batch) = stream.next().await {
+                writer
+                    .write(align_batch_schema(
+                        batch?,
+                        Arc::clone(arrow_schema_with_ids),
+                    )?)
+                    .await?;
+            }
+            data_files.extend(writer.close().await?);
+        }
+    }
+    Ok(data_files)
+}
+
+/// `plans` produce rows sorted by `partition_column`, so one clustered writer keeps only the current
+/// partition's file open and rolls to a new file at `target_file_size`. The table ends up with about
+/// one file per partition value, however many source files it has. Rows with a null partition
+/// value go to their own partition.
+async fn write_partitioned(
+    table: &Table,
+    table_name: &str,
+    plans: &[Arc<dyn ExecutionPlan>],
+    task_ctx: &Arc<TaskContext>,
+    arrow_schema_with_ids: &SchemaRef,
+    target_file_size: usize,
+    partition_column: &str,
+) -> Result<Vec<DataFile>, Box<dyn std::error::Error>> {
+    let splitter = RecordBatchPartitionSplitter::try_new_with_computed_values(
+        table.metadata().current_schema().clone(),
+        table.metadata().default_partition_spec().clone(),
+    )?;
+    let mut writer = ClusteredWriter::new(DataFileWriterBuilder::new(rolling_writer_builder(
+        table,
+        table_name.to_string(),
+        target_file_size,
+    )?));
+    for plan in plans {
+        for partition in 0..plan.output_partitioning().partition_count() {
+            let mut stream = plan.execute(partition, Arc::clone(task_ctx))?;
+            while let Some(batch) = stream.next().await {
+                let batch = align_batch_schema(batch?, Arc::clone(arrow_schema_with_ids))?;
+                let Some(values) = batch.column_by_name(partition_column) else {
+                    return Err(exec_datafusion_err!(
+                        "{table_name} has no partition column {partition_column}"
+                    )
+                    .into());
+                };
+                // `split` returns a batch's partitions in no fixed order, and the clustered writer
+                // fails on a partition it has already closed. So cut the sorted batch into runs of
+                // one partition value first, and split each run in order.
+                for run in equal_value_runs(&[Arc::clone(values)])?.ranges() {
+                    let run = batch.slice(run.start, run.end - run.start);
+                    for (partition_key, run) in splitter.split(&run)? {
+                        writer.write(partition_key, run).await?;
+                    }
+                }
+            }
+        }
+    }
+    Ok(writer.close().await?)
 }
 
 /// Register immutable local benchmark tables written by `dfbench-iceberg prepare`.
@@ -233,10 +406,8 @@ pub async fn register_tables(
     Ok(())
 }
 
-async fn parquet_file_plans(
-    ctx: &SessionContext,
-    table_dir: &Path,
-) -> Result<Vec<Arc<dyn ExecutionPlan>>, DataFusionError> {
+/// The table's Parquet files, in name order.
+fn parquet_files(table_dir: &Path) -> Result<Vec<String>, DataFusionError> {
     let mut files = Vec::new();
     for entry in fs::read_dir(table_dir)? {
         let path = entry?.path();
@@ -244,16 +415,23 @@ async fn parquet_file_plans(
             .extension()
             .is_some_and(|extension| extension == "parquet")
         {
-            files.push(path);
+            let Some(file) = path.to_str() else {
+                return exec_err!("Parquet path is not valid UTF-8: {}", path.display());
+            };
+            files.push(file.to_string());
         }
     }
     files.sort_unstable();
+    Ok(files)
+}
 
+/// One plan per Parquet file.
+async fn parquet_file_plans(
+    ctx: &SessionContext,
+    files: Vec<String>,
+) -> Result<Vec<Arc<dyn ExecutionPlan>>, DataFusionError> {
     let mut plans = Vec::with_capacity(files.len());
     for file in files {
-        let Some(file) = file.to_str() else {
-            return exec_err!("Parquet path is not valid UTF-8: {}", file.display());
-        };
         plans.push(
             ctx.read_parquet(file, ParquetReadOptions::default())
                 .await?
@@ -262,6 +440,20 @@ async fn parquet_file_plans(
         );
     }
     Ok(plans)
+}
+
+/// One plan over all `files`, sorted by `column` with nulls first. The sort spills to disk once
+/// it holds more than the context's memory limit.
+async fn sorted_parquet_plan(
+    ctx: &SessionContext,
+    files: Vec<String>,
+    column: &str,
+) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
+    ctx.read_parquet(files, ParquetReadOptions::default())
+        .await?
+        .sort(vec![ident(column).sort(true, true)])?
+        .create_physical_plan()
+        .await
 }
 
 fn align_batch_schema(

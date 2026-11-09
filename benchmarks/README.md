@@ -159,6 +159,62 @@ and convert again. When choosing `--output`, keep the
 `<benchmark>_iceberg` directory in the path so that `run` can select the
 queries.
 
+#### Partitioned tables
+
+`--partitioned` partitions each table by the column its benchmark declares,
+with an identity transform. All other tables stay unpartitioned. Today only
+TPC-DS declares partition columns, for its fact tables:
+
+| table | partition column |
+|---|---|
+| store_sales | ss_sold_date_sk |
+| store_returns | sr_returned_date_sk |
+| catalog_sales | cs_sold_date_sk |
+| catalog_returns | cr_returned_date_sk |
+| web_sales | ws_sold_date_sk |
+| web_returns | wr_returned_date_sk |
+| inventory | inv_date_sk |
+
+```shell
+DATASET=$(cargo run -p datafusion-distributed-benchmarks --release -- prepare-tpcds --scale-factor 10)
+ICEBERG=$(cargo run -p datafusion-distributed-iceberg-benchmarks --release -- prepare \
+  --input $DATASET --partitioned)
+```
+
+Conversion stops with an error when no table in the input has a partition
+column. The benchmark comes from the `<benchmark>_parquet` directory in the
+input path, as for `run`. Rows with a null date key are kept in a partition of
+their own. The default output path has `partitioned=true` before
+`target_file_size`, beside the unpartitioned dataset:
+
+```
+testdata/tpcds_iceberg/scale_factor=10/.../sorted=false/partitioned=true/target_file_size=1099511627776/
+```
+
+Each partitioned table is sorted by its date key and written through one
+stream, so a partition gets one data file, or one per `--target-file-size` of
+data. Source file boundaries do not apply. A table has about as many files as
+it has distinct date keys. Only one data file is open at a time. The sort holds
+up to 4 GiB in memory and spills the rest to the system's temporary directory,
+so set `TMPDIR` to a disk with room for the largest fact table.
+
+#### Iceberg session options
+
+`dfbench-iceberg run` sets any `iceberg.*` option from an environment variable.
+The variable is the option name in uppercase with dots replaced by underscores,
+as for `DATAFUSION_*` options:
+
+```shell
+ICEBERG_ROW_SELECTION_ENABLED=true \
+  cargo run -p datafusion-distributed-iceberg-benchmarks --release -- run \
+  --workers 2 --dataset $ICEBERG
+```
+
+This sets `iceberg.row_selection_enabled`. The variables apply to the
+coordinator and to every local worker. As with `DATAFUSION_*`, only variables
+named after an option are read, and an invalid value stops the run with an
+error.
+
 Run each representation with its format-specific binary, then compare them with
 `dfbench`:
 

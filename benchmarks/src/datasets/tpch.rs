@@ -34,7 +34,7 @@ impl TpchSpec {
 
 /// Per-table columns. Sort keys are the columns that the pinned tpchgen already emits in order;
 /// `partsupp` only records `ps_partkey` because `ps_suppkey` wraps within each part.
-fn table_columns(table: &str) -> TableColumns {
+pub(crate) fn table_columns(table: &str) -> TableColumns {
     let (sort_keys, dictionary): (&'static [&'static str], &'static [&'static str]) = match table {
         "region" => (&["r_regionkey"], &["r_name"]),
         "nation" => (&["n_nationkey"], &["n_name"]),
@@ -60,6 +60,7 @@ fn table_columns(table: &str) -> TableColumns {
     TableColumns {
         sort_keys,
         dictionary,
+        partition_column: None,
     }
 }
 

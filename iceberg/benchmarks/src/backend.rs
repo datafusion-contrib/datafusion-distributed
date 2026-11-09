@@ -1,11 +1,12 @@
 use std::path::Path;
 
 use async_trait::async_trait;
+use datafusion::config::{ConfigExtension, ConfigOptions, ExtensionOptions};
 use datafusion::error::Result;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::SessionContext;
 use datafusion_distributed_benchmarks::backend::BenchmarkBackend;
-use datafusion_distributed_iceberg::{IcebergExt, IcebergIntegrationOptions};
+use datafusion_distributed_iceberg::{IcebergConfig, IcebergExt, IcebergIntegrationOptions};
 
 use crate::dataset;
 
@@ -20,8 +21,27 @@ impl BenchmarkBackend for IcebergBenchmarkBackend {
     }
 
     fn configure_session(&self, builder: SessionStateBuilder) -> SessionStateBuilder {
-        builder
+        let mut builder = builder
             .with_iceberg_integration(IcebergIntegrationOptions::default())
-            .with_iceberg_column_stats_enabled(true)
+            .with_iceberg_column_stats_enabled(true);
+        if let Some(config) = builder.config().as_mut() {
+            apply_iceberg_env(config.options_mut()).unwrap_or_else(|error| panic!("{error}"));
+        }
+        builder
     }
+}
+
+/// Sets `iceberg.*` options from environment variables the way `SessionConfig::from_env` sets
+/// `datafusion.*` ones. Each option the Iceberg integration registers is read from the variable
+/// named after it in uppercase, with the dots replaced by underscores, so
+/// `ICEBERG_ROW_SELECTION_ENABLED=true` sets `iceberg.row_selection_enabled`. Other variables are
+/// ignored. A value the option rejects is an error.
+fn apply_iceberg_env(options: &mut ConfigOptions) -> Result<()> {
+    for entry in IcebergConfig::default().entries() {
+        let key = format!("{}.{}", IcebergConfig::PREFIX, entry.key);
+        if let Some(value) = std::env::var_os(key.to_uppercase().replace('.', "_")) {
+            options.set(&key, value.to_string_lossy().as_ref())?;
+        }
+    }
+    Ok(())
 }

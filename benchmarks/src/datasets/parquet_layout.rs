@@ -109,6 +109,8 @@ pub struct TableColumns {
     pub sort_keys: &'static [&'static str],
     /// Low-cardinality string columns stored as Arrow dictionaries with [`Dictionary::Arrow`].
     pub dictionary: &'static [&'static str],
+    /// The column a partitioned layout splits the table by, with an identity transform.
+    pub partition_column: Option<&'static str>,
 }
 
 /// Writes the ordered stream of batches of one table as `<table>/1.parquet`,

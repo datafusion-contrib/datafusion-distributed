@@ -32,7 +32,10 @@ target/release/dfbench compare $DATASET $ICEBERG                     # Parquet v
 
 `prepare` converts an existing Parquet dataset; converting into a complete dataset is a no-op, so
 remove the Iceberg copy after regenerating its source. Iceberg runs always load manifest column
-statistics. See `benchmarks/README.md` for S3 output and other options.
+statistics. `prepare --partitioned` partitions each table by the column its benchmark declares;
+only TPC-DS declares them, for its fact tables' date keys. `ICEBERG_<OPTION>=<value>` environment
+variables set `iceberg.*` options on `dfbench-iceberg run`, e.g.
+`ICEBERG_ROW_SELECTION_ENABLED=true`. See `benchmarks/README.md` for S3 output and other options.
 
 ## Things worth knowing
 
