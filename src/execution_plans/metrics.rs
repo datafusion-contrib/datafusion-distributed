@@ -21,11 +21,26 @@ pub(crate) struct MetricsWrapperExec {
     inner: Arc<dyn ExecutionPlan>,
     /// metrics for this plan node.
     metrics: MetricsSet,
+    /// Whether to also return the inner node's own metrics that are not in `metrics`.
+    keep_local_metrics: bool,
 }
 
 impl MetricsWrapperExec {
     pub(crate) fn new(inner: Arc<dyn ExecutionPlan>, metrics: MetricsSet) -> Self {
-        Self { inner, metrics }
+        Self {
+            inner,
+            metrics,
+            keep_local_metrics: true,
+        }
+    }
+
+    /// Wraps `inner` so that it shows no metrics, not even its own.
+    pub(crate) fn without_metrics(inner: Arc<dyn ExecutionPlan>) -> Self {
+        Self {
+            inner,
+            metrics: MetricsSet::new(),
+            keep_local_metrics: false,
+        }
     }
 
     #[cfg(test)]
@@ -77,6 +92,7 @@ impl ExecutionPlan for MetricsWrapperExec {
                 ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
             )?,
             metrics: self.metrics.clone(),
+            keep_local_metrics: self.keep_local_metrics,
         }))
     }
 
@@ -93,7 +109,9 @@ impl ExecutionPlan for MetricsWrapperExec {
     /// on a coordinator's work-unit feed that cannot be reported by workers.
     fn metrics(&self) -> Option<MetricsSet> {
         let mut metrics = self.metrics.clone();
-        if let Some(local_metrics) = self.inner.metrics() {
+        if self.keep_local_metrics
+            && let Some(local_metrics) = self.inner.metrics()
+        {
             let mut reported = HashSet::new();
             for metric in self.metrics.iter() {
                 reported.insert(metric_family(metric.value()));

@@ -427,7 +427,8 @@ mod tests {
     }
 
     /// While the query runs no worker has reported, and the rewrite with the available metrics
-    /// still returns. Only the coordinator's nodes have metrics.
+    /// still returns. The coordinator's metrics are left out, since they keep changing until the
+    /// query ends.
     #[tokio::test]
     async fn available_metrics_while_query_runs() -> Result<(), Box<dyn std::error::Error>> {
         let (ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
@@ -448,12 +449,13 @@ mod tests {
             plan,
             DistributedMetricsFormat::Aggregated,
         )?;
+        assert_eq!(plan.metrics().map(|m| m.iter().count()), Some(0));
         let display = display_plan_ascii(plan.as_ref(), true);
         let coordinator_node = display
             .lines()
             .find(|l| l.contains("NetworkCoalesceExec"))
             .expect("expected a NetworkCoalesceExec on the coordinator");
-        assert_contains!(coordinator_node, "metrics=[output_rows=");
+        assert_contains!(coordinator_node, "metrics=[]");
         let worker_node = display
             .lines()
             .find(|l| l.contains("AggregateExec: mode=Partial"))

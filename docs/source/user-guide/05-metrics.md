@@ -122,8 +122,9 @@ let plan = match tokio::time::timeout(
 };
 ```
 
-It can also be called while the query is still running. Since workers report when the query ends,
-only the coordinator's metrics are available at that point.
+It can also be called while the query is still running. The coordinator's metrics are left out
+until the query ends, since they keep changing until then, and workers report when the query ends.
+So for now, it's mostly useful once the query ends.
 
 To see which tasks have reported, `DistributedExec::metrics_snapshot()` returns the reports received
 so far, keyed by task.

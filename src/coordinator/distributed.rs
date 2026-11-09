@@ -19,6 +19,7 @@ use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, Pla
 use futures::StreamExt;
 use std::fmt::Formatter;
 use std::sync::{Arc, OnceLock};
+use tokio_util::sync::CancellationToken;
 
 /// [ExecutionPlan] that executes the inner plan in distributed mode.
 /// Before executing it, two modifications are lazily performed on the plan:
@@ -58,6 +59,8 @@ pub(super) struct PreparedPlan {
     pub(super) head_stage: Arc<dyn ExecutionPlan>,
     /// The complete distributed plan reconstructed for visualization, including all stages.
     pub(super) plan_for_viz: Arc<dyn ExecutionPlan>,
+    /// Cancelled once the coordinator stops executing the plan.
+    pub(super) query_finished: CancellationToken,
 }
 
 impl DistributedExec {
@@ -101,14 +104,21 @@ impl DistributedExec {
     /// Tasks that have not reported yet are absent from the result.
     pub fn metrics_snapshot(&self) -> Option<HashMap<TaskKey, TaskMetrics>> {
         let task_metrics = self.metrics_store.as_ref()?;
-        self.prepared_plan.get()?;
         Some(task_metrics.snapshot())
     }
 
-    /// Keys of every worker task in the prepared plan, whether or not it has reported.
+    /// Keys of every worker task in the prepared plan.
     pub(crate) fn task_keys(&self) -> Option<Vec<TaskKey>> {
         let plan = &self.prepared_plan.get()?.plan_for_viz;
         Some(task_keys_for_plan(plan))
+    }
+
+    /// Whether the coordinator stopped executing the plan, because it completed, failed or was
+    /// cancelled.
+    pub(crate) fn query_finished(&self) -> bool {
+        self.prepared_plan
+            .get()
+            .is_some_and(|prepared| prepared.query_finished.is_cancelled())
     }
 
     /// Waits until all worker tasks have reported their completed dynamic filters back via
@@ -153,17 +163,21 @@ impl DistributedExec {
     }
 
     /// Returns a new [`DistributedExec`] with an updated visualization plan while leaving its
-    /// public child unchanged.
+    /// public child unchanged. It keeps this node's own metrics if `keep_metrics` is true.
     pub(crate) fn with_plan_for_viz(
         &self,
         plan_for_viz: Arc<dyn ExecutionPlan>,
+        keep_metrics: bool,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let mut prepared_plan = self.prepared_plan()?;
         prepared_plan.plan_for_viz = plan_for_viz;
         Ok(Arc::new(Self {
             base_plan: Arc::clone(&self.base_plan),
             prepared_plan: Arc::new(OnceLock::from(prepared_plan)),
-            metrics: self.metrics.clone(),
+            metrics: match keep_metrics {
+                true => self.metrics.clone(),
+                false => ExecutionPlanMetricsSet::new(),
+            },
             metrics_store: self.metrics_store.clone(),
             completed_dynamic_filter_store: self.completed_dynamic_filter_store.clone(),
         }))
