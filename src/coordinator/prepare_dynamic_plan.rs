@@ -159,6 +159,7 @@ pub(super) async fn prepare_dynamic_plan(
     Ok(PreparedPlan {
         plan_for_viz: plans_for_viz.reconstruct(&head_stage)?,
         head_stage,
+        query_finished: query_coordinator.spawner.query_finished(),
     })
 }
 

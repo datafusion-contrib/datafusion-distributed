@@ -27,6 +27,14 @@ impl<T> Store<T> {
         });
     }
 
+    /// Returns the entries inserted so far, without waiting for missing ones.
+    pub(crate) fn snapshot(&self) -> StoreMap<T>
+    where
+        T: Clone,
+    {
+        self.rx.borrow().clone()
+    }
+
     pub(crate) async fn wait_for(&self, expected_keys: &[TaskKey]) -> StoreMap<T>
     where
         T: Clone,

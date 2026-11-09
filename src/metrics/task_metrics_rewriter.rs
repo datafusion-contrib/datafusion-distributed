@@ -57,14 +57,73 @@ pub async fn rewrite_distributed_plan_with_metrics(
     let Some(metrics_collection) = distributed_exec.wait_for_metrics().await else {
         return internal_err!("metrics were enabled but the execution was not prepared");
     };
-    let task_metrics = collect_plan_metrics(&head_stage)?;
+    rewrite_with_task_metrics(
+        distributed_exec,
+        &head_stage,
+        metrics_collection,
+        format,
+        true,
+    )
+}
 
+/// Same as [rewrite_distributed_plan_with_metrics], but does not wait for worker task metrics.
+/// It uses the metrics reported so far, and tasks that have not reported contribute no metrics.
+///
+/// It can be called while the plan is still executing, or after it finished, failed or was
+/// cancelled. The coordinator's metrics are left out until the query ends, since they keep
+/// changing until then. Does nothing if the root node is not a [DistributedExec]. Returns an error
+/// if the distributed plan was not executed.
+pub fn rewrite_distributed_plan_with_available_metrics(
+    plan: Arc<dyn ExecutionPlan>,
+    format: DistributedMetricsFormat,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let Some(distributed_exec) = plan.downcast_ref::<DistributedExec>() else {
+        return Ok(plan);
+    };
+
+    if distributed_exec.metrics_store.is_none() {
+        return Ok(plan);
+    }
+
+    let head_stage = distributed_exec.head_stage()?;
+    let (Some(mut metrics_collection), Some(task_keys)) = (
+        distributed_exec.metrics_snapshot(),
+        distributed_exec.task_keys(),
+    ) else {
+        return internal_err!("metrics were enabled but the execution was not prepared");
+    };
+    // The rewrite skips tasks with empty reports, as it does for tasks that never executed.
+    for task_key in task_keys {
+        metrics_collection.entry(task_key).or_default();
+    }
+    let coordinator_metrics = distributed_exec.query_finished();
+    rewrite_with_task_metrics(
+        distributed_exec,
+        &head_stage,
+        metrics_collection,
+        format,
+        coordinator_metrics,
+    )
+}
+
+/// Rewrites the plan with the given worker task metrics. The coordinator's own metrics are left
+/// out if `coordinator_metrics` is false.
+fn rewrite_with_task_metrics(
+    distributed_exec: &DistributedExec,
+    head_stage: &Arc<dyn ExecutionPlan>,
+    metrics_collection: HashMap<TaskKey, TaskMetrics>,
+    format: DistributedMetricsFormat,
+    coordinator_metrics: bool,
+) -> Result<Arc<dyn ExecutionPlan>> {
     // Rewrite the DistributedExec's child plan with metrics.
-    let dist_exec_plan_with_metrics = rewrite_local_plan_with_metrics(
-        format.to_rewrite_ctx(0), // Task id is 0 for the DistributedExec plan
-        distributed_exec.plan_for_viz()?,
-        task_metrics,
-    )?;
+    let dist_exec_plan_with_metrics = match coordinator_metrics {
+        true => rewrite_local_plan_with_metrics(
+            format.to_rewrite_ctx(0), // Task id is 0 for the DistributedExec plan
+            distributed_exec.plan_for_viz()?,
+            collect_plan_metrics(head_stage)?,
+        )?,
+        false => rewrite_local_plan_without_metrics(distributed_exec.plan_for_viz()?)?,
+    };
 
     let transformed = dist_exec_plan_with_metrics.transform_down(|plan| {
         // Transform all stages using NetworkShuffleExec and NetworkCoalesceExec as barriers.
@@ -82,14 +141,19 @@ pub async fn rewrite_distributed_plan_with_metrics(
                 tasks: stage.tasks,
                 metrics_set: stage_metrics(stage, &metrics_collection)?,
             }))?;
-            let network_boundary =
-                MetricsWrapperExec::new(network_boundary, plan.metrics().unwrap_or_default());
+            let network_boundary = match coordinator_metrics {
+                true => {
+                    MetricsWrapperExec::new(network_boundary, plan.metrics().unwrap_or_default())
+                }
+                false => MetricsWrapperExec::without_metrics(network_boundary),
+            };
             return Ok(Transformed::yes(Arc::new(network_boundary)));
         }
 
         Ok(Transformed::no(plan))
     })?;
-    let plan = distributed_exec.with_plan_for_viz(Arc::clone(&transformed.data))?;
+    let plan =
+        distributed_exec.with_plan_for_viz(Arc::clone(&transformed.data), coordinator_metrics)?;
     plan.replace_children(
         vec![transformed.data],
         ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
@@ -206,6 +270,25 @@ pub fn rewrite_local_plan_with_metrics(
                 } else {
                     TreeNodeRecursion::Continue
                 },
+            ))
+        })?
+        .data)
+}
+
+/// Same as [rewrite_local_plan_with_metrics], but the nodes show no metrics.
+fn rewrite_local_plan_without_metrics(
+    plan: Arc<dyn ExecutionPlan>,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    Ok(plan
+        .transform_down(|node| {
+            let recursion = match node.is_network_boundary() {
+                true => TreeNodeRecursion::Jump,
+                false => TreeNodeRecursion::Continue,
+            };
+            Ok(Transformed::new(
+                Arc::new(MetricsWrapperExec::without_metrics(node)),
+                true,
+                recursion,
             ))
         })?
         .data)

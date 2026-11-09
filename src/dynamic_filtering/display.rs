@@ -111,7 +111,7 @@ pub async fn rewrite_distributed_plan_with_dynamic_filters(
             )?;
         }
     }
-    let plan = distributed_exec.with_plan_for_viz(Arc::clone(&plan_for_viz))?;
+    let plan = distributed_exec.with_plan_for_viz(Arc::clone(&plan_for_viz), true)?;
     plan.replace_children(
         vec![plan_for_viz],
         ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),

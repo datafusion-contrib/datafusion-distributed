@@ -70,5 +70,6 @@ pub(super) async fn prepare_static_plan(
         // If the plan was statically planned, the base plan is the same one that will be used for
         // visualization.
         plan_for_viz: Arc::clone(base_plan),
+        query_finished: query_coordinator.spawner.query_finished(),
     })
 }
