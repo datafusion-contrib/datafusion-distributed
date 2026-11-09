@@ -1,14 +1,14 @@
 use crate::DistributedTaskContext;
 use crate::common::require_one_child;
 use crate::distributed_planner::{NetworkBoundary, ProducerHead};
-use crate::execution_plans::common::scale_partitioning_props;
+use crate::execution_plans::common::{scale_partitioning_props, validate_input_properties};
 use crate::stage::{LocalStage, Stage};
 use crate::worker::WorkerConnectionPool;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{exec_err, not_impl_err, plan_err};
 use datafusion::error::Result;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
-use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_expr::{Partitioning, PhysicalExpr, RangePartitioning};
 use datafusion::physical_expr_common::metrics::MetricsSet;
 use datafusion::physical_plan::limit::LocalLimitExec;
 use datafusion::physical_plan::projection::ProjectionExec;
@@ -19,11 +19,15 @@ use datafusion::physical_plan::{
     internal_err,
 };
 use std::fmt::{Debug, Formatter};
+use std::iter::repeat_n;
+use std::ops::Range;
 use std::sync::Arc;
 use uuid::Uuid;
 
 /// [ExecutionPlan] that coalesces partitions from multiple tasks into a one or more task without
-/// performing any repartition, and maintaining the same partitioning scheme.
+/// performing any repartition. Range-partitioned tasks must have compatible ordering and
+/// contiguous bounds; coalescing them retains range partitioning. Concatenating multiple
+/// non-range tasks exposes unknown partitioning.
 ///
 /// This is the equivalent of a [CoalescePartitionsExec] but coalescing tasks across the network
 /// between distributed stages.
@@ -81,25 +85,160 @@ pub struct NetworkCoalesceExec {
     pub(crate) properties: Arc<PlanProperties>,
     pub(crate) input_stage: Stage,
     pub(crate) worker_connections: WorkerConnectionPool,
+    /// Planning-time variants; only the selected output properties travel to a worker.
+    pub(crate) task_partitionings: Option<Vec<RangePartitioning>>,
 }
 
 impl NetworkCoalesceExec {
     pub(crate) fn try_from_stage(
         input_stage: Stage,
-        input_properties: Arc<PlanProperties>,
+        input_properties: Vec<Arc<PlanProperties>>,
         consumer_tasks: usize,
     ) -> Result<Self> {
+        let first = validate_input_properties(&input_properties, input_stage.task_count())?;
         // Each output task coalesces a group of input tasks. We size the output partition count
         // per output task based on the maximum group size, returning empty streams for tasks with
         // smaller groups.
         let max_input_task_count = input_stage.task_count().div_ceil(consumer_tasks).max(1);
-        let props = scale_partitioning_props(&input_properties, |p| p * max_input_task_count)?;
+        let mut props = scale_partitioning_props(first, |p| p * max_input_task_count)?;
+        let task_partitionings = if input_properties
+            .iter()
+            .any(|props| matches!(&props.partitioning, Partitioning::Range(_)))
+        {
+            Some(
+                (0..consumer_tasks)
+                    .map(|task| {
+                        let group = task_group(input_properties.len(), task, consumer_tasks);
+                        Self::coalesced_range(
+                            &input_properties[group.start_task..group.start_task + group.len],
+                            props.partitioning.partition_count(),
+                        )
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+            )
+        } else {
+            None
+        };
+        if let Some(partitionings) = &task_partitionings {
+            for (task, ranges) in partitionings.windows(2).enumerate() {
+                assert!(
+                    ranges[0].ordering() == ranges[1].ordering()
+                        && ranges[0].end_bound().is_some()
+                        && ranges[0].end_bound() == ranges[1].start_bound(),
+                    "NetworkCoalesceExec tasks {task} and {} must have contiguous ranges with the same ordering",
+                    task + 1
+                );
+            }
+            props = Arc::new(
+                props
+                    .as_ref()
+                    .clone()
+                    .with_partitioning(Partitioning::Range(partitionings[0].clone())),
+            );
+        }
 
         Ok(Self {
             properties: props,
             worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
             input_stage,
+            task_partitionings,
         })
+    }
+
+    pub(crate) fn to_task_specialized(&self, task: usize) -> Result<Self> {
+        let mut plan = self.clone();
+        if let Some(partitionings) = &self.task_partitionings {
+            let Some(range) = partitionings.get(task) else {
+                return internal_err!("Missing coalesce partitioning for task {task}");
+            };
+            plan.properties = Arc::new(
+                self.properties
+                    .as_ref()
+                    .clone()
+                    .with_partitioning(Partitioning::Range(range.clone())),
+            );
+        }
+        Ok(plan)
+    }
+
+    /// Concatenate contiguous task ranges, rejecting incompatible partitioning.
+    fn coalesced_range(
+        properties: &[Arc<PlanProperties>],
+        width: usize,
+    ) -> Result<RangePartitioning> {
+        let Some((first, rest)) = properties.split_first() else {
+            return plan_err!("Cannot coalesce ranges from an empty task group");
+        };
+        let Partitioning::Range(first) = &first.partitioning else {
+            return plan_err!("Cannot coalesce range-partitioned and non-range-partitioned tasks");
+        };
+        let mut splits = first.split_points().to_vec();
+        let mut previous = first;
+        for props in rest {
+            let Partitioning::Range(range) = &props.partitioning else {
+                return plan_err!(
+                    "Cannot coalesce range-partitioned and non-range-partitioned tasks"
+                );
+            };
+            if range.ordering() != first.ordering() {
+                return plan_err!("Cannot coalesce ranges with different orderings");
+            }
+            // Overlapping or disjoint ranges cannot be concatenated without a shuffle.
+            if previous.end_bound().is_none() || previous.end_bound() != range.start_bound() {
+                return plan_err!(
+                    "Cannot coalesce noncontiguous ranges: previous end {:?}, next start {:?}",
+                    previous.end_bound(),
+                    range.start_bound()
+                );
+            }
+            splits.extend(previous.end_bound().cloned());
+            splits.extend_from_slice(range.split_points());
+            previous = range;
+        }
+        // Smaller task groups need zero-width slots to keep the output count uniform.
+        if splits.len() + 1 < width {
+            if let Some(end) = previous.end_bound() {
+                splits.resize(width - 1, end.clone());
+            } else if let Some(start) = first.start_bound() {
+                splits.splice(0..0, repeat_n(start.clone(), width - 1 - splits.len()));
+            } else {
+                return plan_err!("Cannot pad a range without a finite boundary");
+            }
+        }
+        RangePartitioning::try_new(first.ordering().clone(), splits)?
+            .try_with_bounds(first.start_bound().cloned(), previous.end_bound().cloned())
+    }
+
+    /// Keep RPC batches within nonempty spans. Equal finite boundaries prove a slot is empty.
+    fn nonempty_partition_range(
+        &self,
+        partition: usize,
+        partitions: Range<usize>,
+    ) -> Result<Option<Range<usize>>> {
+        let partitioning = &self.properties.partitioning;
+        if !partitions.contains(&partition) || partitions.end > partitioning.partition_count() {
+            return exec_err!("Invalid partition {partition} in request {partitions:?}");
+        }
+        let Partitioning::Range(range) = partitioning else {
+            return Ok(Some(partitions));
+        };
+        let is_empty = |p: usize| {
+            let start = p
+                .checked_sub(1)
+                .map(|i| &range.split_points()[i])
+                .or(range.start_bound());
+            let end = range.split_points().get(p).or(range.end_bound());
+            start.is_some() && start == end
+        };
+        Ok((!is_empty(partition)).then(|| {
+            let start = (partitions.start..partition)
+                .rfind(|&p| is_empty(p))
+                .map_or(partitions.start, |p| p + 1);
+            let end = (partition + 1..partitions.end)
+                .find(|&p| is_empty(p))
+                .unwrap_or(partitions.end);
+            start..end
+        }))
     }
 
     /// Creates a new [NetworkCoalesceExec] fed by the provided `input` plan.
@@ -125,21 +264,18 @@ impl NetworkCoalesceExec {
             return plan_err!("The `consumer_tasks` input of a NetworkCoalesceExec must not be 0");
         }
 
-        let input_properties = Arc::clone(input.properties());
-        Self::try_from_stage(
-            Stage::Local(LocalStage {
-                // At this point, query_id and num are just placeholders that will be filled by
-                // prepare_network_boundaries.rs. Users are not expected to provide valid values for
-                // these two parameters.
-                query_id: Uuid::nil(),
-                num: 0,
-                plan: input,
-                tasks: producer_tasks,
-                metrics_set: Default::default(),
-            }),
-            input_properties,
-            consumer_tasks,
-        )
+        let input_stage = LocalStage {
+            // At this point, query_id and num are just placeholders that will be filled by
+            // prepare_network_boundaries.rs. Users are not expected to provide valid values for
+            // these two parameters.
+            query_id: Uuid::nil(),
+            num: 0,
+            plan: input,
+            tasks: producer_tasks,
+            metrics_set: Default::default(),
+        };
+        let input_properties = input_stage.task_properties()?;
+        Self::try_from_stage(Stage::Local(input_stage), input_properties, consumer_tasks)
     }
 
     pub(crate) fn with_fetch_on_input_stage(&self, fetch: usize) -> Result<Arc<dyn ExecutionPlan>> {
@@ -199,9 +335,12 @@ impl NetworkBoundary for NetworkCoalesceExec {
 
     fn with_input_stage(&self, input_stage: Stage) -> Result<Arc<dyn NetworkBoundary>> {
         let mut self_clone = self.clone();
-        self_clone.properties = scale_partitioning_props(self_clone.properties(), |p| {
-            p * input_stage.task_count() / self_clone.input_stage.task_count().max(1)
-        })?;
+        if input_stage.task_count() != self.input_stage.task_count() {
+            self_clone.properties = scale_partitioning_props(self_clone.properties(), |p| {
+                p * input_stage.task_count() / self_clone.input_stage.task_count().max(1)
+            })?;
+            self_clone.task_partitionings = None;
+        }
         self_clone.worker_connections = WorkerConnectionPool::new(input_stage.task_count());
         self_clone.input_stage = input_stage;
         Ok(Arc::new(self_clone))
@@ -220,7 +359,11 @@ impl DisplayAs for NetworkCoalesceExec {
         write!(
             f,
             "[Stage {stage}] => NetworkCoalesceExec: output_partitions={partitions}, input_tasks={input_tasks}",
-        )
+        )?;
+        if let Partitioning::Range(range) = &self.properties.partitioning {
+            write!(f, ", partitioning={range}")?;
+        }
+        Ok(())
     }
 }
 
@@ -270,6 +413,12 @@ impl ExecutionPlan for NetworkCoalesceExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
+        if self
+            .nonempty_partition_range(partition, partition..partition + 1)?
+            .is_none()
+        {
+            return Ok(Box::pin(EmptyRecordBatchStream::new(self.schema())));
+        }
         let remote_stage = match &self.input_stage {
             Stage::Local(local) => return local.execute(partition, context),
             Stage::Remote(remote_stage) => remote_stage,
@@ -304,8 +453,19 @@ impl ExecutionPlan for NetworkCoalesceExec {
             task_context.task_count,
         );
 
-        let input_task_offset = partition / partitions_per_task;
-        let target_partition = partition % partitions_per_task;
+        // Padding goes at the start only when this task's end is unbounded.
+        let leading_padding = match &self.properties.partitioning {
+            Partitioning::Range(range) if range.end_bound().is_none() => {
+                out_partitions - group.len * partitions_per_task
+            }
+            _ => 0,
+        };
+        let Some(input_partition) = partition.checked_sub(leading_padding) else {
+            return Ok(Box::pin(EmptyRecordBatchStream::new(self.schema())));
+        };
+
+        let input_task_offset = input_partition / partitions_per_task;
+        let target_partition = input_partition % partitions_per_task;
 
         // Some consumer tasks are assigned fewer upstream tasks when
         // `input_task_count % task_count != 0` (uneven grouping).
@@ -326,10 +486,16 @@ impl ExecutionPlan for NetworkCoalesceExec {
         }
 
         let target_task = group.start_task + input_task_offset;
+        let start = leading_padding + input_task_offset * partitions_per_task;
+        let Some(nonempty) =
+            self.nonempty_partition_range(partition, start..start + partitions_per_task)?
+        else {
+            return Ok(Box::pin(EmptyRecordBatchStream::new(self.schema())));
+        };
 
         let stream = self.worker_connections.execute(
             remote_stage,
-            0..partitions_per_task,
+            (nonempty.start - start)..(nonempty.end - start),
             target_task,
             target_partition,
             self.producer_head(task_context.task_count)?,
