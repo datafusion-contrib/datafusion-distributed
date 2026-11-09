@@ -2,16 +2,18 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use datafusion::arrow::compute::cast;
+use datafusion::arrow::compute::{cast, partition as equal_value_runs};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::{DataFusionError, exec_datafusion_err, exec_err};
 use datafusion::execution::TaskContext;
 
 use datafusion::execution::context::SessionContext;
+use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
-use datafusion::prelude::ParquetReadOptions;
+use datafusion::prelude::{ParquetReadOptions, ident};
 use datafusion_distributed_benchmarks::datasets::output::DatasetOutput;
+use datafusion_distributed_benchmarks::datasets::{dataset_suite, table_columns};
 use datafusion_distributed_iceberg::IcebergIntegrationOptions;
 use datafusion_distributed_iceberg::iceberg;
 use futures::StreamExt;
@@ -29,7 +31,7 @@ use iceberg::writer::file_writer::location_generator::{
 };
 use iceberg::writer::file_writer::rolling_writer::RollingFileWriterBuilder;
 use iceberg::writer::partitioning::PartitioningWriter;
-use iceberg::writer::partitioning::fanout_writer::FanoutWriter;
+use iceberg::writer::partitioning::clustered_writer::ClusteredWriter;
 use iceberg::writer::{IcebergWriter, IcebergWriterBuilder};
 use iceberg::{Catalog, CatalogBuilder, NamespaceIdent, TableCreation};
 use parquet::file::properties::WriterProperties;
@@ -62,25 +64,13 @@ pub(super) fn output_path(
     )))
 }
 
-/// The TPC-DS fact tables that the standard partitioned layout (spark-sql-perf, Trino) splits by
-/// their date key, with an identity transform. Every other table stays unpartitioned.
-fn tpcds_partition_column(table_name: &str) -> Option<&'static str> {
-    match table_name {
-        "store_sales" => Some("ss_sold_date_sk"),
-        "store_returns" => Some("sr_returned_date_sk"),
-        "catalog_sales" => Some("cs_sold_date_sk"),
-        "catalog_returns" => Some("cr_returned_date_sk"),
-        "web_sales" => Some("ws_sold_date_sk"),
-        "web_returns" => Some("wr_returned_date_sk"),
-        "inventory" => Some("inv_date_sk"),
-        _ => None,
-    }
-}
+/// How much memory the conversion uses before sorting a partitioned table spills to disk. Spill
+/// files go to the system's temporary directory, which `TMPDIR` sets.
+const SORT_MEMORY_LIMIT: usize = 4 * 1024 * 1024 * 1024;
 
-/// Converts prepared local Parquet tables, independently of their query suite.
-/// Unpartitioned tables are streamed one input file at a time. With `partitioned`, the TPC-DS
-/// fact tables are split by date key, streaming each table's input files through one writer.
-/// Completion is marked last.
+/// Converts prepared local Parquet tables. Unpartitioned tables are streamed one input file at a
+/// time. With `partitioned`, each table that the dataset's benchmark declares a partition column
+/// for is sorted by that column and streamed through one writer. Completion is marked last.
 pub(super) async fn convert_parquet_to_iceberg(
     source_dir: &Path,
     output: &DatasetOutput,
@@ -90,17 +80,6 @@ pub(super) async fn convert_parquet_to_iceberg(
     if target_file_size == 0 {
         return Err("target file size must be greater than zero".into());
     }
-    if partitioned
-        && !source_dir
-            .components()
-            .any(|component| component.as_os_str() == "tpcds_parquet")
-    {
-        return Err(exec_datafusion_err!(
-            "--partitioned only supports TPC-DS datasets, but {} is not under tpcds_parquet",
-            source_dir.display()
-        )
-        .into());
-    }
     if !source_dir.is_dir() {
         return Err(format!("source dataset does not exist: {}", source_dir.display()).into());
     }
@@ -108,7 +87,7 @@ pub(super) async fn convert_parquet_to_iceberg(
         return Ok(());
     }
 
-    let tables = fs::read_dir(source_dir)?
+    let table_dirs = fs::read_dir(source_dir)?
         .map(|entry| entry.map(|entry| entry.path()))
         .collect::<Result<Vec<_>, _>>()?
         .into_iter()
@@ -121,8 +100,32 @@ pub(super) async fn convert_parquet_to_iceberg(
                     .starts_with(b".")
         })
         .collect::<Vec<_>>();
-    if tables.is_empty() {
+    if table_dirs.is_empty() {
         return Err("conversion requires a non-empty Parquet dataset".into());
+    }
+    let source = source_dir.to_string_lossy();
+    let suite = dataset_suite(&source);
+    let mut tables = Vec::with_capacity(table_dirs.len());
+    for table_path in table_dirs {
+        let table_name = table_path
+            .file_name()
+            .unwrap()
+            .to_str()
+            .ok_or("Table name is not valid UTF-8")?
+            .to_string();
+        let partition_column = if partitioned {
+            table_columns(suite, &table_name)?.partition_column
+        } else {
+            None
+        };
+        tables.push((table_path, table_name, partition_column));
+    }
+    if partitioned && tables.iter().all(|(_, _, column)| column.is_none()) {
+        return Err(exec_datafusion_err!(
+            "--partitioned found no table to partition: {suite} declares no partition column for \
+             the tables in {source}"
+        )
+        .into());
     }
     let catalog = MemoryCatalogBuilder::default()
         .with_storage_factory(IcebergIntegrationOptions::default().storage_factory)
@@ -139,22 +142,23 @@ pub(super) async fn convert_parquet_to_iceberg(
     // One stream per input file preserves the source file boundaries unless rolling
     // is requested. Execution-time partition counts are unrelated to conversion.
     let config = datafusion::prelude::SessionConfig::new().with_target_partitions(1);
-    let ctx = SessionContext::new_with_config(config);
+    let runtime = RuntimeEnvBuilder::new()
+        .with_memory_limit(SORT_MEMORY_LIMIT, 1.0)
+        .build_arc()?;
+    let ctx = SessionContext::new_with_config_rt(config, runtime);
 
-    for table_path in tables {
-        let table_name = table_path
-            .file_name()
-            .unwrap()
-            .to_str()
-            .ok_or("Table name is not valid UTF-8")?;
-        let plans = parquet_file_plans(&ctx, &table_path).await?;
-        let partition_column = partitioned
-            .then(|| tpcds_partition_column(table_name))
-            .flatten();
+    for (table_path, table_name, partition_column) in tables {
+        let files = parquet_files(&table_path)?;
+        let plans = match partition_column {
+            Some(column) if !files.is_empty() => {
+                vec![sorted_parquet_plan(&ctx, files, column).await?]
+            }
+            _ => parquet_file_plans(&ctx, files).await?,
+        };
         write_table(
             &catalog,
             &namespace,
-            table_name,
+            &table_name,
             plans,
             ctx.task_ctx(),
             output,
@@ -170,10 +174,10 @@ pub(super) async fn convert_parquet_to_iceberg(
 }
 
 /// How one table's data files are laid out.
-struct TableLayout<'a> {
+struct TableLayout {
     target_file_size: usize,
     /// The identity partition column, or none for an unpartitioned table.
-    partition_column: Option<&'a str>,
+    partition_column: Option<&'static str>,
 }
 
 async fn write_table(
@@ -183,7 +187,7 @@ async fn write_table(
     plans: Vec<Arc<dyn ExecutionPlan>>,
     task_ctx: Arc<TaskContext>,
     output: &DatasetOutput,
-    layout: TableLayout<'_>,
+    layout: TableLayout,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let TableLayout {
         target_file_size,
@@ -225,7 +229,7 @@ async fn write_table(
         table.metadata().current_schema().as_ref(),
     )?);
 
-    let data_files = if partition_column.is_some() {
+    let data_files = if let Some(column) = partition_column {
         write_partitioned(
             &table,
             table_name,
@@ -233,6 +237,7 @@ async fn write_table(
             &task_ctx,
             &arrow_schema_with_ids,
             target_file_size,
+            column,
         )
         .await?
     } else {
@@ -321,8 +326,8 @@ async fn write_unpartitioned(
     Ok(data_files)
 }
 
-/// All input files of the table flow through one fanout writer, so each partition gets one open
-/// file at a time and rolls to a new file only at `target_file_size`. The table ends up with about
+/// `plans` produce rows sorted by `partition_column`, so one clustered writer keeps only the current
+/// partition's file open and rolls to a new file at `target_file_size`. The table ends up with about
 /// one file per partition value, however many source files it has. Rows with a null partition
 /// value go to their own partition.
 async fn write_partitioned(
@@ -332,12 +337,13 @@ async fn write_partitioned(
     task_ctx: &Arc<TaskContext>,
     arrow_schema_with_ids: &SchemaRef,
     target_file_size: usize,
+    partition_column: &str,
 ) -> Result<Vec<DataFile>, Box<dyn std::error::Error>> {
     let splitter = RecordBatchPartitionSplitter::try_new_with_computed_values(
         table.metadata().current_schema().clone(),
         table.metadata().default_partition_spec().clone(),
     )?;
-    let mut writer = FanoutWriter::new(DataFileWriterBuilder::new(rolling_writer_builder(
+    let mut writer = ClusteredWriter::new(DataFileWriterBuilder::new(rolling_writer_builder(
         table,
         table_name.to_string(),
         target_file_size,
@@ -347,8 +353,20 @@ async fn write_partitioned(
             let mut stream = plan.execute(partition, Arc::clone(task_ctx))?;
             while let Some(batch) = stream.next().await {
                 let batch = align_batch_schema(batch?, Arc::clone(arrow_schema_with_ids))?;
-                for (partition_key, batch) in splitter.split(&batch)? {
-                    writer.write(partition_key, batch).await?;
+                let Some(values) = batch.column_by_name(partition_column) else {
+                    return Err(exec_datafusion_err!(
+                        "{table_name} has no partition column {partition_column}"
+                    )
+                    .into());
+                };
+                // `split` returns a batch's partitions in no fixed order, and the clustered writer
+                // fails on a partition it has already closed. So cut the sorted batch into runs of
+                // one partition value first, and split each run in order.
+                for run in equal_value_runs(&[Arc::clone(values)])?.ranges() {
+                    let run = batch.slice(run.start, run.end - run.start);
+                    for (partition_key, run) in splitter.split(&run)? {
+                        writer.write(partition_key, run).await?;
+                    }
                 }
             }
         }
@@ -388,10 +406,8 @@ pub async fn register_tables(
     Ok(())
 }
 
-async fn parquet_file_plans(
-    ctx: &SessionContext,
-    table_dir: &Path,
-) -> Result<Vec<Arc<dyn ExecutionPlan>>, DataFusionError> {
+/// The table's Parquet files, in name order.
+fn parquet_files(table_dir: &Path) -> Result<Vec<String>, DataFusionError> {
     let mut files = Vec::new();
     for entry in fs::read_dir(table_dir)? {
         let path = entry?.path();
@@ -399,16 +415,23 @@ async fn parquet_file_plans(
             .extension()
             .is_some_and(|extension| extension == "parquet")
         {
-            files.push(path);
+            let Some(file) = path.to_str() else {
+                return exec_err!("Parquet path is not valid UTF-8: {}", path.display());
+            };
+            files.push(file.to_string());
         }
     }
     files.sort_unstable();
+    Ok(files)
+}
 
+/// One plan per Parquet file.
+async fn parquet_file_plans(
+    ctx: &SessionContext,
+    files: Vec<String>,
+) -> Result<Vec<Arc<dyn ExecutionPlan>>, DataFusionError> {
     let mut plans = Vec::with_capacity(files.len());
     for file in files {
-        let Some(file) = file.to_str() else {
-            return exec_err!("Parquet path is not valid UTF-8: {}", file.display());
-        };
         plans.push(
             ctx.read_parquet(file, ParquetReadOptions::default())
                 .await?
@@ -417,6 +440,20 @@ async fn parquet_file_plans(
         );
     }
     Ok(plans)
+}
+
+/// One plan over all `files`, sorted by `column` with nulls first. The sort spills to disk once
+/// it holds more than the context's memory limit.
+async fn sorted_parquet_plan(
+    ctx: &SessionContext,
+    files: Vec<String>,
+    column: &str,
+) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
+    ctx.read_parquet(files, ParquetReadOptions::default())
+        .await?
+        .sort(vec![ident(column).sort(true, true)])?
+        .create_physical_plan()
+        .await
 }
 
 fn align_batch_schema(

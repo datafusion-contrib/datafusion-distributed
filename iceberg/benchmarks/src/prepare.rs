@@ -22,8 +22,9 @@ pub struct PrepareIcebergOpt {
     #[structopt(long, default_value = "1099511627776")]
     target_file_size: usize,
 
-    /// Partition the TPC-DS fact tables by their date key with an identity transform, as Spark and
-    /// Trino do. Other tables stay unpartitioned. Only valid for TPC-DS input.
+    /// Partition each table by the column its benchmark declares, with an identity transform. Other
+    /// tables stay unpartitioned. Today only TPC-DS declares partition columns: its fact tables'
+    /// date keys.
     #[structopt(long)]
     partitioned: bool,
 }

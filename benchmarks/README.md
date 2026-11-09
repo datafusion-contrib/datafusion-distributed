@@ -159,11 +159,11 @@ and convert again. When choosing `--output`, keep the
 `<benchmark>_iceberg` directory in the path so that `run` can select the
 queries.
 
-#### Partitioned TPC-DS
+#### Partitioned tables
 
-`--partitioned` writes the standard partitioned TPC-DS layout that Spark
-(spark-sql-perf) and Trino use. These fact tables are partitioned by an
-identity transform on their date key. All other tables stay unpartitioned.
+`--partitioned` partitions each table by the column its benchmark declares,
+with an identity transform. All other tables stay unpartitioned. Today only
+TPC-DS declares partition columns, for its fact tables:
 
 | table | partition column |
 |---|---|
@@ -181,19 +181,22 @@ ICEBERG=$(cargo run -p datafusion-distributed-iceberg-benchmarks --release -- pr
   --input $DATASET --partitioned)
 ```
 
-The flag only accepts TPC-DS input. Rows with a null date key are kept in a
-partition of their own. The default output path has `partitioned=true` before
+Conversion stops with an error when no table in the input has a partition
+column. The benchmark comes from the `<benchmark>_parquet` directory in the
+input path, as for `run`. Rows with a null date key are kept in a partition of
+their own. The default output path has `partitioned=true` before
 `target_file_size`, beside the unpartitioned dataset:
 
 ```
 testdata/tpcds_iceberg/scale_factor=10/.../sorted=false/partitioned=true/target_file_size=1099511627776/
 ```
 
-Each partitioned table is written through one stream, so a partition gets one
-data file, or one per `--target-file-size` of data. Source file boundaries do
-not apply. A table has about as many files as it has distinct date keys.
-All partitions of a table are open while it is written, so memory use grows
-with the number of date keys.
+Each partitioned table is sorted by its date key and written through one
+stream, so a partition gets one data file, or one per `--target-file-size` of
+data. Source file boundaries do not apply. A table has about as many files as
+it has distinct date keys. Only one data file is open at a time. The sort holds
+up to 4 GiB in memory and spills the rest to the system's temporary directory,
+so set `TMPDIR` to a disk with room for the largest fact table.
 
 #### Iceberg session options
 
