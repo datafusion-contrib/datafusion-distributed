@@ -5,7 +5,9 @@
 //! A [`FixtureCatalog`] is an in-memory catalog over a temporary directory.
 //! Tables are created in it with a [`TableBuilder`], and each
 //! [`FixtureTable::append`] commits one snapshot whose data files are exactly
-//! the batches it was given.
+//! the batches it was given. [`FixtureTable::position_deletes`] commits version 2
+//! position-delete files referencing those data files. Each supplied group becomes
+//! one delete file, and can reference multiple data files in the same partition.
 //!
 //! ```no_run
 //! # async fn example() -> datafusion::error::Result<()> {
@@ -20,7 +22,8 @@
 //!     .partition_by("pickup_date", Transform::Identity)
 //!     .create()
 //!     .await?;
-//! table.append().file(taxi_trips(0)?).commit().await?;
+//! let files = table.append().file(taxi_trips(0)?).commit().await?;
+//! table.position_deletes().file([(&files[0], 0)]).commit().await?;
 //! # Ok(())
 //! # }
 //! ```
@@ -29,6 +32,8 @@ mod append;
 mod catalog;
 mod error;
 mod harness;
+mod position_deletes;
+mod snapshot;
 mod table;
 mod taxi;
 
@@ -37,5 +42,6 @@ pub use catalog::FixtureCatalog;
 pub use harness::{
     IcebergTestHarness, IcebergTestHarnessBuilder, data_file_name, without_snapshots,
 };
+pub use position_deletes::PositionDeletes;
 pub use table::{FixtureTable, TableBuilder};
 pub use taxi::*;
