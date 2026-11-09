@@ -17,6 +17,7 @@ mod table_provider;
 
 pub use config::IcebergConfig;
 pub use distributed_desired_task_count_handler::iceberg_desired_task_count;
+pub use distributed_scale_up_handler::iceberg_scale_up;
 pub use eager::EagerIcebergCodec;
 pub use eager::EagerIcebergDataSource;
 pub use file_io_codec::IcebergFileIOCodec;
