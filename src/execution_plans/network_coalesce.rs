@@ -8,7 +8,7 @@ use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{exec_err, not_impl_err, plan_err};
 use datafusion::error::Result;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
-use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_expr::{Partitioning, PhysicalExpr};
 use datafusion::physical_expr_common::metrics::MetricsSet;
 use datafusion::physical_plan::limit::LocalLimitExec;
 use datafusion::physical_plan::projection::ProjectionExec;
@@ -22,8 +22,8 @@ use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// [ExecutionPlan] that coalesces partitions from multiple tasks into a one or more task without
-/// performing any repartition, and maintaining the same partitioning scheme.
+/// [ExecutionPlan] that coalesces partitions from multiple tasks into one or more tasks without
+/// repartitioning their data.
 ///
 /// This is the equivalent of a [CoalescePartitionsExec] but coalescing tasks across the network
 /// between distributed stages.
@@ -84,6 +84,34 @@ pub struct NetworkCoalesceExec {
 }
 
 impl NetworkCoalesceExec {
+    fn scale_partitioning_props(
+        input_props: &Arc<PlanProperties>,
+        f: impl FnOnce(usize) -> usize,
+    ) -> Result<Arc<PlanProperties>> {
+        if let Partitioning::Range(range) = &input_props.partitioning {
+            // Declare UnknownPartitioning when coalescing range-partitioned data.
+            //
+            // Consider the partitions A-H with split points 10, 20, 30, 40 etc.
+            //
+            //   A |10| B |20| C |30| D |40| E |50| F |60| G |70| H
+            //
+            // After splitting into two tasks, we may have the following:
+            //
+            //    Task 0 Range(4): [A |10| B |20| C |30| D]
+            //    Task 1 Range(4): [E |50| F |60| G |70| H]
+            //
+            // The task-local metadata no longer contains split point 40, so we cannot
+            // reconstruct Range(8) from it. For now, declare UnknownPartitioning.
+            //
+            // TODO: We may be able to improve this is all spit points are present
+            // https://github.com/apache/datafusion/issues/26509
+            return Ok(Arc::new(input_props.as_ref().clone().with_partitioning(
+                Partitioning::UnknownPartitioning(f(range.partition_count())),
+            )));
+        }
+        scale_partitioning_props(input_props, f)
+    }
+
     pub(crate) fn try_from_stage(
         input_stage: Stage,
         input_properties: Arc<PlanProperties>,
@@ -93,7 +121,8 @@ impl NetworkCoalesceExec {
         // per output task based on the maximum group size, returning empty streams for tasks with
         // smaller groups.
         let max_input_task_count = input_stage.task_count().div_ceil(consumer_tasks).max(1);
-        let props = scale_partitioning_props(&input_properties, |p| p * max_input_task_count)?;
+        let props =
+            Self::scale_partitioning_props(&input_properties, |p| p * max_input_task_count)?;
 
         Ok(Self {
             properties: props,
@@ -199,7 +228,7 @@ impl NetworkBoundary for NetworkCoalesceExec {
 
     fn with_input_stage(&self, input_stage: Stage) -> Result<Arc<dyn NetworkBoundary>> {
         let mut self_clone = self.clone();
-        self_clone.properties = scale_partitioning_props(self_clone.properties(), |p| {
+        self_clone.properties = Self::scale_partitioning_props(self_clone.properties(), |p| {
             p * input_stage.task_count() / self_clone.input_stage.task_count().max(1)
         })?;
         self_clone.worker_connections = WorkerConnectionPool::new(input_stage.task_count());
