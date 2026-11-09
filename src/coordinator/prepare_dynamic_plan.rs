@@ -20,8 +20,7 @@ use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{Result, exec_err, plan_err};
 use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::{
-    ColumnStatistics, ExecutionPlan, ExecutionPlanProperties, Statistics, StatisticsArgs,
-    StatisticsContext,
+    ColumnStatistics, ExecutionPlan, Statistics, StatisticsArgs, StatisticsContext,
 };
 use futures::{Stream, StreamExt};
 use std::any::TypeId;
@@ -63,17 +62,8 @@ pub(super) async fn prepare_dynamic_plan(
                 "network_cost",
                 *cost.network.get_value().unwrap_or(&0),
             ));
-            let compute_based_task_count = *cost.cpu.get_value().unwrap_or(&0) as f64
-                / nb_ctx.d_cfg.dynamic_bytes_per_partition.max(1) as f64
-                / input_stage
-                    .plan
-                    .output_partitioning()
-                    .partition_count()
-                    .max(1) as f64;
-            let compute_based_task_count = compute_based_task_count.min(nb_ctx.max_tasks()? as f64);
             let task_count = nb_ctx
-                .task_count(&input_stage.plan)?
-                .merge(TaskCountAnnotation::soft(compute_based_task_count))?;
+                .task_count_with_cpu_cost(&input_stage.plan, *cost.cpu.get_value().unwrap_or(&0))?;
 
             // Propagate the final task_count inferred based on runtime statistics and compute cost.
             // Here is where leaf nodes are scaled up by ScaleUpLeafNodeHandler, and the

@@ -20,6 +20,7 @@ use datafusion::physical_plan::analyze::AnalyzeExec;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::{
     ChildrenPropertiesMode, ExecutionPlan, ExecutionPlanProperties, ReplaceChildrenOptions,
+    StatisticsArgs, StatisticsContext,
 };
 use datafusion::physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner};
 use futures::future::BoxFuture;
@@ -146,10 +147,10 @@ pub fn create_distributed_plan(
         plan = insert_broadcast_execs(plan, cfg)?;
         plan = insert_children_isolator_unions(plan, cfg)?;
 
-        if d_cfg.dynamic_task_count {
-            // The task count will be decided dynamically at execution time.
-            return Ok(create_distributed_exec(Arc::clone(&plan), d_cfg));
-        }
+        // Keep the unsplit plan for AQE, but first determine whether this query needs
+        // distribution at all. Otherwise AQE sends even single-task stages to workers
+        // before it can remove their unnecessary network boundaries.
+        let adaptive_plan = Arc::clone(&plan);
 
         // Compute per-node task counts and inject `Network*Exec` nodes at the stage boundaries.
         plan = inject_network_boundaries(plan, CardinalityBasedNetworkBoundaryBuilder, session_cfg)
@@ -157,7 +158,25 @@ pub fn create_distributed_plan(
 
         plan = prepare_network_boundaries(plan)?;
         if !plan.exists(|plan| Ok(plan.is_network_boundary()))? {
-            return Ok(original_plan);
+            // Missing row counts are not evidence that a query is small. Keep AQE's
+            // sampling path available when the leaf estimates cannot establish locality.
+            let unknown_leaf_rows = d_cfg.dynamic_task_count
+                && adaptive_plan.exists(|node| {
+                    if !node.children().is_empty() {
+                        return Ok(false);
+                    }
+                    let stats =
+                        StatisticsContext::new().compute(node.as_ref(), &StatisticsArgs::new())?;
+                    Ok(stats.num_rows.get_value().is_none())
+                })?;
+            if !unknown_leaf_rows {
+                return Ok(original_plan);
+            }
+        }
+
+        if d_cfg.dynamic_task_count {
+            // Distribution is needed; choose the final stage task counts at execution time.
+            return Ok(create_distributed_exec(adaptive_plan, d_cfg));
         }
 
         let plan = partial_reduce_below_network_shuffles(plan, cfg)?;
