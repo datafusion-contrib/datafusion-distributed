@@ -23,6 +23,26 @@ nodes that stream Arrow data between machines, so you can take an existing
 single-node DataFusion system and add distributed execution with minimal
 changes.
 
+## Differences with Apache DataFusion Ballista
+
+[Apache DataFusion Ballista](https://datafusion.apache.org/ballista/) is a
+distributed query engine with a scheduler, executors, clients, and operational
+tooling. Its components can be customized to build specialized engines. It
+supports staged execution and experimental pipelined execution for
+latency-sensitive queries.
+
+DataFusion Distributed is a library for embedding distribution into an existing
+DataFusion application, leaving worker management, networking, and deployment
+to that application. It does not persist intermediate stage results for
+recovery; failed queries must restart from scratch.
+
+Consider Ballista if:
+
+- You want to adopt an existing distributed engine as your foundation.
+- You are comfortable adopting its deployment and networking model.
+- Your workload benefits from materialized intermediate results and the task
+  recovery provided by its staged execution model.
+
 ## Getting started
 
 Going distributed takes exactly three things:
@@ -39,22 +59,22 @@ runtime metrics, and more — see the
 
 ## Benchmarks
 
-DataFusion Distributed consistently outperforms other distributed query engines
-across TPC-H and TPC-DS. The chart below shows how much slower each engine is
-relative to DataFusion Distributed
-(lower is better):
+The following results compare specific versions and configurations on the
+workloads and hardware described below. They are a historical snapshot, rather
+than a general performance ranking. The chart shows relative query times,
+normalized to DataFusion Distributed (lower is better):
 
 ![How much slower than DataFusion Distributed?](./docs/source/_static/images/summary_relative.png)
 
 <details>
 <summary>Per-dataset totals</summary>
 
-| Dataset     | df-dist | Ballista | Spark | Trino | Queries compared |
-|-------------|--------:|---------:|------:|------:|-----------------:|
-| TPC-H SF1   |  **7s** |      11s |   30s |   18s |               22 |
-| TPC-H SF10  | **10s** |      42s |   51s |   33s |               22 |
-| TPC-H SF100 | **42s** |     237s |  261s |   93s |               19 |
-| TPC-DS SF1  | **29s** |      72s |  101s |   85s |               67 |
+| Dataset     | df-dist | Spark | Trino | Queries compared |
+|-------------|--------:|------:|------:|-----------------:|
+| TPC-H SF1   |  **7s** |   30s |   18s |               22 |
+| TPC-H SF10  | **10s** |   51s |   33s |               22 |
+| TPC-H SF100 | **42s** |  261s |   93s |               19 |
+| TPC-DS SF1  | **29s** |  101s |   85s |               67 |
 
 ![TPC-H SF1](./docs/source/_static/images/tpch_sf1.png)
 ![TPC-H SF10](./docs/source/_static/images/tpch_sf10.png)
