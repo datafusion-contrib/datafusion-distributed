@@ -3,12 +3,12 @@ use datafusion::prelude::{ParquetReadOptions, SessionContext};
 use std::fs;
 use std::path::Path;
 
-/// Returns the workspace root directory (two levels above the benchmarks crate).
+/// Returns the workspace root directory (two levels above this crate).
 pub(crate) fn workspace_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
         .nth(2)
-        .expect("benchmarks crate should be at datafusion/distributed-benchmarks in the workspace")
+        .expect("datasets crate should be at datafusion/datasets in the workspace")
 }
 
 pub fn get_queries(path: &str) -> Vec<String> {

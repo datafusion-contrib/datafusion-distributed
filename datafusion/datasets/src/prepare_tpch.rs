@@ -15,10 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::output::TESTDATA_ROOT;
+use crate::parquet_layout::ParquetLayout;
+use crate::tpch::{TpchSpec, generate_data};
 use datafusion::common::{Result, exec_datafusion_err};
-use datafusion_distributed_benchmarks::datasets::output::TESTDATA_ROOT;
-use datafusion_distributed_benchmarks::datasets::parquet_layout::ParquetLayout;
-use datafusion_distributed_benchmarks::datasets::tpch::{TpchSpec, generate_data};
 use structopt::StructOpt;
 
 /// Generate TPC-H parquet files for benchmarks

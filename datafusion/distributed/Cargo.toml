@@ -123,7 +123,7 @@ chaos-tests = []
 sysinfo = ["dep:sysinfo"]
 
 [dev-dependencies]
-datafusion-distributed-benchmarks = { path = "../distributed-benchmarks" }
+datafusion-datasets = { path = "../datasets" }
 # The crate's own tests drive `SessionContext::sql` and register parquet tables, so they need
 # both features regardless of which ones a consumer selects. Requesting them here keeps
 # `--no-default-features` test runs compiling without forcing either on library consumers.

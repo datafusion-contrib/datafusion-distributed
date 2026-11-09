@@ -6,12 +6,12 @@ mod tests {
     use datafusion::error::DataFusionError;
     use datafusion::execution::{SessionState, SessionStateBuilder};
     use datafusion::prelude::SessionContext;
+    use datafusion_datasets::{
+        output::TESTDATA_ROOT, parquet_layout::ParquetLayout, register_tables, tpch,
+    };
     use datafusion_distributed::test_utils::localhost::LocalHostWorkerResolver;
     use datafusion_distributed::{
         DistributedConfig, DistributedExt, SessionStateBuilderExt, Worker, WorkerQueryContext,
-    };
-    use datafusion_distributed_benchmarks::datasets::{
-        output::TESTDATA_ROOT, parquet_layout::ParquetLayout, register_tables, tpch,
     };
     use moka::future::FutureExt;
     use rand::SeedableRng;

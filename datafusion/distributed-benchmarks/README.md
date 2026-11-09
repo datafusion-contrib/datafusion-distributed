@@ -42,7 +42,7 @@ options:
 
 With `--sorted`, the sort keys declared for each table are listed in
 `table_columns` in
-`src/datasets/tpch.rs` and `tpcds.rs`.
+`../datasets/src/tpch.rs` and `tpcds.rs`.
 
 `_SUCCESS` is written once every table is complete, and rerunning a `prepare-*`
 command for a complete dataset does nothing. Any other non-empty destination,

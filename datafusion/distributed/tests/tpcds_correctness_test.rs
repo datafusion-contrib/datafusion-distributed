@@ -5,17 +5,17 @@ mod tests {
     use datafusion::error::Result;
     use datafusion::physical_plan::{ExecutionPlan, collect};
     use datafusion::prelude::SessionContext;
+    use datafusion_datasets::{
+        output::TESTDATA_ROOT,
+        parquet_layout::{Dictionary, ParquetLayout},
+        register_tables, tpcds,
+    };
     use datafusion_distributed::test_utils::in_memory_channel_resolver::start_in_memory_context;
     use datafusion_distributed::test_utils::property_based::{
         compare_ordering, compare_result_set,
     };
     use datafusion_distributed::{
         DefaultSessionBuilder, DistributedExec, DistributedExt, display_plan_ascii,
-    };
-    use datafusion_distributed_benchmarks::datasets::{
-        output::TESTDATA_ROOT,
-        parquet_layout::{Dictionary, ParquetLayout},
-        register_tables, tpcds,
     };
     use std::sync::Arc;
     use tokio::sync::OnceCell;
