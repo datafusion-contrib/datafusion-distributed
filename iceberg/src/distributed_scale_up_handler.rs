@@ -13,9 +13,16 @@ use crate::eager::assign_files;
 /// Like DFD's FileScanConfig scale-up handler, build one scan variant per task
 /// before routing. This handler chooses task assignments; each source retains
 /// the resulting local groups for routing, transport, and execution.
-pub(crate) fn iceberg_scale_up(
-    ev: ScaleUpLeafNodeEvent,
-) -> Option<Result<ScaleUpLeafNodeEventResponse>> {
+///
+/// ```
+/// use datafusion::execution::SessionStateBuilder;
+/// use datafusion_distributed::DistributedExt;
+/// use datafusion_distributed_iceberg::iceberg_scale_up;
+///
+/// let builder = SessionStateBuilder::new()
+///     .with_distributed_scale_up_leaf_node_handler(iceberg_scale_up);
+/// ```
+pub fn iceberg_scale_up(ev: ScaleUpLeafNodeEvent) -> Option<Result<ScaleUpLeafNodeEventResponse>> {
     let exec = ev.plan.downcast_ref::<DataSourceExec>()?;
     let source = exec
         .data_source()
