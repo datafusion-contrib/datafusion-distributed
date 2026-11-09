@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::common::{TestQuery, execute_range_partitioned_query};
+    use crate::dynamic_filtering::common::{TestQuery, execute_range_partitioned_query};
     use datafusion::common::Result;
     use datafusion_distributed::assert_snapshot;
     use datafusion_distributed::test_utils::insta::insta::allow_duplicates;
