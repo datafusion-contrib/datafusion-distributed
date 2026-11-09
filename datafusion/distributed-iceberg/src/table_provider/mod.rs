@@ -1,6 +1,7 @@
 mod catalog;
 mod column_statistics;
 mod factory;
+pub(crate) mod physical_predicate;
 pub(crate) mod scan;
 mod r#static;
 
