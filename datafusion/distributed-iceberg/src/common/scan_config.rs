@@ -85,8 +85,11 @@ impl ScanConfig {
         apply_expression_roots(self.filters.iter(), f)
     }
 
-    /// Writes the scan's dynamic filters into `f`.
+    /// Writes the scan's dynamic filters into `f` when dynamic filtering is enabled.
     pub(crate) fn fmt_dynamic_filters(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if !self.dynamic_filtering_enabled {
+            return Ok(());
+        }
         let Some(filters) = &self.filters else {
             return Ok(());
         };
