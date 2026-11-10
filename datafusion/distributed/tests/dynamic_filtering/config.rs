@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::common::TestQuery;
+    use crate::dynamic_filtering::common::TestQuery;
     use datafusion::common::Result;
     use datafusion_distributed::assert_snapshot;
 
