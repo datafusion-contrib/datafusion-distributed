@@ -45,9 +45,9 @@ type CatalogProperties = std::collections::HashMap<String, String>;
 /// The dataset directory used for the Iceberg representation of `input`:
 /// `<root>/tpch_parquet/<key>=<value>/...` becomes
 /// `<root>/tpch_iceberg/<key>=<value>/.../target_file_size=<bytes>`, so the path records every
-/// parameter of both the Parquet generation and the conversion. A partitioned conversion adds
-/// `partitioned=true` before `target_file_size`, so that it sits beside the unpartitioned dataset
-/// and not inside it. Unpartitioned paths are unchanged.
+/// parameter of both the Parquet generation and the conversion. With `partitioned`, the path gets
+/// `partitioned=true/` just before `target_file_size`. That puts the partitioned and unpartitioned
+/// datasets in separate folders, side by side.
 pub(super) fn output_path(
     input: &Path,
     target_file_size: usize,
@@ -64,13 +64,14 @@ pub(super) fn output_path(
     )))
 }
 
-/// How much memory the conversion uses before sorting a partitioned table spills to disk. Spill
-/// files go to the system's temporary directory, which `TMPDIR` sets.
+/// How much memory the sort for a partitioned table can use. Past that, the sort moves rows into
+/// temporary files on disk. They go in the system temp folder, which `TMPDIR` sets.
 const SORT_MEMORY_LIMIT: usize = 4 * 1024 * 1024 * 1024;
 
-/// Converts prepared local Parquet tables. Unpartitioned tables are streamed one input file at a
-/// time. With `partitioned`, each table that the dataset's benchmark declares a partition column
-/// for is sorted by that column and streamed through one writer. Completion is marked last.
+/// Converts the local Parquet tables made by `dfbench prepare` into Iceberg tables. By default it
+/// reads and writes one input file at a time. With `partitioned`, a table that has a partition
+/// column is sorted by that column, then written in one pass. The dataset is marked complete only
+/// after every table is written.
 pub(super) async fn convert_parquet_to_iceberg(
     source_dir: &Path,
     output: &DatasetOutput,
@@ -173,10 +174,10 @@ pub(super) async fn convert_parquet_to_iceberg(
     Ok(())
 }
 
-/// How one table's data files are laid out.
+/// How to split one table into data files.
 struct TableLayout {
     target_file_size: usize,
-    /// The identity partition column, or none for an unpartitioned table.
+    /// The column to partition by. `None` writes the table unpartitioned.
     partition_column: Option<&'static str>,
 }
 
@@ -289,7 +290,7 @@ fn rolling_writer_builder(
     ))
 }
 
-/// One writer per input file keeps the source file boundaries.
+/// Writes each input file with its own writer, so no output file mixes rows from two input files.
 async fn write_unpartitioned(
     table: &Table,
     table_name: &str,
@@ -326,10 +327,11 @@ async fn write_unpartitioned(
     Ok(data_files)
 }
 
-/// `plans` produce rows sorted by `partition_column`, so one clustered writer keeps only the current
-/// partition's file open and rolls to a new file at `target_file_size`. The table ends up with about
-/// one file per partition value, however many source files it has. Rows with a null partition
-/// value go to their own partition.
+/// Writes rows that `plans` return sorted by `partition_column`. Because of the sort, all rows with
+/// the same value arrive together. The writer keeps one file open at a time. It starts a new file
+/// when the value changes or the file reaches `target_file_size`. So the table gets about one file
+/// per value, however many input files it had. Rows where the column is null get their own
+/// partition.
 async fn write_partitioned(
     table: &Table,
     table_name: &str,
@@ -359,9 +361,9 @@ async fn write_partitioned(
                     )
                     .into());
                 };
-                // `split` returns a batch's partitions in no fixed order, and the clustered writer
-                // fails on a partition it has already closed. So cut the sorted batch into runs of
-                // one partition value first, and split each run in order.
+                // `split` can return a batch's partitions in any order. The writer fails if a
+                // partition it already closed comes back. So first cut the sorted batch into runs
+                // that share one value. Then split each run, in order.
                 for run in equal_value_runs(&[Arc::clone(values)])?.ranges() {
                     let run = batch.slice(run.start, run.end - run.start);
                     for (partition_key, run) in splitter.split(&run)? {
@@ -406,7 +408,7 @@ pub async fn register_tables(
     Ok(())
 }
 
-/// The table's Parquet files, in name order.
+/// Lists the table's Parquet files, sorted by name.
 fn parquet_files(table_dir: &Path) -> Result<Vec<String>, DataFusionError> {
     let mut files = Vec::new();
     for entry in fs::read_dir(table_dir)? {
@@ -425,7 +427,7 @@ fn parquet_files(table_dir: &Path) -> Result<Vec<String>, DataFusionError> {
     Ok(files)
 }
 
-/// One plan per Parquet file.
+/// Builds one plan per Parquet file. Each plan reads just that file.
 async fn parquet_file_plans(
     ctx: &SessionContext,
     files: Vec<String>,
@@ -442,8 +444,8 @@ async fn parquet_file_plans(
     Ok(plans)
 }
 
-/// One plan over all `files`, sorted by `column` with nulls first. The sort spills to disk once
-/// it holds more than the context's memory limit.
+/// Builds one plan that reads all `files` and sorts the rows by `column`, nulls first. If the rows
+/// don't fit in the context's memory limit, the sort moves them into temporary files on disk.
 async fn sorted_parquet_plan(
     ctx: &SessionContext,
     files: Vec<String>,

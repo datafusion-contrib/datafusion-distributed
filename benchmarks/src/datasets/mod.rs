@@ -27,7 +27,8 @@ pub fn dataset_suite(dataset: &str) -> &str {
         .map_or(suite, |(suite, _format)| suite)
 }
 
-/// The columns of `table` that layouts treat specially, as the benchmark `suite` declares them.
+/// Returns the columns that benchmark `suite` lists for `table`: its sort keys, its dictionary
+/// columns and its partition column. Returns an error for an unknown suite.
 pub fn table_columns(suite: &str, table: &str) -> Result<TableColumns, DataFusionError> {
     match suite {
         "tpch" => Ok(tpch::table_columns(table)),

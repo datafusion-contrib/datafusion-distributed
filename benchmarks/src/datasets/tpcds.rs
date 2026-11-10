@@ -38,7 +38,7 @@ impl TpcdsSpec {
 
 /// Per-table columns, using the canonical column names. Sort keys are the columns that the pinned
 /// tpcdsgen emits in ascending order: surrogate keys of dimension tables and ticket/order
-/// numbers of fact tables. Sold dates are not ordered. The fact tables are partitioned by their
+/// numbers of fact tables. Sold dates are not ordered. Each fact table's partition column is its
 /// date key.
 pub(crate) fn table_columns(table: &str) -> TableColumns {
     let sort_keys: &'static [&'static str] = match table {

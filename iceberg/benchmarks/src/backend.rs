@@ -31,11 +31,11 @@ impl BenchmarkBackend for IcebergBenchmarkBackend {
     }
 }
 
-/// Sets `iceberg.*` options from environment variables the way `SessionConfig::from_env` sets
-/// `datafusion.*` ones. Each option the Iceberg integration registers is read from the variable
-/// named after it in uppercase, with the dots replaced by underscores, so
-/// `ICEBERG_ROW_SELECTION_ENABLED=true` sets `iceberg.row_selection_enabled`. Other variables are
-/// ignored. A value the option rejects is an error.
+/// Sets `iceberg.*` options from environment variables. It works the same way DataFusion reads
+/// `DATAFUSION_*` variables. Each option has one variable: its name in uppercase, with dots
+/// replaced by underscores. For example, `ICEBERG_ROW_SELECTION_ENABLED=true` sets
+/// `iceberg.row_selection_enabled`. Variables with other names are ignored. An invalid value
+/// returns an error.
 fn apply_iceberg_env(options: &mut ConfigOptions) -> Result<()> {
     for entry in IcebergConfig::default().entries() {
         let key = format!("{}.{}", IcebergConfig::PREFIX, entry.key);

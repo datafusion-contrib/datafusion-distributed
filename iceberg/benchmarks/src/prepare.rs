@@ -14,7 +14,7 @@ pub struct PrepareIcebergOpt {
 
     /// Local directory or s3://bucket/prefix. Defaults to the `<benchmark>_iceberg` dataset
     /// mirroring the input's parameters, with `target_file_size` appended. With `--partitioned`,
-    /// `partitioned=true` comes before `target_file_size`.
+    /// the path also gets `partitioned=true` just before `target_file_size`.
     #[structopt(short = "o", long = "output")]
     output: Option<String>,
 
@@ -22,9 +22,9 @@ pub struct PrepareIcebergOpt {
     #[structopt(long, default_value = "1099511627776")]
     target_file_size: usize,
 
-    /// Partition each table by the column its benchmark declares, with an identity transform. Other
-    /// tables stay unpartitioned. Today only TPC-DS declares partition columns: its fact tables'
-    /// date keys.
+    /// Split each table into one partition per value of its partition column. The benchmark picks
+    /// that column. Tables without one are written unpartitioned. Only TPC-DS has partition
+    /// columns today: each fact table is split by its date key.
     #[structopt(long)]
     partitioned: bool,
 }
