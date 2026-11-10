@@ -1,0 +1,644 @@
+use crate::codec::roundtrip_pb;
+use crate::common::{TreeNodeExt, now_ns, task_ctx_with_extension};
+use crate::config_extension_ext::get_config_extension_propagation_headers;
+use crate::coordinator::DynamicFilterRegistry;
+use crate::coordinator::Store;
+use crate::coordinator::latency_metric::LatencyMetric;
+use crate::coordinator::spawner::Spawner;
+use crate::dynamic_filtering::{
+    dynamic_filter_remote_producer_ids, is_local_dynamic_filtering_enabled,
+    is_remote_dynamic_filtering_enabled,
+    maybe_roundtrip_plan_to_sever_in_memory_dynamic_filter_relationships,
+};
+use crate::events::{
+    RouteTaskEvent, RouteTaskEventResponse, RouteTaskHandlers, new_coordinator_to_worker_dialer,
+};
+use crate::execution_plans::{ChildrenIsolatorUnionExec, DistributedLeafExec};
+use crate::passthrough_headers::get_passthrough_headers;
+use crate::stage::LocalStage;
+use crate::work_unit_feed::WorkUnitFeedRegistry;
+use crate::work_unit_feed::{build_work_unit_batch_msg, set_work_unit_send_time};
+use crate::{
+    CoordinatorToWorkerMsg, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedGetterExt,
+    DistributedTaskContext, DistributedWorkUnitFeedContext, LoadInfo, LocalWorkerContext,
+    MaybeEncoded, SetPlanRequest, TaskCompletedDynamicFilters, TaskKey, TaskMetrics,
+    WorkUnitFeedDeclaration, WorkerToCoordinatorMsg, get_distributed_channel_resolver,
+};
+use datafusion::common::Result;
+use datafusion::common::instant::Instant;
+use datafusion::common::tree_node::{Transformed, TreeNodeRecursion};
+use datafusion::common::{DataFusionError, internal_err};
+use datafusion::execution::TaskContext;
+use datafusion::physical_expr_common::metrics::{ExecutionPlanMetricsSet, Label, MetricBuilder};
+use datafusion::physical_plan::metrics::Count;
+use datafusion::physical_plan::repartition::RepartitionExec;
+use datafusion::physical_plan::stream::RecordBatchReceiverStreamBuilder;
+use datafusion::physical_plan::{ChildrenPropertiesMode, ExecutionPlan, ReplaceChildrenOptions};
+use datafusion::prelude::SessionConfig;
+use futures::future::try_join_all;
+use futures::stream::BoxStream;
+use futures::{StreamExt, TryStreamExt};
+use std::sync::{Arc, Mutex};
+use tokio::select;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio_stream::wrappers::UnboundedReceiverStream;
+use url::Url;
+use uuid::Uuid;
+
+/// How many [crate::WorkUnitMsg] messages are allowed to be chunked synchronously together in order to
+/// send fewer bigger [crate::WorkUnitMsg] batches over the wire, reducing the overhead of sending many
+/// small batches. See [StreamExt::ready_chunks] docs for more details about how chunking works.
+const WORK_UNIT_FEED_CHUNK_SIZE: usize = 256;
+
+/// Manages communication between coordinator and workers for a single query.
+///
+/// The [QueryCoordinator]'s lifetime is scoped to a single query , and will instantiate independent
+/// [StageCoordinator] scoped to each individual stage.
+pub(super) struct QueryCoordinator {
+    task_ctx: Arc<TaskContext>,
+    metrics: ExecutionPlanMetricsSet,
+    coordinator_to_worker_metrics: CoordinatorToWorkerMetrics,
+    metrics_store: Option<Arc<Store<TaskMetrics>>>,
+    completed_dynamic_filter_store: Option<Arc<Store<TaskCompletedDynamicFilters>>>,
+    dynamic_filter_registry: Arc<DynamicFilterRegistry>,
+    pub(super) spawner: Spawner,
+}
+
+impl QueryCoordinator {
+    /// Builds a new [QueryCoordinator] scoped to a query.
+    pub(super) fn new(
+        task_ctx: Arc<TaskContext>,
+        metrics_set: &ExecutionPlanMetricsSet,
+        metrics_store: Option<Arc<Store<TaskMetrics>>>,
+        completed_dynamic_filter_store: Option<Arc<Store<TaskCompletedDynamicFilters>>>,
+        output: &mut RecordBatchReceiverStreamBuilder,
+    ) -> Self {
+        let spawner = Spawner::new(output);
+        Self {
+            task_ctx,
+            metrics: metrics_set.clone(),
+            metrics_store,
+            completed_dynamic_filter_store,
+            dynamic_filter_registry: Arc::new(DynamicFilterRegistry::new(
+                metrics_set,
+                spawner.query_finished(),
+            )),
+            coordinator_to_worker_metrics: CoordinatorToWorkerMetrics::new(metrics_set),
+            spawner,
+        }
+    }
+
+    /// Builds a new [StageCoordinator] that will manage coordinator-worker connections for the given
+    /// stage.
+    pub(super) fn stage_coordinator<'a>(&'a self, stage: &'a LocalStage) -> StageCoordinator<'a> {
+        StageCoordinator {
+            plan: &stage.plan,
+            query_id: stage.query_id,
+            stage_id: stage.num,
+            task_count: stage.tasks,
+            task_ctx: &self.task_ctx,
+            metrics_set: &self.metrics,
+            metrics: &self.coordinator_to_worker_metrics,
+            dynamic_filter_registry: &self.dynamic_filter_registry,
+            spawner: &self.spawner,
+        }
+    }
+
+    /// Returns the [SessionConfig] for the current query.
+    pub(super) fn session_config(&self) -> &SessionConfig {
+        self.task_ctx.session_config()
+    }
+
+    /// Builds task startup with report cleanup owned even before its first poll.
+    pub(super) fn start_task(
+        self: &Arc<Self>,
+        stage: &LocalStage,
+        task_i: usize,
+    ) -> impl Future<
+        Output = Result<(
+            Url,
+            UnboundedSender<CoordinatorToWorkerMsg>,
+            UnboundedReceiver<LoadInfo>,
+        )>,
+    > + Send
+    + 'static {
+        let reports = TaskReports {
+            task_key: TaskKey {
+                query_id: stage.query_id,
+                stage_id: stage.num,
+                task_number: task_i,
+            },
+            metrics_store: self.metrics_store.clone(),
+            completed_dynamic_filter_store: self.completed_dynamic_filter_store.clone(),
+        };
+        let coordinator = Arc::clone(self);
+        let stage = stage.clone();
+        async move {
+            let stage_coordinator = coordinator.stage_coordinator(&stage);
+            let (url, tx, stream) = stage_coordinator.init_bidirectional_stream(task_i).await?;
+            let load_info = stage_coordinator.worker_to_coordinator_task(stream, reports);
+            stage_coordinator.coordinator_to_worker_task(task_i, tx.clone())?;
+            Ok((url, tx, load_info))
+        }
+    }
+}
+
+/// Manages all the coordinator->worker and worker->coordinator comms that happen during the
+/// execution of an individual Stage. As this struct is scoped per Stage, it will handle the
+/// connection to N workers, where N is the number of tasks of the managed Stage.
+///
+/// This struct is responsible for:
+/// - Building tasks that communicate a serialized plan to multiple workers for further execution.
+/// - Building tasks that stream partition feeds from local [WorkUnitFeedExec] nodes to their
+///   remote counterparts.
+pub(super) struct StageCoordinator<'a> {
+    plan: &'a Arc<dyn ExecutionPlan>,
+    query_id: Uuid,
+    stage_id: usize,
+    task_count: usize,
+    task_ctx: &'a Arc<TaskContext>,
+    metrics_set: &'a ExecutionPlanMetricsSet,
+    metrics: &'a CoordinatorToWorkerMetrics,
+    dynamic_filter_registry: &'a Arc<DynamicFilterRegistry>,
+    spawner: &'a Spawner,
+}
+
+impl<'a> StageCoordinator<'a> {
+    /// Sends a plan to a specific worker and sets up the bidirectional stream.
+    ///
+    /// Its returns are:
+    /// - The worker URL in which the task got allocated
+    /// - The coordinator-to-worker stream for producing messages that reach the worker.
+    /// - The worker-to-coordinator stream for receiving messages from the worker.
+    async fn init_bidirectional_stream(
+        &self,
+        task_i: usize,
+    ) -> Result<(
+        Url,
+        UnboundedSender<CoordinatorToWorkerMsg>,
+        BoxStream<'static, Result<WorkerToCoordinatorMsg>>,
+    )> {
+        let session_config = self.task_ctx.session_config();
+
+        let TaskSpecializedPlan {
+            plan,
+            work_unit_feed_declarations,
+            dynamic_filter_remote_producer_ids,
+        } = self.task_specialized_plan(task_i)?;
+
+        let task_key = TaskKey {
+            query_id: self.query_id,
+            stage_id: self.stage_id,
+            task_number: task_i,
+        };
+
+        if is_remote_dynamic_filtering_enabled(session_config)? {
+            self.dynamic_filter_registry
+                .register_task(&plan, task_key)?;
+        }
+
+        let mut headers = get_config_extension_propagation_headers(session_config)?;
+        headers.extend(get_passthrough_headers(session_config));
+
+        let metrics = self.metrics.clone();
+        let metrics_set = self.metrics_set.clone();
+        // Stores the last coordinator_to_worker_tx that was attempted for establishing a
+        // connection with the remote worker. If dialing a remote worker fails, and it's retried,
+        // this will hold the channel belonging to the last retry
+        let coordinator_to_worker_tx_slot = Mutex::new(None);
+
+        let dialer = new_coordinator_to_worker_dialer(|url| {
+            let (coordinator_to_worker_tx, coordinator_to_worker_rx) = unbounded_channel();
+            coordinator_to_worker_tx_slot
+                .lock()
+                .unwrap()
+                .replace(coordinator_to_worker_tx);
+
+            let coordinator_to_worker_stream =
+                UnboundedReceiverStream::new(coordinator_to_worker_rx)
+                    .map(set_work_unit_send_time)
+                    // Keep the request side of the channel open until the query ends. Workers interpret this
+                    // end-of-stream (EOS) as a query finished/aborted signal. The flow looks like this:
+                    // 1. Execution ends normally. All Arrow RecordBatches are emitted.
+                    // 2. The end stream notifier guard is dropped in `DistributedExec::execute()`.
+                    // 3. Here, the coordinator->worker channel is gracefully ended.
+                    // 4. The coordinator->worker channel EOS is received in `impl_coordinator_channel.rs`.
+                    // 5. The metrics and final dynamic filters are sent back in the
+                    //    worker->coordinator channel, and then that channel is closed.
+                    .take_until(self.spawner.query_finished().cancelled_owned())
+                    .boxed();
+
+            let set_plan_request = SetPlanRequest {
+                task_key,
+                task_count: self.task_count,
+                plan: MaybeEncoded::Decoded(Arc::clone(&plan)),
+                dynamic_filter_remote_producer_ids: dynamic_filter_remote_producer_ids.clone(),
+                work_unit_feed_declarations: work_unit_feed_declarations.clone(),
+                target_worker_url: url.clone(),
+                query_start_time_ns: self.metrics.instantiation_time,
+            };
+            let task_ctx = Arc::clone(self.task_ctx);
+            let headers = headers.clone();
+            let metrics = metrics.clone();
+            let metrics_set = metrics_set.clone();
+
+            async move {
+                let mut client = match LocalWorkerContext::from_ctx(&task_ctx) {
+                    Some(lw) if lw.self_url == url => {
+                        metrics.local_coordinator_channels.add(1);
+                        Ok(lw.to_worker_channel())
+                    }
+                    _ => {
+                        metrics.remote_coordinator_channels.add(1);
+                        let ch_resolver = get_distributed_channel_resolver(task_ctx.as_ref());
+                        ch_resolver.get_worker_client_for_url(&url).await
+                    }
+                }?;
+                let worker_to_coordinator_stream = client
+                    .coordinator_channel(
+                        headers,
+                        set_plan_request,
+                        coordinator_to_worker_stream,
+                        metrics_set,
+                        &task_ctx,
+                    )
+                    .await?;
+
+                Ok::<_, DataFusionError>(RouteTaskEventResponse {
+                    url,
+                    worker_to_coordinator_stream,
+                })
+            }
+        });
+
+        let worker_resolver = session_config.get_distributed_worker_resolver()?;
+
+        let ev = RouteTaskEvent {
+            task_ctx: self.task_ctx,
+            metrics: self.metrics_set,
+            worker_resolver: worker_resolver.as_ref(),
+            stage_plan: self.plan,
+            task_specialized_plan: &plan,
+            task_key,
+            task_count: self.task_count,
+            dialer: &dialer,
+        };
+
+        let start = Instant::now();
+        let Some(response) = RouteTaskHandlers::handle(ev).await.transpose()? else {
+            return internal_err!("No RouteTaskHandler returned a response");
+        };
+        metrics.plan_send_latency.record(&start);
+
+        let Some(coordinator_to_worker_tx) = coordinator_to_worker_tx_slot.lock().unwrap().take()
+        else {
+            return internal_err!("Missing coordinator_to_worker_tx");
+        };
+        self.dynamic_filter_registry
+            .register_sender(task_key, coordinator_to_worker_tx.clone())?;
+
+        Ok((
+            response.url,
+            coordinator_to_worker_tx,
+            response.worker_to_coordinator_stream,
+        ))
+    }
+
+    pub(super) fn seal_dynamic_filter_stage(&self) -> Result<()> {
+        self.dynamic_filter_registry.seal_stage(self.stage_id)
+    }
+
+    /// Spawns background tasks in charge of collecting messages sent by a worker.
+    fn worker_to_coordinator_task(
+        &self,
+        mut worker_to_coordinator_stream: BoxStream<'static, Result<WorkerToCoordinatorMsg>>,
+        mut reports: TaskReports,
+    ) -> UnboundedReceiver<LoadInfo> {
+        let task_key = reports.task_key;
+        let dynamic_filter_registry = Arc::clone(self.dynamic_filter_registry);
+        let task_ctx = Arc::clone(self.task_ctx);
+        let (load_info_tx, load_info_rx) = unbounded_channel();
+        let mut load_info_tx_opt = Some(load_info_tx);
+
+        // Read from the worker -> coordinator stream and fail the query on error.
+        self.spawner.spawn_unbounded(async move {
+            while let Some(msg) = worker_to_coordinator_stream.try_next().await? {
+                match msg {
+                    WorkerToCoordinatorMsg::TaskMetrics(metrics) => {
+                        if let Some(task_metrics) = reports.metrics_store.take() {
+                            task_metrics.insert(task_key, metrics);
+                        }
+                    }
+                    WorkerToCoordinatorMsg::TaskCompletedDynamicFilters(filters) => {
+                        if let Some(store) = reports.completed_dynamic_filter_store.take() {
+                            store.insert(task_key, filters);
+                        }
+                    }
+                    WorkerToCoordinatorMsg::ProducedDynamicFilter(filter) => {
+                        dynamic_filter_registry
+                            .record_dynamic_filter_update(task_key, *filter, &task_ctx)?;
+                    }
+                    WorkerToCoordinatorMsg::LoadInfo(info) => {
+                        if let Some(tx) = &load_info_tx_opt {
+                            let _ = tx.send(info);
+                        }
+                    }
+                    WorkerToCoordinatorMsg::LoadInfoEos => {
+                        let _ = load_info_tx_opt.take();
+                    }
+                };
+            }
+            Ok::<_, DataFusionError>(())
+        });
+
+        load_info_rx
+    }
+
+    /// Spawns a background task in charge of sending messages to workers. Some things that are sent
+    /// to workers here are:
+    /// - WorkUnits collected from [WorkUnitFeeds] present in the plan.
+    fn coordinator_to_worker_task(
+        &self,
+        task_i: usize,
+        tx: UnboundedSender<CoordinatorToWorkerMsg>,
+    ) -> Result<()> {
+        let session_config = self.task_ctx.session_config();
+        let wuf_registry = session_config
+            .get_extension::<WorkUnitFeedRegistry>()
+            .unwrap_or_default();
+
+        let d_ctx = DistributedTaskContext {
+            task_index: task_i,
+            task_count: self.task_count,
+        };
+        let mut futures = vec![];
+        self.plan.apply_with_dt_ctx(d_ctx, |plan, d_ctx| {
+            let Some(wuf) = wuf_registry.get_work_unit_feed(plan) else {
+                return Ok(TreeNodeRecursion::Continue);
+            };
+
+            let partitions = plan.properties().partitioning.partition_count();
+            let start_partition = partitions * d_ctx.task_index;
+            let end_partition = start_partition + partitions;
+
+            let dist_feed_ctx = DistributedWorkUnitFeedContext {
+                fan_out_tasks: d_ctx.task_count,
+            };
+            let t_ctx = Arc::new(task_ctx_with_extension(self.task_ctx, dist_feed_ctx));
+
+            let mut feeds = Vec::with_capacity(end_partition - start_partition);
+            for (partition, feed_idx) in (start_partition..end_partition).enumerate() {
+                let feed = wuf
+                    .feed(feed_idx, Arc::clone(&t_ctx))?
+                    .map(move |el| (partition, el));
+                feeds.push(feed);
+            }
+            let interleaved_feed = futures::stream::select_all(feeds);
+            let mut chunked_interleaved_feed =
+                interleaved_feed.ready_chunks(WORK_UNIT_FEED_CHUNK_SIZE);
+
+            let id = wuf.id();
+            let tx = tx.clone();
+            futures.push(Box::pin(async move {
+                // At this point, the partition feed contains a stream of decoded messages,
+                // so they must be encoded in order to send them over the wire.
+                while let Some(chunk) = chunked_interleaved_feed.next().await {
+                    if tx.send(build_work_unit_batch_msg(&id, chunk)?).is_err() {
+                        break; // channel closed.
+                    };
+                }
+                Ok::<_, DataFusionError>(())
+            }));
+            Ok(TreeNodeRecursion::Continue)
+        })?;
+
+        struct WorkUnitEosOnDrop(UnboundedSender<CoordinatorToWorkerMsg>);
+        impl Drop for WorkUnitEosOnDrop {
+            fn drop(&mut self) {
+                let _ = self.0.send(CoordinatorToWorkerMsg::WorkUnitEos);
+            }
+        }
+
+        // Cancel any feeds if the query finishes or aborts.
+        let query_finished = self.spawner.query_finished();
+        self.spawner.spawn(async move {
+            let _guard = WorkUnitEosOnDrop(tx);
+            select! {
+                result = try_join_all(futures) => { result?; }
+                _ = query_finished.cancelled() => {}
+            }
+            Ok(())
+        });
+        Ok(())
+    }
+
+    /// Specializes the [Arc<dyn ExecutionPlan>] for this stage to provided task index. This implies
+    /// trimming down any unnecessary information that the specific `task_i` task is not going to
+    /// need, like unexecuted branches in [ChildrenIsolatorUnionExec], or unexecuted variants of
+    /// [DistributedLeafExec].
+    fn task_specialized_plan(&self, task_i: usize) -> Result<TaskSpecializedPlan> {
+        let session_config = self.task_ctx.session_config();
+        let wuf_registry = session_config
+            .get_extension::<WorkUnitFeedRegistry>()
+            .unwrap_or_default();
+        let dynamic_filtering_enabled = is_local_dynamic_filtering_enabled(session_config);
+        let remote_dynamic_filtering_enabled = is_remote_dynamic_filtering_enabled(session_config)?;
+
+        let mut work_unit_feed_declarations = vec![];
+        let d_ctx = DistributedTaskContext {
+            task_index: task_i,
+            task_count: self.task_count,
+        };
+
+        let plan = Arc::clone(self.plan);
+        let transformed = plan.transform_down_with_dt_ctx(d_ctx, |plan, d_ctx| {
+            if let Some(wuf) = wuf_registry.get_work_unit_feed(&plan) {
+                work_unit_feed_declarations.push(WorkUnitFeedDeclaration {
+                    id: wuf.id(),
+                    partitions: plan.properties().partitioning.partition_count(),
+                });
+
+                // WorkUnitFeeds are transitioned to remote mode during proto conversion.
+                // Right now, there's no other way for a WorkUnitFeed to be transitioned to
+                // remote mode so that it can pull WorkUnits over the WorkerChannel.
+                //
+                // Doing this roundtrip here is not super clean, but it transitions the feed with
+                // very little specialized code.
+                let plan = roundtrip_pb(plan, self.task_ctx)?;
+                return Ok(Transformed::yes(plan));
+            };
+
+            if let Some(ciu) = plan.downcast_ref::<ChildrenIsolatorUnionExec>() {
+                let ciu = ciu.to_task_specialized(d_ctx.task_index);
+                return Ok(Transformed::yes(Arc::new(ciu)));
+            };
+
+            if let Some(dle) = plan.downcast_ref::<DistributedLeafExec>() {
+                let specialized = dle.to_task_specialized(d_ctx.task_index);
+                return Ok(Transformed::yes(specialized));
+            }
+
+            // Rebuild each RepartitionExec so every task gets its own instance with
+            // fresh partition state; sharing one across tasks causes a "partition not
+            // used yet" panic when the second task tries to pull from it.
+            if plan.downcast_ref::<RepartitionExec>().is_some() {
+                let children = plan.children().into_iter().map(Arc::clone).collect();
+                let local_repartion_exec = plan.replace_children(
+                    children,
+                    ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+                )?;
+                return Ok(Transformed::yes(local_repartion_exec));
+            }
+            // we are explicitly not retransforming the entire plan. if other operators cause shared state errors they will error out.
+            Ok(Transformed::no(plan))
+        })?;
+        let plan = if dynamic_filtering_enabled {
+            maybe_roundtrip_plan_to_sever_in_memory_dynamic_filter_relationships(
+                Arc::clone(&transformed.data),
+                self.task_ctx,
+            )?
+        } else {
+            transformed.data
+        };
+        let dynamic_filter_remote_producer_ids =
+            if dynamic_filtering_enabled && remote_dynamic_filtering_enabled {
+                dynamic_filter_remote_producer_ids(&plan)?
+            } else {
+                vec![]
+            };
+        Ok(TaskSpecializedPlan {
+            plan,
+            work_unit_feed_declarations,
+            dynamic_filter_remote_producer_ids,
+        })
+    }
+}
+
+/// Completes missing report waits when setup or its worker response reader ends.
+struct TaskReports {
+    task_key: TaskKey,
+    metrics_store: Option<Arc<Store<TaskMetrics>>>,
+    completed_dynamic_filter_store: Option<Arc<Store<TaskCompletedDynamicFilters>>>,
+}
+
+impl Drop for TaskReports {
+    fn drop(&mut self) {
+        if let Some(store) = self.metrics_store.take() {
+            store.insert(self.task_key, TaskMetrics::default());
+        }
+        if let Some(store) = self.completed_dynamic_filter_store.take() {
+            store.insert(self.task_key, TaskCompletedDynamicFilters::default());
+        }
+    }
+}
+
+struct TaskSpecializedPlan {
+    plan: Arc<dyn ExecutionPlan>,
+    work_unit_feed_declarations: Vec<WorkUnitFeedDeclaration>,
+    dynamic_filter_remote_producer_ids: Vec<u64>,
+}
+
+/// Metrics that measure network details about communications between [DistributedExec] and a worker.
+#[derive(Clone)]
+pub(super) struct CoordinatorToWorkerMetrics {
+    pub(super) local_coordinator_channels: Count,
+    pub(super) remote_coordinator_channels: Count,
+    pub(super) plan_send_latency: Arc<LatencyMetric>,
+    pub(super) instantiation_time: usize,
+}
+
+// Use a helper function instead of a closure due to a panic in the rustc compiler where it
+// would incorrectly allocate memory for the metrics that reuses the same buffer across calls to builder.
+// This is fixed in rustc 1.98
+fn with_task_id_label(builder: MetricBuilder) -> MetricBuilder {
+    builder.with_label(Label::new(DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, "0"))
+}
+
+impl CoordinatorToWorkerMetrics {
+    pub(super) fn new(metrics: &ExecutionPlanMetricsSet) -> Self {
+        Self {
+            local_coordinator_channels: MetricBuilder::new(metrics)
+                .global_counter("local_coordinator_channels"),
+            remote_coordinator_channels: MetricBuilder::new(metrics)
+                .global_counter("remote_coordinator_channels"),
+            // Latency statistics about the network calls issued to the workers for feeding subplans.
+            plan_send_latency: Arc::new(LatencyMetric::new(
+                "plan_send_latency",
+                with_task_id_label,
+                metrics,
+            )),
+            instantiation_time: now_ns(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression test for a rustc miscompilation (present at least through
+    /// 1.96, fixed in 1.98) of [`CoordinatorToWorkerMetrics::new`].
+    ///
+    /// When the per-metric label builder was passed to [`LatencyMetric::new`]
+    /// as a closure (`|b| b.with_label(..)`) and the crate was compiled in
+    /// release mode with `panic = "abort"` at opt-level >= 2, the compiler
+    /// reused the first `MetricBuilder`'s freshly-emptied labels `Vec` header
+    /// on the second, back-to-back invocation. The `_avg` latency metric's
+    /// labels vec then aliased the `_max` metric's heap buffer (pushing into
+    /// it at index 1 without allocating), so two live [`Metric`]s owned one
+    /// buffer and metrics teardown double-freed / read freed memory — a
+    /// use-after-free that only reproduced in optimized abort builds. Passing
+    /// the builder as a named `fn` ([`with_task_id_label`]) sidesteps it.
+    ///
+    /// `CoordinatorToWorkerMetrics::new` registers the latency `_max`/`_avg` pair, each of which
+    /// must own a distinct heap buffer holding exactly its single `task_id`
+    /// label. The miscompile is observable as the `_avg` buffer aliasing the
+    /// `_max` buffer with length 2.
+    ///
+    /// NOTE: the miscompile only manifests in `--release` builds compiled with
+    /// `panic = "abort"`; a default debug `cargo test` run passes on affected
+    /// and fixed toolchains alike. This test therefore guards the invariant
+    /// and documents the required builder shape; to exercise the miscompile
+    /// itself, build the reproducing configuration.
+    #[test]
+    fn coordinator_metrics_have_distinct_label_buffers() {
+        // The exact codegen depends on the surrounding inlining context, so
+        // repeat rather than trusting a single construction.
+        for iteration in 0..10_000 {
+            let metrics = ExecutionPlanMetricsSet::new();
+            let _coordinator = CoordinatorToWorkerMetrics::new(&metrics);
+
+            let set = metrics.clone_inner();
+            let labeled: Vec<(usize, usize)> = set
+                .iter()
+                .filter(|metric| !metric.labels().is_empty())
+                .map(|metric| (metric.labels().as_ptr() as usize, metric.labels().len()))
+                .collect();
+
+            assert_eq!(
+                labeled.len(),
+                2,
+                "iteration {iteration}: expected 2 labeled metrics \
+                 (plan_send_latency_max, plan_send_latency_avg), \
+                 got {labeled:x?}"
+            );
+
+            for (ptr, len) in &labeled {
+                assert_eq!(
+                    *len, 1,
+                    "iteration {iteration}: labeled metric at {ptr:#x} carries {len} labels, \
+                     expected 1 — label-buffer aliasing miscompilation"
+                );
+            }
+
+            let mut ptrs: Vec<usize> = labeled.iter().map(|(ptr, _)| *ptr).collect();
+            ptrs.sort_unstable();
+            let distinct = ptrs.windows(2).all(|w| w[0] != w[1]);
+            assert!(
+                distinct,
+                "iteration {iteration}: labeled metrics share a label buffer: {labeled:x?} \
+                 — rustc metric-builder miscompilation (use a named fn, not a closure)"
+            );
+        }
+    }
+}

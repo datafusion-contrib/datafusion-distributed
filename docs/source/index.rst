@@ -43,26 +43,25 @@ Everything else is opt-in.
    part of Apache DataFusion itself.
 
 
-When not to use this library
-----------------------------
+When to use Apache DataFusion Ballista instead of this library
+--------------------------------------------------------------
 
-This library doesn't change DataFusion's execution model — so it inherits
-its limitations too. In both vanilla and Distributed DataFusion:
+`Apache DataFusion Ballista <https://github.com/apache/datafusion-ballista>`_ is a distributed query engine.
+It has a scheduler that tracks executors, jobs, and stages; executors with per-task memory pools;
+clients (Rust, Python, the CLI, and Flight SQL); and operational tooling (REST API, event logs,
+history server, Kubernetes, and KEDA).
 
-- If any node fails mid-query, the whole query fails; there are no retries.
-- There's no persistence of intermediate results, so queries can't checkpoint
-  or resume from where they stopped.
+This project is a library intended to be embedded in existing DataFusion-based applications, allowing a system
+to spread a query over workers it already manages. Like DataFusion, it does not persist intermediate results
+for recovery: if a query fails mid-execution, it needs to be retried from scratch.
 
-If your workload is large, long-running batch or ETL that benefits from
-materializing intermediate results between stages,
-`Apache DataFusion Ballista <https://github.com/apache/datafusion-ballista>`_
-is worth a look: it's also built on DataFusion, but runs as a standing cluster —
-a scheduler plus executors — that writes shuffle data to disk between stages
-rather than streaming it.
+Consider using Ballista instead of this project if:
 
-Distributed DataFusion instead targets fast,
-interactive analytics — the kind of query where someone is waiting on the other
-side of the screen for the answer.
+- You'd rather use an existing distributed engine as a foundation and customize it to your needs, rather than
+  building a distributed query engine yourself.
+- You are comfortable adopting Ballista's deployment and networking model.
+- Your workload involves large, long-running batch queries or ETL that benefits from
+  materializing intermediate results between stages.
 
 .. toctree::
    :maxdepth: 1
@@ -105,6 +104,7 @@ side of the screen for the answer.
    :hidden:
 
    blog/distributed-dynamic-filtering
+   blog/reducing-shuffle-fanout
 
 .. toctree::
    :maxdepth: 1

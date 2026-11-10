@@ -16,7 +16,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn generate_metrics(repo_root: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let proto_dir = repo_root.join("src/metrics");
+    let proto_dir = repo_root.join("datafusion/distributed/src/metrics");
     let proto_file = proto_dir.join("metrics.proto");
     let out_dir = proto_dir.join("generated");
 
@@ -32,10 +32,10 @@ fn generate_metrics(repo_root: &Path) -> Result<(), Box<dyn std::error::Error>> 
 }
 
 fn generate_worker(repo_root: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let proto_dir = repo_root.join("src/protocol/grpc");
+    let proto_dir = repo_root.join("datafusion/distributed/src/protocol/grpc");
     let proto_file = proto_dir.join("worker.proto");
     let out_dir = proto_dir.join("generated");
-    let metrics_proto_dir = repo_root.join("src/metrics");
+    let metrics_proto_dir = repo_root.join("datafusion/distributed/src/metrics");
 
     fs::create_dir_all(&out_dir)?;
 
@@ -55,7 +55,7 @@ fn generate_worker(repo_root: &Path) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn generate_iceberg(repo_root: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let proto_dir = repo_root.join("iceberg/src/proto");
+    let proto_dir = repo_root.join("datafusion/distributed-iceberg/src/proto");
     let proto_file = proto_dir.join("iceberg.proto");
     let out_dir = proto_dir.join("generated");
 
@@ -79,9 +79,9 @@ fn generate_iceberg(repo_root: &Path) -> Result<(), Box<dyn std::error::Error>> 
 }
 
 fn generate_observability(repo_root: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let proto_dir = repo_root.join("src/protocol/grpc/observability/proto");
+    let proto_dir = repo_root.join("datafusion/distributed/src/protocol/grpc/observability/proto");
     let proto_file = proto_dir.join("observability.proto");
-    let out_dir = repo_root.join("src/protocol/grpc/observability/generated");
+    let out_dir = repo_root.join("datafusion/distributed/src/protocol/grpc/observability/generated");
 
     fs::create_dir_all(&out_dir)?;
 

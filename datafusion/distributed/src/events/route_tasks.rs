@@ -1,0 +1,122 @@
+use crate::events::common::EventHandlerChain;
+use crate::{TaskKey, WorkerResolver, WorkerToCoordinatorMsg};
+use async_trait::async_trait;
+use datafusion::common::Result;
+use datafusion::execution::TaskContext;
+use datafusion::physical_expr_common::metrics::ExecutionPlanMetricsSet;
+use datafusion::physical_plan::ExecutionPlan;
+use futures::stream::BoxStream;
+use std::sync::Arc;
+use url::Url;
+
+/// Information supplied when the coordinator assigns one distributed task to a worker.
+#[derive(Clone, Copy)]
+pub struct RouteTaskEvent<'a> {
+    /// The task context active for the query being coordinated.
+    pub task_ctx: &'a Arc<TaskContext>,
+    /// Metrics attached to the [crate::DistributedExec]
+    pub metrics: &'a ExecutionPlanMetricsSet,
+    /// [WorkerResolver] in scope.
+    pub worker_resolver: &'a dyn WorkerResolver,
+    /// Identifier of the task that is getting assigned.
+    pub task_key: TaskKey,
+    /// Number of tasks of the stage to which the assigned task belongs.
+    pub task_count: usize,
+    /// The coordinator's unspecialized stage plan at routing time.
+    ///
+    /// This includes every task variant and union branch in the stage. Child stages remain
+    /// behind network boundaries. The plan is available for both static and dynamic task
+    /// counts, after the stage's task count has been resolved. Adaptive execution may finalize
+    /// output partitioning later, once downstream task counts are known. Stage-level observers
+    /// can use `task_key.task_number == 0` to observe it once per stage routing attempt.
+    pub stage_plan: &'a Arc<dyn ExecutionPlan>,
+    /// The exact plan variant that will be sent for this task.
+    pub task_specialized_plan: &'a Arc<dyn ExecutionPlan>,
+    /// Establishes a coordinator-to-worker connection for a candidate URL. Users are expected
+    /// to call `dialer.dial()` inside their [RouteTaskHandler] implementations for establishing
+    /// a connection with the remote worker.
+    ///
+    /// `dialer.dial()` can be called multiple times over different URLs until one successfully
+    /// connects.
+    pub dialer: &'a dyn CoordinatorToWorkerDialer,
+}
+
+/// A worker connection selected by a [`RouteTaskHandler`].
+pub struct RouteTaskEventResponse {
+    /// The URL of the selected worker. Once this URL is returned, the worker officially starts
+    /// being part of the query, and it must commit to drive it to completion. Once a worker URL is
+    /// returned, a failure in the worker means the failure of the query.
+    pub url: Url,
+    /// Messages streamed from the selected worker to the coordinator. This must be the result of
+    /// calling `ev.dialer.dial(url).await`, where `dialer` is provided by the [RouteTaskEvent]
+    /// definition.
+    pub worker_to_coordinator_stream: BoxStream<'static, Result<WorkerToCoordinatorMsg>>,
+}
+
+/// Assigns a distributed task to a worker and establishes its connection.
+///
+/// Handlers are evaluated in registration order, with custom handlers before built-ins. Return
+/// `None` to defer to the next handler. To implement retries or failover, call
+/// [`RouteTaskEvent::dialer`] multiple times and return the successful response.
+#[async_trait]
+pub trait RouteTaskHandler: Send + Sync + 'static {
+    /// Attempts to assign the task described by the event to a worker.
+    async fn handle(&self, ev: RouteTaskEvent<'_>) -> Option<Result<RouteTaskEventResponse>>;
+}
+
+#[async_trait]
+impl RouteTaskHandler for Arc<dyn RouteTaskHandler> {
+    async fn handle(&self, ev: RouteTaskEvent<'_>) -> Option<Result<RouteTaskEventResponse>> {
+        self.as_ref().handle(ev).await
+    }
+}
+
+pub(crate) type RouteTaskHandlers = EventHandlerChain<dyn RouteTaskHandler>;
+
+impl RouteTaskHandlers {
+    pub(crate) async fn handle(ev: RouteTaskEvent<'_>) -> Option<Result<RouteTaskEventResponse>> {
+        let handlers = ev
+            .task_ctx
+            .session_config()
+            .get_extension::<RouteTaskHandlers>()?;
+        for handler in handlers.iter() {
+            if let Some(response) = handler.handle(ev).await {
+                return Some(response);
+            }
+        }
+        None
+    }
+}
+
+// === CoordinatorToWorkerDialer ===
+
+/// Establishes coordinator-to-worker connections for assignment candidates.
+///
+/// Each call represents an independent connection attempt. A handler may call `dial` multiple
+/// times, sequentially or concurrently, when implementing retries or failover.
+#[async_trait]
+pub trait CoordinatorToWorkerDialer: Send + Sync {
+    /// Attempts to connect the task to `url`.
+    async fn dial(&self, url: Url) -> Result<RouteTaskEventResponse>;
+}
+
+pub(crate) fn new_coordinator_to_worker_dialer<F, Fut>(f: F) -> impl CoordinatorToWorkerDialer
+where
+    F: Fn(Url) -> Fut + Send + Sync,
+    Fut: Future<Output = Result<RouteTaskEventResponse>> + Send,
+{
+    struct S<F>(F);
+
+    #[async_trait]
+    impl<F, Fut> CoordinatorToWorkerDialer for S<F>
+    where
+        F: Fn(Url) -> Fut + Send + Sync,
+        Fut: Future<Output = Result<RouteTaskEventResponse>> + Send,
+    {
+        async fn dial(&self, url: Url) -> Result<RouteTaskEventResponse> {
+            self.0(url).await
+        }
+    }
+
+    S(f)
+}

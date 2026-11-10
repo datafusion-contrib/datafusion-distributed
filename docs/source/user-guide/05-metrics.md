@@ -24,6 +24,10 @@ let state = SessionStateBuilder::new()
 When enabled, each worker streams the metrics for its tasks back to the coordinator on a dedicated
 channel, so they are not lost even if the result stream is dropped early (for example by a `LIMIT`).
 
+Workers can add their own task-scoped metrics with a
+[task finished handler](../advanced/03-plan-hooks.md#task-finished-handlers). These metrics appear
+with the other task metrics, such as `plan_finished_at`, in each stage header.
+
 ## Rendering a plan with metrics
 
 These functions, all exported from the crate root, do the work:

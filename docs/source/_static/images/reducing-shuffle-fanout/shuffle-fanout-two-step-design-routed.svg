@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Licensed to the Apache Software Foundation (ASF) under the Apache License, Version 2.0. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 480" preserveAspectRatio="xMidYMid meet" role="img" aria-labelledby="title desc">
+  <title id="title">The two-step shuffle reduces producer fanout</title>
+  <desc id="desc">One producing task creates one bucket for each of four consuming tasks instead of one bucket for all 16 destination partitions. A labeled dashed line marks the network transfer into NetworkShuffleExec. Four animated routes bend above the consuming tasks and enter them from the top, after which each consumer locally repartitions its task bucket into four partitions.</desc>
+
+  <defs>
+    <marker id="arrow-orange" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#b45309"/></marker>
+    <marker id="arrow-blue" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#1677d2"/></marker>
+    <style>
+      .scene{font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+      .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+      .section{fill:#57606a;font-size:13px;font-weight:700;letter-spacing:.08em}
+      .heading{fill:#24292f;font-size:16px;font-weight:700}
+      .label{fill:#3d444d;font-size:13px}
+      .small{fill:#667085;font-size:11px}
+      .tiny{fill:#57606a;font-size:9px}
+      .producer{fill:#eaf3ff;stroke:#1677d2;stroke-width:1.4}
+      .repartition{fill:#fff;stroke:#1677d2;stroke-width:1.3}
+      .bucket{fill:#fff8eb;stroke:#d97706;stroke-width:1}
+      .consumer{fill:#ecfdf5;stroke:#16856b;stroke-width:1.3}
+      .network{fill:#fff8eb;stroke:#d97706;stroke-width:1.4}
+      .partition{fill:#eef6ff;stroke:#1677d2;stroke-width:1}
+      .network-boundary{stroke:#98a2b3;stroke-width:1.2;stroke-dasharray:5 5}
+      .boundary-label{fill:#667085;font-size:10px;font-weight:600;letter-spacing:.04em}
+      .route-guide{fill:none;stroke:#b45309;stroke-width:1.2;stroke-opacity:.32;stroke-linecap:round;stroke-linejoin:round}
+      .network-route{fill:none;stroke:#b45309;stroke-width:2;stroke-opacity:.92;stroke-linecap:round;stroke-linejoin:round;marker-end:url(#arrow-orange)}
+      .local-route{fill:none;stroke:#1677d2;stroke-width:1.5;stroke-opacity:.78;marker-end:url(#arrow-blue)}
+      .flow{stroke-dasharray:8 12;animation:flow 2.1s linear infinite}
+      .local-flow{animation-delay:-.7s}
+      @keyframes flow{to{stroke-dashoffset:-40}}
+      @media (prefers-reduced-motion:reduce){.flow{animation:none}}
+    </style>
+  </defs>
+
+  <g class="scene">
+    <rect width="1000" height="480" fill="#fff"/>
+    <text x="30" y="30" class="section">TWO-STEP SHUFFLE</text>
+    <text x="970" y="30" class="small" text-anchor="end">small example · T = 4 · P = 4</text>
+    <text x="735" y="72" class="heading" text-anchor="middle">T = 4 consuming tasks</text>
+
+    <g transform="translate(0 40)">
+    <rect x="30" y="100" width="220" height="230" rx="9" class="producer"/>
+    <text x="140" y="132" class="heading" text-anchor="middle">producing task</text>
+    <text x="140" y="153" class="small" text-anchor="middle">N input partitions</text>
+    <rect x="50" y="173" width="180" height="60" rx="6" class="repartition"/>
+    <text x="140" y="198" class="label mono" text-anchor="middle">RepartitionExec</text>
+    <text x="140" y="219" class="small mono" text-anchor="middle">hash(key + salt) → T</text>
+    <text x="140" y="257" class="small" text-anchor="middle">one network bucket per task</text>
+    <rect x="50" y="273" width="38" height="34" rx="4" class="bucket"/><rect x="96" y="273" width="38" height="34" rx="4" class="bucket"/><rect x="142" y="273" width="38" height="34" rx="4" class="bucket"/><rect x="188" y="273" width="38" height="34" rx="4" class="bucket"/>
+    <text x="69" y="295" class="tiny mono" text-anchor="middle">T0</text><text x="115" y="295" class="tiny mono" text-anchor="middle">T1</text><text x="161" y="295" class="tiny mono" text-anchor="middle">T2</text><text x="207" y="295" class="tiny mono" text-anchor="middle">T3</text>
+
+    <line x1="285" y1="100" x2="285" y2="330" class="network-boundary" aria-label="network transfer boundary"/>
+    <path d="M250 185L315 185" class="network-route flow"/><path d="M250 205L315 205" class="network-route flow"/><path d="M250 225L315 225" class="network-route flow"/><path d="M250 245L315 245" class="network-route flow"/>
+    <text x="285" y="351" class="boundary-label" text-anchor="middle">network transfer</text>
+    <rect x="315" y="145" width="130" height="140" rx="8" class="network"/>
+    <text x="380" y="208" class="small mono" text-anchor="middle">Network</text><text x="380" y="228" class="small mono" text-anchor="middle">ShuffleExec</text>
+
+    <g transform="translate(490 95)">
+      <g>
+        <rect width="110" height="235" rx="8" class="consumer"/>
+        <text x="55" y="29" class="heading" text-anchor="middle">T0</text>
+        <rect x="12" y="47" width="86" height="48" rx="5" class="repartition"/><text x="55" y="67" class="tiny mono" text-anchor="middle">local</text><text x="55" y="82" class="tiny mono" text-anchor="middle">RepartitionExec</text>
+        <path d="M55 96V119" class="local-route flow local-flow"/>
+        <text x="55" y="135" class="tiny" text-anchor="middle">P local partitions</text>
+        <rect x="14" y="148" width="82" height="16" rx="3" class="partition"/><rect x="14" y="168" width="82" height="16" rx="3" class="partition"/><rect x="14" y="188" width="82" height="16" rx="3" class="partition"/><rect x="14" y="208" width="82" height="16" rx="3" class="partition"/>
+        <text x="55" y="160" class="tiny mono" text-anchor="middle">P0</text><text x="55" y="180" class="tiny mono" text-anchor="middle">P1</text><text x="55" y="200" class="tiny mono" text-anchor="middle">P2</text><text x="55" y="220" class="tiny mono" text-anchor="middle">P3</text>
+      </g>
+      <g transform="translate(120 0)">
+        <rect width="110" height="235" rx="8" class="consumer"/><text x="55" y="29" class="heading" text-anchor="middle">T1</text>
+        <rect x="12" y="47" width="86" height="48" rx="5" class="repartition"/><text x="55" y="67" class="tiny mono" text-anchor="middle">local</text><text x="55" y="82" class="tiny mono" text-anchor="middle">RepartitionExec</text><path d="M55 96V119" class="local-route flow local-flow"/><text x="55" y="135" class="tiny" text-anchor="middle">P local partitions</text>
+        <rect x="14" y="148" width="82" height="16" rx="3" class="partition"/><rect x="14" y="168" width="82" height="16" rx="3" class="partition"/><rect x="14" y="188" width="82" height="16" rx="3" class="partition"/><rect x="14" y="208" width="82" height="16" rx="3" class="partition"/>
+        <text x="55" y="160" class="tiny mono" text-anchor="middle">P0</text><text x="55" y="180" class="tiny mono" text-anchor="middle">P1</text><text x="55" y="200" class="tiny mono" text-anchor="middle">P2</text><text x="55" y="220" class="tiny mono" text-anchor="middle">P3</text>
+      </g>
+      <g transform="translate(240 0)">
+        <rect width="110" height="235" rx="8" class="consumer"/><text x="55" y="29" class="heading" text-anchor="middle">T2</text>
+        <rect x="12" y="47" width="86" height="48" rx="5" class="repartition"/><text x="55" y="67" class="tiny mono" text-anchor="middle">local</text><text x="55" y="82" class="tiny mono" text-anchor="middle">RepartitionExec</text><path d="M55 96V119" class="local-route flow local-flow"/><text x="55" y="135" class="tiny" text-anchor="middle">P local partitions</text>
+        <rect x="14" y="148" width="82" height="16" rx="3" class="partition"/><rect x="14" y="168" width="82" height="16" rx="3" class="partition"/><rect x="14" y="188" width="82" height="16" rx="3" class="partition"/><rect x="14" y="208" width="82" height="16" rx="3" class="partition"/>
+        <text x="55" y="160" class="tiny mono" text-anchor="middle">P0</text><text x="55" y="180" class="tiny mono" text-anchor="middle">P1</text><text x="55" y="200" class="tiny mono" text-anchor="middle">P2</text><text x="55" y="220" class="tiny mono" text-anchor="middle">P3</text>
+      </g>
+      <g transform="translate(360 0)">
+        <rect width="110" height="235" rx="8" class="consumer"/><text x="55" y="29" class="heading" text-anchor="middle">T3</text>
+        <rect x="12" y="47" width="86" height="48" rx="5" class="repartition"/><text x="55" y="67" class="tiny mono" text-anchor="middle">local</text><text x="55" y="82" class="tiny mono" text-anchor="middle">RepartitionExec</text><path d="M55 96V119" class="local-route flow local-flow"/><text x="55" y="135" class="tiny" text-anchor="middle">P local partitions</text>
+        <rect x="14" y="148" width="82" height="16" rx="3" class="partition"/><rect x="14" y="168" width="82" height="16" rx="3" class="partition"/><rect x="14" y="188" width="82" height="16" rx="3" class="partition"/><rect x="14" y="208" width="82" height="16" rx="3" class="partition"/>
+        <text x="55" y="160" class="tiny mono" text-anchor="middle">P0</text><text x="55" y="180" class="tiny mono" text-anchor="middle">P1</text><text x="55" y="200" class="tiny mono" text-anchor="middle">P2</text><text x="55" y="220" class="tiny mono" text-anchor="middle">P3</text>
+      </g>
+    </g>
+
+    <g aria-label="four network routes bending above and entering the top of their consuming tasks">
+      <path d="M445 180C470 180 475 80 485 80H545V95" class="route-guide"/>
+      <path d="M445 202C470 202 475 70 485 70H665V95" class="route-guide"/>
+      <path d="M445 224C470 224 475 60 485 60H785V95" class="route-guide"/>
+      <path d="M445 246C470 246 475 50 485 50H905V95" class="route-guide"/>
+      <path d="M445 180C470 180 475 80 485 80H545V95" class="network-route flow"/>
+      <path d="M445 202C470 202 475 70 485 70H665V95" class="network-route flow"/>
+      <path d="M445 224C470 224 475 60 485 60H785V95" class="network-route flow"/>
+      <path d="M445 246C470 246 475 50 485 50H905V95" class="network-route flow"/>
+    </g>
+    </g>
+
+    <line x1="30" y1="405" x2="970" y2="405" stroke="#d8dee4"/>
+    <text x="500" y="435" class="label" text-anchor="middle">Producer fanout falls from T × P = 16 partition buckets to T = 4 task buckets.</text>
+    <text x="500" y="458" class="small" text-anchor="middle">Each consumer performs the second hash locally to recover its P final partitions.</text>
+  </g>
+</svg>

@@ -15,7 +15,7 @@ simplify them as much as possible.
   implementation details. Unit tests are appropriate for very scoped and clearly
   separated pieces of work, but not great for when there needs to be too many
   moving pieces in the tests.
-- Add an integration test in `tests/` for a user-visible behavior. When in
+- Add an integration test in `datafusion/distributed/tests/` for a user-visible behavior. When in
   doubt, always prefer this type of tests. Never expose internals of the project
   to these tests just for the sake of finer grained testing, always test at the
   public API level.
@@ -99,5 +99,5 @@ cargo test --features clickbench
 
 ## Resources
 
-- [Integration tests directory](https://github.com/datafusion-contrib/datafusion-distributed/tree/main/tests) -
+- [Integration tests directory](https://github.com/datafusion-contrib/datafusion-distributed/tree/main/datafusion/distributed/tests) -
   Feature-specific test examples

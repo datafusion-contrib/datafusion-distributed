@@ -1,0 +1,536 @@
+#[cfg(all(feature = "integration", test))]
+mod tests {
+    use datafusion::catalog::memory::DataSourceExec;
+    use datafusion::common::assert_not_contains;
+    use datafusion::common::{HashMap, Result, assert_contains};
+    use datafusion::execution::SessionState;
+    use datafusion::physical_plan::display::DisplayableExecutionPlan;
+    use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
+    use datafusion::physical_plan::{ExecutionPlan, execute_stream};
+    use datafusion::prelude::SessionContext;
+    use datafusion_distributed::test_utils::localhost::start_localhost_context;
+    use datafusion_distributed::test_utils::metrics::{assert_metrics_equal, node_metrics};
+    use datafusion_distributed::test_utils::parquet::register_parquet_tables;
+    use datafusion_distributed::test_utils::test_work_unit_feed::{
+        RowGeneratorExec, TestWorkUnitFeedExecCodec, TestWorkUnitFeedFunction,
+        row_generator_desired_task_count_handler, row_generator_scale_up_leaf_node_handler,
+    };
+    use datafusion_distributed::{
+        DefaultSessionBuilder, DistributedExec, DistributedExt, DistributedLeafExec,
+        DistributedMetricsFormat, NetworkCoalesceExec, NetworkShuffleExec, TaskKey, TaskMetrics,
+        WorkerQueryContext, display_plan_ascii, rewrite_distributed_plan_with_dynamic_filters,
+        rewrite_distributed_plan_with_metrics,
+    };
+    use futures::TryStreamExt;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use test_case::test_case;
+
+    const COLLECTION_TIMEOUT: Duration = Duration::from_secs(10);
+
+    #[test_case(DistributedMetricsFormat::Aggregated ; "aggregated_metrics")]
+    #[test_case(DistributedMetricsFormat::PerTask ; "per_task_metrics")]
+    #[tokio::test]
+    async fn test_metrics_collection_in_aggregation(
+        format: DistributedMetricsFormat,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (d_ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+
+        let query =
+            r#"SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)"#;
+
+        let s_ctx = SessionContext::default();
+        let (s_physical, mut d_physical) = execute(&s_ctx, &d_ctx, query).await?;
+        d_physical = rewrite_with_metrics(d_physical.clone(), format).await;
+        println!("{}", display_plan_ascii(s_physical.as_ref(), true));
+        println!("{}", display_plan_ascii(d_physical.as_ref(), true));
+
+        assert_metrics_equal::<DataSourceExec, DistributedLeafExec>(
+            ["output_rows", "output_bytes"],
+            &s_physical,
+            &d_physical,
+            0,
+        );
+
+        Ok(())
+    }
+
+    #[test_case(DistributedMetricsFormat::Aggregated ; "aggregated_metrics")]
+    #[test_case(DistributedMetricsFormat::PerTask ; "per_task_metrics")]
+    #[tokio::test]
+    async fn test_metrics_collection_in_join(
+        format: DistributedMetricsFormat,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (d_ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+
+        let query = r#"
+        WITH a AS (
+            SELECT
+                AVG("MinTemp") as "MinTemp",
+                "RainTomorrow"
+            FROM weather
+            WHERE "RainToday" = 'Yes'
+            GROUP BY "RainTomorrow"
+        ), b AS (
+            SELECT
+                AVG("MaxTemp") as "MaxTemp",
+                "RainTomorrow"
+            FROM weather
+            WHERE "RainToday" = 'No'
+            GROUP BY "RainTomorrow"
+        )
+        SELECT
+            a."MinTemp",
+            b."MaxTemp"
+        FROM a
+        LEFT JOIN b
+        ON a."RainTomorrow" = b."RainTomorrow"
+        "#;
+
+        let s_ctx = SessionContext::default();
+        // This test during local connections might prune some rows using dynamic filters
+        // differently in distributed vs single-node. Disabling dynamic filters prevents this
+        // from happening.
+        disable_dynamic_filters(&s_ctx);
+        disable_dynamic_filters(&d_ctx);
+        let (s_physical, mut d_physical) = execute(&s_ctx, &d_ctx, query).await?;
+        d_physical = rewrite_with_metrics(d_physical.clone(), format).await;
+        println!("{}", display_plan_ascii(s_physical.as_ref(), true));
+        println!("{}", display_plan_ascii(d_physical.as_ref(), true));
+
+        for data_source_index in 0..2 {
+            assert_metrics_equal::<DataSourceExec, DistributedLeafExec>(
+                ["output_rows", "output_bytes"],
+                &s_physical,
+                &d_physical,
+                data_source_index,
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test_case(DistributedMetricsFormat::Aggregated ; "aggregated_metrics")]
+    #[test_case(DistributedMetricsFormat::PerTask ; "per_task_metrics")]
+    #[tokio::test]
+    async fn test_metrics_collection_in_union(
+        format: DistributedMetricsFormat,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (d_ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+
+        let query = r#"
+        SELECT "MinTemp", "RainToday" FROM weather WHERE "MinTemp" > 10.0
+        UNION ALL
+        SELECT "MaxTemp", "RainToday" FROM weather WHERE "MaxTemp" < 30.0
+        UNION ALL
+        SELECT "Temp9am", "RainToday" FROM weather WHERE "Temp9am" > 15.0
+        UNION ALL
+        SELECT "Temp3pm", "RainToday" FROM weather WHERE "Temp3pm" < 25.0
+        UNION ALL
+        SELECT "Rainfall", "RainToday" FROM weather WHERE "Rainfall" > 5.0
+        "#;
+
+        let s_ctx = SessionContext::default();
+        let (s_physical, mut d_physical) = execute(&s_ctx, &d_ctx, query).await?;
+
+        d_physical = rewrite_with_metrics(d_physical.clone(), format).await;
+        println!("{}", display_plan_ascii(s_physical.as_ref(), true));
+        println!("{}", display_plan_ascii(d_physical.as_ref(), true));
+
+        for data_source_index in 0..5 {
+            assert_metrics_equal::<DataSourceExec, DistributedLeafExec>(
+                ["output_rows", "output_bytes"],
+                &s_physical,
+                &d_physical,
+                data_source_index,
+            );
+        }
+        Ok(())
+    }
+
+    #[test_case(DistributedMetricsFormat::Aggregated ; "aggregated_metrics")]
+    #[test_case(DistributedMetricsFormat::PerTask ; "per_task_metrics")]
+    #[tokio::test]
+    async fn test_metric_collection_network_boundaries(
+        format: DistributedMetricsFormat,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (d_ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+
+        let query =
+            r#"SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)"#;
+
+        let s_ctx = SessionContext::default();
+        let (s_physical, mut d_physical) = execute(&s_ctx, &d_ctx, query).await?;
+        d_physical = rewrite_with_metrics(d_physical.clone(), format).await;
+        println!("{}", display_plan_ascii(s_physical.as_ref(), true));
+        println!("{}", display_plan_ascii(d_physical.as_ref(), true));
+
+        let value = node_metrics::<NetworkCoalesceExec>(&d_physical, "bytes_transferred", 1);
+        assert!(value > 100);
+        let value = node_metrics::<NetworkCoalesceExec>(&d_physical, "max_mem_used", 1);
+        assert!(value > 100);
+        let value = node_metrics::<NetworkCoalesceExec>(&d_physical, "elapsed_compute", 1);
+        assert!(value > 100);
+        let value = node_metrics::<NetworkCoalesceExec>(&d_physical, "network_latency_min", 1);
+        assert!(value > 0);
+        let value = node_metrics::<NetworkCoalesceExec>(&d_physical, "network_latency_max", 1);
+        assert!(value > 0);
+        let value = node_metrics::<NetworkCoalesceExec>(&d_physical, "network_latency_p50", 1);
+        assert!(value > 0);
+        let value = node_metrics::<NetworkCoalesceExec>(&d_physical, "network_latency_first", 1);
+        assert!(value > 0);
+        let value = node_metrics::<NetworkCoalesceExec>(&d_physical, "network_latency_sum", 1);
+        assert!(value > 0);
+        let value = node_metrics::<NetworkCoalesceExec>(&d_physical, "network_latency_count", 1);
+        assert!(value > 0);
+
+        let value = node_metrics::<NetworkShuffleExec>(&d_physical, "bytes_transferred", 1);
+        assert!(value > 100);
+        let value = node_metrics::<NetworkShuffleExec>(&d_physical, "max_mem_used", 1);
+        assert!(value > 100);
+        let value = node_metrics::<NetworkShuffleExec>(&d_physical, "elapsed_compute", 1);
+        assert!(value > 100);
+        let value = node_metrics::<NetworkShuffleExec>(&d_physical, "network_latency_min", 1);
+        assert!(value > 0);
+        let value = node_metrics::<NetworkShuffleExec>(&d_physical, "network_latency_max", 1);
+        assert!(value > 0);
+        let value = node_metrics::<NetworkCoalesceExec>(&d_physical, "network_latency_p50", 1);
+        assert!(value > 0);
+        let value = node_metrics::<NetworkShuffleExec>(&d_physical, "network_latency_first", 1);
+        assert!(value > 0);
+        let value = node_metrics::<NetworkShuffleExec>(&d_physical, "network_latency_sum", 1);
+        assert!(value > 0);
+        let value = node_metrics::<NetworkShuffleExec>(&d_physical, "network_latency_count", 1);
+        assert!(value > 0);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_stage_level_metric_collection() -> Result<(), Box<dyn std::error::Error>> {
+        let format = DistributedMetricsFormat::PerTask;
+        let (d_ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+
+        let query =
+            r#"SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)"#;
+
+        let s_ctx = SessionContext::default();
+        let (_, mut d_physical) = execute(&s_ctx, &d_ctx, query).await?;
+        d_physical = rewrite_with_metrics(d_physical.clone(), format).await;
+
+        let display = display_plan_ascii(d_physical.as_ref(), true);
+        assert_not_contains!(&display, "metrics=[]");
+        assert_contains!(&display, "plan_added_at");
+        assert_contains!(&display, "plan_executed_at");
+        assert_contains!(&display, "plan_finished_at");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_metric_collection_display_all_have_metrics()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let format = DistributedMetricsFormat::PerTask;
+        let (d_ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+
+        let query =
+            r#"SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)"#;
+
+        let s_ctx = SessionContext::default();
+        let (_, mut d_physical) = execute(&s_ctx, &d_ctx, query).await?;
+        d_physical = rewrite_with_metrics(d_physical.clone(), format).await;
+
+        let display =
+            DisplayableExecutionPlan::with_metrics(d_physical.children().swap_remove(0).as_ref())
+                .indent(true)
+                .to_string();
+        assert_not_contains!(display, "metrics=[]");
+
+        let display = display_plan_ascii(d_physical.as_ref(), true);
+        assert_not_contains!(display, "metrics=[]");
+
+        Ok(())
+    }
+
+    /// Ensures the per-task metrics of a `DistributedLeafExec` render next to each task variant
+    /// when using `PerTask`, while the `Aggregated` format keeps a single metrics block on the
+    /// header line.
+    ///
+    /// This guards against the regression where the per-task metrics were sourced from the
+    /// un-rewritten `leaf.metrics()` (always empty) instead of the wrapping `MetricsWrapperExec`,
+    /// which collapsed all metrics onto the header line regardless of format.
+    #[test_case(DistributedMetricsFormat::Aggregated ; "aggregated_metrics")]
+    #[test_case(DistributedMetricsFormat::PerTask ; "per_task_metrics")]
+    #[tokio::test]
+    async fn test_distributed_leaf_metrics_display(
+        format: DistributedMetricsFormat,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (d_ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+
+        let query =
+            r#"SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)"#;
+
+        let s_ctx = SessionContext::default();
+        let (_, mut d_physical) = execute(&s_ctx, &d_ctx, query).await?;
+        d_physical = rewrite_with_metrics(d_physical.clone(), format).await;
+
+        let display = display_plan_ascii(d_physical.as_ref(), true);
+        println!("{display}");
+
+        let header = display
+            .lines()
+            .find(|l| l.contains("DistributedLeafExec:"))
+            .expect("expected a DistributedLeafExec in the distributed plan");
+
+        // Collect the per-task variant lines (eg. `t0: DataSourceExec: ...`).
+        let mut variants = vec![];
+        while let Some(line) = display
+            .lines()
+            .find(|l| l.contains(format!("t{}: DataSourceExec", variants.len()).as_str()))
+        {
+            variants.push(line);
+        }
+        assert!(
+            variants.len() > 1,
+            "expected the leaf to be split across multiple tasks, got {}",
+            variants.len()
+        );
+
+        match format {
+            DistributedMetricsFormat::PerTask => {
+                // Metrics belong next to each variant, not aggregated on the header line.
+                assert_not_contains!(header, "metrics=");
+                for (task, line) in variants.iter().enumerate() {
+                    assert_contains!(*line, format!("metrics=[output_rows={{{task}:"));
+                }
+            }
+            DistributedMetricsFormat::Aggregated => {
+                // A single aggregated metrics block lives on the header; variants stay bare.
+                assert_contains!(header, "metrics=[output_rows=");
+                for line in &variants {
+                    assert_not_contains!(*line, "metrics=");
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_metrics_collection_in_work_unit_feed_exec()
+    -> Result<(), Box<dyn std::error::Error>> {
+        async fn build_state(ctx: WorkerQueryContext) -> Result<SessionState> {
+            Ok(ctx
+                .builder
+                .with_distributed_user_codec(TestWorkUnitFeedExecCodec)
+                .build())
+        }
+
+        let (mut ctx, _guard, _) = start_localhost_context(3, build_state).await;
+        ctx.set_distributed_work_unit_feed(|p: &RowGeneratorExec| Some(&p.feed));
+        ctx.set_distributed_user_codec(TestWorkUnitFeedExecCodec);
+        ctx.set_distributed_desired_task_count_handler(row_generator_desired_task_count_handler);
+        ctx.set_distributed_scale_up_leaf_node_handler(row_generator_scale_up_leaf_node_handler);
+        ctx.register_udtf("test_work_unit", Arc::new(TestWorkUnitFeedFunction));
+
+        // Two tasks × two partitions × comma-separated row counts. Total work units sent:
+        // 2 (t0/p0) + 1 (t0/p1) + 1 (t1/p0) + 2 (t1/p1) = 6.
+        let df = ctx
+            .sql("SELECT * FROM test_work_unit('t', 2, 'rows(3),rows(4)', 'rows(1)', 'rows(1)', 'rows(2),rows(5)')")
+            .await?;
+        let plan = df.create_physical_plan().await?;
+        execute_stream(plan.clone(), ctx.task_ctx())?
+            .try_collect::<Vec<_>>()
+            .await?;
+
+        let plan =
+            rewrite_distributed_plan_with_metrics(plan, DistributedMetricsFormat::PerTask).await?;
+
+        let work_units_sent = node_metrics::<RowGeneratorExec>(&plan, "work_units_sent", 0);
+        assert_eq!(work_units_sent, 6);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_metrics_collection_dynamic() -> Result<(), Box<dyn std::error::Error>> {
+        let (mut d_ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+        d_ctx.set_distributed_dynamic_task_count(true)?;
+
+        let query =
+            r#"SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)"#;
+
+        let s_ctx = SessionContext::default();
+        let (s_physical, mut d_physical) = execute(&s_ctx, &d_ctx, query).await?;
+        d_physical = rewrite_with_metrics(d_physical, DistributedMetricsFormat::Aggregated).await;
+        println!("{}", display_plan_ascii(s_physical.as_ref(), true));
+        println!("{}", display_plan_ascii(d_physical.as_ref(), true));
+
+        assert_metrics_equal::<DataSourceExec, DistributedLeafExec>(
+            ["output_rows", "output_bytes"],
+            &s_physical,
+            &d_physical,
+            0,
+        );
+
+        assert_metrics_equal::<SortPreservingMergeExec, SortPreservingMergeExec>(
+            ["output_rows", "output_bytes"],
+            &s_physical,
+            &d_physical,
+            0,
+        );
+
+        Ok(())
+    }
+
+    /// Regression for #739: an empty build side can leave sampled probe tasks unexecuted.
+    #[tokio::test]
+    async fn metrics_rewrite_after_unexecuted_aqe_tasks() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (mut ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+        ctx.set_distributed_dynamic_task_count(true)?;
+        ctx = ctx.with_distributed_dynamic_filter_collection(true)?;
+        register_parquet_tables(&ctx).await?;
+        {
+            let state = ctx.state_ref();
+            let mut state = state.write();
+            let options = state.config_mut().options_mut();
+            options.optimizer.hash_join_single_partition_threshold = 0;
+            options.optimizer.hash_join_single_partition_threshold_rows = 0;
+        }
+
+        let plan = ctx
+            .sql(
+                r#"SELECT a."MinTemp" FROM weather a JOIN weather b
+                     ON a."RainToday" = b."RainToday" WHERE a."MinTemp" > 1000000"#,
+            )
+            .await?
+            .create_physical_plan()
+            .await?;
+        let batches = execute_stream(plan.clone(), ctx.task_ctx())?
+            .try_collect::<Vec<_>>()
+            .await?;
+        assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 0);
+
+        let task_ctx = ctx.task_ctx();
+        let plan = tokio::time::timeout(
+            COLLECTION_TIMEOUT,
+            rewrite_distributed_plan_with_dynamic_filters(plan, &task_ctx),
+        )
+        .await??;
+        tokio::time::timeout(
+            COLLECTION_TIMEOUT,
+            rewrite_distributed_plan_with_metrics(plan, DistributedMetricsFormat::PerTask),
+        )
+        .await??;
+        Ok(())
+    }
+
+    /// Workers still report their final metrics when the query is cancelled.
+    #[tokio::test]
+    async fn metrics_collected_after_cancel() -> Result<(), Box<dyn std::error::Error>> {
+        let (ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+        register_parquet_tables(&ctx).await?;
+
+        let query = r#"SELECT "FL_DATE", count(*) FROM flights_1m GROUP BY "FL_DATE""#;
+        let plan = ctx.sql(query).await?.create_physical_plan().await?;
+        let mut stream = execute_stream(plan.clone(), ctx.task_ctx())?;
+        assert!(stream.try_next().await?.is_some());
+        // Dropping the stream before it ends cancels the query.
+        drop(stream);
+
+        let task_metrics = wait_for_task_metrics(&plan).await;
+        assert!(!task_metrics.is_empty());
+        for (task_key, metrics) in &task_metrics {
+            assert!(
+                !metrics.pre_order_plan_metrics.is_empty(),
+                "{task_key:?} reported no metrics"
+            );
+        }
+        Ok(())
+    }
+
+    /// Workers still report their final metrics when the query fails.
+    #[tokio::test]
+    async fn metrics_collected_after_failure() -> Result<(), Box<dyn std::error::Error>> {
+        let (ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+        register_parquet_tables(&ctx).await?;
+
+        // The division runs on the coordinator after the final aggregation, so every worker task
+        // has executed before the query fails.
+        let query =
+            r#"SELECT sum("Humidity3pm") / (sum("Humidity3pm") - sum("Humidity3pm")) FROM weather"#;
+        let plan = ctx.sql(query).await?.create_physical_plan().await?;
+        let result = execute_stream(plan.clone(), ctx.task_ctx())?
+            .try_collect::<Vec<_>>()
+            .await;
+        assert_contains!(result.unwrap_err().to_string(), "Divide by zero");
+
+        let task_metrics = wait_for_task_metrics(&plan).await;
+        assert!(!task_metrics.is_empty());
+        for (task_key, metrics) in &task_metrics {
+            assert!(
+                !metrics.pre_order_plan_metrics.is_empty(),
+                "{task_key:?} reported no metrics"
+            );
+        }
+        Ok(())
+    }
+
+    /// Waits until every task of the executed `plan` has a final metrics report.
+    async fn wait_for_task_metrics(plan: &Arc<dyn ExecutionPlan>) -> HashMap<TaskKey, TaskMetrics> {
+        let d_exec = plan
+            .downcast_ref::<DistributedExec>()
+            .expect("plan root should be a DistributedExec");
+        tokio::time::timeout(COLLECTION_TIMEOUT, d_exec.wait_for_metrics())
+            .await
+            .expect("timed out waiting for task metrics")
+            .expect("metrics collection should be enabled")
+    }
+
+    /// Waits for all worker metrics to arrive then rewrites the plan with them.
+    async fn rewrite_with_metrics(
+        plan: Arc<dyn ExecutionPlan>,
+        format: DistributedMetricsFormat,
+    ) -> Arc<dyn ExecutionPlan> {
+        rewrite_distributed_plan_with_metrics(plan, format)
+            .await
+            .unwrap()
+    }
+
+    async fn execute(
+        s_ctx: &SessionContext,
+        d_ctx: &SessionContext,
+        query: &str,
+    ) -> Result<(Arc<dyn ExecutionPlan>, Arc<dyn ExecutionPlan>), Box<dyn std::error::Error>> {
+        register_parquet_tables(s_ctx).await?;
+        register_parquet_tables(d_ctx).await?;
+
+        let s_df = s_ctx.sql(query).await?;
+        let s_physical = s_df.create_physical_plan().await?;
+        execute_stream(s_physical.clone(), s_ctx.task_ctx())?
+            .try_collect::<Vec<_>>()
+            .await?;
+
+        let d_df = d_ctx.sql(query).await?;
+        let d_physical = d_df.create_physical_plan().await?;
+        execute_stream(d_physical.clone(), d_ctx.task_ctx())?
+            .try_collect::<Vec<_>>()
+            .await?;
+
+        Ok((s_physical, d_physical))
+    }
+
+    fn disable_dynamic_filters(ctx: &SessionContext) {
+        let session_state = ctx.state_ref();
+        let mut session_state = session_state.write();
+        let config = session_state.config_mut();
+        let options = config.options_mut();
+        options
+            .set(
+                "datafusion.optimizer.enable_dynamic_filter_pushdown",
+                "false",
+            )
+            .expect("static dynamic-filter setting should be valid");
+    }
+}

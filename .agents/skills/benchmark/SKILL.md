@@ -32,7 +32,7 @@ target/release/dfbench compare $DATASET $ICEBERG                     # Parquet v
 
 `prepare` converts an existing Parquet dataset; converting into a complete dataset is a no-op, so
 remove the Iceberg copy after regenerating its source. Iceberg runs always load manifest column
-statistics. See `benchmarks/README.md` for S3 output and other options.
+statistics. See `datafusion/distributed-benchmarks/README.md` for S3 output and other options.
 
 ## Things worth knowing
 
@@ -40,7 +40,7 @@ statistics. See `benchmarks/README.md` for S3 output and other options.
   generation parameter; `prepare-*` prints the absolute path, and `--dataset` takes it absolute
   or relative to the current directory. Generating a complete dataset again is a
   no-op; an interrupted one must be removed before regenerating. Layout options
-  (`--max-file-size`, `--dictionary`, `--sorted`) are listed in `benchmarks/README.md`.
+  (`--max-file-size`, `--dictionary`, `--sorted`) are listed in `datafusion/distributed-benchmarks/README.md`.
 - DuckDB and Spark treat the `key=value` directories as Hive partitions and add them as columns;
   pass `hive_partitioning=false` when inspecting files with DuckDB.
 - Query ids are `q1`, `q18`, … (`-q q1,q18`). An unknown id silently runs nothing.

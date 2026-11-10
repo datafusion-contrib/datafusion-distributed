@@ -1,0 +1,68 @@
+[package]
+name = "datafusion-distributed-benchmarks"
+version = "0.1.0"
+edition = "2024"
+default-run = "dfbench"
+
+[dependencies]
+async-trait = "0.1.89"
+datafusion = { workspace = true }
+datafusion-distributed = { path = "../distributed", features = [
+  "integration",
+  "system-metrics",
+] }
+tokio = { version = "1.48", features = ["full"] }
+parquet = { version = "59" }
+structopt = { version = "0.3.26" }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.141"
+env_logger = "0.11.8"
+futures = "0.3.31"
+indicatif = "0.18"
+arrow = { version = "59", features = ["test_utils"] }
+tonic = { version = "0.14.1", features = ["transport"] }
+tpchgen = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "f42708c32e7fd816b8ad8d2a880c1802a71b669f" }
+tpchgen-arrow = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "f42708c32e7fd816b8ad8d2a880c1802a71b669f" }
+tpcdsgen = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "f42708c32e7fd816b8ad8d2a880c1802a71b669f" }
+tpcdsgen-arrow = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "f42708c32e7fd816b8ad8d2a880c1802a71b669f" }
+reqwest = "0.12"
+sketches-ddsketch = "0.3"
+object_store = { version = "0.13", features = ["aws"] }
+aws-config = "1"
+aws-credential-types = "1"
+url = "2"
+tempfile = "3"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[build-dependencies]
+built = { version = "0.8", features = ["git2", "chrono"] }
+
+[[bin]]
+name = "dfbench"
+path = "src/main.rs"
+
+[[bench]]
+name = "broadcast_cache_scenarios"
+harness = false
+
+[[bench]]
+name = "shuffle"
+harness = false
+
+[[bench]]
+name = "local_repartition"
+harness = false
+
+[[bench]]
+name = "transport"
+harness = false
+
+[[bench]]
+name = "planning"
+harness = false
+
+[[bench]]
+name = "metrics_collection"
+harness = false

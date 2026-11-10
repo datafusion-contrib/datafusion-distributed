@@ -61,3 +61,41 @@ already been decided. It is **not** a way to change how a query is split across
 the cluster — for that, see
 [Building Custom Distributed Plans](05-custom-distributed-plans.md).
 ```
+
+# Task finished handlers
+
+`DistributedExt::with_distributed_task_finished_handler` registers handlers that run once for each
+task, after the coordinator closes its channel to the worker. Use them to record how each task
+ended, or to report metrics for the task as a whole. Register them on the worker session, the
+same way as plan rewrite handlers.
+
+Each handler receives a `TaskFinishedEvent` with the task's `TaskKey`, its plan, and its
+`TaskOutcome`:
+
+- `Succeeded`: every partition stream of the task reached its end.
+- `Failed(error)`: a partition stream returned an error. The event carries the first one.
+- `Incomplete`: whatever reads the task stopped before all of its output was read, and no stream
+  returned an error.
+
+```rust
+# use datafusion::common::Result;
+# use datafusion::execution::SessionState;
+# use datafusion::physical_plan::metrics::MetricsSet;
+# use datafusion_distributed::{DistributedExt, TaskFinishedEvent, TaskFinishedEventResponse, TaskOutcome, WorkerQueryContext};
+
+async fn build_worker_session(ctx: WorkerQueryContext) -> Result<SessionState> {
+    Ok(ctx
+        .builder
+        .with_distributed_task_finished_handler(|event: TaskFinishedEvent<'_>| {
+            if let TaskOutcome::Failed(err) = event.outcome {
+                eprintln!("task {:?} failed: {err}", event.task_key);
+            }
+            Ok(TaskFinishedEventResponse::new(MetricsSet::new()))
+        })
+        .build())
+}
+```
+
+Handlers are synchronous and must not wait on I/O. If a handler returns an error, the error is
+dropped and the task is not affected. A task whose plan could not be set up on the worker produces
+no event.
