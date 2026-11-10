@@ -1,19 +1,16 @@
 #[cfg(all(feature = "integration", test))]
 mod tests {
-    use std::hint::black_box;
     use std::slice::from_ref;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     use arrow::array::{Int64Array, RecordBatch};
-    use arrow::datatypes::DataType;
     use async_trait::async_trait;
     use datafusion::common::runtime::SpawnedTask;
     use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
     use datafusion::common::{Result, assert_contains, exec_err};
     use datafusion::execution::SessionState;
-    use datafusion::logical_expr::{ScalarUDF, Volatility, create_udf};
     use datafusion::physical_plan::{ExecutionPlan, execute_stream};
     use datafusion::prelude::SessionContext;
     use datafusion_distributed::test_utils::in_memory_channel_resolver::start_in_memory_context;
@@ -22,12 +19,12 @@ mod tests {
         url_emitter_desired_task_count, url_emitter_scale_up_leaf_node,
     };
     use datafusion_distributed::{
-        DistributedExec, DistributedExt, MappedWorkerSessionBuilderExt, NetworkBoundaryExt,
-        NetworkCoalesceExec, RouteTaskEvent, RouteTaskEventResponse, RouteTaskHandler, Stage,
-        WorkerQueryContext, WorkerToCoordinatorMsg, rewrite_distributed_plan_with_dynamic_filters,
+        DistributedExec, DistributedExt, NetworkBoundaryExt, NetworkCoalesceExec, RouteTaskEvent,
+        RouteTaskEventResponse, RouteTaskHandler, Stage, WorkerQueryContext,
+        WorkerToCoordinatorMsg, rewrite_distributed_plan_with_dynamic_filters,
     };
     use futures::{StreamExt, TryStreamExt, stream};
-    use tokio::time::{sleep, timeout};
+    use tokio::time::timeout;
     use tokio_util::sync::CancellationToken;
 
     const WAIT: Duration = Duration::from_secs(5);
@@ -281,100 +278,6 @@ mod tests {
         Ok(())
     }
 
-    // Iteration zero is warmup. Compare the same test on both revisions.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    #[ignore = "controlled startup benchmark; run with --release --ignored --nocapture"]
-    async fn startup_overlap_benchmark() -> Result<()> {
-        for adaptive in [false, true] {
-            for delayed_task in [None, Some(0), Some(1)] {
-                for iteration in 0..6 {
-                    let gate = SetupGate {
-                        delayed_task,
-                        ..Default::default()
-                    };
-                    let activity = Arc::new(AtomicUsize::new(0));
-                    let observation = Some((Arc::clone(&activity), gate.release.clone()));
-                    let udf = Arc::new(cpu_work(observation));
-                    let worker = build_state.map(move |builder| {
-                        Ok(builder.with_scalar_functions(vec![udf.clone()]).build())
-                    });
-                    let ctx = context(start_in_memory_context(2, worker).await)
-                        .with_distributed_dynamic_task_count(adaptive)?
-                        .with_distributed_route_task_handler(gate.clone());
-                    ctx.state_ref()
-                        .write()
-                        .config_mut()
-                        .options_mut()
-                        .execution
-                        .target_partitions = 2;
-                    ctx.register_udf(cpu_work(None));
-                    let plan = ctx
-                        .sql("SELECT cpu_work(task_index) FROM url_emitter(2, 2, 'scan')")
-                        .await?
-                        .create_physical_plan()
-                        .await?;
-                    if delayed_task.is_none() {
-                        gate.release.cancel();
-                    }
-                    let release = gate.clone();
-                    let timer = SpawnedTask::spawn(async move {
-                        if delayed_task.is_some() {
-                            release.entered.cancelled().await;
-                            sleep(Duration::from_millis(250)).await;
-                            release.release.cancel();
-                        }
-                    });
-                    let start = Instant::now();
-                    let mut output = execute_stream(plan, ctx.task_ctx())?;
-                    let first = timeout(WAIT, output.try_next()).await.unwrap()?.unwrap();
-                    let first_ms = start.elapsed().as_secs_f64() * 1_000.0;
-                    let mut batches = vec![first];
-                    batches.extend(
-                        timeout(WAIT, output.try_collect::<Vec<_>>())
-                            .await
-                            .unwrap()?,
-                    );
-                    let total_ms = start.elapsed().as_secs_f64() * 1_000.0;
-                    timer.join().await.unwrap();
-                    assert_eq!(task_indices(&batches), vec![0, 1]);
-                    let observed = activity.load(Ordering::Relaxed);
-                    assert!(observed > 0, "heavy task must execute remotely");
-                    println!(
-                        "adaptive={adaptive},delayed_task={delayed_task:?},iteration={iteration},first_ms={first_ms:.3},total_ms={total_ms:.3},heavy_started_before_release={}",
-                        observed == 2
-                    );
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn cpu_work(observation: Option<(Arc<AtomicUsize>, CancellationToken)>) -> ScalarUDF {
-        create_udf(
-            "cpu_work",
-            vec![DataType::Int64],
-            DataType::Int64,
-            Volatility::Volatile,
-            Arc::new(move |args| {
-                let Some((activity, release)) = &observation else {
-                    return exec_err!("CPU work must execute on a remote worker");
-                };
-                let input = args[0].clone().into_array(1)?;
-                let input = input.as_any().downcast_ref::<Int64Array>().unwrap();
-                for task in input.values() {
-                    if *task == 0 {
-                        activity.store(1 + usize::from(!release.is_cancelled()), Ordering::Relaxed);
-                        let mut value = 1u64;
-                        for _ in 0..100_000_000 {
-                            value = black_box(value.wrapping_mul(17).wrapping_add(1));
-                        }
-                    }
-                }
-                Ok(args[0].clone())
-            }),
-        )
-    }
-
     fn context(mut ctx: SessionContext) -> SessionContext {
         ctx.set_distributed_desired_task_count_handler(url_emitter_desired_task_count);
         ctx.set_distributed_scale_up_leaf_node_handler(url_emitter_scale_up_leaf_node);
@@ -453,7 +356,6 @@ mod tests {
         sampled: CancellationToken,
         nested_coalesces: Arc<AtomicUsize>,
         fail: bool,
-        delayed_task: Option<usize>,
         wait_for_sibling: bool,
     }
 
@@ -489,7 +391,7 @@ mod tests {
             if event.task_key.task_number == 0 && self.wait_for_sibling {
                 self.entered.cancelled().await;
             }
-            if event.task_key.task_number == self.delayed_task.unwrap_or(1) {
+            if event.task_key.task_number == 1 {
                 let cancelled = self.cancelled.clone().drop_guard();
                 self.entered.cancel();
                 self.release.cancelled().await;

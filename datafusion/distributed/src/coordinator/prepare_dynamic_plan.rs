@@ -1,6 +1,5 @@
 use crate::common::{TreeNodeExt, element_wise_sum, vec_avg_reduce, vec_div, vec_mul};
 use crate::coordinator::distributed::PreparedPlan;
-use crate::coordinator::prepare_static_plan::prepare_stages;
 use crate::coordinator::query_coordinator::QueryCoordinator;
 use crate::distributed_planner::{
     InjectNetworkBoundaryContext, NetworkBoundaryBuilder, NetworkBoundaryBuilderResult,
@@ -25,6 +24,7 @@ use datafusion::physical_plan::{
     ColumnStatistics, ExecutionPlan, ExecutionPlanProperties, Statistics, StatisticsArgs,
     StatisticsContext,
 };
+use futures::future::try_join_all;
 use futures::{Stream, StreamExt};
 use std::any::TypeId;
 use std::num::NonZeroUsize;
@@ -45,7 +45,31 @@ pub(super) async fn prepare_dynamic_plan(
         query_coordinator.session_config(),
     )
     .await?;
-    let head_stage = prepare_stages(query_coordinator, &head_stage, true).await?;
+    let head_stage = head_stage
+        .transform_down(|plan| {
+            let Some(boundary) = plan.as_network_boundary() else {
+                return Ok(Transformed::no(plan));
+            };
+            let Stage::Local(stage) = boundary.input_stage() else {
+                return Ok(Transformed::no(plan));
+            };
+            let dynamic_filter_anchors =
+                if is_remote_dynamic_filtering_enabled(query_coordinator.session_config())? {
+                    orphan_dynamic_filter_consumers(&stage.plan)?
+                } else {
+                    vec![]
+                };
+            Ok(Transformed::yes(boundary.with_input_stage(
+                Stage::Remote(RemoteStage {
+                    query_id: stage.query_id,
+                    num: stage.num,
+                    workers: query_coordinator.start_pending_stage(stage),
+                    runtime_stats: None,
+                    dynamic_filter_anchors,
+                }),
+            )?))
+        })?
+        .data;
 
     Ok(PreparedPlan {
         plan_for_viz: plans_for_viz.reconstruct(&head_stage)?,
@@ -68,7 +92,7 @@ impl NetworkBoundaryBuilder for DynamicPlanBuilder<'_> {
     ) -> Result<NetworkBoundaryBuilderResult> {
         // A deferred coalesce becomes a concrete destination before another worker stage
         // consumes it. Preserve the planner's pointer-keyed annotations when replacing nodes.
-        let prepared = prepare_stages(self.query_coordinator, &input_stage.plan, false).await?;
+        let prepared = prepare_worker_inputs(self.query_coordinator, &input_stage.plan).await?;
         nb_ctx.copy_task_counts(&input_stage.plan, &prepared)?;
         input_stage.plan = prepared;
         let mut metrics = MetricsSet::new();
@@ -132,10 +156,8 @@ impl NetworkBoundaryBuilder for DynamicPlanBuilder<'_> {
                 Ok::<_, DataFusionError>((url, UnboundedReceiverStream::new(load_info)))
             }
         });
-        let (workers, load_info_rxs): (Vec<_>, Vec<_>) = futures::future::try_join_all(futures)
-            .await?
-            .into_iter()
-            .unzip();
+        let (workers, load_info_rxs): (Vec<_>, Vec<_>) =
+            try_join_all(futures).await?.into_iter().unzip();
         self.query_coordinator
             .stage_coordinator(&input_stage)
             .seal_dynamic_filter_stage()?;
@@ -159,6 +181,45 @@ impl NetworkBoundaryBuilder for DynamicPlanBuilder<'_> {
             input_properties,
         })
     }
+}
+
+async fn prepare_worker_inputs(
+    query_coordinator: &Arc<QueryCoordinator>,
+    plan: &Arc<dyn ExecutionPlan>,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let prepared = Arc::clone(plan).transform_up_async(async |plan| {
+        let Some(boundary) = plan.as_network_boundary() else {
+            return Ok(Transformed::no(plan));
+        };
+        let Stage::Local(stage) = boundary.input_stage() else {
+            return Ok(Transformed::no(plan));
+        };
+        let dynamic_filter_anchors =
+            if is_remote_dynamic_filtering_enabled(query_coordinator.session_config())? {
+                orphan_dynamic_filter_consumers(&stage.plan)?
+            } else {
+                vec![]
+            };
+        let workers =
+            try_join_all((0..stage.tasks).map(|task| query_coordinator.start_task(stage, task)))
+                .await?
+                .into_iter()
+                .map(|(url, ..)| WorkerLocation::from(url))
+                .collect();
+        query_coordinator
+            .stage_coordinator(stage)
+            .seal_dynamic_filter_stage()?;
+        Ok(Transformed::yes(boundary.with_input_stage(
+            Stage::Remote(RemoteStage {
+                query_id: stage.query_id,
+                num: stage.num,
+                workers,
+                runtime_stats: None,
+                dynamic_filter_anchors,
+            }),
+        )?))
+    });
+    Ok(prepared.await?.data)
 }
 
 /// Reconstructs the plan dynamically as stages get transitioned to Remote and get sent to the

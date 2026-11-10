@@ -22,12 +22,13 @@ use crate::{
     CoordinatorToWorkerMsg, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedGetterExt,
     DistributedTaskContext, DistributedWorkUnitFeedContext, LoadInfo, LocalWorkerContext,
     MaybeEncoded, SetPlanRequest, TaskCompletedDynamicFilters, TaskKey, TaskMetrics,
-    WorkUnitFeedDeclaration, WorkerToCoordinatorMsg, get_distributed_channel_resolver,
+    WorkUnitFeedDeclaration, WorkerLocation, WorkerToCoordinatorMsg,
+    get_distributed_channel_resolver,
 };
 use datafusion::common::Result;
 use datafusion::common::instant::Instant;
 use datafusion::common::tree_node::{Transformed, TreeNodeRecursion};
-use datafusion::common::{DataFusionError, internal_err};
+use datafusion::common::{DataFusionError, exec_datafusion_err, internal_err};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr_common::metrics::{ExecutionPlanMetricsSet, Label, MetricBuilder};
 use datafusion::physical_plan::metrics::Count;
@@ -37,10 +38,11 @@ use datafusion::physical_plan::{ChildrenPropertiesMode, ExecutionPlan, ReplaceCh
 use datafusion::prelude::SessionConfig;
 use futures::future::try_join_all;
 use futures::stream::BoxStream;
-use futures::{StreamExt, TryStreamExt};
+use futures::{FutureExt, StreamExt, TryStreamExt};
 use std::sync::{Arc, Mutex};
 use tokio::select;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::sync::oneshot;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use url::Url;
 use uuid::Uuid;
@@ -140,6 +142,45 @@ impl QueryCoordinator {
             stage_coordinator.coordinator_to_worker_task(task_i, tx.clone())?;
             Ok((url, tx, load_info))
         }
+    }
+
+    /// Starts coordinator inputs independently while supervising all setup failures.
+    pub(super) fn start_pending_stage(self: &Arc<Self>, stage: &LocalStage) -> Vec<WorkerLocation> {
+        let mut workers = Vec::with_capacity(stage.tasks);
+        let mut setups = Vec::with_capacity(stage.tasks);
+        for task in 0..stage.tasks {
+            let (tx, rx) = oneshot::channel();
+            workers.push(WorkerLocation::Pending {
+                url: async move {
+                    rx.await
+                        .map_err(|_| Arc::new(exec_datafusion_err!("Task setup was cancelled")))?
+                }
+                .boxed()
+                .shared(),
+                query_finished: self.spawner.query_finished(),
+            });
+            setups.push((tx, self.start_task(stage, task)));
+        }
+        let coordinator = Arc::clone(self);
+        let stage = stage.clone();
+        let finished = self.spawner.query_finished();
+        self.spawner.spawn(async move {
+            let stage_coordinator = coordinator.stage_coordinator(&stage);
+            let setup = async {
+                try_join_all(setups.into_iter().map(|(tx, setup)| async move {
+                    let result = setup.await.map(|(url, ..)| url).map_err(Arc::new);
+                    let _ = tx.send(result.clone());
+                    result.map_err(DataFusionError::Shared)
+                }))
+                .await?;
+                stage_coordinator.seal_dynamic_filter_stage()
+            };
+            tokio::select! {
+                result = setup => result,
+                _ = finished.cancelled() => Ok(()),
+            }
+        });
+        workers
     }
 }
 
