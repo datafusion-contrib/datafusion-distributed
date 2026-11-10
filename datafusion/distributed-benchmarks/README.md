@@ -1,5 +1,34 @@
 # Local DataFusion benchmarks
 
+### Task startup overlap
+
+```shell
+cargo bench -p datafusion-distributed-benchmarks --bench startup_overlap -- --save-baseline main
+# Run the same benchmark on the candidate revision:
+cargo bench -p datafusion-distributed-benchmarks --bench startup_overlap -- --baseline main
+```
+
+This controlled benchmark runs two tasks over localhost gRPC in static and AQE
+mode. Task 0 performs 100 million dependent integer operations; task 1 returns
+one row. The existing localhost fixture starts three endpoints so both active
+tasks can route away from the coordinator's local endpoint. Each query must
+return task indices `[0, 1]`, and the CPU function must execute remotely once.
+
+`delay_light_task` adds 250 ms to task 1's routing setup, allowing task 0's CPU
+work to overlap that wait. `delay_heavy_task` delays task 0 instead, keeping the
+wait on the critical path; `no_delay` provides the other control. The delay is
+only in routing setup, not in the CPU workload. Criterion measures execution
+through complete output collection; worker startup and query planning are
+excluded. An untimed preflight also reports first-batch time and whether remote
+CPU work started and finished before the delayed task returned a ready
+destination. The witnesses are reported without requiring overlap, so the
+benchmark also runs before the optimization.
+
+Run both revisions on a quiet host and alternate comparisons. Verify a positive
+overlap witness in the candidate's `delay_light_task` preflight and its absence
+in the baseline before interpreting timings. This isolates scheduling value
+under controlled setup skew; it does not replace representative suite results.
+
 ### Generating Benchmarking data
 
 The `dfbench prepare-*` commands generate datasets under `--root` (by default
