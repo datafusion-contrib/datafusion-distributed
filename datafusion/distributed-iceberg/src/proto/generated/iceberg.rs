@@ -15,7 +15,7 @@ pub struct IcebergDataSource {
         ::std::collections::HashMap<::prost::alloc::string::String, ::prost::alloc::string::String>,
     #[prost(bytes = "vec", optional, tag = "6")]
     pub custom_file_io: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
-    /// Filters pushed into the scan, ANDed together.
+    /// Filters pushed into the scan. A row must pass all of them.
     #[prost(message, optional, tag = "7")]
     pub filters: ::core::option::Option<::datafusion_proto::protobuf::PhysicalExprNode>,
     /// Whether the scan takes part in dynamic filtering. It reports its filters to
@@ -43,7 +43,7 @@ pub struct ScanConfig {
         ::std::collections::HashMap<::prost::alloc::string::String, ::prost::alloc::string::String>,
     #[prost(bytes = "vec", optional, tag = "5")]
     pub custom_file_io: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
-    /// Filters pushed into the scan, ANDed together.
+    /// Filters pushed into the scan. A row must pass all of them.
     #[prost(message, optional, tag = "6")]
     pub filters: ::core::option::Option<::datafusion_proto::protobuf::PhysicalExprNode>,
     /// Whether the scan takes part in dynamic filtering. It reports its filters to
