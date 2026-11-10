@@ -4,12 +4,12 @@ use datafusion::common::runtime::JoinSet;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_plan::execute_stream;
 use datafusion::prelude::SessionContext;
+use datafusion_datasets::{
+    output::TESTDATA_ROOT, parquet_layout::ParquetLayout, register_tables, tpcds,
+};
 use datafusion_distributed::{
     DistributedExt, DistributedMetricsFormat, SessionStateBuilderExt, WorkerResolver,
     display_plan_ascii,
-};
-use datafusion_distributed_benchmarks::datasets::{
-    output::TESTDATA_ROOT, parquet_layout::ParquetLayout, register_tables, tpcds,
 };
 use futures::TryStreamExt;
 use std::error::Error;

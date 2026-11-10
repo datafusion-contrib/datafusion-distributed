@@ -16,7 +16,6 @@
 // under the License.
 
 use crate::backend::BenchmarkBackend;
-use crate::datasets::{clickbench, tpcds, tpch};
 use crate::local_workers::LocalWorkers;
 use crate::results::{BenchResult, BenchmarkRun, QueryIter, dataset_path};
 use crate::stats::stats_estimation_q_error;
@@ -31,6 +30,7 @@ use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_plan::{ExecutionPlan, collect};
 use datafusion::prelude::*;
+use datafusion_datasets::{clickbench, tpcds, tpch};
 use datafusion_distributed::test_utils::localhost::LocalHostWorkerResolver;
 use datafusion_distributed::test_utils::work_unit_file_scan::{
     WorkUnitFileScanCodec, WorkUnitFileScanConfig, WorkUnitFileScanRule,

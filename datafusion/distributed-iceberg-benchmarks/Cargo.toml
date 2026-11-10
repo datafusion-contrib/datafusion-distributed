@@ -8,6 +8,7 @@ publish = false
 [dependencies]
 async-trait = "0.1.89"
 datafusion = { workspace = true, features = ["parquet", "sql"] }
+datafusion-datasets = { path = "../datasets" }
 datafusion-distributed-benchmarks = { path = "../distributed-benchmarks" }
 datafusion-distributed-iceberg = { path = "../distributed-iceberg" }
 env_logger = "0.11.8"

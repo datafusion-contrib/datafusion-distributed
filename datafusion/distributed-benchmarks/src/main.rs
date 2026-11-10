@@ -1,9 +1,7 @@
 //! DataFusion Distributed benchmark runner
-mod prepare_clickbench;
-mod prepare_tpcds;
-mod prepare_tpch;
 
 use datafusion::error::Result;
+use datafusion_datasets::{prepare_clickbench, prepare_tpcds, prepare_tpch};
 use datafusion_distributed_benchmarks::{backend::ParquetBenchmarkBackend, compare, run};
 use structopt::StructOpt;
 

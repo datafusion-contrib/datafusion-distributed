@@ -79,6 +79,9 @@ Integration tests are slower but cover a wide range of functionality.
 ```bash
 # Run unit and integration tests
 cargo test --features integration
+
+# Run the integration tests of one file, e.g. tests/udfs.rs
+cargo test --features integration --test integration udfs::
 ```
 
 ## Running Benchmark Tests

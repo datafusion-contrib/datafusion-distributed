@@ -14,7 +14,7 @@ use futures::TryStreamExt;
 use tokio::io::AsyncWriteExt;
 use url::Url;
 
-use crate::datasets::common::workspace_root;
+use crate::common::workspace_root;
 
 const SUCCESS: &str = "_SUCCESS";
 

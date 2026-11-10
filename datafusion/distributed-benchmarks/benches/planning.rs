@@ -1,11 +1,11 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use datafusion::prelude::SessionContext;
+use datafusion_datasets::output::TESTDATA_ROOT;
+use datafusion_datasets::parquet_layout::ParquetLayout;
+use datafusion_datasets::tpch::TpchSpec;
+use datafusion_datasets::{register_tables, tpch};
 use datafusion_distributed::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
 use datafusion_distributed::{DistributedExt, create_distributed_plan};
-use datafusion_distributed_benchmarks::datasets::output::TESTDATA_ROOT;
-use datafusion_distributed_benchmarks::datasets::parquet_layout::ParquetLayout;
-use datafusion_distributed_benchmarks::datasets::tpch::TpchSpec;
-use datafusion_distributed_benchmarks::datasets::{register_tables, tpch};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::runtime::Builder as RuntimeBuilder;
