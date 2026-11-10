@@ -34,7 +34,7 @@ code itself.
 Some other more tangible concepts are the structs and traits exposed publicly,
 the most important are:
 
-## [SessionStateBuilderExt](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/src/distributed_planner/session_state_builder_ext.rs)
+## [SessionStateBuilderExt](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/datafusion/distributed/src/distributed_planner/session_state_builder_ext.rs)
 
 An extension trait for `SessionStateBuilder` that provides
 `with_distributed_planner()`. This registers a custom query planner that
@@ -44,7 +44,7 @@ physical planning.
 It builds the distributed plan from bottom to top, injecting network boundaries
 at appropriate locations based on the nodes present in the original plan.
 
-## [Worker](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/src/worker/worker_service.rs)
+## [Worker](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/datafusion/distributed/src/worker/worker_service.rs)
 
 gRPC server implementation that integrates with the Tonic ecosystem and listens
 to serialized plans that get executed over the wire.
@@ -52,7 +52,7 @@ to serialized plans that get executed over the wire.
 Users are expected to build these and spawn them in ports so that the network
 boundary nodes can reach them.
 
-## [WorkerResolver](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/src/worker_resolver.rs)
+## [WorkerResolver](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/datafusion/distributed/src/worker_resolver.rs)
 
 Determines the available workers in the Distributed DataFusion cluster by
 returning their URLs.
@@ -61,7 +61,7 @@ Different organizations have different networking requirements—from Kubernetes
 deployments to cloud provider solutions. This trait allows Distributed
 DataFusion to adapt to various scenarios.
 
-## [Planner event handlers](https://github.com/datafusion-contrib/datafusion-distributed/tree/main/src/events)
+## [Planner event handlers](https://github.com/datafusion-contrib/datafusion-distributed/tree/main/datafusion/distributed/src/events)
 
 Event handlers let applications participate in distinct distributed-planning lifecycle phases:
 `DesiredTaskCountHandler` supplies task-count hints, `ScaleUpLeafNodeHandler`
@@ -74,7 +74,7 @@ amount of data their leaf nodes will pull. Upper stages will have their number
 of tasks reduced or increased depending on how much the cardinality of the data
 was reduced in previous stages.
 
-## [DistributedTaskContext](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/src/stage.rs)
+## [DistributedTaskContext](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/datafusion/distributed/src/stage.rs)
 
 An extension present during the `ExecutionPlan::execute()` that contains
 information about the current task in which the plan is being executed.
@@ -91,7 +91,7 @@ return the first third of rows, task 2 the last third, and so on. See
 [Distribute a custom `ExecutionPlan`](../user-guide/04-distribute-custom-plan.md)
 for guidance on which approach to use.
 
-## [ChannelResolver](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/src/protocol/channel_resolver.rs)
+## [ChannelResolver](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/datafusion/distributed/src/protocol/channel_resolver.rs)
 
 Optional extension trait that allows to customize how connections are
 established to workers. Given one of the URLs returned by the `WorkerResolver`,

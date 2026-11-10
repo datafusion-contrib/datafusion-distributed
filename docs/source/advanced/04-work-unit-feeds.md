@@ -232,4 +232,4 @@ There is a complete, runnable example in the `examples/` folder:
 The integration tests are also a good reference for the range of plan shapes feeds support (unions,
 joins, aggregations, broadcast joins, error and back-pressure behaviour):
 
-- [tests/work_unit_feed.rs](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/tests/work_unit_feed.rs)
+- [tests/work_unit_feed.rs](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/datafusion/distributed/tests/work_unit_feed.rs)

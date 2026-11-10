@@ -51,4 +51,4 @@ cargo run --example localhost_run -- 'SELECT * FROM weather LIMIT 10' --cluster-
 ## Resources
 
 - [Examples directory](https://github.com/datafusion-contrib/datafusion-distributed/tree/main/examples) - Full working examples
-- [Integration tests](https://github.com/datafusion-contrib/datafusion-distributed/tree/main/tests) - Feature-specific examples
+- [Integration tests](https://github.com/datafusion-contrib/datafusion-distributed/tree/main/datafusion/distributed/tests) - Feature-specific examples

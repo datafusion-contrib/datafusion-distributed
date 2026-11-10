@@ -9,35 +9,44 @@ about a user's networking or deployment stack.
 
 ## Repository map
 
-- `src/`: library implementation.
-    - `codec/`: Protobuf codecs for the execution plans this project ships +
-      machinery for wiring up custom user-defined codecs.
-    - `common/`: internal shared helpers. These are collections of reusable
-      functions that are not coupled to anything else in the project, they are
-      standalone helpers.
-    - `coordinator/`: Main execution plan implementation in charge of sending
-      plans to workers and execute them.
-    - `distributed_planner/`: transforms DataFusion physical plans for
-      distributed execution. See further instructions in
-      [src/distributed_planner/AGENTS.md](./src/distributed_planner/AGENTS.md)
-    - `events/`: event handlers where users can customize how this project
-      reacts to certain distributed events. See further instructions in
-      [src/events/AGENTS.md](./src/events/AGENTS.md)
-    - `execution_plans/`: distributed physical-plan nodes and test-only
-      execution benchmarks. Any ExecutionPlan implementation should be
-      contributed here as its own module.
-    - `metrics/`: task-metric collection and distributed-plan metric rendering.
-    - `protocol/`: coordinator-worker messages, channel resolution, and gRPC
-      transport. Anything gRPC specific should be contributed to
-      `protocol/grpc`.
-    - `test_utils/`: shared test fixtures, plans, resolvers, and assertions.
-    - `work_unit_feed/`: work-unit definitions, providers, registries, and
-      remote-feed support.
-    - `worker/`: worker service, sessions, task execution, and connections.
-- `tests/`: integration and correctness tests.
-- `examples/`: runnable usage examples.
-- `benchmarks/`: local benchmark crate and microbenchmarks; do not change
-  benchmark behavior as an incidental part of a library change.
+- `datafusion/distributed/`: the core `datafusion-distributed` library crate.
+    - `src/`: library implementation.
+        - `codec/`: Protobuf codecs for the execution plans this project ships +
+          machinery for wiring up custom user-defined codecs.
+        - `common/`: internal shared helpers. These are collections of reusable
+          functions that are not coupled to anything else in the project, they are
+          standalone helpers.
+        - `coordinator/`: Main execution plan implementation in charge of sending
+          plans to workers and execute them.
+        - `distributed_planner/`: transforms DataFusion physical plans for
+          distributed execution. See further instructions in
+          [src/distributed_planner/AGENTS.md](./datafusion/distributed/src/distributed_planner/AGENTS.md)
+        - `events/`: event handlers where users can customize how this project
+          reacts to certain distributed events. See further instructions in
+          [src/events/AGENTS.md](./datafusion/distributed/src/events/AGENTS.md)
+        - `execution_plans/`: distributed physical-plan nodes and test-only
+          execution benchmarks. Any ExecutionPlan implementation should be
+          contributed here as its own module.
+        - `metrics/`: task-metric collection and distributed-plan metric rendering.
+        - `protocol/`: coordinator-worker messages, channel resolution, and gRPC
+          transport. Anything gRPC specific should be contributed to
+          `protocol/grpc`.
+        - `test_utils/`: shared test fixtures, plans, resolvers, and assertions.
+        - `work_unit_feed/`: work-unit definitions, providers, registries, and
+          remote-feed support.
+        - `worker/`: worker service, sessions, task execution, and connections.
+    - `tests/`: integration and correctness tests.
+- `datafusion/distributed-iceberg/`: Iceberg integration crate.
+- `datafusion/distributed-iceberg-test-tools/`: shared Iceberg test fixtures.
+- `datafusion/distributed-console/`: terminal console for observing a cluster.
+- `datafusion/distributed-cli/`: distributed variant of the DataFusion CLI.
+- `datafusion/distributed-benchmarks/`, `datafusion/distributed-iceberg-benchmarks/`,
+  `datafusion/distributed-remote-worker/`: local benchmark crates, remote
+  benchmark worker, and microbenchmarks; do not change benchmark behavior as an
+  incidental part of a library change.
+- `examples/`: runnable usage examples for the core library (wired into
+  `datafusion/distributed/Cargo.toml` as `[[example]]` targets).
+- `testdata/`: datasets and queries shared by all crates.
 - `docs/`: Sphinx documentation. Contributor documentation is in
   `docs/source/contributor-guide/`.
 
