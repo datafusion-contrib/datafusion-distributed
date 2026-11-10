@@ -1,3 +1,4 @@
+use crate::common::arrow_bytes::scan_arrow_bytes;
 use crate::{IcebergConfig, common::df_err};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::stats::Precision;
@@ -121,35 +122,41 @@ impl fmt::Debug for ScanConfig {
 const TOTAL_RECORDS: &str = "total-records";
 const TOTAL_FILE_SIZE: &str = "total-files-size";
 
-/// Getting stats out of snapshot's additional properties (no I/O overhead)
+/// Getting stats out of snapshot's additional properties (no I/O overhead), with `column_statistics`
+/// when they were read. The total size is an in-memory estimate from [scan_arrow_bytes].
 pub(crate) fn stats_from_snapshot(
     snapshot: Option<SnapshotRef>,
     schema: &SchemaRef,
-) -> Result<Statistics> {
-    let Some(snap) = snapshot else {
+    column_statistics: Option<Vec<ColumnStatistics>>,
+) -> Statistics {
+    let num_rows = match snapshot {
         // A table with no current snapshot has never had a commit. It was created, but zero data files were added
-        return Ok(Statistics {
-            num_rows: Precision::Exact(0),
-            total_byte_size: Precision::Exact(0),
-            column_statistics: vec![ColumnStatistics::new_unknown(); schema.fields().len()],
-        });
+        None => Precision::Exact(0),
+        Some(snap) => snap
+            .summary()
+            .additional_properties
+            .get(TOTAL_RECORDS)
+            .and_then(|v| v.parse().ok())
+            .map(Precision::Exact)
+            .unwrap_or(Precision::Absent),
     };
-    let props = &snap.summary().additional_properties;
-
-    let num_rows = props
-        .get(TOTAL_RECORDS)
-        .and_then(|v| v.parse().ok())
-        .map(Precision::Exact)
-        .unwrap_or(Precision::Absent);
-    let total_byte_size = props
-        .get(TOTAL_FILE_SIZE)
-        .and_then(|v| v.parse().ok())
-        .map(Precision::Exact)
-        .unwrap_or(Precision::Absent);
-
-    Ok(Statistics {
+    let column_statistics = column_statistics
+        .unwrap_or_else(|| vec![ColumnStatistics::new_unknown(); schema.fields().len()]);
+    Statistics {
         num_rows,
-        total_byte_size,
-        column_statistics: vec![ColumnStatistics::new_unknown(); schema.fields().len()],
-    })
+        total_byte_size: scan_arrow_bytes(schema, num_rows, &column_statistics),
+        column_statistics,
+    }
+}
+
+/// On-disk size of the snapshot's data files, from its summary (no I/O overhead).
+pub(crate) fn snapshot_file_bytes(snapshot: Option<&SnapshotRef>) -> Option<usize> {
+    let Some(snap) = snapshot else {
+        return Some(0);
+    };
+    snap.summary()
+        .additional_properties
+        .get(TOTAL_FILE_SIZE)?
+        .parse()
+        .ok()
 }

@@ -105,21 +105,24 @@ pub(crate) async fn plan_scan(
             Some(projection) => projection.iter().map(|&idx| fields[idx].id).collect(),
             None => fields.iter().map(|f| f.id).collect(),
         };
-        Some(compute_column_stats(table.clone(), field_ids, table_snapshot.clone()).await?)
+        // The scan's Arrow schema lists the same columns in the same order.
+        let columns = field_ids
+            .into_iter()
+            .zip(scan.schema.fields().iter().map(|f| f.data_type().clone()))
+            .collect();
+        Some(compute_column_stats(table.clone(), columns, table_snapshot.clone()).await?)
     } else {
         None
     };
     if let Some(planned) = planned {
-        let mut statistics = planned.statistics(&scan.schema, may_filter_rows);
-        if let Some(column_stats) = column_stats {
-            statistics.column_statistics = column_stats;
-        }
+        let statistics = planned.statistics(&scan.schema, may_filter_rows, column_stats);
         let partitions = assign_files(planned.tasks().iter(), 1, partitioning.partition_count())?
             .pop()
             .expect("one task was assigned");
         return Ok(DataSourceExec::from_data_source(EagerIcebergDataSource {
             scan,
             statistics: Arc::new(statistics),
+            file_bytes: Some(planned.file_bytes()),
             files: planned,
             partitions: partitions.into(),
         }));

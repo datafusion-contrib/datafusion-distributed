@@ -14,28 +14,24 @@ pub fn iceberg_desired_task_count(
     ev: DesiredTaskCountEvent,
 ) -> Option<Result<DesiredTaskCountEventResponse>> {
     let node = ev.plan.downcast_ref::<DataSourceExec>()?.data_source();
-    if !node.is::<LazyIcebergDataSource>() && !node.is::<EagerIcebergDataSource>() {
-        return None;
-    }
-    let statistics = match node.partition_statistics(None) {
-        Ok(statistics) => statistics,
-        Err(error) => return Some(Err(error)),
+    // Scan work is the bytes read from disk. The statistics hold in-memory estimates.
+    let (file_bytes, file_count) = match node.downcast_ref::<EagerIcebergDataSource>() {
+        Some(source) => (source.file_bytes?, Some(source.planned_files().count())),
+        None => (
+            node.downcast_ref::<LazyIcebergDataSource>()?.file_bytes()?,
+            None,
+        ),
     };
-    let total_bytes = *statistics.total_byte_size.get_value()?;
     let config = DistributedConfig::from_session_config(ev.session_config).ok()?;
 
     Some(
         calculate_task_count(
-            total_bytes,
+            file_bytes,
             config.file_scan_config_bytes_per_partition,
             ev.session_config.target_partitions(),
         )
         .map(|count| {
-            let count = node
-                .downcast_ref::<EagerIcebergDataSource>()
-                .map_or(count, |source| {
-                    count.min(source.planned_files().count() as f64)
-                });
+            let count = file_count.map_or(count, |files| count.min(files as f64));
             DesiredTaskCountEventResponse::soft(count)
         }),
     )

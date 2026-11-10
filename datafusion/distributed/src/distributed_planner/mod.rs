@@ -19,3 +19,4 @@ pub(crate) use inject_network_boundaries::{
 pub use network_boundary::{NetworkBoundary, NetworkBoundaryExt, ProducerHead};
 pub use session_state_builder_ext::SessionStateBuilderExt;
 pub(crate) use statistics::calculate_cost;
+pub use statistics::default_bytes_for_datatype;
