@@ -1,15 +1,15 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use datafusion::error::DataFusionError;
 use datafusion::physical_plan::collect;
+use datafusion_datasets::output::TESTDATA_ROOT;
+use datafusion_datasets::parquet_layout::ParquetLayout;
+use datafusion_datasets::tpch::TpchSpec;
+use datafusion_datasets::{register_tables, tpch};
 use datafusion_distributed::test_utils::localhost::start_localhost_context;
 use datafusion_distributed::{
     DefaultSessionBuilder, DistributedExec, DistributedExt, DistributedMetricsFormat,
     display_plan_ascii, rewrite_distributed_plan_with_metrics,
 };
-use datafusion_distributed_benchmarks::datasets::output::TESTDATA_ROOT;
-use datafusion_distributed_benchmarks::datasets::parquet_layout::ParquetLayout;
-use datafusion_distributed_benchmarks::datasets::tpch::TpchSpec;
-use datafusion_distributed_benchmarks::datasets::{register_tables, tpch};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::runtime::Builder as RuntimeBuilder;

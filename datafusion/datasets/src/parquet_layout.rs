@@ -1,4 +1,4 @@
-use super::output::DatasetOutput;
+use crate::output::DatasetOutput;
 use arrow::array::RecordBatch;
 use arrow::compute::cast;
 use arrow::datatypes::{DataType, Field, Schema};

@@ -5,7 +5,7 @@ use datafusion::error::Result;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::SessionContext;
 
-use crate::datasets::register_tables;
+use datafusion_datasets::register_tables;
 
 #[async_trait]
 pub trait BenchmarkBackend: Send + Sync + 'static {

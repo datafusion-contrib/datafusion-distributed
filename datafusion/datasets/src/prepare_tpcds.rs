@@ -1,7 +1,7 @@
+use crate::output::TESTDATA_ROOT;
+use crate::parquet_layout::ParquetLayout;
+use crate::tpcds::{TpcdsSpec, generate_data};
 use datafusion::common::{Result, exec_datafusion_err};
-use datafusion_distributed_benchmarks::datasets::output::TESTDATA_ROOT;
-use datafusion_distributed_benchmarks::datasets::parquet_layout::ParquetLayout;
-use datafusion_distributed_benchmarks::datasets::tpcds::{TpcdsSpec, generate_data};
 use structopt::StructOpt;
 
 /// Prepare TPC-DS parquet files for benchmarks

@@ -1,11 +1,11 @@
 #[cfg(all(feature = "integration", feature = "tpch", test))]
 mod tests {
+    use datafusion_datasets::{
+        output::TESTDATA_ROOT, parquet_layout::ParquetLayout, register_tables, tpch,
+    };
     use datafusion_distributed::test_utils::in_memory_channel_resolver::start_in_memory_context;
     use datafusion_distributed::{
         DefaultSessionBuilder, DistributedExt, assert_snapshot, display_plan_ascii,
-    };
-    use datafusion_distributed_benchmarks::datasets::{
-        output::TESTDATA_ROOT, parquet_layout::ParquetLayout, register_tables, tpch,
     };
     use std::error::Error;
     use tokio::sync::OnceCell;
