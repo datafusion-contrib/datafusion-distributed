@@ -138,7 +138,7 @@ fn convert_not(not: &NotExpr) -> Option<Converted> {
 ///
 /// Partitioned hash joins build filters like this, with one branch per partition:
 /// `CASE hash(a) % 2 WHEN 0 THEN a IN (1, 2) WHEN 1 THEN a IN (3) ELSE false END`.
-/// Iceberg can't compute the hash, so the WHENs are dropped, leaving
+/// Iceberg can't compute the hash, so the WHEN conditions are dropped, leaving
 /// `a IN (1, 2) OR a IN (3)`.
 ///
 /// A missing ELSE means NULL, which matches nothing.
