@@ -1,13 +1,15 @@
 use crate::{IcebergConfig, common::df_err};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::stats::Precision;
-use datafusion::common::tree_node::TreeNodeRecursion;
+use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{ColumnStatistics, Statistics};
 use datafusion::error::Result;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
+use datafusion::physical_expr::expressions::{InListExpr, lit};
 use datafusion::physical_expr::{
     DynamicFilterTracking, Partitioning, PhysicalExpr, conjunction, split_conjunction,
 };
+use datafusion::physical_expr_common::physical_expr::snapshot_physical_expr;
 use datafusion::physical_plan::apply_expression_roots;
 use datafusion::physical_plan::limit::LimitStream;
 use datafusion::physical_plan::metrics::{
@@ -85,7 +87,8 @@ impl ScanConfig {
         apply_expression_roots(self.filters.iter(), f)
     }
 
-    /// Writes the scan's dynamic filters into `f` when dynamic filtering is enabled.
+    /// Writes the scan's dynamic filters into `f` when dynamic filtering is enabled. A join filter
+    /// can list thousands of keys, so an IN list of more than 5 values prints as its count.
     pub(crate) fn fmt_dynamic_filters(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if !self.dynamic_filtering_enabled {
             return Ok(());
@@ -101,7 +104,21 @@ impl ScanConfig {
         if dynamic_filters.is_empty() {
             return Ok(());
         }
-        write!(f, ", dynamic_filters={}", conjunction(dynamic_filters))
+        write!(f, ", dynamic_filters=")?;
+        for (i, filter) in dynamic_filters.into_iter().enumerate() {
+            if i > 0 {
+                write!(f, " AND ")?;
+            }
+            // A dynamic filter is at generation 1 until it gets its first values.
+            if filter.snapshot_generation() == 1 {
+                write!(f, "DynamicFilter [ empty ]")?;
+                continue;
+            }
+            let current = snapshot_physical_expr(filter).map_err(|_| fmt::Error)?;
+            let current = count_long_in_lists(current).map_err(|_| fmt::Error)?;
+            write!(f, "DynamicFilter [ {current} ]")?;
+        }
+        Ok(())
     }
 
     pub(crate) fn open(
@@ -156,6 +173,19 @@ impl fmt::Debug for ScanConfig {
             .field("dynamic_filtering_enabled", &self.dynamic_filtering_enabled)
             .finish_non_exhaustive()
     }
+}
+
+/// `expr` with each IN list of more than 5 values replaced by text giving its count, for printing.
+fn count_long_in_lists(expr: Arc<dyn PhysicalExpr>) -> Result<Arc<dyn PhysicalExpr>> {
+    expr.transform_up(|expr| match expr.downcast_ref::<InListExpr>() {
+        Some(in_list) if in_list.len() > 5 => {
+            let not = if in_list.negated() { "NOT " } else { "" };
+            let text = format!("{} {not}IN ([{} elements])", in_list.expr(), in_list.len());
+            Ok(Transformed::yes(lit(text)))
+        }
+        _ => Ok(Transformed::no(expr)),
+    })
+    .map(|expr| expr.data)
 }
 
 /// Snapshot summary keys defined by the Iceberg table spec:
