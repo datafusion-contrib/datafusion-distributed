@@ -6,10 +6,8 @@ use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{ColumnStatistics, Statistics};
 use datafusion::error::Result;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
-use datafusion::physical_expr::expressions::{InListExpr, lit};
-use datafusion::physical_expr::{
-    DynamicFilterTracking, Partitioning, PhysicalExpr, conjunction, split_conjunction,
-};
+use datafusion::physical_expr::expressions::{DynamicFilterPhysicalExpr, InListExpr, lit};
+use datafusion::physical_expr::{Partitioning, PhysicalExpr, conjunction, split_conjunction};
 use datafusion::physical_expr_common::physical_expr::snapshot_physical_expr;
 use datafusion::physical_plan::apply_expression_roots;
 use datafusion::physical_plan::limit::LimitStream;
@@ -21,7 +19,7 @@ use futures::stream::poll_fn;
 use futures::{StreamExt, TryStreamExt};
 use iceberg::arrow::{ArrowReader, ArrowReaderBuilder};
 use iceberg::io::FileIO;
-use iceberg::scan::{FileScanTask, FileScanTaskStream};
+use iceberg::scan::FileScanTaskStream;
 use iceberg::spec::SnapshotRef;
 use std::fmt;
 use std::future::ready;
@@ -98,11 +96,7 @@ impl ScanConfig {
         let Some(filters) = &self.filters else {
             return Ok(());
         };
-        let dynamic_filters: Vec<_> = split_conjunction(filters)
-            .into_iter()
-            .filter(|filter| DynamicFilterTracking::classify(filter).contains_dynamic_filter())
-            .cloned()
-            .collect();
+        let dynamic_filters = dynamic_filters(filters);
         if dynamic_filters.is_empty() {
             return Ok(());
         }
@@ -151,14 +145,18 @@ impl ScanConfig {
             .with_category(MetricCategory::Bytes)
             .gauge("bytes_scanned", partition);
 
-        let dynamic_filters = self.dynamic_filters();
-        let mut partition_skipper = PartitionSkipper::new(dynamic_filters);
-
+        let mut partition_skipper = self.partition_skipper();
+        // The reader pulls a task when it starts reading that task's file. It reads ahead,
+        // so with a LIMIT this can count files that never produced output. Skipped files
+        // are dropped before this, so they aren't counted.
         let tasks = tasks
-            .try_filter(move |task| ready(!partition_skipper.should_skip_task(task)))
-            .inspect_ok(move |_| {
-                files_opened.add(1);
+            .try_filter(move |task| {
+                let skip = partition_skipper
+                    .as_mut()
+                    .is_some_and(|skipper| skipper.should_skip_task(task));
+                ready(!skip)
             })
+            .inspect_ok(move |_| files_opened.add(1))
             .boxed();
         let result = self.reader.clone().read(tasks).map_err(df_err)?;
 
@@ -182,25 +180,30 @@ impl ScanConfig {
         Ok(Box::pin(LimitStream::new(stream, 0, self.fetch, metrics)))
     }
 
-    fn dynamic_filters(&self) -> Vec<Arc<dyn PhysicalExpr>> {
+    /// A skipper over the scan's dynamic filters. `None` when dynamic filtering is off or the
+    /// scan has no dynamic filter.
+    fn partition_skipper(&self) -> Option<PartitionSkipper> {
         if !self.dynamic_filtering_enabled {
-            return vec![];
+            return None;
         }
-
-        let Some(filters) = &self.filters else {
-            return vec![];
-        };
-
-        split_conjunction(filters)
-            .into_iter()
-            .filter(|filter| DynamicFilterTracking::classify(filter).contains_dynamic_filter())
-            .cloned()
-            .collect()
+        let dynamic_filters = dynamic_filters(self.filters.as_ref()?);
+        (!dynamic_filters.is_empty()).then(|| PartitionSkipper::new(dynamic_filters))
     }
 }
 
-fn should_skip_task(task: &FileScanTask, dynamic_filters: &Vec<Arc<dyn PhysicalExpr>>) -> bool {
-    return false;
+/// The parts of `filters` that contain a dynamic filter. It only looks at the expressions, so
+/// it doesn't subscribe to the filters' updates.
+fn dynamic_filters(filters: &Arc<dyn PhysicalExpr>) -> Vec<Arc<dyn PhysicalExpr>> {
+    split_conjunction(filters)
+        .into_iter()
+        .filter(|filter| {
+            matches!(
+                filter.exists(|expr| Ok(expr.is::<DynamicFilterPhysicalExpr>())),
+                Ok(true)
+            )
+        })
+        .cloned()
+        .collect()
 }
 
 impl fmt::Debug for ScanConfig {

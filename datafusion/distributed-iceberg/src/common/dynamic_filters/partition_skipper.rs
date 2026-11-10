@@ -17,7 +17,7 @@ use crate::table_provider::physical_predicate::convert_physical_filter_to_predic
 
 /// Skips files whose partition value can't match the scan's dynamic filters.
 pub(crate) struct PartitionSkipper {
-    /// The dynamic filters that will be used to evaluate whether a task can be skipped based on it's partition keys
+    /// The scan's dynamic filters, combined with AND.
     dynamic_filters: Arc<dyn PhysicalExpr>,
 
     /// The generation of `dynamic_filters` that `predicate` was built from.
@@ -27,7 +27,9 @@ pub(crate) struct PartitionSkipper {
     predicate: Option<BoundPredicate>,
 
     /// `predicate` projected onto each partition spec and bound to its partition schema, by spec
-    /// id. `None` keeps every file written with that spec. Cleared when `predicate` changes.
+    /// id. `None` keeps every file written with that spec. That happens when the projection
+    /// matches every partition, or when the spec's partition values can't be checked. Cleared
+    /// when `predicate` changes.
     partition_predicates: HashMap<i32, Option<BoundPredicate>>,
 }
 
@@ -43,25 +45,37 @@ impl PartitionSkipper {
 
     /// Whether no row in the task's partition can match the filters. Any error keeps the file.
     pub(crate) fn should_skip_task(&mut self, task: &FileScanTask) -> bool {
-        self.refresh(task);
-        let Some(predicate) = &self.predicate else {
-            return false;
-        };
         let (Some(spec), Some(partition)) = (task.partition_spec(), task.partition()) else {
             return false;
         };
         if spec.is_unpartitioned() {
             return false;
         }
+        self.refresh(task);
+        let Some(predicate) = &self.predicate else {
+            return false;
+        };
         // Every task in a scan has the same table schema, so the spec id is enough as a key.
         let partition_predicate = self
             .partition_predicates
             .entry(spec.spec_id())
-            .or_insert_with(|| project_onto_spec(predicate, spec, task.schema()).ok());
-        let Some(partition_predicate) = partition_predicate else {
+            .or_insert_with(|| {
+                project_onto_spec(predicate, spec, task.schema())
+                    .ok()
+                    .filter(|projected| !matches!(projected, BoundPredicate::AlwaysTrue))
+            });
+        let Some(projected) = partition_predicate.as_ref() else {
             return false;
         };
-        !evaluate(partition_predicate, spec, partition).unwrap_or(true)
+        match evaluate(projected, spec, partition) {
+            Ok(matches) => !matches,
+            // Files with the same spec would most likely fail the same way, so stop checking
+            // them until the filters change.
+            Err(_) => {
+                *partition_predicate = None;
+                false
+            }
+        }
     }
 
     /// Rebuilds the predicate when any of the filters has changed.
@@ -116,7 +130,8 @@ fn project(predicate: &BoundPredicate, spec: &PartitionSpec) -> iceberg::Result<
             let [left, right] = expr.inputs();
             project(left, spec)?.or(project(right, spec)?)
         }
-        // `refresh` removes every NOT before binding. Keep the file if one shows up anyway.
+        // The filter translator turns each NOT into the opposite comparison, so none reach
+        // here. Keep the file if one shows up anyway.
         BoundPredicate::Not(_) => Predicate::AlwaysTrue,
         BoundPredicate::Unary(expr) => project_column(expr.term(), predicate, spec)?,
         BoundPredicate::Binary(expr) => project_column(expr.term(), predicate, spec)?,
@@ -198,10 +213,9 @@ fn evaluate(
             let Some(value) = partition_value(expr.term(), spec, partition)? else {
                 return Ok(matches!(expr.op(), PredicateOperator::NotIn));
             };
-            if let Some(literal) = expr
-                .literals()
-                .iter()
-                .find(|literal| literal.data_type() != value.data_type())
+            // Binding gives every value in the set the column's type, so checking one is enough.
+            if let Some(literal) = expr.literals().iter().next()
+                && literal.data_type() != value.data_type()
             {
                 return Err(type_mismatch(&value, literal));
             }
