@@ -10,7 +10,8 @@ use iceberg::expr::{Predicate, Reference};
 use iceberg::spec::{Datum, PrimitiveType};
 
 /// Turns a DataFusion filter into an iceberg predicate. The predicate matches every row that the
-/// filter would match, and *can* match more if the DF expression cannot be translated into an Iceberg predicate completely.
+/// filter would match, and *can* match more if the DF expression cannot be translated into an
+/// Iceberg predicate completely.
 /// Returns `None` when no part of the filter can be converted.
 pub(crate) fn convert_physical_filter_to_predicate(
     filter: &Arc<dyn PhysicalExpr>,
@@ -128,25 +129,32 @@ fn convert_not(not: &NotExpr) -> Option<Converted> {
         .map(|inner| Converted::exact(inner.predicate.negate()))
 }
 
-/// In a CASE, each WHEN picks which THEN decides if a row is kept. So every row the CASE
-/// keeps passed some WHEN and its THEN, and this matches it:
+/// In a CASE statement, each WHEN/THEN pair applies a filter over the rows.
+///
 /// `CASE WHEN c1 THEN x WHEN c2 THEN y ELSE z END` becomes `(c1 AND x) OR (c2 AND y) OR z`.
 /// It ignores that the second branch only applies when `c1` is false, so it can match
-/// extra rows. That's fine here, but a NOT over it could skip rows the filter keeps.
+/// extra rows.
 ///
 /// `CASE a WHEN 1 THEN x ...` works the same way, with `a = 1` as the WHEN.
 ///
-/// Partitioned hash joins build filters like this, with one branch per partition:
-/// `CASE hash(a) % 2 WHEN 0 THEN a IN (1, 2) WHEN 1 THEN a IN (3) ELSE false END`.
-/// Iceberg can't compute the hash, so the WHEN conditions are dropped, leaving
-/// `a IN (1, 2) OR a IN (3)`.
-///
 /// A missing ELSE means NULL, which matches nothing.
 fn convert_case(case: &CaseExpr) -> Option<Converted> {
+    // This handles the two variants for CASE
+    // 1. CASE WHEN a = 1 THEN ...
+    // In this variant, `case.expr()` is `None` because the expression is imbued in the WHEN clause.
+    // We pass the WHEN clause to our general predicate converter for this.
+    //
+    // 2. CASE a WHEN 0 THEN ...
+    // In this variant, `case.expr()` is `Some(a)`, and each WHEN clause compares its own
+    // expression with this expression.
+    // To handle this, we convert this into a comparison predicate.
+    // Iceberg predicates can't always represent a given expression; if that is the case, we drop
+    // the predicate for the WHEN clause.
     let convert_when = |when| match case.expr() {
         Some(value) => compare(value, Operator::Eq, when).map(Converted::exact),
         None => convert(when),
     };
+
     let predicate = case
         .when_then_expr()
         .iter()
@@ -251,12 +259,26 @@ fn convert_like(like: &LikeExpr) -> Option<Predicate> {
     if like.case_insensitive() {
         return None;
     }
+
+    // Iceberg can only represent prefix matches using plain columns.
+    // E.g. WHERE s LIKE ...
+    // It cannot represent complex expressions or functions on the left side of the match
+    // E.g  WHERE upper(s) LIKE ...
+    // `column_name` will return None if the left side is not a plain column and we don't add a
+    // predicate for this LikeExpr
     let column = Reference::new(column_name(like.expr())?);
+
+    // The pattern being matched *must* be a string literal that ends in a '%', which means that it
+    // is trying to match the string's prefix.
+    //
+    // Iceberg can only support `STARTS WITH` predicates - after stripping the final '%',
+    // if there are more symbols in the string that could represent a broader match,
+    // we don't add a predicate for this LikeExpr
     let prefix = string_literal(like.pattern())?.strip_suffix('%')?;
-    // Any other `%` or `_`, or a `\`, means it's more than a simple prefix.
     if prefix.contains(['%', '_', '\\']) {
         return None;
     }
+
     let prefix = prefix_datum(prefix)?;
     Some(if like.negated() {
         column.not_starts_with(prefix)
@@ -277,10 +299,12 @@ fn convert_function(function: &ScalarFunctionExpr) -> Option<Predicate> {
     }
 }
 
-/// Iceberg counts bytes where it should count characters when it checks STARTS WITH against
-/// a `truncate` partition. With `truncate(2)`, the prefix `é` is 2 bytes, so iceberg only
-/// looks in the partition `é` and skips the partition `éa`, which also has matching rows.
-/// ASCII text has one byte per character, so only ASCII prefixes are converted.
+/// Converts a string used as the prefix in a 'STARTS WITH' clause into a Datum
+///
+/// This only works for ASCII strings. This is because iceberg-rust currently has a bug
+/// where it can skip rows unintentionally if a partition column truncates the underlying value
+/// via truncate(N) and if that underlying value contains non-ascii characters
+/// Ref: https://github.com/apache/iceberg-rust/issues/3626
 fn prefix_datum(prefix: &str) -> Option<Datum> {
     prefix.is_ascii().then(|| Datum::string(prefix))
 }
@@ -670,7 +694,6 @@ mod tests {
     }
 
     /// Turns SQL like `a < 5` into a DataFusion filter over [`schema`], then converts it.
-    /// DataFusion's simplify step is skipped, so `NOT (a < 5)` stays a NOT.
     fn convert_sql(filter: &str) -> String {
         let schema = DFSchema::try_from(schema()).unwrap();
         let ctx = SessionContext::new();
