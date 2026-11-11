@@ -61,3 +61,7 @@ harness = false
 [[bench]]
 name = "startup_overlap"
 harness = false
+
+[[bench]]
+name = "sibling_topk"
+harness = false

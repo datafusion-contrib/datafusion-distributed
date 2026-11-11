@@ -242,6 +242,7 @@ fn apply_filters_to_distributed_leaves(
                 return internal_err!("missing producer schema for dynamic filter {}", consumer.id);
             };
             apply_dynamic_filter_update(
+                consumer.id,
                 &consumer.expression,
                 expression,
                 producer_schema.as_ref(),

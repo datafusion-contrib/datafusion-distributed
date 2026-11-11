@@ -2,7 +2,7 @@ use crate::common::TreeNodeExt;
 #[cfg(feature = "integration")]
 use crate::common::on_drop_stream;
 use crate::dynamic_filtering::{
-    apply_dynamic_filter_update, discover_dynamic_filter_consumers,
+    apply_dynamic_filter_update, attach_sibling_topk_consumers, discover_dynamic_filter_consumers,
     discover_dynamic_filter_producers,
 };
 use crate::events::{TaskFinishedHandlers, WorkerPlanRewriteEvent, WorkerPlanRewriteHandlers};
@@ -84,6 +84,7 @@ impl Worker {
             let shuffle_batch_size = d_cfg.shuffle_batch_size;
             let collect_metrics = d_cfg.collect_metrics;
             let collect_dynamic_filters = d_cfg.collect_dynamic_filters;
+            let share_sibling_topk = d_cfg.enable_sibling_topk_filter_pushdown;
             if shuffle_batch_size != 0 {
                 cfg = cfg.with_batch_size(shuffle_batch_size);
             }
@@ -107,10 +108,20 @@ impl Worker {
                 session_config: session_state.config(),
             };
             let plan = WorkerPlanRewriteHandlers::handle(ev).await?.plan;
+            // A custom worker session can disable sharing, but requested updates still
+            // need separate state so they cannot overwrite a local producer.
+            let sibling_producer_ids = if share_sibling_topk {
+                request.dynamic_filter_remote_producer_ids.as_slice()
+            } else {
+                &[]
+            };
+            let (plan, sibling_topk_consumers) =
+                attach_sibling_topk_consumers(plan, &task_ctx, sibling_producer_ids)?;
 
             // Initialize partition count to the number of partitions in the stage
             Ok::<_, DataFusionError>(TaskData {
                 base_plan: plan,
+                sibling_topk_consumers,
                 final_plan: Arc::new(OnceLock::new()),
                 task_ctx,
                 metrics_tx: match collect_metrics {
@@ -147,12 +158,14 @@ impl Worker {
         let producer_filters = discover_dynamic_filter_producers(&task_data.base_plan)?
             .into_iter()
             .filter(|producer| dynamic_filter_remote_producer_ids.contains(&producer.id));
-        let dynamic_filter_consumers: HashMap<_, _> =
+        let mut dynamic_filter_consumers: HashMap<_, _> =
             discover_dynamic_filter_consumers(&task_data.base_plan)?
                 .consumers
                 .into_iter()
-                .map(|consumer| (consumer.id, consumer))
+                .map(|consumer| (consumer.id, consumer.expression))
                 .collect();
+        // Sibling updates use the original wire ID but must not update the local producer.
+        dynamic_filter_consumers.extend(task_data.sibling_topk_consumers.clone());
         let (producer_cancel_tx, producer_cancel_rx) = watch::channel(false);
 
         // Continue reading remaining messages (work unit feed data) in the background.
@@ -222,7 +235,8 @@ impl Worker {
                             })
                             .and_then(|consumer| {
                                 apply_dynamic_filter_update(
-                                    &consumer.expression,
+                                    filter.expression_id,
+                                    consumer,
                                     &filter.expression,
                                     filter.producer_schema.as_ref(),
                                     &dynamic_filter_task_ctx,
@@ -391,27 +405,39 @@ fn produced_dynamic_filter_stream(
     expression: Arc<dyn PhysicalExpr>,
     cancel_rx: watch::Receiver<bool>,
 ) -> BoxStream<'static, WorkerToCoordinatorMsg> {
-    futures::stream::unfold(Some((expression, cancel_rx)), move |state| async move {
-        let (expression, mut cancel_rx) = state?;
+    futures::stream::unfold(Some((expression, cancel_rx, 1)), move |state| async move {
+        let (expression, mut cancel_rx, previous_generation) = state?;
+        if *cancel_rx.borrow() {
+            return None;
+        }
         let dynamic_filter = expression
             .downcast_ref::<DynamicFilterPhysicalExpr>()
             .expect("producer discovery returns DynamicFilterPhysicalExpr");
 
-        // `wait_update()` uses a Tokio watch channel, so multiple generations can
-        // are natively "deduped" into just one update. This helps avoid too many
-        // update messages. If this becomes an issue, we can introduce an artificial
-        // backoff.
-        let completed = tokio::select! {
-            _ = dynamic_filter.wait_update() => false,
-            _ = dynamic_filter.wait_complete() => true,
-            _ = cancel_rx.wait_for(|cancelled| *cancelled) => return None,
+        let completed = {
+            let update = dynamic_filter.wait_update();
+            futures::pin_mut!(update);
+            // Subscribe before checking the generation so a change between polls is
+            // caught without losing a concurrent update. Multiple changes coalesce.
+            if futures::poll!(&mut update).is_ready()
+                || dynamic_filter.snapshot_generation() > previous_generation
+            {
+                false
+            } else {
+                tokio::select! {
+                    _ = update => false,
+                    _ = dynamic_filter.wait_complete() => true,
+                    _ = cancel_rx.wait_for(|cancelled| *cancelled) => return None,
+                }
+            }
         };
+        let generation = expression.snapshot_generation();
         let message =
             WorkerToCoordinatorMsg::ProducedDynamicFilter(Box::new(ProducedDynamicFilter {
                 expression_id,
                 expression: MaybeEncoded::Decoded(Arc::clone(&expression)),
             }));
-        let next = (!completed).then_some((expression, cancel_rx));
+        let next = (!completed).then_some((expression, cancel_rx, generation));
         Some((message, next))
     })
     .boxed()
@@ -447,10 +473,73 @@ mod tests {
     use super::*;
     use crate::TaskKey;
     use datafusion::arrow::datatypes::Schema;
+    use datafusion::physical_expr::expressions::lit;
     use datafusion::physical_plan::placeholder_row::PlaceholderRowExec;
+    use datafusion_proto::protobuf::physical_expr_node::ExprType;
     use std::time::Duration;
     use url::Url;
     use uuid::Uuid;
+
+    #[tokio::test]
+    async fn producer_publication_catches_updates_between_polls_and_completes() -> Result<()> {
+        let filter = Arc::new(DynamicFilterPhysicalExpr::new(vec![], lit(true)));
+        let id = filter.expression_id().unwrap();
+        let context = Arc::new(TaskContext::default());
+        let (_cancel, cancel_rx) = watch::channel(false);
+        let mut stream = produced_dynamic_filter_stream(id, filter.clone(), cancel_rx);
+        filter.update(lit(false))?;
+
+        let first = tokio::time::timeout(Duration::from_secs(1), stream.next())
+            .await
+            .unwrap()
+            .unwrap();
+        let WorkerToCoordinatorMsg::ProducedDynamicFilter(first) = first else {
+            panic!("expected publication")
+        };
+        let before = first.expression.to_proto(&context)?;
+        filter.update(lit(true))?;
+        let second = tokio::time::timeout(Duration::from_secs(1), stream.next())
+            .await
+            .unwrap()
+            .unwrap();
+        let WorkerToCoordinatorMsg::ProducedDynamicFilter(second) = second else {
+            panic!("expected publication")
+        };
+        assert_ne!(second.expression.to_proto(&context)?, before);
+
+        filter.mark_complete();
+        let final_update = tokio::time::timeout(Duration::from_secs(1), stream.next())
+            .await
+            .unwrap()
+            .unwrap();
+        let WorkerToCoordinatorMsg::ProducedDynamicFilter(final_update) = final_update else {
+            panic!("expected publication")
+        };
+        let Some(ExprType::DynamicFilter(final_filter)) =
+            final_update.expression.to_proto(&context)?.expr_type
+        else {
+            panic!("expected dynamic filter")
+        };
+        assert!(final_filter.is_complete);
+        assert!(stream.next().await.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn producer_publication_stops_without_a_bound_on_cancellation() -> Result<()> {
+        let filter = Arc::new(DynamicFilterPhysicalExpr::new(vec![], lit(true)));
+        let (cancel, cancel_rx) = watch::channel(false);
+        let mut stream =
+            produced_dynamic_filter_stream(filter.expression_id().unwrap(), filter, cancel_rx);
+        cancel.send_replace(true);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), stream.next())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        Ok(())
+    }
 
     #[tokio::test]
     async fn coordinator_eos_releases_unexecuted_task() -> Result<()> {
