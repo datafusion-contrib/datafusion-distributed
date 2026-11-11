@@ -2525,13 +2525,16 @@ name = "datafusion-distributed-iceberg-benchmarks"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "criterion",
  "datafusion",
  "datafusion-datasets",
  "datafusion-distributed-benchmarks",
  "datafusion-distributed-iceberg",
+ "datafusion-proto",
  "env_logger",
  "futures",
  "parquet",
+ "prost",
  "serde_json",
  "structopt",
  "tokio",

@@ -19,6 +19,15 @@ structopt = "0.3.26"
 tokio = { version = "1.48", features = ["full"] }
 url = "2.5.7"
 
+[dev-dependencies]
+criterion = "0.5"
+datafusion-proto = { workspace = true }
+prost = "0.14.1"
+
 [[bin]]
 name = "dfbench-iceberg"
 path = "src/main.rs"
+
+[[bench]]
+name = "eager_scan_codec"
+harness = false
