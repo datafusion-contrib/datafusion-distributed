@@ -145,10 +145,10 @@ impl ScanConfig {
             .with_category(MetricCategory::Bytes)
             .gauge("bytes_scanned", partition);
 
-        let mut partition_skipper = self.partition_skipper();
+        let mut partition_skipper = self.partition_skipper(partition);
         // The reader pulls a task when it starts reading that task's file. It reads ahead,
         // so with a LIMIT this can count files that never produced output. Skipped files
-        // are dropped before this, so they aren't counted.
+        // are dropped before this, and the skipper counts them.
         let tasks = tasks
             .try_filter(move |task| {
                 let skip = partition_skipper
@@ -182,12 +182,13 @@ impl ScanConfig {
 
     /// A skipper over the scan's dynamic filters. `None` when dynamic filtering is off or the
     /// scan has no dynamic filter.
-    fn partition_skipper(&self) -> Option<PartitionSkipper> {
+    fn partition_skipper(&self, partition: usize) -> Option<PartitionSkipper> {
         if !self.dynamic_filtering_enabled {
             return None;
         }
         let dynamic_filters = dynamic_filters(self.filters.as_ref()?);
-        (!dynamic_filters.is_empty()).then(|| PartitionSkipper::new(dynamic_filters))
+        (!dynamic_filters.is_empty())
+            .then(|| PartitionSkipper::new(dynamic_filters, &self.metrics, partition))
     }
 }
 

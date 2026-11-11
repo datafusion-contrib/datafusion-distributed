@@ -6,6 +6,9 @@ use datafusion::physical_expr::{PhysicalExpr, conjunction};
 use datafusion::physical_expr_common::physical_expr::{
     snapshot_generation, snapshot_physical_expr,
 };
+use datafusion::physical_plan::metrics::{
+    ExecutionPlanMetricsSet, MetricBuilder, MetricType, PruningMetrics,
+};
 use iceberg::expr::{Bind, BoundPredicate, BoundReference, Predicate, PredicateOperator};
 use iceberg::scan::FileScanTask;
 use iceberg::spec::{
@@ -31,20 +34,40 @@ pub(crate) struct PartitionSkipper {
     /// matches every partition, or when the spec's partition values can't be checked. Cleared
     /// when `predicate` changes.
     partition_predicates: HashMap<i32, Option<BoundPredicate>>,
+
+    /// The files checked. Pruned files were skipped and matched files were kept.
+    files: PruningMetrics,
 }
 
 impl PartitionSkipper {
-    pub(crate) fn new(dynamic_filters: Vec<Arc<dyn PhysicalExpr>>) -> Self {
+    pub(crate) fn new(
+        dynamic_filters: Vec<Arc<dyn PhysicalExpr>>,
+        metrics: &ExecutionPlanMetricsSet,
+        partition: usize,
+    ) -> Self {
         Self {
             dynamic_filters: conjunction(dynamic_filters),
             cached_snapshot_generation: 0,
             predicate: None,
             partition_predicates: HashMap::new(),
+            files: MetricBuilder::new(metrics)
+                .with_type(MetricType::Summary)
+                .pruning_metrics("files_pruned_by_partition", partition),
         }
     }
 
     /// Whether no row in the task's partition can match the filters. Any error keeps the file.
     pub(crate) fn should_skip_task(&mut self, task: &FileScanTask) -> bool {
+        let skip = self.can_skip(task);
+        if skip {
+            self.files.add_pruned(1);
+        } else {
+            self.files.add_matched(1);
+        }
+        skip
+    }
+
+    fn can_skip(&mut self, task: &FileScanTask) -> bool {
         let (Some(spec), Some(partition)) = (task.partition_spec(), task.partition()) else {
             return false;
         };
