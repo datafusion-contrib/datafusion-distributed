@@ -103,8 +103,6 @@ impl PhysicalExtensionCodec for LazyIcebergCodec {
             proto.custom_file_io.as_deref(),
             ctx,
         )?;
-        // Decode with the plan's converter, so a filter keeps sharing its state with the
-        // operator that fills it in when both run in the same task.
         let filters = proto
             .filters
             .as_ref()
@@ -179,8 +177,7 @@ mod tests {
     use datafusion::common::Statistics;
     use datafusion::datasource::source::DataSource;
     use datafusion::logical_expr::Operator;
-    use datafusion::physical_expr::PhysicalExpr;
-    use datafusion::physical_expr::expressions::{BinaryExpr, Column, lit};
+    use datafusion::physical_expr::expressions::{binary, col, lit};
     use datafusion::prelude::SessionConfig;
     use datafusion_distributed_iceberg_test_tools::create_taxi_table;
     use datafusion_proto::physical_plan::DefaultPhysicalProtoConverter;
@@ -223,16 +220,14 @@ mod tests {
             Arc::new(TaskContext::default().with_session_config(config.clone())),
         )
         .await?;
-        let fare_over_ten: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
-            Arc::new(Column::new_with_schema(
-                "fare_amount",
-                taxi.schema()?.as_ref(),
-            )?),
+        let schema = taxi.schema()?;
+        let filter = binary(
+            col("fare_amount", &schema)?,
             Operator::Gt,
             lit(10.0),
-        ));
-        let pushed =
-            iceberg_source(&plan)?.try_pushdown_filters(vec![fare_over_ten], config.options())?;
+            &schema,
+        )?;
+        let pushed = iceberg_source(&plan)?.try_pushdown_filters(vec![filter], config.options())?;
         let Some(pushed_source) = pushed.updated_node else {
             return internal_err!("the scan should keep the filter it was offered");
         };

@@ -176,8 +176,6 @@ impl EagerIcebergCodec {
             proto.custom_file_io.as_deref(),
             ctx,
         )?;
-        // Decode with the plan's converter, so a filter keeps sharing its state with the
-        // operator that fills it in when both run in the same task.
         let filters = proto
             .filters
             .as_ref()
