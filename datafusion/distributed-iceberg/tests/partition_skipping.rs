@@ -1,9 +1,14 @@
 mod tests {
-    use datafusion::arrow::array::{ArrayRef, Date32Array, Int32Array, RecordBatch};
+    use datafusion::arrow::array::{
+        ArrayRef, Date32Array, Int32Array, Int64Array, RecordBatch, StringArray,
+        TimestampMicrosecondArray,
+    };
+    use datafusion::arrow::datatypes::SchemaRef;
     use datafusion::arrow::util::pretty::pretty_format_batches;
     use datafusion::common::Result;
     use datafusion::datasource::source::DataSourceExec;
-    use datafusion::physical_plan::collect;
+    use datafusion::physical_plan::metrics::MetricValue;
+    use datafusion::physical_plan::{ExecutionPlan, collect};
     use datafusion_distributed::test_utils::metrics::node_metrics;
     use datafusion_distributed::{
         DistributedExt, DistributedLeafExec, DistributedMetricsFormat,
@@ -205,6 +210,140 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn validate_predicate_translation() -> Result<(), Box<dyn Error>> {
+        let skipping = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
+            .with_table(readings().await?)
+            .with_config_option("iceberg.eager_file_planning", false)
+            .with_config_option("iceberg.dynamic_filtering_enabled", true)
+            // Read one file at a time, so top-N's filter tightens before the next file starts.
+            .with_config_option("iceberg.data_file_concurrency_limit", 1)
+            // A join with more than 2 keys filters only on their bounds, so the cases cover
+            // both kinds of join filter.
+            .with_config_option(
+                "datafusion.optimizer.hash_join_inlist_pushdown_max_distinct_values",
+                2,
+            )
+            .configure_session(|mut state| {
+                let session = state.config().get_or_insert_default();
+                session.options_mut().execution.target_partitions = 1;
+                Ok(state)
+            })?
+            .build()
+            .await?;
+        let reading_every_file = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
+            .with_table(readings().await?)
+            .with_config_option("iceberg.eager_file_planning", false)
+            .with_config_option("iceberg.dynamic_filtering_enabled", false)
+            .with_config_option("iceberg.data_file_concurrency_limit", 1)
+            .with_config_option(
+                "datafusion.optimizer.hash_join_inlist_pushdown_max_distinct_values",
+                2,
+            )
+            .configure_session(|mut state| {
+                let session = state.config().get_or_insert_default();
+                session.options_mut().execution.target_partitions = 1;
+                Ok(state)
+            })?
+            .build()
+            .await?;
+
+        // Keys on partition edges, keys in no partition, and nulls, for each transform.
+        let schema = skipping.table().schema()?;
+        let cases = [
+            join(&schema, "id", &["3"]),
+            join(&schema, "id", &["0"]),
+            join(&schema, "id", &["2", "6"]),
+            join(&schema, "id", &["2", "3", "4"]),
+            join(&schema, "id", &["NULL"]),
+            join(&schema, "id", &["1", "NULL"]),
+            join(&schema, "name", &["'avocado'"]),
+            join(&schema, "name", &["'b'"]),
+            join(&schema, "name", &["'éclair'"]),
+            join(&schema, "name", &["'é'"]),
+            join(&schema, "name", &["'zebra'"]),
+            join(&schema, "day", &["'2024-02-01'"]),
+            join(&schema, "day", &["'2024-01-15'"]),
+            join(&schema, "day", &["'2024-04-01'"]),
+            join(&schema, "day", &["'2023-12-31'", "'2024-03-01'"]),
+            join(&schema, "n", &["12"]),
+            join(&schema, "n", &["99"]),
+            join(&schema, "n", &["-1", "13"]),
+            join(&schema, "at", &["'2024-01-02T00:00:00'"]),
+            join(&schema, "at", &["'2024-01-01T23:59:59.999999'"]),
+            join(&schema, "at", &["'2024-01-04T00:00:00'"]),
+            top_n("id", 1),
+            top_n("id DESC", 1),
+            top_n("id NULLS FIRST", 2),
+            top_n("id DESC NULLS LAST", 2),
+            top_n("name", 1),
+            top_n("name DESC", 1),
+            top_n("day", 2),
+            top_n("day DESC", 1),
+            top_n("n", 1),
+            top_n("at", 1),
+            top_n("at DESC", 2),
+        ];
+
+        // Each case must return the same rows whether the scan skips files or reads them all.
+        // The snapshot shows how many files each case kept.
+        let mut skipped = Vec::new();
+        for (case, sql) in cases {
+            let plan = skipping.physical_plan(&sql).await?;
+            let rows = collect(Arc::clone(&plan), skipping.state().task_ctx()).await?;
+            let plan =
+                rewrite_distributed_plan_with_metrics(plan, DistributedMetricsFormat::Aggregated)
+                    .await?;
+            let expected = reading_every_file.query(&sql).await?.1;
+            assert_eq!(
+                pretty_format_batches(&rows)?.to_string(),
+                expected,
+                "{case}"
+            );
+            let files = scan_metric(&plan, "files_pruned_by_partition")
+                .unwrap_or_else(|| panic!("{case}: the scan has no dynamic filter"));
+            let rows: usize = rows.iter().map(RecordBatch::num_rows).sum();
+            skipped.push(format!("{case}: rows: {rows}, files: {files}"));
+        }
+        insta::assert_snapshot!(skipped.join("\n"), @"
+        join on id with 3: rows: 1, files: 6 total → 1 matched
+        join on id with 0: rows: 0, files: 6 total → 0 matched
+        join on id with 2, 6: rows: 2, files: 6 total → 2 matched
+        join on id with 2, 3, 4: rows: 3, files: 6 total → 3 matched
+        join on id with NULL: rows: 0, files: 0 total → 0 matched
+        join on id with 1, NULL: rows: 1, files: 6 total → 1 matched
+        join on name with 'avocado': rows: 1, files: 6 total → 2 matched
+        join on name with 'b': rows: 0, files: 6 total → 1 matched
+        join on name with 'éclair': rows: 1, files: 6 total → 1 matched
+        join on name with 'é': rows: 0, files: 6 total → 1 matched
+        join on name with 'zebra': rows: 0, files: 6 total → 0 matched
+        join on day with '2024-02-01': rows: 1, files: 6 total → 2 matched
+        join on day with '2024-01-15': rows: 0, files: 6 total → 1 matched
+        join on day with '2024-04-01': rows: 0, files: 6 total → 0 matched
+        join on day with '2023-12-31', '2024-03-01': rows: 2, files: 6 total → 2 matched
+        join on n with 12: rows: 1, files: 6 total → 3 matched
+        join on n with 99: rows: 0, files: 6 total → 1 matched
+        join on n with -1, 13: rows: 2, files: 6 total → 4 matched
+        join on at with '2024-01-02T00:00:00': rows: 1, files: 6 total → 2 matched
+        join on at with '2024-01-01T23:59:59.999999': rows: 1, files: 6 total → 1 matched
+        join on at with '2024-01-04T00:00:00': rows: 0, files: 6 total → 0 matched
+        ORDER BY id LIMIT 1: rows: 1, files: 6 total → 1 matched
+        ORDER BY id DESC LIMIT 1: rows: 1, files: 6 total → 6 matched
+        ORDER BY id NULLS FIRST LIMIT 2: rows: 2, files: 6 total → 3 matched
+        ORDER BY id DESC NULLS LAST LIMIT 2: rows: 2, files: 6 total → 5 matched
+        ORDER BY name LIMIT 1: rows: 1, files: 6 total → 2 matched
+        ORDER BY name DESC LIMIT 1: rows: 1, files: 6 total → 5 matched
+        ORDER BY day LIMIT 2: rows: 2, files: 6 total → 3 matched
+        ORDER BY day DESC LIMIT 1: rows: 1, files: 6 total → 5 matched
+        ORDER BY n LIMIT 1: rows: 1, files: 6 total → 6 matched
+        ORDER BY at LIMIT 1: rows: 1, files: 6 total → 2 matched
+        ORDER BY at DESC LIMIT 2: rows: 2, files: 6 total → 5 matched
+        ");
+        Ok(())
+    }
+
     // Table `events`, partitioned by the month of `day`, with one file for each of January,
     // February and March 2024.
     async fn events_by_month() -> Result<FixtureTable, Box<dyn Error>> {
@@ -253,5 +392,123 @@ mod tests {
         }
         append.commit().await?;
         Ok(table)
+    }
+
+    // Table `readings`, partitioned by `id`, the first letter of `name`, the month of `day`, 4
+    // buckets of `n` and the day of `at`. Each row is its own file, and the last row is all
+    // nulls.
+    async fn readings() -> Result<FixtureTable, Box<dyn Error>> {
+        let schema = Schema::builder()
+            .with_fields(vec![
+                NestedField::optional(1, "id", Type::Primitive(PrimitiveType::Int)).into(),
+                NestedField::optional(2, "name", Type::Primitive(PrimitiveType::String)).into(),
+                NestedField::optional(3, "day", Type::Primitive(PrimitiveType::Date)).into(),
+                NestedField::optional(4, "n", Type::Primitive(PrimitiveType::Long)).into(),
+                NestedField::optional(5, "at", Type::Primitive(PrimitiveType::Timestamp)).into(),
+            ])
+            .build()?;
+        let fixtures = FixtureCatalog::try_new().await?;
+        let mut table = fixtures
+            .table(TableIdent::from_strs(["default", "readings"])?, schema)
+            .partition_by("id", Transform::Identity)
+            .partition_by("name", Transform::Truncate(1))
+            .partition_by("day", Transform::Month)
+            .partition_by("n", Transform::Bucket(4))
+            .partition_by("at", Transform::Day)
+            .create()
+            .await?;
+        let id: ArrayRef = Arc::new(Int32Array::from(vec![
+            Some(1),
+            Some(2),
+            Some(3),
+            Some(4),
+            Some(6),
+            None,
+        ]));
+        let name: ArrayRef = Arc::new(StringArray::from(vec![
+            Some("apple"),
+            Some("avocado"),
+            Some("banana"),
+            Some("éclair"),
+            Some("cherry"),
+            None,
+        ]));
+        // Days since 1970-01-01: 2024-01-31, 2024-02-01, 2024-02-29, 2024-03-01, 2023-12-31.
+        let day: ArrayRef = Arc::new(Date32Array::from(vec![
+            Some(19753),
+            Some(19754),
+            Some(19782),
+            Some(19783),
+            Some(19722),
+            None,
+        ]));
+        let n: ArrayRef = Arc::new(Int64Array::from(vec![
+            Some(10),
+            Some(11),
+            Some(12),
+            Some(13),
+            Some(-1),
+            None,
+        ]));
+        // Microseconds since 1970-01-01: 2024-01-01 23:59:59.999999, 2024-01-02 00:00:00,
+        // 2024-01-02 12:00:00, 2024-01-03 00:00:00, 2023-12-31 23:59:59.
+        let at: ArrayRef = Arc::new(TimestampMicrosecondArray::from(vec![
+            Some(1704153599999999),
+            Some(1704153600000000),
+            Some(1704196800000000),
+            Some(1704240000000000),
+            Some(1704067199000000),
+            None,
+        ]));
+        let rows = RecordBatch::try_from_iter([
+            ("id", id),
+            ("name", name),
+            ("day", day),
+            ("n", n),
+            ("at", at),
+        ])?;
+        let mut append = table.append();
+        for row in 0..rows.num_rows() {
+            append = append.file(rows.slice(row, 1));
+        }
+        append.commit().await?;
+        Ok(table)
+    }
+
+    /// A case that joins `readings` with `keys` on `column`. Each key is cast to the column's
+    /// type, so the join filters the column itself, without a cast around it.
+    fn join(schema: &SchemaRef, column: &str, keys: &[&str]) -> (String, String) {
+        let data_type = schema.field_with_name(column).unwrap().data_type();
+        let values = keys
+            .iter()
+            .map(|key| format!("(arrow_cast({key}, '{data_type}'))"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        (
+            format!("join on {column} with {}", keys.join(", ")),
+            format!(
+                "SELECT t.* FROM readings t JOIN (VALUES {values}) AS k(x) \
+                 ON t.{column} = k.x ORDER BY t.id"
+            ),
+        )
+    }
+
+    /// A case that reads the first `limit` rows of `readings` in `order`.
+    fn top_n(order: &str, limit: usize) -> (String, String) {
+        (
+            format!("ORDER BY {order} LIMIT {limit}"),
+            format!("SELECT * FROM readings ORDER BY {order} LIMIT {limit}"),
+        )
+    }
+
+    /// The metric `name` of the Iceberg scan in `plan`, summed over its partitions.
+    fn scan_metric(plan: &Arc<dyn ExecutionPlan>, name: &str) -> Option<MetricValue> {
+        plan.metrics()
+            .and_then(|metrics| metrics.sum_by_name(name))
+            .or_else(|| {
+                plan.children()
+                    .into_iter()
+                    .find_map(|child| scan_metric(child, name))
+            })
     }
 }
