@@ -1,6 +1,7 @@
 mod apply;
 mod discovery;
 mod display;
+mod sibling_topk;
 
 use crate::DistributedConfig;
 use crate::codec::roundtrip_pb;
@@ -14,6 +15,10 @@ pub(crate) use apply::apply_dynamic_filter_update;
 pub(crate) use discovery::*;
 pub use display::rewrite_distributed_plan_with_dynamic_filters;
 pub(crate) use display::sever_dynamic_filter_relationships_in_plan_for_display;
+pub(crate) use sibling_topk::{
+    SiblingTopKConsumers, attach_sibling_topk_consumers, sibling_topk_enabled,
+    sibling_topk_producer_ids,
+};
 
 pub(crate) fn is_local_dynamic_filtering_enabled(session_config: &SessionConfig) -> bool {
     session_config

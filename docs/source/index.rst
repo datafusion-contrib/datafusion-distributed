@@ -88,6 +88,7 @@ Consider using Ballista instead of this project if:
    advanced/06-worker-routing
    advanced/07-worker-versioning
    advanced/08-adaptive-query-execution
+   advanced/09-sibling-topk
 
 .. toctree::
    :maxdepth: 1

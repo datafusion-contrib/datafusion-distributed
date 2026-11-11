@@ -47,6 +47,8 @@ pub(super) struct PlannedDynamicFilter {
     /// Registered producers and their latest accepted snapshots, if any.
     pub(super) producers: HashMap<TaskKey, Option<PhysicalDynamicFilterNode>>,
     pub(super) consumer_tasks: HashSet<TaskKey>,
+    /// Eligible producers receive updates through independent remote filter state.
+    sibling_tasks: HashSet<TaskKey>,
 
     /// Populated upon task registration when a producer is found.
     ///
@@ -106,8 +108,11 @@ impl DynamicFilterRegistry {
         &self,
         task_specialized_plan: &Arc<dyn ExecutionPlan>,
         task_key: TaskKey,
+        share_sibling_topk: bool,
     ) -> Result<()> {
         let mut producers = vec![];
+        // Anchors are metadata only; only real consumers need forwarded updates.
+        let consumers = discover_dynamic_filter_consumers(task_specialized_plan)?.consumers;
 
         task_specialized_plan.apply(|node| {
             // `CollectLeft` joins broadcast an equivalent build side to every producer task,
@@ -145,20 +150,19 @@ impl DynamicFilterRegistry {
                 .collect::<Result<_>>()?;
             if !produced_ids.is_empty() {
                 let schema = dynamic_filter_producer_schema(node.as_ref())?;
-                producers.extend(
-                    produced_ids
-                        .iter()
-                        .map(|id| (*id, merge_mode, Arc::clone(&schema))),
-                );
+                let sibling_topk = share_sibling_topk
+                    && node
+                        .downcast_ref::<SortExec>()
+                        .is_some_and(|sort| sort.fetch().is_some());
+                producers.extend(produced_ids.iter().map(|id| {
+                    let share = sibling_topk && consumers.iter().any(|consumer| consumer.id == *id);
+                    (*id, merge_mode, Arc::clone(&schema), share)
+                }));
             }
             Ok(TreeNodeRecursion::Continue)
         })?;
-        // We can safely ignore anchors because they are not evaluated by network boundaries. This
-        // means they do not need updates forwarded to them.
-        let consumers = discover_dynamic_filter_consumers(task_specialized_plan)?.consumers;
-
         let mut state = self.state.lock().expect("dynamic filter registry poisoned");
-        for (id, merge_mode, producer_schema) in producers {
+        for (id, merge_mode, producer_schema, share) in producers {
             let filter = state.filters.entry(id).or_default();
             if let Some(existing) = &filter.producer_schema
                 && existing != &producer_schema
@@ -166,6 +170,9 @@ impl DynamicFilterRegistry {
                 return internal_err!("Dynamic filter {id} has conflicting producer schemas");
             }
             filter.producer_schema.get_or_insert(producer_schema);
+            if share {
+                filter.sibling_tasks.insert(task_key);
+            }
             filter.merge_mode = Some(match filter.merge_mode {
                 Some(existing) if existing != merge_mode => {
                     return internal_err!(
@@ -360,8 +367,12 @@ impl DynamicFilterRegistry {
             );
         };
         for &task_key in &filter.consumer_tasks {
-            // A task-local consumer is already updated directly by its producer.
-            if filter.producers.contains_key(&task_key) || state.delivered.contains(&(id, task_key))
+            // Ordinary task-local consumers are already updated directly by their producer.
+            // Eligible Top-K producers instead receive into separate remote state; their
+            // own older cutoff in the merged bound is redundant with the live local bound.
+            if (filter.producers.contains_key(&task_key)
+                && !filter.sibling_tasks.contains(&task_key))
+                || state.delivered.contains(&(id, task_key))
             {
                 continue;
             }
@@ -411,5 +422,120 @@ fn merge_predicates(
                 operands: predicates,
             }))),
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::codec::encode_physical_expr;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::physical_expr::expressions::{Column, lit};
+    use datafusion::physical_expr::{LexOrdering, PhysicalExpr, PhysicalSortExpr};
+    use datafusion::physical_plan::empty::EmptyExec;
+    use datafusion::physical_plan::filter::FilterExec;
+    use datafusion::physical_plan::{ChildrenPropertiesMode, ReplaceChildrenOptions};
+    use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
+    use uuid::Uuid;
+
+    #[test]
+    fn producer_without_a_local_consumer_does_not_receive_sibling_updates() -> Result<()> {
+        let registry =
+            DynamicFilterRegistry::new(&ExecutionPlanMetricsSet::new(), CancellationToken::new());
+        let (eligible_plan, id) = topk_plan()?;
+        let without_consumer = eligible_plan.clone().replace_children(
+            vec![Arc::new(EmptyExec::new(eligible_plan.schema()))],
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+        )?;
+        let eligible = TaskKey {
+            query_id: Uuid::new_v4(),
+            stage_id: 1,
+            task_number: 0,
+        };
+        let ineligible = TaskKey {
+            task_number: 1,
+            ..eligible
+        };
+        registry.register_task(&eligible_plan, eligible, true)?;
+        registry.register_task(&without_consumer, ineligible, true)?;
+        registry.seal_stage(1)?;
+        let (sender, mut eligible_updates) = unbounded_channel();
+        registry.register_sender(eligible, sender)?;
+        let (sender, mut ineligible_updates) = unbounded_channel();
+        registry.register_sender(ineligible, sender)?;
+
+        registry.record_dynamic_filter_update(
+            eligible,
+            report(id, false, false)?,
+            &TaskContext::default(),
+        )?;
+        assert!(ineligible_updates.try_recv().is_err());
+        assert_eq!(
+            receive(&mut eligible_updates)?.inner_expr,
+            report_predicate(false)?
+        );
+        registry.record_dynamic_filter_update(
+            ineligible,
+            report(id, true, true)?,
+            &TaskContext::default(),
+        )?;
+
+        let update = receive(&mut eligible_updates)?;
+        assert!(!update.is_complete);
+        assert!(ineligible_updates.try_recv().is_err());
+        Ok(())
+    }
+
+    fn topk_plan() -> Result<(Arc<dyn ExecutionPlan>, u64)> {
+        let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, true)]));
+        let key: Arc<dyn PhysicalExpr> = Arc::new(Column::new("key", 0));
+        let dynamic = Arc::new(DynamicFilterPhysicalExpr::new(vec![key.clone()], lit(true)));
+        let input = Arc::new(FilterExec::try_new(
+            dynamic.clone(),
+            Arc::new(EmptyExec::new(schema)),
+        )?);
+        let order = LexOrdering::new(vec![PhysicalSortExpr::new_default(key)]).unwrap();
+        let sort = SortExec::new(order, input)
+            .with_fetch(Some(1))
+            .with_dynamic_filter_expr(dynamic.clone())?;
+        Ok((Arc::new(sort), dynamic.expression_id().unwrap()))
+    }
+
+    fn report(id: u64, value: bool, complete: bool) -> Result<ProducedDynamicFilter> {
+        let expression = Arc::new(DynamicFilterPhysicalExpr::new(vec![], lit(value)));
+        if complete {
+            expression.mark_complete();
+        }
+        let expression: Arc<dyn PhysicalExpr> = expression;
+        let mut proto = encode_physical_expr(&expression, &TaskContext::default())?;
+        proto.expr_id = Some(id);
+        Ok(ProducedDynamicFilter {
+            expression_id: id,
+            expression: MaybeEncoded::Encoded(proto.encode_to_vec()),
+        })
+    }
+
+    fn report_predicate(value: bool) -> Result<Option<Box<PhysicalExprNode>>> {
+        Ok(Some(Box::new(encode_physical_expr(
+            &lit(value),
+            &TaskContext::default(),
+        )?)))
+    }
+
+    fn receive(
+        receiver: &mut UnboundedReceiver<CoordinatorToWorkerMsg>,
+    ) -> Result<PhysicalDynamicFilterNode> {
+        let CoordinatorToWorkerMsg::ApplyDynamicFilter(update) = receiver.try_recv().unwrap()
+        else {
+            panic!("expected a dynamic-filter update");
+        };
+        let Some(ExprType::DynamicFilter(filter)) = update
+            .expression
+            .to_proto(&TaskContext::default())?
+            .expr_type
+        else {
+            panic!("expected a dynamic-filter expression");
+        };
+        Ok(*filter)
     }
 }

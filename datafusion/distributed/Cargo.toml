@@ -51,6 +51,11 @@ name = "localhost_worker"
 path = "../../examples/localhost_worker.rs"
 
 [[example]]
+name = "sibling_topk"
+path = "../../examples/sibling_topk.rs"
+required-features = ["integration"]
+
+[[example]]
 name = "work_unit_feed"
 path = "../../examples/work_unit_feed.rs"
 

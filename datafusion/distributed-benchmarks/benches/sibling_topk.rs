@@ -166,6 +166,8 @@ async fn context(
     let ctx = ctx
         .with_distributed_dynamic_task_count(false)?
         .with_distributed_metrics_collection(true)?;
+    ctx.sql("SET distributed.enable_sibling_topk_filter_pushdown = true")
+        .await?;
     ctx.sql("SET datafusion.execution.target_partitions = 2")
         .await?;
     ctx.sql("SET datafusion.execution.parquet.pushdown_filters = false")
