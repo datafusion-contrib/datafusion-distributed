@@ -13,7 +13,7 @@ use iceberg::spec::{
 };
 use iceberg::{Error, ErrorKind};
 
-use crate::table_provider::physical_predicate::convert_physical_filter_to_predicate;
+use crate::common::dynamic_filters::physical_predicate::convert_physical_filter_to_predicate;
 
 /// Skips files whose partition value can't match the scan's dynamic filters.
 pub(crate) struct PartitionSkipper {
