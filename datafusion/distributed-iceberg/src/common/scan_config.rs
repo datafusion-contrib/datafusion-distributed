@@ -88,7 +88,7 @@ impl ScanConfig {
     }
 
     /// Writes the scan's dynamic filters into `f` when dynamic filtering is enabled. A join filter
-    /// can list thousands of keys, so an IN list of more than 5 values prints as its count.
+    /// can list thousands of keys, so each IN list prints as its count.
     pub(crate) fn fmt_dynamic_filters(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if !self.dynamic_filtering_enabled {
             return Ok(());
@@ -114,8 +114,23 @@ impl ScanConfig {
                 write!(f, "DynamicFilter [ empty ]")?;
                 continue;
             }
-            let current = snapshot_physical_expr(filter).map_err(|_| fmt::Error)?;
-            let current = count_long_in_lists(current).map_err(|_| fmt::Error)?;
+            let current = snapshot_physical_expr(filter)
+                .and_then(|current| {
+                    current.transform_up(|expr| match expr.downcast_ref::<InListExpr>() {
+                        Some(in_list) => {
+                            let not = if in_list.negated() { "NOT " } else { "" };
+                            let text = format!(
+                                "{} {not}IN ([{} elements])",
+                                in_list.expr(),
+                                in_list.len()
+                            );
+                            Ok(Transformed::yes(lit(text)))
+                        }
+                        None => Ok(Transformed::no(expr)),
+                    })
+                })
+                .map_err(|_| fmt::Error)?
+                .data;
             write!(f, "DynamicFilter [ {current} ]")?;
         }
         Ok(())
@@ -173,19 +188,6 @@ impl fmt::Debug for ScanConfig {
             .field("dynamic_filtering_enabled", &self.dynamic_filtering_enabled)
             .finish_non_exhaustive()
     }
-}
-
-/// `expr` with each IN list of more than 5 values replaced by text giving its count, for printing.
-fn count_long_in_lists(expr: Arc<dyn PhysicalExpr>) -> Result<Arc<dyn PhysicalExpr>> {
-    expr.transform_up(|expr| match expr.downcast_ref::<InListExpr>() {
-        Some(in_list) if in_list.len() > 5 => {
-            let not = if in_list.negated() { "NOT " } else { "" };
-            let text = format!("{} {not}IN ([{} elements])", in_list.expr(), in_list.len());
-            Ok(Transformed::yes(lit(text)))
-        }
-        _ => Ok(Transformed::no(expr)),
-    })
-    .map(|expr| expr.data)
 }
 
 /// Snapshot summary keys defined by the Iceberg table spec:

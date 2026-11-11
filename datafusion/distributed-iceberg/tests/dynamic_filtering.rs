@@ -37,42 +37,7 @@ mod tests {
                   ProjectionExec: expr=[column1@0 as day]
                     DataSourceExec: partitions=1, partition_sizes=[1]
                   FilterExec: trip_distance@0 >= 2, projection=[pickup_date@1]
-                    DataSourceExec: format=iceberg, table=default.taxi, projection=[trip_distance, pickup_date], predicate=trip_distance >= 2, dynamic_filters=DynamicFilter [ pickup_date@1 >= 2024-01-10 AND pickup_date@1 <= 2024-01-10 AND pickup_date@1 IN (SET) ([2024-01-10]) ]
-        ");
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn the_plan_shows_the_length_of_a_long_join_filter() -> Result<()> {
-        let harness = IcebergTestHarness::builder()
-            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
-            .with_table(create_taxi_table().await?)
-            .with_config_option("iceberg.eager_file_planning", false)
-            .with_config_option("iceberg.dynamic_filtering_enabled", true)
-            .build()
-            .await?;
-
-        // The join filter lists seven days. The plan shows how many instead of listing them.
-        let plan = harness
-            .physical_plan(
-                "SELECT COUNT(*) AS trips FROM taxi \
-                 JOIN (VALUES (DATE '2024-01-01'), (DATE '2024-01-02'), (DATE '2024-01-03'), \
-                     (DATE '2024-01-04'), (DATE '2024-01-05'), (DATE '2024-01-06'), \
-                     (DATE '2024-01-07')) AS days(day) \
-                 ON taxi.pickup_date = days.day",
-            )
-            .await?;
-        collect(Arc::clone(&plan), harness.state().task_ctx()).await?;
-
-        insta::assert_snapshot!(display_plan_ascii(plan.as_ref(), false), @"
-        ProjectionExec: expr=[count(Int64(1))@0 as trips]
-          AggregateExec: mode=Final, gby=[], aggr=[count(Int64(1))]
-            CoalescePartitionsExec
-              AggregateExec: mode=Partial, gby=[], aggr=[count(Int64(1))]
-                HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(day@0, pickup_date@0)], projection=[]
-                  ProjectionExec: expr=[column1@0 as day]
-                    DataSourceExec: partitions=1, partition_sizes=[1]
-                  DataSourceExec: format=iceberg, table=default.taxi, projection=[pickup_date], dynamic_filters=DynamicFilter [ pickup_date@0 >= 2024-01-01 AND pickup_date@0 <= 2024-01-07 AND pickup_date@0 IN ([7 elements]) ]
+                    DataSourceExec: format=iceberg, table=default.taxi, projection=[trip_distance, pickup_date], predicate=trip_distance >= 2, dynamic_filters=DynamicFilter [ pickup_date@1 >= 2024-01-10 AND pickup_date@1 <= 2024-01-10 AND pickup_date@1 IN ([1 elements]) ]
         ");
         Ok(())
     }
@@ -118,8 +83,8 @@ mod tests {
           │       [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=1, stage_partitions=2, input_tasks=1
           │     FilterExec: trip_distance@0 >= 2, projection=[pickup_date@1]
           │       DistributedLeafExec:
-          │         t0: DataSourceExec: format=iceberg, planned_files=3, dynamic_filters=DynamicFilter [ pickup_date@1 >= 2024-01-10 AND pickup_date@1 <= 2024-01-10 AND pickup_date@1 IN (SET) ([2024-01-10]) ]
-          │         t1: DataSourceExec: format=iceberg, planned_files=4, dynamic_filters=DynamicFilter [ pickup_date@1 >= 2024-01-10 AND pickup_date@1 <= 2024-01-10 AND pickup_date@1 IN (SET) ([2024-01-10]) ]
+          │         t0: DataSourceExec: format=iceberg, planned_files=3, dynamic_filters=DynamicFilter [ pickup_date@1 >= 2024-01-10 AND pickup_date@1 <= 2024-01-10 AND pickup_date@1 IN ([1 elements]) ]
+          │         t1: DataSourceExec: format=iceberg, planned_files=4, dynamic_filters=DynamicFilter [ pickup_date@1 >= 2024-01-10 AND pickup_date@1 <= 2024-01-10 AND pickup_date@1 IN ([1 elements]) ]
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=1, partitions=2
             │ BroadcastExec: input_partitions=1, consumer_tasks=2, output_partitions=2
