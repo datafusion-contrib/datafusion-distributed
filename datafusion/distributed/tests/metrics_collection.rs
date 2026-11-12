@@ -1,8 +1,9 @@
 #[cfg(all(feature = "integration", test))]
 mod tests {
+    use async_trait::async_trait;
     use datafusion::catalog::memory::DataSourceExec;
     use datafusion::common::assert_not_contains;
-    use datafusion::common::{HashMap, Result, assert_contains};
+    use datafusion::common::{HashMap, Result, assert_contains, exec_err};
     use datafusion::execution::SessionState;
     use datafusion::physical_plan::display::DisplayableExecutionPlan;
     use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
@@ -17,14 +18,16 @@ mod tests {
     };
     use datafusion_distributed::{
         DefaultSessionBuilder, DistributedExec, DistributedExt, DistributedLeafExec,
-        DistributedMetricsFormat, NetworkCoalesceExec, NetworkShuffleExec, TaskKey, TaskMetrics,
-        WorkerQueryContext, display_plan_ascii, rewrite_distributed_plan_with_dynamic_filters,
+        DistributedMetricsFormat, NetworkCoalesceExec, NetworkShuffleExec, RouteTaskEvent,
+        RouteTaskEventResponse, RouteTaskHandler, TaskKey, TaskMetrics, WorkerQueryContext,
+        display_plan_ascii, rewrite_distributed_plan_with_dynamic_filters,
         rewrite_distributed_plan_with_metrics,
     };
-    use futures::TryStreamExt;
+    use futures::{StreamExt, TryStreamExt, stream};
     use std::sync::Arc;
     use std::time::Duration;
     use test_case::test_case;
+    use tokio_util::sync::CancellationToken;
 
     const COLLECTION_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -477,6 +480,35 @@ mod tests {
         Ok(())
     }
 
+    /// Tasks whose worker->coordinator stream fails before their final reports still complete
+    /// their metrics wait.
+    #[tokio::test]
+    async fn metrics_collected_after_worker_stream_error() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+        let fail = FailTaskZeroWorkerStream::default();
+        let ctx = ctx
+            .with_distributed_dynamic_task_count(false)?
+            .with_distributed_route_task_handler(fail.clone());
+        register_parquet_tables(&ctx).await?;
+
+        let query = r#"SELECT "FL_DATE", count(*) FROM flights_1m GROUP BY "FL_DATE""#;
+        let plan = ctx.sql(query).await?.create_physical_plan().await?;
+        let mut stream = execute_stream(plan.clone(), ctx.task_ctx())?;
+        assert!(stream.try_next().await?.is_some());
+        // Workers send their final reports when the query ends, so the error arrives before them.
+        fail.release.cancel();
+        let result = stream.try_collect::<Vec<_>>().await;
+        assert_contains!(
+            result.unwrap_err().to_string(),
+            "injected worker stream error"
+        );
+
+        let task_metrics = wait_for_task_metrics(&plan).await;
+        assert!(!task_metrics.is_empty());
+        Ok(())
+    }
+
     /// Waits until every task of the executed `plan` has a final metrics report.
     async fn wait_for_task_metrics(plan: &Arc<dyn ExecutionPlan>) -> HashMap<TaskKey, TaskMetrics> {
         let d_exec = plan
@@ -532,5 +564,37 @@ mod tests {
                 "false",
             )
             .expect("static dynamic-filter setting should be valid");
+    }
+
+    /// Routes tasks like the default handler, but fails the worker->coordinator stream of every
+    /// task 0 once `release` is cancelled.
+    #[derive(Clone, Default)]
+    struct FailTaskZeroWorkerStream {
+        release: CancellationToken,
+    }
+
+    #[async_trait]
+    impl RouteTaskHandler for FailTaskZeroWorkerStream {
+        async fn handle(&self, ev: RouteTaskEvent<'_>) -> Option<Result<RouteTaskEventResponse>> {
+            let urls = match ev.worker_resolver.get_urls() {
+                Ok(urls) => urls,
+                Err(err) => return Some(Err(err)),
+            };
+            let url = urls[ev.task_key.task_number % urls.len()].clone();
+            let mut response = match ev.dialer.dial(url).await {
+                Ok(response) => response,
+                Err(err) => return Some(Err(err)),
+            };
+            if ev.task_key.task_number == 0 {
+                let release = self.release.clone();
+                let error = stream::once(async move {
+                    release.cancelled().await;
+                    exec_err!("injected worker stream error")
+                });
+                response.worker_to_coordinator_stream =
+                    error.chain(response.worker_to_coordinator_stream).boxed();
+            }
+            Some(Ok(response))
+        }
     }
 }
