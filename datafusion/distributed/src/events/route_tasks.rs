@@ -88,8 +88,6 @@ impl RouteTaskHandlers {
     }
 }
 
-// === CoordinatorToWorkerDialer ===
-
 /// Establishes coordinator-to-worker connections for assignment candidates.
 ///
 /// Each call represents an independent connection attempt. A handler may call `dial` multiple
@@ -98,25 +96,4 @@ impl RouteTaskHandlers {
 pub trait CoordinatorToWorkerDialer: Send + Sync {
     /// Attempts to connect the task to `url`.
     async fn dial(&self, url: Url) -> Result<RouteTaskEventResponse>;
-}
-
-pub(crate) fn new_coordinator_to_worker_dialer<F, Fut>(f: F) -> impl CoordinatorToWorkerDialer
-where
-    F: Fn(Url) -> Fut + Send + Sync,
-    Fut: Future<Output = Result<RouteTaskEventResponse>> + Send,
-{
-    struct S<F>(F);
-
-    #[async_trait]
-    impl<F, Fut> CoordinatorToWorkerDialer for S<F>
-    where
-        F: Fn(Url) -> Fut + Send + Sync,
-        Fut: Future<Output = Result<RouteTaskEventResponse>> + Send,
-    {
-        async fn dial(&self, url: Url) -> Result<RouteTaskEventResponse> {
-            self.0(url).await
-        }
-    }
-
-    S(f)
 }
