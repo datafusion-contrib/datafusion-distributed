@@ -6,6 +6,9 @@ mod tests {
     use datafusion::error::DataFusionError;
     use datafusion::execution::{SessionState, SessionStateBuilder};
     use datafusion::prelude::SessionContext;
+    use datafusion_datasets::{
+        output::TESTDATA_ROOT, parquet_layout::ParquetLayout, register_tables, tpch,
+    };
     use datafusion_distributed::grpc::{
         TASK_KEY_QUERY_ID_HEADER, TASK_KEY_STAGE_ID_HEADER, TASK_KEY_TASK_NUMBER_HEADER,
     };
@@ -13,9 +16,6 @@ mod tests {
     use datafusion_distributed::{
         DistributedConfig, DistributedExt, RandomRouteTaskHandler, SessionStateBuilderExt, Worker,
         WorkerQueryContext,
-    };
-    use datafusion_distributed_benchmarks::datasets::{
-        output::TESTDATA_ROOT, parquet_layout::ParquetLayout, register_tables, tpch,
     };
     use moka::future::FutureExt;
     use rand::SeedableRng;

@@ -3,11 +3,11 @@ mod tests {
     use datafusion::common::{Result, instant::Instant};
     use datafusion::physical_plan::execute_stream;
     use datafusion::prelude::SessionContext;
-    use datafusion_distributed::test_utils::localhost::start_localhost_context;
-    use datafusion_distributed::{DefaultSessionBuilder, DistributedExt, Worker};
-    use datafusion_distributed_benchmarks::datasets::{
+    use datafusion_datasets::{
         output::TESTDATA_ROOT, parquet_layout::ParquetLayout, register_tables, tpch,
     };
+    use datafusion_distributed::test_utils::localhost::start_localhost_context;
+    use datafusion_distributed::{DefaultSessionBuilder, DistributedExt, Worker};
     use futures::TryStreamExt;
     use std::time::Duration;
     use test_case::test_case;

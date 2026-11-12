@@ -1,5 +1,5 @@
-use super::progress::dataset_progress;
-use super::{common, output::DatasetOutput};
+use crate::progress::dataset_progress;
+use crate::{common, output::DatasetOutput};
 use arrow::array::Array;
 use arrow::compute::cast;
 use arrow::datatypes::{DataType, Field, Schema};

@@ -1,14 +1,14 @@
 #[cfg(all(feature = "integration", feature = "tpcds", test))]
 mod tests {
     use datafusion::error::Result;
-    use datafusion_distributed::test_utils::in_memory_channel_resolver::start_in_memory_context;
-    use datafusion_distributed::{
-        DefaultSessionBuilder, DistributedExec, DistributedExt, assert_snapshot, display_plan_ascii,
-    };
-    use datafusion_distributed_benchmarks::datasets::{
+    use datafusion_datasets::{
         output::TESTDATA_ROOT,
         parquet_layout::{Dictionary, ParquetLayout},
         register_tables, tpcds,
+    };
+    use datafusion_distributed::test_utils::in_memory_channel_resolver::start_in_memory_context;
+    use datafusion_distributed::{
+        DefaultSessionBuilder, DistributedExec, DistributedExt, assert_snapshot, display_plan_ascii,
     };
     use tokio::sync::OnceCell;
 

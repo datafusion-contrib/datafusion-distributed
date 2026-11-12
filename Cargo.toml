@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "datafusion/datasets",
     "datafusion/distributed",
     "datafusion/distributed-benchmarks",
     "datafusion/distributed-cli",

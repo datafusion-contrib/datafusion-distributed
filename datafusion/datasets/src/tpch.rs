@@ -1,6 +1,6 @@
-use super::parquet_layout::{ParquetLayout, TableColumns, TableWriter};
-use super::progress::dataset_progress;
-use super::{common, output::DatasetOutput};
+use crate::parquet_layout::{ParquetLayout, TableColumns, TableWriter};
+use crate::progress::dataset_progress;
+use crate::{common, output::DatasetOutput};
 use datafusion::common::{DataFusionError, exec_datafusion_err};
 use indicatif::HumanCount;
 use tpchgen::generators::{

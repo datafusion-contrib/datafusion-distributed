@@ -1,7 +1,7 @@
 use datafusion::common::{Result, exec_datafusion_err};
 
-use datafusion_distributed_benchmarks::datasets::clickbench::{ClickBenchSpec, generate_data};
-use datafusion_distributed_benchmarks::datasets::output::TESTDATA_ROOT;
+use crate::clickbench::{ClickBenchSpec, generate_data};
+use crate::output::TESTDATA_ROOT;
 use structopt::StructOpt;
 
 /// Prepare ClickBench parquet files for benchmarks

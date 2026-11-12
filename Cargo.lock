@@ -2212,6 +2212,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "datafusion-datasets"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "aws-config",
+ "aws-credential-types",
+ "datafusion",
+ "futures",
+ "indicatif",
+ "object_store",
+ "parquet",
+ "reqwest 0.12.28",
+ "structopt",
+ "tempfile",
+ "tokio",
+ "tpcdsgen",
+ "tpcdsgen-arrow",
+ "tpchgen",
+ "tpchgen-arrow",
+ "url",
+]
+
+[[package]]
 name = "datafusion-datasource"
 version = "55.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2387,7 +2410,7 @@ dependencies = [
  "crossbeam-queue",
  "dashmap",
  "datafusion",
- "datafusion-distributed-benchmarks",
+ "datafusion-datasets",
  "datafusion-proto",
  "delegate",
  "futures",
@@ -2423,29 +2446,20 @@ version = "0.1.0"
 dependencies = [
  "arrow",
  "async-trait",
- "aws-config",
- "aws-credential-types",
  "built",
  "criterion",
  "datafusion",
+ "datafusion-datasets",
  "datafusion-distributed",
  "env_logger",
  "futures",
- "indicatif",
- "object_store",
  "parquet",
- "reqwest 0.12.28",
  "serde",
  "serde_json",
  "sketches-ddsketch",
  "structopt",
- "tempfile",
  "tokio",
  "tonic",
- "tpcdsgen",
- "tpcdsgen-arrow",
- "tpchgen",
- "tpchgen-arrow",
  "url",
 ]
 
@@ -2471,8 +2485,8 @@ dependencies = [
  "color-eyre",
  "crossterm",
  "datafusion",
+ "datafusion-datasets",
  "datafusion-distributed",
- "datafusion-distributed-benchmarks",
  "futures",
  "ratatui",
  "structopt",
@@ -2512,6 +2526,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "datafusion",
+ "datafusion-datasets",
  "datafusion-distributed-benchmarks",
  "datafusion-distributed-iceberg",
  "env_logger",

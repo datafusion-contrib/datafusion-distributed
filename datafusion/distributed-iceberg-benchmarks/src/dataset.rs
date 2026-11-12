@@ -9,7 +9,7 @@ use datafusion::common::{DataFusionError, exec_datafusion_err, exec_err};
 use datafusion::execution::context::SessionContext;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 use datafusion::prelude::ParquetReadOptions;
-use datafusion_distributed_benchmarks::datasets::output::DatasetOutput;
+use datafusion_datasets::output::DatasetOutput;
 use datafusion_distributed_iceberg::IcebergIntegrationOptions;
 use datafusion_distributed_iceberg::iceberg;
 use futures::StreamExt;

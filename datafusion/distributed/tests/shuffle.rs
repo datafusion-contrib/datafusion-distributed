@@ -176,12 +176,12 @@ mod tests {
 mod tpch_two_phase_tests {
     use datafusion::physical_plan::execute_stream;
     use datafusion::prelude::SessionContext;
+    use datafusion_datasets::{
+        output::TESTDATA_ROOT, parquet_layout::ParquetLayout, register_tables, tpch,
+    };
     use datafusion_distributed::test_utils::in_memory_channel_resolver::start_in_memory_context;
     use datafusion_distributed::{
         DefaultSessionBuilder, DistributedExt, assert_snapshot, display_plan_ascii,
-    };
-    use datafusion_distributed_benchmarks::datasets::{
-        output::TESTDATA_ROOT, parquet_layout::ParquetLayout, register_tables, tpch,
     };
     use futures::TryStreamExt;
     use std::error::Error;

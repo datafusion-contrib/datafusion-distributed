@@ -40,6 +40,9 @@ about a user's networking or deployment stack.
 - `datafusion/distributed-iceberg-test-tools/`: shared Iceberg test fixtures.
 - `datafusion/distributed-console/`: terminal console for observing a cluster.
 - `datafusion/distributed-cli/`: distributed variant of the DataFusion CLI.
+- `datafusion/datasets/`: TPC-H, TPC-DS and ClickBench
+  dataset generation shared by tests and benchmarks; it must not depend on
+  `datafusion-distributed`.
 - `datafusion/distributed-benchmarks/`, `datafusion/distributed-iceberg-benchmarks/`,
   `datafusion/distributed-remote-worker/`: local benchmark crates, remote
   benchmark worker, and microbenchmarks; do not change benchmark behavior as an
