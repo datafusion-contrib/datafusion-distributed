@@ -32,5 +32,6 @@ mod tpch_plans_test;
 mod tpch_sorted_correctness_test;
 mod tpch_sorted_plans_test;
 mod udfs;
+mod window;
 mod work_unit_feed;
 mod worker_plan_hook;

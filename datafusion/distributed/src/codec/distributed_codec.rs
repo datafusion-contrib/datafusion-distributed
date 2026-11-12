@@ -15,7 +15,9 @@ use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::{Result, internal_datafusion_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
-use datafusion::physical_expr::equivalence::{EquivalenceClass, EquivalenceGroup};
+use datafusion::physical_expr::equivalence::{
+    AcrossPartitions, ConstExpr, EquivalenceClass, EquivalenceGroup,
+};
 use datafusion::physical_expr::{EquivalenceProperties, PhysicalExpr};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::union::UnionExec;
@@ -513,11 +515,29 @@ fn serialize_equivalence_group(
         .eq_group()
         .iter()
         .map(|class| {
-            class
+            let expressions = class
                 .iter()
                 .map(|expr| proto_converter.physical_expr_to_proto(expr, codec))
-                .collect::<Result<Vec<_>>>()
-                .map(|expressions| EquivalenceClassProto { expressions })
+                .collect::<Result<Vec<_>>>()?;
+            let constant = match class
+                .canonical_expr()
+                .and_then(|expr| properties.eq_group().is_expr_constant(expr))
+            {
+                None => None,
+                Some(AcrossPartitions::Heterogeneous) => {
+                    Some(AcrossPartitionsProto::Heterogeneous(()))
+                }
+                Some(AcrossPartitions::Uniform(None)) => {
+                    Some(AcrossPartitionsProto::UniformUnknown(()))
+                }
+                Some(AcrossPartitions::Uniform(Some(value))) => {
+                    Some(AcrossPartitionsProto::UniformValue((&value).try_into()?))
+                }
+            };
+            Ok(EquivalenceClassProto {
+                expressions,
+                constant,
+            })
         })
         .collect()
 }
@@ -528,22 +548,34 @@ fn parse_equivalence_properties(
     decode_ctx: &PhysicalPlanDecodeContext<'_>,
     proto_converter: &dyn PhysicalProtoConverterExtension,
 ) -> Result<EquivalenceProperties> {
-    let classes = equivalence_classes
-        .into_iter()
-        .map(|class| {
-            class
-                .expressions
-                .iter()
-                .map(|expr| {
-                    proto_converter.proto_to_physical_expr(expr, schema.as_ref(), decode_ctx)
-                })
-                .collect::<Result<Vec<_>>>()
-                .map(EquivalenceClass::new)
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let mut classes = Vec::with_capacity(equivalence_classes.len());
+    let mut constants = Vec::new();
+    for class in equivalence_classes {
+        let expressions = class
+            .expressions
+            .iter()
+            .map(|expr| proto_converter.proto_to_physical_expr(expr, schema.as_ref(), decode_ctx))
+            .collect::<Result<Vec<_>>>()?;
+        if let Some(constant) = class.constant {
+            let expr = expressions.first().ok_or_else(|| {
+                internal_datafusion_err!("Constant equivalence class has no expressions")
+            })?;
+            let across = match constant {
+                AcrossPartitionsProto::Heterogeneous(()) => AcrossPartitions::Heterogeneous,
+                AcrossPartitionsProto::UniformUnknown(()) => AcrossPartitions::Uniform(None),
+                AcrossPartitionsProto::UniformValue(value) => {
+                    AcrossPartitions::Uniform(Some((&value).try_into()?))
+                }
+            };
+            constants.push(ConstExpr::new(Arc::clone(expr), across));
+        }
+        classes.push(EquivalenceClass::new(expressions));
+    }
 
     let mut properties = EquivalenceProperties::new(schema);
     properties.add_equivalence_group(EquivalenceGroup::new(classes))?;
+    // Singleton column classes are otherwise discarded as trivial during reconstruction.
+    properties.add_constants(constants)?;
     Ok(properties)
 }
 
@@ -663,6 +695,19 @@ pub struct EquivalenceClassProto {
     /// Expressions known to produce equal values.
     #[prost(message, repeated, tag = "1")]
     expressions: Vec<protobuf::PhysicalExprNode>,
+    /// Constant metadata can exist without a literal in the expression list.
+    #[prost(oneof = "AcrossPartitionsProto", tags = "2, 3, 4")]
+    constant: Option<AcrossPartitionsProto>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Oneof)]
+pub enum AcrossPartitionsProto {
+    #[prost(message, tag = "2")]
+    Heterogeneous(()),
+    #[prost(message, tag = "3")]
+    UniformUnknown(()),
+    #[prost(message, tag = "4")]
+    UniformValue(protobuf::ScalarValue),
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -810,6 +855,7 @@ mod tests {
 
     const DEFAULT_MODE: ShuffleMode = ShuffleMode::Direct;
     use datafusion::arrow::datatypes::{DataType, Field};
+    use datafusion::common::ScalarValue;
     use datafusion::physical_expr::{LexOrdering, PhysicalExpr};
     use datafusion::physical_plan::empty::EmptyExec;
     use datafusion::physical_plan::filter::FilterExec;
@@ -1198,6 +1244,10 @@ mod tests {
         let schema = Arc::new(Schema::new(vec![
             Field::new("a", DataType::Int32, false),
             Field::new("b", DataType::Int32, false),
+            Field::new("c0", DataType::Int32, true),
+            Field::new("c1", DataType::Int32, true),
+            Field::new("c2", DataType::Int32, true),
+            Field::new("c3", DataType::Int32, true),
         ]));
         let a: Arc<dyn PhysicalExpr> = Arc::new(Column::new("a", 0));
         let b: Arc<dyn PhysicalExpr> = Arc::new(Column::new("b", 1));
@@ -1205,6 +1255,21 @@ mod tests {
         let mut equivalence_properties = EquivalenceProperties::new(schema.clone());
         equivalence_properties.add_equal_conditions(a.clone(), b.clone())?;
         equivalence_properties.add_ordering([PhysicalSortExpr::new_default(a.clone())]);
+
+        let constants = [
+            AcrossPartitions::Uniform(Some(ScalarValue::Int32(Some(7)))),
+            AcrossPartitions::Uniform(Some(ScalarValue::Int32(None))),
+            AcrossPartitions::Uniform(None),
+            AcrossPartitions::Heterogeneous,
+        ];
+        let constants = constants
+            .into_iter()
+            .enumerate()
+            .map(|(i, across)| {
+                ConstExpr::new(Arc::new(Column::new(&format!("c{i}"), i + 2)), across)
+            })
+            .collect::<Vec<_>>();
+        equivalence_properties.add_constants(constants.clone())?;
 
         let plans: Vec<(&str, Arc<dyn ExecutionPlan>)> = vec![
             (
@@ -1250,6 +1315,11 @@ mod tests {
                     .eq_group()
                     .exprs_equal(&a, &b),
                 "{name} lost the equivalence relationship"
+            );
+            assert_eq!(
+                decoded.properties().equivalence_properties().constants(),
+                constants,
+                "{name} lost constant metadata"
             );
             if name == "shuffle" {
                 assert_eq!(
