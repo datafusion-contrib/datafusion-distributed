@@ -14,6 +14,10 @@ mod worker_service;
 /// The worker refuses a call that carries it more than once, or with a value other than the query
 /// id of the [TaskKey](crate::TaskKey) in the body. A call without it is served.
 pub const TASK_KEY_QUERY_ID_HEADER: &str = "x-datafusion-distributed-task-key-query-id";
+/// Set by the gRPC client to the stage id of the task named by the request.
+pub const TASK_KEY_STAGE_ID_HEADER: &str = "x-datafusion-distributed-task-key-stage-id";
+/// Set by the gRPC client to the task number within its stage.
+pub const TASK_KEY_TASK_NUMBER_HEADER: &str = "x-datafusion-distributed-task-key-task-number";
 
 // TODO: this should not be exposed.
 pub(crate) use channel_resolver::DEFAULT_CHANNEL_RESOLVER_PER_RUNTIME;

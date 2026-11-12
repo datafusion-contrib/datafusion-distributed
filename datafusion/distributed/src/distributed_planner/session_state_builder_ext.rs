@@ -24,11 +24,6 @@ impl SessionStateBuilderExt for SessionStateBuilder {
     fn with_distributed_planner(mut self) -> Self {
         let cfg = self.config().get_or_insert_default();
         DistributedConfig::ensure_in_config(cfg);
-        let random_route_seed = cfg
-            .options()
-            .extensions
-            .get::<DistributedConfig>()
-            .and_then(|cfg| cfg.random_route_seed);
         cfg.options_mut()
             .optimizer
             .enable_physical_uncorrelated_scalar_subquery = false;
@@ -48,7 +43,7 @@ impl SessionStateBuilderExt for SessionStateBuilder {
                 //    co-locate it in one of the workers from the stage below to avoid network transfers.
                 Arc::new(SingleTaskChildUrlRouteTaskHandler),
                 // 3. If everything above fails, just place randomly.
-                Arc::new(RandomRouteTaskHandler::new(random_route_seed)),
+                Arc::new(RandomRouteTaskHandler::new(None)),
             ],
         );
 

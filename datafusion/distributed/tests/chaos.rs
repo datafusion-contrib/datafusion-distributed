@@ -1,14 +1,18 @@
 #[cfg(all(feature = "tpch", feature = "chaos-tests", test))]
 mod tests {
     use arrow::util::pretty::pretty_format_batches;
-    use datafusion::common::Result;
     use datafusion::common::runtime::JoinSet;
+    use datafusion::common::{HashMap, Result};
     use datafusion::error::DataFusionError;
     use datafusion::execution::{SessionState, SessionStateBuilder};
     use datafusion::prelude::SessionContext;
+    use datafusion_distributed::grpc::{
+        TASK_KEY_QUERY_ID_HEADER, TASK_KEY_STAGE_ID_HEADER, TASK_KEY_TASK_NUMBER_HEADER,
+    };
     use datafusion_distributed::test_utils::localhost::LocalHostWorkerResolver;
     use datafusion_distributed::{
-        DistributedConfig, DistributedExt, SessionStateBuilderExt, Worker, WorkerQueryContext,
+        DistributedConfig, DistributedExt, RandomRouteTaskHandler, SessionStateBuilderExt, Worker,
+        WorkerQueryContext,
     };
     use datafusion_distributed_benchmarks::datasets::{
         output::TESTDATA_ROOT, parquet_layout::ParquetLayout, register_tables, tpch,
@@ -121,14 +125,14 @@ mod tests {
     #[derive(Clone)]
     struct ChaosLayer {
         in_flight: Arc<Semaphore>,
-        rng: Arc<Mutex<StdRng>>,
+        state: ChaosState,
     }
 
     impl ChaosLayer {
-        fn new(max_in_flight: usize, seed: u64) -> Self {
+        fn new(max_in_flight: usize, state: ChaosState) -> Self {
             Self {
                 in_flight: Arc::new(Semaphore::new(max_in_flight)),
-                rng: Arc::new(Mutex::new(StdRng::seed_from_u64(seed))),
+                state,
             }
         }
     }
@@ -140,7 +144,7 @@ mod tests {
             ChaosService {
                 inner,
                 in_flight: self.in_flight.clone(),
-                rng: self.rng.clone(),
+                state: self.state.clone(),
             }
         }
     }
@@ -149,7 +153,7 @@ mod tests {
     struct ChaosService<S> {
         inner: S,
         in_flight: Arc<Semaphore>,
-        rng: Arc<Mutex<StdRng>>,
+        state: ChaosState,
     }
 
     impl<S> Service<http::Request<Body>> for ChaosService<S>
@@ -184,7 +188,8 @@ mod tests {
                     });
                 }
             };
-            let action = ChaosAction::random(&mut *self.rng.lock().unwrap());
+            let task_key = ChaosTaskKey::from_headers(request.headers());
+            let action = self.state.action(task_key);
             let response = self.inner.call(request);
 
             Box::pin(async move {
@@ -216,6 +221,7 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Eq, PartialEq)]
     enum ChaosAction {
         Pass,
         Delay(Duration),
@@ -223,19 +229,117 @@ mod tests {
         Unavailable(Duration),
     }
 
-    impl ChaosAction {
-        fn random(rng: &mut impl Rng) -> Self {
-            let duration = Duration::from_millis(10 + u64::from(rng.random::<u8>() % 90));
-            // Odds of an error are 5 in 256. The odds of a query failing are (5/256)^num_retries.
-            // Make sure the max_coordinator_channel_retries in the DistributedConfig is large enough
-            // to avoid errors.
-            match rng.random::<u8>() {
-                0..=4 => Self::Delay(duration),
-                5..=7 => Self::Timeout(duration),
-                8..=9 => Self::Unavailable(duration),
-                _ => Self::Pass,
+    #[derive(Clone, Debug, Eq, Hash, PartialEq)]
+    struct ChaosTaskKey {
+        query_id: String,
+        stage_id: u64,
+        task_number: u64,
+    }
+
+    impl ChaosTaskKey {
+        fn from_headers(headers: &http::HeaderMap) -> Self {
+            let header = |name| {
+                headers
+                    .get(name)
+                    .unwrap_or_else(|| panic!("missing {name}"))
+                    .to_str()
+                    .unwrap_or_else(|_| panic!("invalid {name}"))
+            };
+            Self {
+                query_id: header(TASK_KEY_QUERY_ID_HEADER).to_string(),
+                stage_id: header(TASK_KEY_STAGE_ID_HEADER)
+                    .parse()
+                    .expect("stage id must be a u64"),
+                task_number: header(TASK_KEY_TASK_NUMBER_HEADER)
+                    .parse()
+                    .expect("task number must be a u64"),
             }
         }
+    }
+
+    #[derive(Clone)]
+    struct ChaosState {
+        seed: u64,
+        attempts: Arc<Mutex<HashMap<ChaosTaskKey, usize>>>,
+    }
+
+    impl ChaosState {
+        fn new(seed: u64) -> Self {
+            Self {
+                seed,
+                attempts: Arc::new(Mutex::new(HashMap::new())),
+            }
+        }
+
+        fn action(&self, task_key: ChaosTaskKey) -> ChaosAction {
+            let attempt = {
+                let mut attempts = self.attempts.lock().unwrap();
+                let attempt = attempts.entry(task_key.clone()).or_default();
+                let current = *attempt;
+                *attempt += 1;
+                current
+            };
+            ChaosAction::for_task(self.seed, &task_key, attempt)
+        }
+    }
+
+    impl ChaosAction {
+        fn for_task(seed: u64, task_key: &ChaosTaskKey, attempt: usize) -> Self {
+            let mut task_seed = [0; 32];
+            task_seed[..8].copy_from_slice(&seed.to_le_bytes());
+            task_seed[8..16].copy_from_slice(&task_key.stage_id.to_le_bytes());
+            task_seed[16..24].copy_from_slice(&task_key.task_number.to_le_bytes());
+
+            let mut task_rng = StdRng::from_seed(task_seed);
+            let num_errors = match task_rng.random::<u8>() {
+                0..=4 => 2,
+                5..=14 => 1,
+                _ => 0,
+            };
+
+            task_seed[24..].copy_from_slice(&(attempt as u64).to_le_bytes());
+            let mut attempt_rng = StdRng::from_seed(task_seed);
+            let duration = Duration::from_millis(10 + u64::from(attempt_rng.random::<u8>() % 90));
+            if attempt < num_errors {
+                if attempt_rng.random() {
+                    Self::Timeout(duration)
+                } else {
+                    Self::Unavailable(duration)
+                }
+            } else if attempt_rng.random::<u8>() <= 4 {
+                Self::Delay(duration)
+            } else {
+                Self::Pass
+            }
+        }
+    }
+
+    #[test]
+    fn chaos_actions_repeat_per_task_independent_of_request_order() {
+        let task_a = ChaosTaskKey {
+            query_id: "query-a".to_string(),
+            stage_id: 7,
+            task_number: 3,
+        };
+        let task_b = ChaosTaskKey {
+            query_id: "query-b".to_string(),
+            stage_id: 7,
+            task_number: 4,
+        };
+
+        let first = ChaosState::new(42);
+        let first_a = first.action(task_a.clone());
+        let first_b = first.action(task_b.clone());
+        let second_a = first.action(task_a.clone());
+
+        let second = ChaosState::new(42);
+        let second_b = second.action(task_b);
+        let repeated_first_a = second.action(task_a.clone());
+        let repeated_second_a = second.action(task_a);
+
+        assert_eq!(first_a, repeated_first_a);
+        assert_eq!(second_a, repeated_second_a);
+        assert_eq!(first_b, second_b);
     }
 
     async fn chaos_worker_session_builder(ctx: WorkerQueryContext) -> Result<SessionState> {
@@ -251,7 +355,6 @@ mod tests {
     async fn chaos_localhost_cluster(
         cfg: ChaosClusterConfig,
     ) -> Result<(SessionContext, JoinSet<()>, Vec<Worker>)> {
-        let mut layer_rng = StdRng::seed_from_u64(cfg.seed);
         let listeners = futures::future::try_join_all(
             (0..cfg.num_workers)
                 .map(|_| TcpListener::bind("127.0.0.1:0"))
@@ -272,16 +375,18 @@ mod tests {
 
         let mut join_set = JoinSet::new();
         let mut workers = vec![];
+        let chaos_state = ChaosState::new(cfg.seed);
         for listener in listeners {
-            let layer_seed = layer_rng.random();
             let worker = Worker::from_session_builder(chaos_worker_session_builder);
             workers.push(worker.clone());
 
             let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+            let chaos_state = chaos_state.clone();
+            let max_in_flight = cfg.max_in_flight;
 
             join_set.spawn(async move {
                 Server::builder()
-                    .layer(ChaosLayer::new(cfg.max_in_flight, layer_seed))
+                    .layer(ChaosLayer::new(max_in_flight, chaos_state))
                     .add_service(worker.into_worker_server())
                     .serve_with_incoming(incoming)
                     .await
@@ -293,11 +398,11 @@ mod tests {
         let worker_resolver = LocalHostWorkerResolver::new(ports.clone());
         let mut distributed_config = DistributedConfig::default();
         distributed_config.max_coordinator_channel_retries = 5;
-        distributed_config.random_route_seed = Some(cfg.seed);
         let state = SessionStateBuilder::new()
             .with_default_features()
             .with_distributed_option_extension(distributed_config)
             .with_distributed_planner()
+            .with_distributed_route_task_handler(RandomRouteTaskHandler::new(Some(cfg.seed)))
             .with_distributed_dynamic_task_count(adaptive())?
             .with_distributed_local_worker_context(
                 workers[0].to_local_worker_context(first_worker_url),

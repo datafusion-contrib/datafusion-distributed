@@ -1,7 +1,7 @@
-use super::TASK_KEY_QUERY_ID_HEADER;
 use super::errors::{datafusion_error_to_tonic_status, map_status_to_datafusion_error};
 use super::generated::worker as pb;
 use super::spawn_select_all::spawn_select_all;
+use super::{TASK_KEY_QUERY_ID_HEADER, TASK_KEY_STAGE_ID_HEADER, TASK_KEY_TASK_NUMBER_HEADER};
 
 use crate::common::{deserialize_uuid, now_ns};
 use crate::metrics::df_metrics_set_to_proto;
@@ -508,16 +508,24 @@ fn garbage_collect_arrays(
 /// Refuses a call whose task key headers do not name the [TaskKey] decoded from its body, so a
 /// layer that authorized the headers authorized the task the worker acts on.
 fn check_task_key_headers(metadata: &MetadataMap, task_key: &TaskKey) -> Result<(), Status> {
-    let mut query_ids = metadata.get_all(TASK_KEY_QUERY_ID_HEADER).iter();
-    let Some(query_id) = query_ids.next() else {
-        return Ok(());
-    };
-    if query_ids.next().is_some()
-        || query_id.as_encoded_bytes() != task_key.query_id.to_string().as_bytes()
-    {
-        return Err(Status::invalid_argument(format!(
-            "{TASK_KEY_QUERY_ID_HEADER} must appear at most once and match the request's task key"
-        )));
+    let expected = [
+        (TASK_KEY_QUERY_ID_HEADER, task_key.query_id.to_string()),
+        (TASK_KEY_STAGE_ID_HEADER, task_key.stage_id.to_string()),
+        (
+            TASK_KEY_TASK_NUMBER_HEADER,
+            task_key.task_number.to_string(),
+        ),
+    ];
+    for (header, expected_value) in expected {
+        let mut values = metadata.get_all(header).iter();
+        let Some(value) = values.next() else {
+            continue;
+        };
+        if values.next().is_some() || value.as_encoded_bytes() != expected_value.as_bytes() {
+            return Err(Status::invalid_argument(format!(
+                "{header} must appear at most once and match the request's task key"
+            )));
+        }
     }
     Ok(())
 }
@@ -554,7 +562,7 @@ mod tests {
     }
 
     #[test]
-    fn check_task_key_headers_refuses_a_query_id_naming_another_query_or_sent_twice() {
+    fn check_task_key_headers_refuses_mismatched_or_duplicate_values() {
         let key = TaskKey {
             query_id: uuid::Uuid::new_v4(),
             stage_id: 1,
@@ -574,5 +582,13 @@ mod tests {
         assert!(check(&[key.query_id]).is_ok());
         assert!(check(&[uuid::Uuid::new_v4()]).is_err());
         assert!(check(&[key.query_id, key.query_id]).is_err());
+
+        let mut metadata = MetadataMap::new();
+        metadata.insert(TASK_KEY_STAGE_ID_HEADER, "2".parse().unwrap());
+        assert!(check_task_key_headers(&metadata, &key).is_err());
+
+        let mut metadata = MetadataMap::new();
+        metadata.insert(TASK_KEY_TASK_NUMBER_HEADER, "0".parse().unwrap());
+        assert!(check_task_key_headers(&metadata, &key).is_ok());
     }
 }

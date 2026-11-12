@@ -16,19 +16,17 @@ use tokio::time::sleep;
 use url::Url;
 
 /// Assigns a task to a random URL from the registered [WorkerResolver].
-pub(crate) struct RandomRouteTaskHandler {
+pub struct RandomRouteTaskHandler {
     seed: u64,
 }
 
 impl RandomRouteTaskHandler {
-    pub(crate) fn new(seed: Option<u64>) -> Self {
+    /// Creates a routing handler. A fixed seed reproduces placement and failover order for the
+    /// same stage and task numbers; `None` generates a seed once for this handler.
+    pub fn new(seed: Option<u64>) -> Self {
         Self {
             seed: seed.unwrap_or_else(rand::random),
         }
-    }
-
-    fn retry_seed(&self, key: &TaskKey) -> [u8; 32] {
-        routing_seed(key, self.seed, true)
     }
 }
 
@@ -36,19 +34,10 @@ impl RandomRouteTaskHandler {
 impl RouteTaskHandler for RandomRouteTaskHandler {
     async fn handle(&self, ev: RouteTaskEvent<'_>) -> Option<Result<RouteTaskEventResponse>> {
         let urls = ok_or_some_err!(ev.worker_resolver.get_urls());
-        let url = stage_contiguous_rand_offset(&ev.task_key, self.seed, &urls)?.clone();
+        let seed = routing_seed(&ev.task_key, self.seed);
+        let url = seeded_rand_item(seed, &urls)?.clone();
         let d_cfg = ok_or_some_err!(DistributedConfig::from_task_context(ev.task_ctx));
-        Some(
-            dial_with_failover(
-                ev.dialer,
-                url,
-                urls,
-                self.retry_seed(&ev.task_key),
-                ev.metrics,
-                d_cfg,
-            )
-            .await,
-        )
+        Some(dial_with_failover(ev.dialer, url, urls, seed.bytes, ev.metrics, d_cfg).await)
     }
 }
 
@@ -144,32 +133,36 @@ fn same_url_retry_backoff(
     backoff
 }
 
-/// Chooses an item using a random starting offset shared by every task in this stage.
-/// Successive task numbers rotate through the list from that offset.
-fn stage_contiguous_rand_offset<T>(
-    key: &TaskKey,
-    seed: u64,
-    list: impl IntoIterator<Item = T>,
-) -> Option<T> {
+/// Chooses a stage-wide random starting offset, then rotates successive tasks through the list.
+fn seeded_rand_item<T>(seed: RoutingSeed, list: impl IntoIterator<Item = T>) -> Option<T> {
     let list = list.into_iter().collect::<Vec<_>>();
     if list.is_empty() {
         return None;
     }
 
-    let mut rng = StdRng::from_seed(routing_seed(key, seed, false));
+    let mut stage_seed = seed.bytes;
+    stage_seed[24..].fill(0);
+    let mut rng = StdRng::from_seed(stage_seed);
     let start = rng.random_range(0..list.len());
-    let index = (start + key.task_number % list.len()) % list.len();
+    let index = (start + seed.task_number % list.len()) % list.len();
     list.into_iter().nth(index)
 }
 
-fn routing_seed(key: &TaskKey, base_seed: u64, include_task: bool) -> [u8; 32] {
-    let mut seed = [0; 32];
-    seed[..8].copy_from_slice(&base_seed.to_le_bytes());
-    seed[16..24].copy_from_slice(&(key.stage_id as u64).to_le_bytes());
-    if include_task {
-        seed[24..].copy_from_slice(&(key.task_number as u64).to_le_bytes());
+#[derive(Clone, Copy)]
+struct RoutingSeed {
+    bytes: [u8; 32],
+    task_number: usize,
+}
+
+fn routing_seed(key: &TaskKey, base_seed: u64) -> RoutingSeed {
+    let mut bytes = [0; 32];
+    bytes[..8].copy_from_slice(&base_seed.to_le_bytes());
+    bytes[16..24].copy_from_slice(&(key.stage_id as u64).to_le_bytes());
+    bytes[24..].copy_from_slice(&(key.task_number as u64).to_le_bytes());
+    RoutingSeed {
+        bytes,
+        task_number: key.task_number,
     }
-    seed
 }
 
 /// If there's a single task, it co-locates it in the coordinator if it can also act as a worker.
@@ -245,7 +238,7 @@ mod tests {
                         stage_id: 7,
                         task_number,
                     };
-                    stage_contiguous_rand_offset(&key, handler.seed, 0..4).unwrap()
+                    seeded_rand_item(routing_seed(&key, handler.seed), 0..4).unwrap()
                 })
                 .collect::<Vec<_>>()
         };
@@ -270,8 +263,14 @@ mod tests {
         let mut first = vec![0, 1, 2, 3];
         let mut second = first.clone();
 
-        shuffle_retry_urls(&mut first, handler.retry_seed(&key(Uuid::from_u128(1))));
-        shuffle_retry_urls(&mut second, handler.retry_seed(&key(Uuid::from_u128(2))));
+        shuffle_retry_urls(
+            &mut first,
+            routing_seed(&key(Uuid::from_u128(1)), handler.seed).bytes,
+        );
+        shuffle_retry_urls(
+            &mut second,
+            routing_seed(&key(Uuid::from_u128(2)), handler.seed).bytes,
+        );
 
         assert_eq!(first, second);
     }
