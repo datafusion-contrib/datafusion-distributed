@@ -87,6 +87,7 @@ pub struct WorkUnitFeedDeclaration {
     pub partitions: usize,
 }
 
+#[derive(Clone)]
 pub struct SetPlanRequest {
     /// The unique identifier of the task to which the subplan belongs to.
     pub task_key: TaskKey,
