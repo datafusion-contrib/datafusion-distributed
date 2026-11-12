@@ -11,8 +11,8 @@ use crate::dynamic_filtering::{
 use crate::execution_plans::SamplerExec;
 use crate::stage::{LocalStage, RemoteStage};
 use crate::{
-    BytesCounterMetric, CoordinatorToWorkerMsg, LoadInfo, MaxGaugeMetric, NetworkBoundaryExt,
-    NetworkCoalesceExec, Stage, TaskCountAnnotation,
+    BytesCounterMetric, LoadInfo, MaxGaugeMetric, NetworkBoundaryExt, NetworkCoalesceExec, Stage,
+    TaskCountAnnotation,
 };
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -28,7 +28,6 @@ use futures::{Stream, StreamExt};
 use std::any::TypeId;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
-use tokio_stream::wrappers::UnboundedReceiverStream;
 
 /// Stage metric with the bytes a stage is estimated to return, from sampling its output.
 pub(crate) const ESTIMATED_OUTPUT_BYTES_METRIC: &str = "estimated_output_bytes";
@@ -121,33 +120,18 @@ impl NetworkBoundaryBuilder for DynamicPlanBuilder<'_> {
                 vec![]
             };
 
-        let mut load_info_rxs = Vec::with_capacity(input_stage.tasks);
+        let stage_coordinator = self.query_coordinator.stage_coordinator(&input_stage);
 
-        let mut stage_coordinator = self.query_coordinator.stage_coordinator(&input_stage);
-
-        let mut futures = Vec::with_capacity(input_stage.tasks);
-        for task_i in 0..input_stage.tasks {
-            futures.push(stage_coordinator.init_bidirectional_stream(task_i));
-        }
-        let results = futures::future::try_join_all(futures).await?;
-
-        let mut workers = Vec::with_capacity(input_stage.tasks);
-        for (task_i, (url, worker_tx, worker_rx_stream)) in results.into_iter().enumerate() {
-            workers.push(url);
-            load_info_rxs.push({
-                let rx = stage_coordinator.worker_to_coordinator_task(task_i, worker_rx_stream);
-                UnboundedReceiverStream::new(rx)
-            });
-            let _ = worker_tx.send(CoordinatorToWorkerMsg::KickOffSampling);
-            stage_coordinator.coordinator_to_worker_task(task_i, worker_tx)?;
-        }
-        stage_coordinator.seal_dynamic_filter_stage()?;
+        let worker_connection_result = stage_coordinator.connect_to_workers().await?;
 
         let (stats, consumer_tc) = if nb_type == TypeId::of::<NetworkCoalesceExec>() {
             (None, TaskCountAnnotation::exact(NonZeroUsize::MIN, 0.0))
         } else {
-            let (stats, new_metrics) =
-                gather_runtime_statistics(load_info_rxs, &input_stage.plan).await?;
+            let (stats, new_metrics) = gather_runtime_statistics(
+                worker_connection_result.per_task_load_info_streams,
+                &input_stage.plan,
+            )
+            .await?;
             metrics.extend(new_metrics);
             // returning Desired(0) here is our way to tell the planner that we don't care
             // about the task count assigned to the network boundary in the consumer stage,
@@ -169,7 +153,7 @@ impl NetworkBoundaryBuilder for DynamicPlanBuilder<'_> {
             input_stage: Stage::Remote(RemoteStage {
                 query_id: input_stage.query_id,
                 num: input_stage.num,
-                workers,
+                workers: worker_connection_result.per_task_worker_locations,
                 runtime_stats: stats,
                 dynamic_filter_anchors,
             }),
