@@ -1,3 +1,4 @@
+mod aggregate_by_name;
 mod bytes_metric;
 pub(crate) mod generated;
 mod latency_metric;
@@ -6,6 +7,7 @@ mod metrics_proto;
 mod task_metrics_collector;
 mod task_metrics_rewriter;
 
+pub(crate) use aggregate_by_name::aggregate_by_name;
 pub use bytes_metric::{BytesCounterMetric, BytesMetricExt};
 pub use latency_metric::{
     AvgLatencyMetric, FirstLatencyMetric, LatencyMetricExt, MaxLatencyMetric, MinLatencyMetric,
