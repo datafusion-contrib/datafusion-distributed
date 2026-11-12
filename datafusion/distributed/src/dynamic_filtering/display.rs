@@ -1,4 +1,4 @@
-use crate::codec::roundtrip_pb;
+use crate::codec::{RoundtripProtoConverter, roundtrip_pb};
 use crate::common::TreeNodeExt;
 use crate::coordinator::DistributedExec;
 use crate::dynamic_filtering::{
@@ -13,11 +13,8 @@ use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{HashMap, Result, internal_err};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::PhysicalExpr;
-use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
-use datafusion::physical_plan::{
-    ChildrenPropertiesMode, ExecutionPlan, ExecutionPlanProperties, ReplaceChildrenOptions,
-};
+use datafusion::physical_plan::{ChildrenPropertiesMode, ExecutionPlan, ReplaceChildrenOptions};
 use std::sync::Arc;
 
 /// Rewrites an executed distributed plan with dynamic filters from the coordinator and its
@@ -157,7 +154,11 @@ pub(crate) fn sever_dynamic_filter_relationships_in_plan_for_display(
             .variants()
             .iter()
             .map(|variant| {
-                let variant = roundtrip_pb(Arc::clone(variant), task_ctx)?;
+                let variant = roundtrip_pb(
+                    Arc::clone(variant),
+                    task_ctx,
+                    &RoundtripProtoConverter::default(),
+                )?;
                 // The variant can have a SortExec
                 isolate_sort_dynamic_filters_for_display(variant, task_ctx)
             })
@@ -177,12 +178,7 @@ pub(crate) fn sever_dynamic_filter_relationships_in_plan_for_display(
 /// displaying different dynamic filters for each task containing a [`SortExec`]. For now, we
 /// just clear the dynamic filter and don't display it.
 ///
-/// To avoid serializing an entire subtree, we swap in an [`EmptyExec`]:
-///
-/// ```text
-/// SortExec           SortExec          SortExec
-///   ...children  ->    EmptyExec  ->     ...children
-/// ```
+/// Only the [`SortExec`] node is round-tripped, its children are left untouched.
 ///
 /// TODO(#677): display producer dynamic filters
 fn isolate_sort_dynamic_filters_for_display(
@@ -190,25 +186,16 @@ fn isolate_sort_dynamic_filters_for_display(
     task_ctx: &Arc<TaskContext>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     plan.transform_up(|node| {
-        let Some(sort) = node.downcast_ref::<SortExec>() else {
-            return Ok(Transformed::no(node));
-        };
-        if node.dynamic_expressions_produced().is_empty() {
+        if node.downcast_ref::<SortExec>().is_none()
+            || node.dynamic_expressions_produced().is_empty()
+        {
             return Ok(Transformed::no(node));
         }
-
-        let input = Arc::clone(sort.input());
-        let placeholder = Arc::new(
-            EmptyExec::new(input.schema())
-                .with_partitions(input.output_partitioning().partition_count()),
-        ) as Arc<dyn ExecutionPlan>;
-        let recompute = ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute);
-        let sort_with_placeholder = node.replace_children(vec![placeholder], recompute)?;
-
-        let isolated = roundtrip_pb(sort_with_placeholder, task_ctx)?;
-        let isolated = isolated.replace_children(vec![input], recompute)?;
-
-        Ok(Transformed::yes(isolated))
+        Ok(Transformed::yes(roundtrip_pb(
+            node,
+            task_ctx,
+            &RoundtripProtoConverter::default(),
+        )?))
     })
     .map(|transformed| transformed.data)
 }
