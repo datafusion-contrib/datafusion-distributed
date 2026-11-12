@@ -16,10 +16,10 @@ pub use desired_task_count::{
     TaskCountAnnotation,
 };
 pub(crate) use desired_task_count::{DesiredTaskCountHandlers, TaskCountRestriction};
+pub(crate) use route_tasks::RouteTaskHandlers;
 pub use route_tasks::{
     CoordinatorToWorkerDialer, RouteTaskEvent, RouteTaskEventResponse, RouteTaskHandler,
 };
-pub(crate) use route_tasks::{RouteTaskHandlers, new_coordinator_to_worker_dialer};
 pub(crate) use scale_up_leaf_node::ScaleUpLeafNodeHandlers;
 pub use scale_up_leaf_node::{
     ScaleUpLeafNodeEvent, ScaleUpLeafNodeEventResponse, ScaleUpLeafNodeHandler,
