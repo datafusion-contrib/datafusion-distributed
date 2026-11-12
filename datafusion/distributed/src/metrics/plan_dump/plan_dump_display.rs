@@ -744,6 +744,7 @@ mod tests {
             │ dynamic_filter_updates_received=0
             │ local_coordinator_channels=0
             │ remote_coordinator_channels=3
+            │ num_workers=3
             │ plan_send_latency_avg=<time>
             │ plan_send_latency_max=<time>
             │ plan_bytes_sent=<bytes>
@@ -781,6 +782,7 @@ mod tests {
             │ dynamic_filter_updates_received=0
             │ local_coordinator_channels=0
             │ remote_coordinator_channels=3
+            │ num_workers=3
             │ plan_send_latency_avg=<time>
             │ plan_send_latency_max=<time>
             │ plan_bytes_sent=<bytes>
