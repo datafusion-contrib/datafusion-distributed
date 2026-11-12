@@ -1,5 +1,86 @@
 # Local DataFusion benchmarks
 
+### Sibling Top-K scan workloads
+
+```shell
+cargo bench -p datafusion-distributed-benchmarks --bench sibling_topk -- --save-baseline main
+# Run the same workload on the candidate revision:
+cargo bench -p datafusion-distributed-benchmarks --bench sibling_topk -- --baseline main
+```
+
+This controlled benchmark runs `SELECT score FROM topk_data WHERE included ORDER
+BY score DESC LIMIT 100` through localhost gRPC with two or eight scan tasks,
+two partitions per task, and four Tokio threads. It uses ordinary task allocation
+and execution, with no wait for a dynamic filter. Each task adds one identical
+two-million-row Parquet file: the eight-task case has four times the data of the
+two-task case, so this is not a constant-work fan-out comparison.
+
+- `pruning`: the first row group has high scores; remaining groups have increasing
+  low scores. Natural byte-range allocation separates the high groups from some
+  low scans, giving an early remote bound useful work to prune.
+- `nonprunable`: included scores increase, but each row group also contains an
+  excluded row with the maximum `Int64` score. Its statistics prevent Top-K bounds
+  from skipping that group. Parquet row filtering and page indexes are disabled
+  in both workloads, so this control measures update work without scan pruning.
+  Every iteration checks zero pruned groups or file ranges, all input rows scanned,
+  and stable scan bytes; compare those bytes across revisions too.
+
+Every query checks the complete ordered result against values derived from the
+fixture. Worker completion observations report actual task assignments, local
+and remote filter counts, scan bytes, row counts, and group/range pruning. The
+configured `distributed.enable_sibling_topk_filter_pushdown` entry determines whether remote
+consumers are required. Effective remote pruning requires a useful received
+predicate and fewer scan rows than local pruning could explain. One check uses
+groups surviving the strongest local cutoff. Another recognizes file-range stops
+when the local filter still admits the whole-file maximum, after discounting all
+observed row-group pruning. Both exclude empty byte fragments and require actual
+pruning counters. They prove fewer scan output rows; Parquet scan-byte counters
+measure reduced reads separately, not physical disk or origin I/O.
+
+Every correct query stays in the timing samples, including queries where delivery
+was too late to prove useful pruning. The output counts queries with producer
+updates, useful received predicates, and proven remote effects separately. Report
+those fractions alongside timings; the pruning workload needs observed effects
+before supporting a pruning-benefit claim. Criterion's `observed` totals include
+its calibration, warmup, and measurement calls; resource totals cover exactly the
+marked queries.
+
+The benchmark compiles before sibling sharing is available. To evaluate an
+opt-in implementation, install its configuration at the existing context setup
+and verify `configured=true` in the candidate's output and `false` in the control.
+Keep the fixture, query, checks, and measurement loop unchanged.
+
+Criterion measures execution through complete result collection. Fixture
+generation, worker startup, planning, and checking after collection are excluded;
+worker completion observations can overlap collection.
+The untimed preflight is also a warmup and prints the worker observations.
+For fixed-work CPU and memory comparisons, run the compiled benchmark executable
+with, for example, `TOPK_RESOURCE_CASE=pruning/8 TOPK_RESOURCE_QUERIES=20`.
+Accepted case names are `pruning/2`, `pruning/8`, `nonprunable/2`, and
+`nonprunable/8`; the query count defaults to 20. Flushed `resource_begin` and
+`resource_end` lines bracket exactly that many checked queries after the preflight.
+This window includes planning and checking; its summed `elapsed` field contains
+only query execution. Observing remote predicates adds feature-dependent work,
+so these CPU measurements do not isolate production-only sharing overhead.
+Observations are consumed after each query, and plans are not retained across
+queries.
+
+Use a fresh process per resource run. Measure process user plus system CPU and
+sample resident memory inside the marked window; report process high-water RSS
+separately because it includes setup. All workers share the process, so summing
+per-worker process metrics duplicates resources. Criterion calibrates iteration
+counts independently, making whole-process CPU totals from ordinary Criterion
+runs unsuitable for fixed-work comparisons.
+Sampled RSS can miss short peaks; allocator-accounted Arrow memory does not include
+all expression, message, and channel allocations. The reported update count is a
+producer-report count, not a measurement of dynamic-filter network bytes.
+
+Use matching release builds, dataset contents, CPU affinity, and configuration;
+alternate paired runs on a quiet host and retain failed or rejected pairs. Verify
+activation and exact correctness before interpreting timings. These synthetic
+cases qualify conditional scan savings and overhead; they do not establish a
+general speedup or replace representative full-suite regression measurements.
+
 ### Generating Benchmarking data
 
 The `dfbench prepare-*` commands generate datasets under `--root` (by default
