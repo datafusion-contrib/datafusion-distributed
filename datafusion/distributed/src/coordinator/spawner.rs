@@ -77,9 +77,17 @@ impl Spawner {
     /// [`Spawner::end_query_guard`] or [`Spawner::query_finished`].
     ///
     /// Otherwise, they may choose to terminate gracefully, blocking the response stream.
-    pub(super) fn spawn(&self, task: impl Future<Output = Result<()>> + Send + 'static) {
+    pub(super) fn spawn<F>(&self, task_f: impl FnOnce(Spawner) -> F)
+    where
+        F: Future<Output = Result<()>> + Send + 'static,
+    {
+        let self_clone = Spawner {
+            query_finished: self.query_finished.clone(),
+            task_tx: self.task_tx.clone(),
+            error_tx: self.error_tx.clone(),
+        };
         // Once the supervisor stops, sending fails and drops the future without running it.
-        let _ = self.task_tx.send(task.boxed());
+        let _ = self.task_tx.send(task_f(self_clone).boxed());
     }
 
     /// Spawns a task that keeps running if the query fails or is cancelled.

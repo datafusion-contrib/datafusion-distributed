@@ -216,7 +216,12 @@ impl ShuffleFixture {
         let input_stage = Stage::Remote(RemoteStage {
             query_id,
             num: 0,
-            workers: self.input_stage_workers.clone(),
+            workers: self
+                .input_stage_workers
+                .iter()
+                .cloned()
+                .map(Into::into)
+                .collect(),
             runtime_stats: None,
             dynamic_filter_anchors: vec![],
         });
