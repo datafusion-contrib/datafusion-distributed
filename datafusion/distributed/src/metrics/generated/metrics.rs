@@ -266,7 +266,8 @@ pub struct MetricColumn {
     /// The metric's kind and name, with its values left unset.
     #[prost(message, optional, tag = "1")]
     pub metric: ::core::option::Option<Metric>,
-    /// The task each group of values belongs to, or empty if the metric does not belong to a task.
+    /// The task each group of values belongs to. Metrics that do not belong to a task are dumped as
+    /// task 0's.
     #[prost(uint64, repeated, tag = "2")]
     pub tasks: ::prost::alloc::vec::Vec<u64>,
     /// The values of the metric, as many per task as the metric has (e.g. `pruned` and `matched` for

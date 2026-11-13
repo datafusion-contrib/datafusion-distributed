@@ -450,7 +450,7 @@ fn display_inner_distributed_leaf(
 /// For a non-distributed plan, this is equivalent to [MetricsSet::aggregate_by_name] since there
 /// will be no task ids. For a distributed plan, it's expected that the metrics rewriter populated
 /// task id labels in all metrics.
-pub(crate) fn aggregate_by_task_id(metrics: &MetricsSet) -> MetricsSet {
+fn aggregate_by_task_id(metrics: &MetricsSet) -> MetricsSet {
     // Key: (metric_name, Option<task_id>)
     let mut map: HashMap<(&str, Option<&str>), Metric> = HashMap::new();
 

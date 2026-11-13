@@ -179,7 +179,8 @@ message PlanDump {
 message MetricColumn {
   // The metric's kind and name, with its values left unset.
   Metric metric = 1;
-  // The task each group of values belongs to, or empty if the metric does not belong to a task.
+  // The task each group of values belongs to. Metrics that do not belong to a task are dumped as
+  // task 0's.
   repeated uint64 tasks = 2;
   // The values of the metric, as many per task as the metric has (e.g. `pruned` and `matched` for
   // pruning metrics), one task after the other.
