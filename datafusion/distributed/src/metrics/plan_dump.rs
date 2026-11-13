@@ -1,26 +1,26 @@
 use crate::metrics::df_metrics_set_to_proto;
 use crate::metrics::generated::metrics::{self as pb, PlanDump, StageDump};
 use crate::metrics::metrics_proto::metric_proto_to_df;
-use crate::stage::{
-    aggregate_by_task_id, format_each_metric_by_task, metrics_by_task_id, stage_partition_count,
-};
+use crate::stage::{format_each_metric_by_task, metrics_by_task_id, stage_partition_count};
 use crate::{
-    DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedExec, DistributedLeafExec, MaxLatencyMetric,
-    NetworkBoundaryExt, P50LatencyMetric, P75LatencyMetric, P95LatencyMetric, P99LatencyMetric,
-    Stage,
+    AvgLatencyMetric, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedExec, DistributedLeafExec,
+    MaxLatencyMetric, NetworkBoundaryExt, P50LatencyMetric, P75LatencyMetric, P95LatencyMetric,
+    P99LatencyMetric, Stage,
 };
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use datafusion::common::{
-    Result, exec_datafusion_err, exec_err, internal_datafusion_err, internal_err,
+    HashSet, Result, exec_datafusion_err, exec_err, internal_datafusion_err, internal_err,
 };
 use datafusion::physical_expr_common::metrics::MetricValue;
 use datafusion::physical_plan::metrics::{Metric, MetricsSet};
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties, displayable};
 use prost::Message;
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::io::Read;
+use std::ptr;
 use std::sync::{Arc, LazyLock};
 use zstd::dict::{DecoderDictionary, EncoderDictionary};
 
@@ -218,40 +218,122 @@ fn dump_metrics(metrics: Option<&MetricsSet>) -> Result<Vec<pb::MetricColumn>> {
     let Some(metrics) = metrics else {
         return Ok(vec![]);
     };
-    let mut optimized = MetricsSet::new();
-    for metric in aggregate_by_task_id(metrics).iter() {
-        let Some(value) = optimize_metric(metric.value().clone()) else {
-            continue;
-        };
-        let labels = metric.labels().to_vec();
-        optimized.push(Arc::new(Metric::new_with_labels(value, None, labels)));
+    let mut columns = vec![];
+    for (_, tasks) in by_name_and_task(metrics)? {
+        columns.extend(metric_column(&tasks)?);
     }
-    let proto_metrics = df_metrics_set_to_proto(&optimized)?.metrics;
+    Ok(columns)
+}
 
-    let mut metrics = Vec::with_capacity(proto_metrics.len());
-    for mut metric in proto_metrics {
-        let task = take_task_label(&mut metric)?;
-        let values: Vec<u64> = metric_values(&mut metric)?
-            .into_iter()
-            .map(std::mem::take)
-            .collect();
-        metrics.push((task, metric, values));
+/// The value of a metric for each task.
+type TaskValues<'a> = BTreeMap<u64, Cow<'a, MetricValue>>;
+
+/// The value of each metric for each task, aggregating the values of the task's partitions, with
+/// metrics sorted by name so that the same metrics always produce the same dump.
+fn by_name_and_task(metrics: &MetricsSet) -> Result<Vec<(&str, TaskValues<'_>)>> {
+    let mut by_name: Vec<(&str, TaskValues)> = vec![];
+    for metric in metrics.iter() {
+        let value = metric.value();
+        // Most tasks report a single value per metric, which is used as is.
+        tasks_of(&mut by_name, value.name())
+            .entry(metric_task(metric)?)
+            .and_modify(|aggregated| aggregate(aggregated, value))
+            .or_insert(Cow::Borrowed(value));
     }
-    // Sorting by task makes each column list its tasks in order, and keying columns by their
-    // encoded value-less metric gives them a stable order.
-    metrics.sort_by_key(|(task, _, _)| *task);
-    let mut columns: BTreeMap<Vec<u8>, pb::MetricColumn> = BTreeMap::new();
-    for (task, metric, values) in metrics {
-        let column = columns
-            .entry(metric.encode_to_vec())
-            .or_insert_with(|| pb::MetricColumn {
-                metric: Some(metric),
-                ..Default::default()
-            });
-        column.tasks.extend(task);
-        column.values.extend(values);
+    by_name.sort_unstable_by_key(|(name, _)| *name);
+    Ok(by_name)
+}
+
+/// The values of the metric named `name`. A node has a few dozen metric names, reported once per
+/// partition with the same `&str`, so comparing pointers first finds them faster than comparing
+/// or hashing names.
+fn tasks_of<'a, 'b>(
+    by_name: &'b mut Vec<(&'a str, TaskValues<'a>)>,
+    name: &'a str,
+) -> &'b mut TaskValues<'a> {
+    let i = by_name
+        .iter()
+        .position(|(n, _)| ptr::eq(*n, name) || *n == name);
+    let i = i.unwrap_or_else(|| {
+        by_name.push((name, BTreeMap::new()));
+        by_name.len() - 1
+    });
+    &mut by_name[i].1
+}
+
+/// Aggregates `value` into `aggregated`, which becomes owned the first time.
+fn aggregate(aggregated: &mut Cow<MetricValue>, value: &MetricValue) {
+    if let Cow::Borrowed(first) = *aggregated {
+        // Not `Cow::to_mut`, as a clone of a metric shares its values with the plan's.
+        let mut owned = first.new_empty();
+        owned.aggregate(first);
+        *aggregated = Cow::Owned(owned);
     }
-    Ok(columns.into_values().collect())
+    aggregated.to_mut().aggregate(value);
+}
+
+/// The column of a metric's values for each task. All of them share the kind and name of the
+/// first one, which is dumped as the column's metric, and the rest only contribute their numbers.
+/// Metrics that a dump leaves out, like timestamps, have no column.
+fn metric_column(tasks: &TaskValues) -> Result<Option<pb::MetricColumn>> {
+    let Some(first) = tasks.values().next() else {
+        return Ok(None);
+    };
+    let Some(value) = optimize_metric(first.as_ref().clone()) else {
+        return Ok(None);
+    };
+    // Converted as a set, which leaves out the custom metrics it does not support.
+    let mut set = MetricsSet::new();
+    set.push(Arc::new(Metric::new(value, None)));
+    let Some(mut metric) = df_metrics_set_to_proto(&set)?.metrics.pop() else {
+        return Ok(None);
+    };
+    let mut values = Vec::with_capacity(tasks.len());
+    for value in tasks.values() {
+        push_numbers(&mut values, value);
+    }
+    // The column's metric is left without values, which are all in `values`.
+    let first_values: Vec<u64> = (metric_values(&mut metric)?.into_iter())
+        .map(std::mem::take)
+        .collect();
+    debug_assert_eq!(first_values, values[..first_values.len()]);
+    Ok(Some(pb::MetricColumn {
+        metric: Some(metric),
+        tasks: tasks.keys().copied().collect(),
+        values,
+    }))
+}
+
+/// Pushes the numbers of a metric that are dumped in its column, in the order of [metric_values].
+fn push_numbers(values: &mut Vec<u64>, value: &MetricValue) {
+    match value {
+        MetricValue::PruningMetrics {
+            pruning_metrics, ..
+        } => values.extend([pruning_metrics.pruned(), pruning_metrics.matched()].map(|n| n as u64)),
+        MetricValue::Ratio { ratio_metrics, .. } => {
+            values.extend([ratio_metrics.part(), ratio_metrics.total()].map(|n| n as u64))
+        }
+        MetricValue::Custom { value, .. } => {
+            match value.as_any().downcast_ref::<AvgLatencyMetric>() {
+                Some(avg) => values.extend([avg.nanos_sum(), avg.count()].map(|n| n as u64)),
+                None => values.push(value.as_usize() as u64),
+            }
+        }
+        value => values.push(value.as_usize() as u64),
+    }
+}
+
+/// The task that reported `metric`. Metrics without a task label, like the ones of a plan that is
+/// not distributed, are taken as reported by task 0.
+fn metric_task(metric: &Metric) -> Result<u64> {
+    let Some(label) =
+        (metric.labels().iter()).find(|l| l.name() == DISTRIBUTED_DATAFUSION_TASK_ID_LABEL)
+    else {
+        return Ok(0);
+    };
+    let task = label.value();
+    task.parse()
+        .map_err(|_| internal_datafusion_err!("Invalid task id label '{task}'"))
 }
 
 /// Reverses [dump_metrics], giving each metric of a column its task label back.
@@ -262,43 +344,22 @@ fn undump_metrics(columns: &[pb::MetricColumn]) -> Result<MetricsSet> {
             continue;
         };
         let width = metric_values(&mut template.clone())?.len();
-        // A metric that does not belong to a task has a single group of values.
-        let tasks = match column.tasks.is_empty() {
-            true => vec![None],
-            false => column.tasks.iter().copied().map(Some).collect(),
-        };
-        if column.values.len() != tasks.len() * width {
+        if column.values.len() != column.tasks.len() * width {
             return exec_err!("Plan dump has a metric column with a wrong number of values");
         }
-        for (task, values) in tasks.into_iter().zip(column.values.chunks_exact(width)) {
+        for (task, values) in column.tasks.iter().zip(column.values.chunks_exact(width)) {
             let mut metric = template.clone();
             for (slot, value) in metric_values(&mut metric)?.into_iter().zip(values) {
                 *slot = *value;
             }
-            metric.labels.extend(task.map(|task| pb::Label {
+            metric.labels.push(pb::Label {
                 name: DISTRIBUTED_DATAFUSION_TASK_ID_LABEL.to_string(),
                 value: task.to_string(),
-            }));
+            });
             metrics.push(metric_proto_to_df(metric)?);
         }
     }
     Ok(metrics)
-}
-
-/// Removes the task label from `metric`, returning the task it belongs to, if any.
-fn take_task_label(metric: &mut pb::Metric) -> Result<Option<u64>> {
-    let Some(i) = metric
-        .labels
-        .iter()
-        .position(|l| l.name == DISTRIBUTED_DATAFUSION_TASK_ID_LABEL)
-    else {
-        return Ok(None);
-    };
-    let task = metric.labels.remove(i).value;
-    let task = task
-        .parse()
-        .map_err(|_| internal_datafusion_err!("Invalid task id label '{task}'"))?;
-    Ok(Some(task))
 }
 
 /// The numbers of a metric, which are dumped as part of a [pb::MetricColumn], while the rest of
@@ -468,10 +529,9 @@ fn operator_tree(plan: &PlanDump, paint: Paint) -> Result<Node> {
 }
 
 /// Like [crate::display_plan_ascii], each `t<i>: …` variant of a [DistributedLeafExec] shows the
-/// metrics of the task that ran it, as long as the metrics are labeled by task.
+/// metrics of the task that ran it.
 fn leaf_tree(plan: &PlanDump, paint: Paint) -> Result<Node> {
-    let metrics = undump_metrics(&plan.metrics)?;
-    let by_task = metrics_by_task_id(&metrics);
+    let by_task = metrics_by_task_id(&undump_metrics(&plan.metrics)?);
     let variant = |task: usize, variant: &PlanDump| Node {
         label: paint.operator(&variant.display),
         metrics: by_task
@@ -482,10 +542,7 @@ fn leaf_tree(plan: &PlanDump, paint: Paint) -> Result<Node> {
     };
     Ok(Node {
         label: paint.operator(&plan.display),
-        metrics: match by_task.is_empty() {
-            true => metric_lines(&metrics, paint),
-            false => vec![],
-        },
+        metrics: vec![],
         children: plan
             .children
             .iter()
@@ -529,12 +586,37 @@ fn boundary_kind(display: &str) -> &str {
     name.trim_start_matches("Network").trim_end_matches("Exec")
 }
 
-/// One `name=value` line per metric, with per-task values as `name={task:value, …}`.
+/// One `name=value` line per metric, with per-task values as `name={task:value, …}`. A metric only
+/// reported by task 0, like the ones of a plan that is not distributed, displays as `name=value`.
 fn metric_lines(metrics: &MetricsSet, paint: Paint) -> Vec<String> {
-    format_each_metric_by_task(metrics)
+    let reported_by_other_tasks: HashSet<&str> = (metrics.iter())
+        .filter(|metric| metric_task(metric).is_ok_and(|task| task != 0))
+        .map(|metric| metric.value().name())
+        .collect();
+    let mut displayed = MetricsSet::new();
+    for metric in metrics.iter() {
+        let only_task_0 = !reported_by_other_tasks.contains(metric.value().name());
+        displayed.push(match only_task_0 {
+            true => without_task_label(metric),
+            false => Arc::clone(metric),
+        });
+    }
+    format_each_metric_by_task(&displayed)
         .iter()
         .map(|metric| paint.metric(metric))
         .collect()
+}
+
+fn without_task_label(metric: &Metric) -> Arc<Metric> {
+    let labels = (metric.labels().iter())
+        .filter(|label| label.name() != DISTRIBUTED_DATAFUSION_TASK_ID_LABEL)
+        .cloned()
+        .collect();
+    Arc::new(Metric::new_with_labels(
+        metric.value().clone(),
+        None,
+        labels,
+    ))
 }
 
 /// `file_groups={16 groups: [[…]]}` becomes `file_groups={16 groups}`, as file lists are often
@@ -552,6 +634,18 @@ fn elide_file_groups(display: &str) -> String {
         .next()
         .unwrap_or_default();
     format!("{}{groups}{}", &display[..start], &display[start + len..])
+}
+
+/// Where the parameter name that `before` ends with starts, like `mode` in `…, mode`, if it is a
+/// whole lowercase word.
+fn param_name_start(before: &str) -> Option<usize> {
+    let start = (before.char_indices().rev())
+        .take_while(|(_, c)| c.is_ascii_lowercase() || *c == '_')
+        .last()?
+        .0;
+    let at_word_start =
+        (before[..start].chars().next_back()).is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
+    at_word_start.then_some(start)
 }
 
 /// Colors the parts of a rendered plan dump with ANSI escape codes when enabled, similar to how
@@ -590,22 +684,24 @@ impl Paint {
             return metric.to_string();
         };
         let value = match value.strip_prefix('{').and_then(|v| v.strip_suffix('}')) {
+            Some(tasks) => self.tasks(tasks),
             None => self.value(value),
-            Some(tasks) => {
-                let tasks = tasks
-                    .split(", ")
-                    .map(|task| match task.split_once(':') {
-                        Some((index, value)) => {
-                            format!("{}{}", self.dim(&format!("{index}:")), self.value(value))
-                        }
-                        None => self.value(task),
-                    })
-                    .collect::<Vec<_>>()
-                    .join(&self.dim(", "));
-                format!("{}{tasks}{}", self.dim("{"), self.dim("}"))
-            }
         };
         format!("{name}{}{value}", self.dim("="))
+    }
+
+    /// The `task:value, …` values of a metric for each task, within braces.
+    fn tasks(self, tasks: &str) -> String {
+        let tasks = (tasks.split(", "))
+            .map(|task| match task.split_once(':') {
+                Some((index, value)) => {
+                    format!("{}{}", self.dim(&format!("{index}:")), self.value(value))
+                }
+                None => self.value(task),
+            })
+            .collect::<Vec<_>>()
+            .join(&self.dim(", "));
+        format!("{}{tasks}{}", self.dim("{"), self.dim("}"))
     }
 
     /// An operator, like `[Stage 1] => NetworkShuffleExec: input_tasks=3`, with the stage it reads
@@ -644,23 +740,13 @@ impl Paint {
         let mut rest = text;
         while let Some(eq) = rest.find('=') {
             let before = &rest[..eq];
-            let start = before
-                .char_indices()
-                .rev()
-                .take_while(|(_, c)| c.is_ascii_lowercase() || *c == '_')
-                .last()
-                .map_or(eq, |(i, _)| i);
-            let at_word_start = before[..start]
-                .chars()
-                .next_back()
-                .is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
-            match start < eq && at_word_start {
-                true => {
+            match param_name_start(before) {
+                Some(start) => {
                     out += &before[..start];
                     out += &self.style("34", &before[start..]);
                     out += &self.dim("=");
                 }
-                false => {
+                None => {
                     out += before;
                     out += "=";
                 }
@@ -757,13 +843,14 @@ mod tests {
     }
 
     #[test]
-    fn metrics_display_the_same_once_dumped() -> Result<()> {
+    fn metrics_once_dumped() -> Result<()> {
         let metrics = ExecutionPlanMetricsSet::new();
         let task = |task: usize| {
             MetricBuilder::new(&metrics)
                 .with_new_label(DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, task.to_string())
         };
-        // Task 0 runs two partitions, whose values add up.
+        // Task 0 runs two partitions, whose values add up. Metrics only reported by task 0 display
+        // as a plain value.
         task(0).output_rows(0).add(10);
         task(0).output_rows(1).add(5);
         task(1).output_rows(0).add(7);
@@ -788,7 +875,10 @@ mod tests {
         p50.add_duration(Duration::from_millis(1));
         p50.add_duration(Duration::from_millis(5));
         p50.add_duration(Duration::from_millis(9));
-        // The coordinator's metrics do not belong to a task.
+        task(2)
+            .p50_latency("network_latency_p50")
+            .add_duration(Duration::from_millis(7));
+        // The coordinator's metrics do not belong to a task, and display like task 0's.
         MetricBuilder::new(&metrics)
             .global_counter("plan_bytes_sent")
             .add(1024);
@@ -796,16 +886,14 @@ mod tests {
 
         let dumped = undump_metrics(&dump_metrics(Some(&metrics))?)?;
 
-        let display = format_each_metric_by_task(&dumped);
-        assert_eq!(display, format_each_metric_by_task(&metrics));
-        assert_snapshot!(display.join("\n"), @r"
+        assert_snapshot!(metric_lines(&dumped, Paint(false)).join("\n"), @r"
         output_rows={0:15, 1:7}
         elapsed_compute={0:3.00ms, 1:1.50ms}
         files_ranges_pruned_statistics={1:5 total → 2 matched}
         plan_bytes_sent=1.02 K
-        probe_hit_rate={0:25% (1/4)}
-        network_latency_avg={0:2.00ms}
-        network_latency_p50={1:5.03ms}
+        probe_hit_rate=25% (1/4)
+        network_latency_avg=2.00ms
+        network_latency_p50={1:5.03ms, 2:7.06ms}
         ");
         Ok(())
     }
