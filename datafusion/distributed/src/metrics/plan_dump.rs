@@ -20,10 +20,37 @@ use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties, displaya
 use prost::Message;
 use std::collections::BTreeMap;
 use std::fmt::Write;
-use std::sync::Arc;
+use std::io::Read;
+use std::sync::{Arc, LazyLock};
+use zstd::dict::{DecoderDictionary, EncoderDictionary};
 
 /// zstd compression level for plan dumps.
 const ZSTD_LEVEL: i32 = 3;
+
+/// zstd dictionary that plan dumps are compressed with. Metric names, operator names and plan
+/// fragments repeat across all dumps, and a dictionary of them makes dumps 15% to 40% smaller,
+/// measured on benchmark dumps it was not trained on.
+///
+/// It is trained on the dumps of the TPC-H SF10, TPC-DS SF10 and ClickBench (partitions 0 to 3)
+/// local benchmarks, run with `--workers 8 --debug`, which print one dump per query on stdout.
+/// Each dump is decoded into the protobuf it contains, as a file of a samples directory:
+///
+/// ```shell
+/// base64 -d <<< "$dump" | zstd -d > samples/<dataset>/<query>.pb
+/// zstd --train -r samples --maxdict=65536 --dictID=32768 -o plan_dump.zdict
+/// ```
+///
+/// Dumps record the id of the dictionary they are compressed with, so a dictionary trained again
+/// must get a new `--dictID`, and dumps compressed with the previous one no longer decode.
+const ZSTD_DICTIONARY: &[u8] = include_bytes!("plan_dump.zdict");
+
+/// [ZSTD_DICTIONARY] prepared once for compressing, instead of on every dump.
+static ZSTD_ENCODER_DICTIONARY: LazyLock<EncoderDictionary<'static>> =
+    LazyLock::new(|| EncoderDictionary::copy(ZSTD_DICTIONARY, ZSTD_LEVEL));
+
+/// [ZSTD_DICTIONARY] prepared once for decompressing, instead of on every dump.
+static ZSTD_DECODER_DICTIONARY: LazyLock<DecoderDictionary<'static>> =
+    LazyLock::new(|| DecoderDictionary::copy(ZSTD_DICTIONARY));
 
 /// The identifier of the head stage that runs on the coordinator.
 const HEAD_STAGE_ID: usize = 0;
@@ -55,7 +82,8 @@ pub fn generate_plan_dump(plan: &Arc<dyn ExecutionPlan>) -> Result<String> {
         partitions: plan.output_partitioning().partition_count() as u64,
         plan_dump: Some(Box::new(plan_dump(&plan)?)),
     };
-    let compressed = zstd::encode_all(head.encode_to_vec().as_slice(), ZSTD_LEVEL)
+    let compressed = zstd::bulk::Compressor::with_prepared_dictionary(&ZSTD_ENCODER_DICTIONARY)
+        .and_then(|mut compressor| compressor.compress(&head.encode_to_vec()))
         .map_err(|err| internal_datafusion_err!("Failed to compress plan dump: {err}"))?;
     Ok(STANDARD.encode(compressed))
 }
@@ -92,8 +120,13 @@ pub fn display_plan_dump(plan: String, opts: DisplayPlanDumpOptions) -> Result<S
     let compressed = STANDARD
         .decode(plan.trim())
         .map_err(|err| exec_datafusion_err!("Plan dump is not valid base64: {err}"))?;
-    let encoded = zstd::decode_all(compressed.as_slice())
-        .map_err(|err| exec_datafusion_err!("Plan dump is not zstd-compressed: {err}"))?;
+    let mut encoded = vec![];
+    zstd::stream::Decoder::with_prepared_dictionary(
+        compressed.as_slice(),
+        &ZSTD_DECODER_DICTIONARY,
+    )
+    .and_then(|mut decoder| decoder.read_to_end(&mut encoded))
+    .map_err(|err| exec_datafusion_err!("Plan dump is not zstd-compressed: {err}"))?;
     let head = StageDump::decode(encoded.as_slice())
         .map_err(|err| exec_datafusion_err!("Plan dump does not contain a plan: {err}"))?;
 
