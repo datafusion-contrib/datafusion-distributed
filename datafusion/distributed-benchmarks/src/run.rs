@@ -72,8 +72,8 @@ pub struct RunOpt {
     workers: usize,
 
     /// Number of iterations of each test run
-    #[structopt(short = "i", long = "iterations", default_value = "5")]
-    iterations: usize,
+    #[structopt(short = "i", long = "iterations")]
+    iterations: Option<usize>,
 
     /// Activate debug mode to see more details
     #[structopt(short, long)]
@@ -230,8 +230,8 @@ impl RunOpt {
         backend.register_tables(&ctx, &self.get_path()?).await?;
         let dataset_suite = dataset_suite(&self.dataset);
 
-        println!("Running benchmarks with the following options: {self:?}");
-        println!("Config: {config_entries:?}");
+        eprintln!("Running benchmarks with the following options: {self:?}");
+        eprintln!("Config: {config_entries:?}");
         let mut benchmark_run = BenchmarkRun::new(self.dataset.clone(), local_workers.ports.len());
 
         for (id, sql) in queries_for_dataset(dataset_suite)? {
@@ -264,8 +264,15 @@ impl RunOpt {
             dataset: self.dataset.clone(),
             iterations: vec![],
         };
+        let mut iterations = 5; // Default to 5 iterations.
+        if self.debug {
+            iterations = 1;
+        }
+        if let Some(value) = self.iterations {
+            iterations = value
+        }
 
-        'outer: for i in 0..self.iterations {
+        'outer: for i in 0..iterations {
             let start = Instant::now();
 
             for query in sql.split(";").map(|v| v.trim()) {
@@ -295,20 +302,21 @@ impl RunOpt {
                             false => None,
                         };
                         if let Some(q_error) = stats_q_error {
-                            println!(
+                            eprintln!(
                                 "Query {id} iteration {i} took {ms:.1} ms, stats q-error P50 {:.2}x, P95 {:.2}x and returned {row_count} rows",
                                 q_error.p50, q_error.p95
                             );
                         } else {
-                            println!(
+                            eprintln!(
                                 "Query {id} iteration {i} took {ms:.1} ms and returned {row_count} rows"
                             );
                         }
                         if self.debug {
-                            println!(
+                            eprintln!(
                                 "=== Physical plan with metrics ===\n{}\n",
                                 display_plan_ascii(physical_plan.as_ref(), true)
                             );
+                            println!("{}", generate_plan_dump(&physical_plan)?);
                         }
 
                         bench_query.iterations.push(QueryIter {
@@ -321,7 +329,7 @@ impl RunOpt {
                         });
                     }
                     Err(err) => {
-                        println!("Query {id} iteration {i} failed: {err}");
+                        eprintln!("Query {id} iteration {i} failed: {err}");
                         bench_query.iterations.push(QueryIter {
                             elapsed: Duration::from_millis(0),
                             row_count: 0,
@@ -335,7 +343,7 @@ impl RunOpt {
                 }
             }
         }
-        println!("Query {id} p50 time: {} ms", bench_query.p50());
+        eprintln!("Query {id} p50 time: {} ms", bench_query.p50());
 
         Ok(bench_query)
     }
