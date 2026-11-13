@@ -237,7 +237,7 @@ pub struct StageDump {
     #[prost(uint64, tag = "1")]
     pub stage_id: u64,
     #[prost(message, repeated, tag = "2")]
-    pub metrics: ::prost::alloc::vec::Vec<TaskLabeledMetricsSet>,
+    pub metrics: ::prost::alloc::vec::Vec<MetricColumn>,
     #[prost(message, optional, boxed, tag = "3")]
     pub plan_dump: ::core::option::Option<::prost::alloc::boxed::Box<PlanDump>>,
     /// The number of tasks the stage ran with.
@@ -252,19 +252,25 @@ pub struct PlanDump {
     #[prost(string, tag = "1")]
     pub display: ::prost::alloc::string::String,
     #[prost(message, repeated, tag = "2")]
-    pub metrics: ::prost::alloc::vec::Vec<TaskLabeledMetricsSet>,
+    pub metrics: ::prost::alloc::vec::Vec<MetricColumn>,
     #[prost(message, repeated, tag = "3")]
     pub children: ::prost::alloc::vec::Vec<PlanDump>,
     /// For network boundaries, the stage they read from. Its plan is not part of `children`.
     #[prost(message, optional, boxed, tag = "4")]
     pub input_stage: ::core::option::Option<::prost::alloc::boxed::Box<StageDump>>,
 }
-/// The metrics of one task, or the ones that do not belong to a specific task if `task` is not set.
-/// Grouping them by task keeps each metric from carrying a task label.
+/// One metric of a node with its values for every task, stored once instead of as one `Metric` per
+/// task, which makes dumps much smaller.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct TaskLabeledMetricsSet {
-    #[prost(uint64, optional, tag = "1")]
-    pub task: ::core::option::Option<u64>,
-    #[prost(message, optional, tag = "2")]
-    pub metrics_set: ::core::option::Option<MetricsSet>,
+pub struct MetricColumn {
+    /// The metric's kind and name, with its values left unset.
+    #[prost(message, optional, tag = "1")]
+    pub metric: ::core::option::Option<Metric>,
+    /// The task each group of values belongs to, or empty if the metric does not belong to a task.
+    #[prost(uint64, repeated, tag = "2")]
+    pub tasks: ::prost::alloc::vec::Vec<u64>,
+    /// The values of the metric, as many per task as the metric has (e.g. `pruned` and `matched` for
+    /// pruning metrics), one task after the other.
+    #[prost(uint64, repeated, tag = "3")]
+    pub values: ::prost::alloc::vec::Vec<u64>,
 }

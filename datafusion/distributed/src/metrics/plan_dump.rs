@@ -1,5 +1,6 @@
+use crate::metrics::df_metrics_set_to_proto;
 use crate::metrics::generated::metrics::{self as pb, PlanDump, StageDump};
-use crate::metrics::{df_metrics_set_to_proto, metrics_set_proto_to_df};
+use crate::metrics::metrics_proto::metric_proto_to_df;
 use crate::stage::{
     aggregate_by_task_id, format_each_metric_by_task, metrics_by_task_id, stage_partition_count,
 };
@@ -10,9 +11,11 @@ use crate::{
 };
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use datafusion::common::{Result, exec_datafusion_err, exec_err, internal_datafusion_err};
+use datafusion::common::{
+    Result, exec_datafusion_err, exec_err, internal_datafusion_err, internal_err,
+};
 use datafusion::physical_expr_common::metrics::MetricValue;
-use datafusion::physical_plan::metrics::{Label, Metric, MetricsSet};
+use datafusion::physical_plan::metrics::{Metric, MetricsSet};
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties, displayable};
 use prost::Message;
 use std::collections::BTreeMap;
@@ -24,6 +27,10 @@ const ZSTD_LEVEL: i32 = 3;
 
 /// The identifier of the head stage that runs on the coordinator.
 const HEAD_STAGE_ID: usize = 0;
+
+/// The display of a [DistributedLeafExec] in a dump, which tells [operator_tree] that the metrics
+/// of the node belong to its `t<i>: …` children.
+const LEAF_DISPLAY: &str = "DistributedLeafExec:";
 
 /// Distributed plans can be huge, the more tasks there are, the bigger the plans get, and
 /// logging it can get prohibitive or impossible. This function produces a protobuf + zstd + base64
@@ -148,73 +155,157 @@ fn plan_dump(plan: &Arc<dyn ExecutionPlan>) -> Result<PlanDump> {
     Ok(dump)
 }
 
-/// A [DistributedLeafExec] runs a different variant of its leaf in each task. Like in
-/// [crate::display_plan_ascii], each variant becomes a `t<i>: …` child holding the metrics of the
-/// task that ran it, as long as the metrics are labeled by task.
+/// A [DistributedLeafExec] runs a different variant of its leaf in each task, and each variant
+/// becomes a `t<i>: …` child. The metrics of all the variants are dumped once on the leaf, where
+/// each metric is a single column with the values of every task, and [leaf_tree] hands each
+/// variant the metrics of its task when displaying them.
 fn leaf_dump(leaf: &DistributedLeafExec, metrics: Option<MetricsSet>) -> Result<PlanDump> {
-    let by_task = metrics.as_ref().map(metrics_by_task_id).unwrap_or_default();
     let children = leaf
         .variants
         .iter()
         .enumerate()
-        .map(|(task, variant)| {
-            Ok(PlanDump {
-                display: format!("t{task}: {}", one_line(variant)),
-                metrics: dump_metrics(by_task.get(&task))?,
-                children: vec![],
-                input_stage: None,
-            })
+        .map(|(task, variant)| PlanDump {
+            display: format!("t{task}: {}", one_line(variant)),
+            ..Default::default()
         })
-        .collect::<Result<_>>()?;
-    let metrics = match by_task.is_empty() {
-        true => dump_metrics(metrics.as_ref())?,
-        false => vec![],
-    };
+        .collect();
     Ok(PlanDump {
-        display: "DistributedLeafExec:".to_string(),
-        metrics,
+        display: LEAF_DISPLAY.to_string(),
+        metrics: dump_metrics(metrics.as_ref())?,
         children,
         input_stage: None,
     })
 }
 
-/// Metrics are dumped per task, which is how they are displayed, instead of per partition, and
-/// grouped by task, so that they do not need to carry a task label each. This makes dumps several
-/// times smaller.
-fn dump_metrics(metrics: Option<&MetricsSet>) -> Result<Vec<pb::TaskLabeledMetricsSet>> {
+/// Metrics are dumped per task, which is how they are displayed, instead of per partition. Each
+/// metric of a node is dumped once as a [pb::MetricColumn] holding its values for every task,
+/// instead of as one [pb::Metric] per task repeating its kind, name and task label, which makes
+/// dumps about a third smaller.
+fn dump_metrics(metrics: Option<&MetricsSet>) -> Result<Vec<pb::MetricColumn>> {
     let Some(metrics) = metrics else {
         return Ok(vec![]);
     };
-    // Metrics that do not belong to a specific task are under `None`, which goes first.
-    let mut by_task: BTreeMap<Option<u64>, MetricsSet> = BTreeMap::new();
+    let mut optimized = MetricsSet::new();
     for metric in aggregate_by_task_id(metrics).iter() {
         let Some(value) = optimize_metric(metric.value().clone()) else {
             continue;
         };
-        let (task, labels): (Vec<Label>, Vec<Label>) = metric
-            .labels()
-            .iter()
-            .cloned()
-            .partition(|label| label.name() == DISTRIBUTED_DATAFUSION_TASK_ID_LABEL);
-        let task = task.first().and_then(|label| label.value().parse().ok());
-        by_task
-            .entry(task)
-            .or_default()
-            .push(Arc::new(Metric::new_with_labels(
-                value,
-                metric.partition(),
-                labels,
-            )));
+        let labels = metric.labels().to_vec();
+        optimized.push(Arc::new(Metric::new_with_labels(value, None, labels)));
     }
-    by_task
-        .into_iter()
-        .map(|(task, metrics)| {
-            Ok(pb::TaskLabeledMetricsSet {
-                task,
-                metrics_set: Some(df_metrics_set_to_proto(&metrics)?),
-            })
-        })
-        .collect()
+    let proto_metrics = df_metrics_set_to_proto(&optimized)?.metrics;
+
+    let mut metrics = Vec::with_capacity(proto_metrics.len());
+    for mut metric in proto_metrics {
+        let task = take_task_label(&mut metric)?;
+        let values: Vec<u64> = metric_values(&mut metric)?
+            .into_iter()
+            .map(std::mem::take)
+            .collect();
+        metrics.push((task, metric, values));
+    }
+    // Sorting by task makes each column list its tasks in order, and keying columns by their
+    // encoded value-less metric gives them a stable order.
+    metrics.sort_by_key(|(task, _, _)| *task);
+    let mut columns: BTreeMap<Vec<u8>, pb::MetricColumn> = BTreeMap::new();
+    for (task, metric, values) in metrics {
+        let column = columns
+            .entry(metric.encode_to_vec())
+            .or_insert_with(|| pb::MetricColumn {
+                metric: Some(metric),
+                ..Default::default()
+            });
+        column.tasks.extend(task);
+        column.values.extend(values);
+    }
+    Ok(columns.into_values().collect())
+}
+
+/// Reverses [dump_metrics], giving each metric of a column its task label back.
+fn undump_metrics(columns: &[pb::MetricColumn]) -> Result<MetricsSet> {
+    let mut metrics = MetricsSet::new();
+    for column in columns {
+        let Some(template) = &column.metric else {
+            continue;
+        };
+        let width = metric_values(&mut template.clone())?.len();
+        // A metric that does not belong to a task has a single group of values.
+        let tasks = match column.tasks.is_empty() {
+            true => vec![None],
+            false => column.tasks.iter().copied().map(Some).collect(),
+        };
+        if column.values.len() != tasks.len() * width {
+            return exec_err!("Plan dump has a metric column with a wrong number of values");
+        }
+        for (task, values) in tasks.into_iter().zip(column.values.chunks_exact(width)) {
+            let mut metric = template.clone();
+            for (slot, value) in metric_values(&mut metric)?.into_iter().zip(values) {
+                *slot = *value;
+            }
+            metric.labels.extend(task.map(|task| pb::Label {
+                name: DISTRIBUTED_DATAFUSION_TASK_ID_LABEL.to_string(),
+                value: task.to_string(),
+            }));
+            metrics.push(metric_proto_to_df(metric)?);
+        }
+    }
+    Ok(metrics)
+}
+
+/// Removes the task label from `metric`, returning the task it belongs to, if any.
+fn take_task_label(metric: &mut pb::Metric) -> Result<Option<u64>> {
+    let Some(i) = metric
+        .labels
+        .iter()
+        .position(|l| l.name == DISTRIBUTED_DATAFUSION_TASK_ID_LABEL)
+    else {
+        return Ok(None);
+    };
+    let task = metric.labels.remove(i).value;
+    let task = task
+        .parse()
+        .map_err(|_| internal_datafusion_err!("Invalid task id label '{task}'"))?;
+    Ok(Some(task))
+}
+
+/// The numbers of a metric, which are dumped as part of a [pb::MetricColumn], while the rest of
+/// the metric, its kind and name, is dumped once per column.
+fn metric_values(metric: &mut pb::Metric) -> Result<Vec<&mut u64>> {
+    use pb::metric::Value;
+    Ok(match &mut metric.value {
+        Some(Value::OutputRows(v)) => vec![&mut v.value],
+        Some(Value::ElapsedCompute(v)) => vec![&mut v.value],
+        Some(Value::SpillCount(v)) => vec![&mut v.value],
+        Some(Value::SpilledBytes(v)) => vec![&mut v.value],
+        Some(Value::SpilledRows(v)) => vec![&mut v.value],
+        Some(Value::CurrentMemoryUsage(v)) => vec![&mut v.value],
+        Some(Value::Count(v)) => vec![&mut v.value],
+        Some(Value::Gauge(v)) => vec![&mut v.value],
+        Some(Value::Time(v)) => vec![&mut v.value],
+        Some(Value::OutputBytes(v)) => vec![&mut v.value],
+        Some(Value::OutputBatches(v)) => vec![&mut v.value],
+        Some(Value::PruningMetrics(v)) => vec![&mut v.pruned, &mut v.matched],
+        Some(Value::Ratio(v)) => vec![&mut v.part, &mut v.total],
+        Some(Value::CustomMinLatency(v)) => vec![&mut v.value],
+        Some(Value::CustomMaxLatency(v)) => vec![&mut v.value],
+        Some(Value::CustomAvgLatency(v)) => vec![&mut v.nanos_sum, &mut v.count],
+        Some(Value::CustomFirstLatency(v)) => vec![&mut v.value],
+        Some(Value::CustomBytesCount(v)) => vec![&mut v.value],
+        Some(Value::CustomMaxGauge(v)) => vec![&mut v.value],
+        Some(Value::PeakMemoryUsage(v)) => vec![&mut v.value],
+        // Timestamps are dropped and percentiles resolved by [optimize_metric].
+        unsupported @ (Some(
+            Value::StartTimestamp(_)
+            | Value::EndTimestamp(_)
+            | Value::CustomP50Latency(_)
+            | Value::CustomP75Latency(_)
+            | Value::CustomP95Latency(_)
+            | Value::CustomP99Latency(_),
+        )
+        | None) => {
+            return internal_err!("Metric {unsupported:?} cannot be part of a plan dump");
+        }
+    })
 }
 
 /// Optimizes metrics so that they are shipped as compressed as possible over the wire.
@@ -311,7 +402,7 @@ fn stage_node(stage: &StageDump, boundary: Option<&str>, paint: Paint) -> Result
     };
     Ok(Node {
         label,
-        metrics: metric_lines(&stage.metrics, paint)?,
+        metrics: metric_lines(&undump_metrics(&stage.metrics)?, paint),
         children: vec![],
     })
 }
@@ -329,14 +420,45 @@ fn stage_tree(stage: &StageDump, boundary: Option<&str>, paint: Paint) -> Result
 /// The nodes of a stage as a tree. Network boundaries are leaves: the stages they read from are
 /// rendered on their own.
 fn operator_tree(plan: &PlanDump, paint: Paint) -> Result<Node> {
+    if plan.display == LEAF_DISPLAY {
+        return leaf_tree(plan, paint);
+    }
     Ok(Node {
         label: paint.operator(&plan.display),
-        metrics: metric_lines(&plan.metrics, paint)?,
+        metrics: metric_lines(&undump_metrics(&plan.metrics)?, paint),
         children: plan
             .children
             .iter()
             .map(|child| operator_tree(child, paint))
             .collect::<Result<_>>()?,
+    })
+}
+
+/// Like [crate::display_plan_ascii], each `t<i>: …` variant of a [DistributedLeafExec] shows the
+/// metrics of the task that ran it, as long as the metrics are labeled by task.
+fn leaf_tree(plan: &PlanDump, paint: Paint) -> Result<Node> {
+    let metrics = undump_metrics(&plan.metrics)?;
+    let by_task = metrics_by_task_id(&metrics);
+    let variant = |task: usize, variant: &PlanDump| Node {
+        label: paint.operator(&variant.display),
+        metrics: by_task
+            .get(&task)
+            .map(|metrics| metric_lines(metrics, paint))
+            .unwrap_or_default(),
+        children: vec![],
+    };
+    Ok(Node {
+        label: paint.operator(&plan.display),
+        metrics: match by_task.is_empty() {
+            true => metric_lines(&metrics, paint),
+            false => vec![],
+        },
+        children: plan
+            .children
+            .iter()
+            .enumerate()
+            .map(|(task, child)| variant(task, child))
+            .collect(),
     })
 }
 
@@ -375,31 +497,11 @@ fn boundary_kind(display: &str) -> &str {
 }
 
 /// One `name=value` line per metric, with per-task values as `name={task:value, …}`.
-fn metric_lines(metrics: &[pb::TaskLabeledMetricsSet], paint: Paint) -> Result<Vec<String>> {
-    let mut all = MetricsSet::new();
-    for labeled in metrics {
-        let Some(metrics_set) = &labeled.metrics_set else {
-            continue;
-        };
-        // A task's metrics get their task label back, which is how they are displayed per task.
-        let task = labeled
-            .task
-            .map(|task| Label::new(DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, task.to_string()));
-        for metric in metrics_set_proto_to_df(metrics_set.clone())?.iter() {
-            let mut labels = metric.labels().to_vec();
-            labels.extend(task.clone());
-            let value = metric.value().clone();
-            all.push(Arc::new(Metric::new_with_labels(
-                value,
-                metric.partition(),
-                labels,
-            )));
-        }
-    }
-    Ok(format_each_metric_by_task(&all)
+fn metric_lines(metrics: &MetricsSet, paint: Paint) -> Vec<String> {
+    format_each_metric_by_task(metrics)
         .iter()
         .map(|metric| paint.metric(metric))
-        .collect())
+        .collect()
 }
 
 /// `file_groups={16 groups: [[…]]}` becomes `file_groups={16 groups}`, as file lists are often
@@ -539,8 +641,11 @@ impl Paint {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::LatencyMetricExt;
     use crate::assert_snapshot;
     use crate::test_utils::plans::TestPlanBuilder;
+    use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricBuilder};
+    use std::time::Duration;
 
     #[tokio::test]
     async fn single_node_plan() -> Result<()> {
@@ -614,6 +719,60 @@ mod tests {
                  ├─ t0: DataSourceExec: file_groups={3 groups}, projection=[MinTemp, Rainfall, RainToday], file_type=parquet, predicate=Rainfall@2 > 0, pruning_predicate=Rainfall_null_count@1 != row_count@2 AND Rainfall_max@0 > 0, required_guarantees=[]
                  ├─ t1: DataSourceExec: file_groups={3 groups}, projection=[MinTemp, Rainfall, RainToday], file_type=parquet, predicate=Rainfall@2 > 0, pruning_predicate=Rainfall_null_count@1 != row_count@2 AND Rainfall_max@0 > 0, required_guarantees=[]
                  └─ t2: DataSourceExec: file_groups={3 groups}, projection=[MinTemp, Rainfall, RainToday], file_type=parquet, predicate=Rainfall@2 > 0, pruning_predicate=Rainfall_null_count@1 != row_count@2 AND Rainfall_max@0 > 0, required_guarantees=[]
+        ");
+        Ok(())
+    }
+
+    #[test]
+    fn metrics_display_the_same_once_dumped() -> Result<()> {
+        let metrics = ExecutionPlanMetricsSet::new();
+        let task = |task: usize| {
+            MetricBuilder::new(&metrics)
+                .with_new_label(DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, task.to_string())
+        };
+        // Task 0 runs two partitions, whose values add up.
+        task(0).output_rows(0).add(10);
+        task(0).output_rows(1).add(5);
+        task(1).output_rows(0).add(7);
+        task(0)
+            .elapsed_compute(0)
+            .add_duration(Duration::from_millis(3));
+        task(1)
+            .elapsed_compute(0)
+            .add_duration(Duration::from_micros(1500));
+        // Metrics with more than one value.
+        let pruning = task(1).pruning_metrics("files_ranges_pruned_statistics", 0);
+        pruning.add_pruned(3);
+        pruning.add_matched(2);
+        let ratio = task(0).ratio_metrics("probe_hit_rate", 0);
+        ratio.add_part(1);
+        ratio.add_total(4);
+        task(0)
+            .avg_latency("network_latency_avg")
+            .add_duration(Duration::from_millis(2));
+        // Percentiles are dumped as the value they display.
+        let p50 = task(1).p50_latency("network_latency_p50");
+        p50.add_duration(Duration::from_millis(1));
+        p50.add_duration(Duration::from_millis(5));
+        p50.add_duration(Duration::from_millis(9));
+        // The coordinator's metrics do not belong to a task.
+        MetricBuilder::new(&metrics)
+            .global_counter("plan_bytes_sent")
+            .add(1024);
+        let metrics = metrics.clone_inner();
+
+        let dumped = undump_metrics(&dump_metrics(Some(&metrics))?)?;
+
+        let display = format_each_metric_by_task(&dumped);
+        assert_eq!(display, format_each_metric_by_task(&metrics));
+        assert_snapshot!(display.join("\n"), @r"
+        output_rows={0:15, 1:7}
+        elapsed_compute={0:3.00ms, 1:1.50ms}
+        files_ranges_pruned_statistics={1:5 total → 2 matched}
+        plan_bytes_sent=1.02 K
+        probe_hit_rate={0:25% (1/4)}
+        network_latency_avg={0:2.00ms}
+        network_latency_p50={1:5.03ms}
         ");
         Ok(())
     }
