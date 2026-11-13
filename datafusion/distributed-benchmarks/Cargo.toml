@@ -59,5 +59,9 @@ name = "metrics_collection"
 harness = false
 
 [[bench]]
+name = "plan_dump"
+harness = false
+
+[[bench]]
 name = "startup_overlap"
 harness = false
