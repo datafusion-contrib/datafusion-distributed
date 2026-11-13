@@ -25,7 +25,7 @@ use std::sync::{Arc, LazyLock};
 use zstd::dict::{DecoderDictionary, EncoderDictionary};
 
 /// zstd compression level for plan dumps.
-const ZSTD_LEVEL: i32 = 3;
+const ZSTD_LEVEL: i32 = 6;
 
 /// zstd dictionary that plan dumps are compressed with. Metric names, operator names and plan
 /// fragments repeat across all dumps, and a dictionary of them makes dumps 15% to 40% smaller,
