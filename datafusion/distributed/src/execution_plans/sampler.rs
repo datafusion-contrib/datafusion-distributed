@@ -91,7 +91,7 @@ impl SamplerExecMetrics {
                 });
                 gauge
             },
-            bytes_ready: bdr().bytes_counter("bytes_ready"),
+            bytes_ready: BytesMetricExt::bytes_counter(bdr(), "bytes_ready"),
             elapsed_compute: {
                 let time = Time::new();
                 bdr().build(MetricValue::ElapsedCompute(time.clone()));

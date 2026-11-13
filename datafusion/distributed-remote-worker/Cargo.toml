@@ -19,7 +19,7 @@ env_logger = "0.11.8"
 futures = "0.3.31"
 log = "0.4.27"
 mimalloc = "0.1"
-object_store = { version = "0.13", features = ["aws"] }
+object_store = { version = "0.14", features = ["aws"] }
 serde = { version = "1.0.219", features = ["derive"] }
 sketches-ddsketch = "0.3"
 structopt = "0.3.26"

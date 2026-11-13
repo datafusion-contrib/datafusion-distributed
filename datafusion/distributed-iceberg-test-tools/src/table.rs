@@ -7,9 +7,7 @@ use datafusion::common::exec_datafusion_err;
 use datafusion::error::Result;
 use iceberg::arrow::schema_to_arrow_schema;
 use iceberg::memory::MemoryCatalog;
-use iceberg::spec::{
-    Schema, TableMetadata, Transform, UnboundPartitionField, UnboundPartitionSpec,
-};
+use iceberg::spec::{Schema, TableMetadata, Transform, UnboundPartitionSpec};
 use iceberg::table::Table;
 use iceberg::{Catalog, MetadataLocation, TableCreation, TableIdent};
 use tempfile::TempDir;
@@ -72,12 +70,9 @@ impl TableBuilder {
             })?;
             partition_spec = partition_spec
                 .add_partition_field(
-                    UnboundPartitionField::builder()
-                        .source_ids(vec![source.id])
-                        .name(partition_field_name(&column, transform))
-                        .transform(transform)
-                        .build()
-                        .map_err(df_err)?,
+                    source.id,
+                    partition_field_name(&column, transform),
+                    transform,
                 )
                 .map_err(df_err)?;
         }

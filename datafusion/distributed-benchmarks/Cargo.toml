@@ -13,13 +13,13 @@ datafusion-distributed = { path = "../distributed", features = [
   "system-metrics",
 ] }
 tokio = { version = "1.48", features = ["full"] }
-parquet = { version = "59" }
+parquet = { version = "60" }
 structopt = { version = "0.3.26" }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.141"
 env_logger = "0.11.8"
 futures = "0.3.31"
-arrow = { version = "59", features = ["test_utils"] }
+arrow = { version = "60", features = ["test_utils"] }
 tonic = { version = "0.14.1", features = ["transport"] }
 sketches-ddsketch = "0.3"
 url = "2"

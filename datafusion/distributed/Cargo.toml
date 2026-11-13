@@ -85,16 +85,16 @@ postcard = { version = "1.1", default-features = false, features = ["alloc"] }
 tonic-prost = "0.14.2"
 
 # grpc-specific features
-arrow-flight = { version = "59", optional = true }
-arrow-select = { version = "59", optional = true }
-arrow-ipc = { version = "59", features = ["zstd"], optional = true }
+arrow-flight = { version = "60", optional = true }
+arrow-select = { version = "60", optional = true }
+arrow-ipc = { version = "60", features = ["zstd"], optional = true }
 tonic = { version = "0.14.1", features = ["transport"], optional = true }
 tower = { version = "0.5.2", optional = true }
 
 # integration_tests deps
 insta = { version = "1.46.0", features = ["filters"], optional = true }
-parquet = { version = "59", optional = true }
-arrow = { version = "59", optional = true, features = ["test_utils"] }
+parquet = { version = "60", optional = true }
+arrow = { version = "60", optional = true, features = ["test_utils"] }
 hyper-util = { version = "0.1.16", optional = true }
 
 [features]
@@ -134,10 +134,9 @@ datafusion = { workspace = true, features = ["parquet", "sql"] }
 datafusion-proto = { workspace = true, features = ["parquet"] }
 structopt = "0.3"
 insta = { version = "1.46.0", features = ["filters"] }
-parquet = "59"
-arrow = { version = "59", features = ["test_utils"] }
+parquet = "60"
+arrow = { version = "60", features = ["test_utils"] }
 tokio-stream = { version = "0.1.17", features = ["sync"] }
 hyper-util = "0.1.16"
 pretty_assertions = "1.4"
 test-case = "3.3.1"
-
