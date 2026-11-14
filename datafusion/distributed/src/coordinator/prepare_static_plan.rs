@@ -6,69 +6,64 @@ use crate::dynamic_filtering::{
 };
 use crate::stage::RemoteStage;
 use crate::{NetworkBoundaryExt, Stage};
-use datafusion::common::tree_node::Transformed;
-use datafusion::common::{Result, exec_err};
+use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
+use datafusion::common::{HashSet, Result, exec_err};
 use datafusion::physical_plan::ExecutionPlan;
+use futures::future::try_join_all;
 use std::sync::Arc;
 
-/// Prepares the distributed plan for execution, which implies:
-/// 1. Perform some worker URL assignation, choosing either:
-///    - The workers selected by the user's [crate::RouteTaskHandler].
-///    - Randomly otherwise
-/// 2. Sending the sliced subplans to the assigned URLs. For each URL assigned to a task, a
-///    network call feeding the subplan is necessary.
-/// 3. In each network boundary, set the input plan to `None`. That way, network boundaries
-///    become nodes without children and traversing them will not go further down in.
-/// 4. Spawn a background task per worker that waits for the worker to finish and collects
-///    its metrics into [DistributedExec::task_metrics] via the coordinator channel.
 pub(super) async fn prepare_static_plan(
-    query_coordinator: &QueryCoordinator,
+    query_coordinator: &Arc<QueryCoordinator>,
     base_plan: &Arc<dyn ExecutionPlan>,
 ) -> Result<PreparedPlan> {
+    let mut coordinator_input_stage_ids = HashSet::new();
+    base_plan.apply(|plan| {
+        if let Some(boundary) = plan.as_network_boundary() {
+            coordinator_input_stage_ids.insert(boundary.input_stage().num());
+            Ok(TreeNodeRecursion::Jump)
+        } else {
+            Ok(TreeNodeRecursion::Continue)
+        }
+    })?;
     let prepared = Arc::clone(base_plan).transform_up_async(async |plan| {
-        // The following logic is just applied on network boundaries.
-        let Some(plan) = plan.as_network_boundary() else {
+        let Some(boundary) = plan.as_network_boundary() else {
             return Ok(Transformed::no(plan));
         };
-
-        let Stage::Local(stage) = plan.input_stage() else {
-            return exec_err!("Input stage from network boundary was not in Local state");
+        let Stage::Local(stage) = boundary.input_stage() else {
+            return exec_err!("Expected a local stage during static plan preparation");
         };
-        let dynamic_filter_anchors =
-            if is_remote_dynamic_filtering_enabled(query_coordinator.session_config())? {
-                orphan_dynamic_filter_consumers(&stage.plan)?
-            } else {
-                vec![]
-            };
-
-        let mut stage_coordinator = query_coordinator.stage_coordinator(stage);
-        let mut futures = Vec::with_capacity(stage.tasks);
-        for task_i in 0..stage.tasks {
-            futures.push(stage_coordinator.init_bidirectional_stream(task_i));
-        }
-        let results = futures::future::try_join_all(futures).await?;
-
-        let mut workers = Vec::with_capacity(stage.tasks);
-        for (task_i, (url, worker_tx, worker_stream)) in results.into_iter().enumerate() {
-            workers.push(url);
-            stage_coordinator.worker_to_coordinator_task(task_i, worker_stream);
-            stage_coordinator.coordinator_to_worker_task(task_i, worker_tx)?;
-        }
-        stage_coordinator.seal_dynamic_filter_stage()?;
-        Ok(Transformed::yes(plan.with_input_stage(Stage::Remote(
-            RemoteStage {
+        let anchors = if is_remote_dynamic_filtering_enabled(query_coordinator.session_config())? {
+            orphan_dynamic_filter_consumers(&stage.plan)?
+        } else {
+            vec![]
+        };
+        let workers = if coordinator_input_stage_ids.contains(&stage.num) {
+            query_coordinator.start_pending_stage(stage)
+        } else {
+            let workers = try_join_all(
+                (0..stage.tasks).map(|task| query_coordinator.start_task(stage, task)),
+            )
+            .await?
+            .into_iter()
+            .map(|(url, ..)| url.into())
+            .collect();
+            query_coordinator
+                .stage_coordinator(stage)
+                .seal_dynamic_filter_stage()?;
+            workers
+        };
+        Ok(Transformed::yes(boundary.with_input_stage(
+            Stage::Remote(RemoteStage {
                 query_id: stage.query_id,
                 num: stage.num,
                 workers,
                 runtime_stats: None,
-                dynamic_filter_anchors,
-            },
-        ))?))
+                dynamic_filter_anchors: anchors,
+            }),
+        )?))
     });
     Ok(PreparedPlan {
         head_stage: prepared.await?.data,
-        // If the plan was statically planned, the base plan is the same one that will be used for
-        // visualization.
         plan_for_viz: Arc::clone(base_plan),
     })
 }

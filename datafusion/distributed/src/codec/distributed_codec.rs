@@ -101,7 +101,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     let Ok(url) = Url::parse(&url_str) else {
                         return Err(proto_error("Invalid URL in task"));
                     };
-                    worker_urls.push(url);
+                    worker_urls.push(url.into());
                 }
                 Ok(Stage::Remote(RemoteStage {
                     query_id: deserialize_uuid(proto.query_id.as_ref())?,
@@ -349,7 +349,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     let mut tasks = Vec::with_capacity(remote.workers.len());
                     for worker in &remote.workers {
                         tasks.push(ExecutionTaskProto {
-                            url_str: Some(worker.to_string()),
+                            url_str: Some(worker.ready_url()?.to_string()),
                         })
                     }
                     StageProto {
@@ -851,6 +851,7 @@ mod tests {
     };
     use super::*;
 
+    use crate::WorkerLocation;
     use crate::execution_plans::PRODUCER_SALT_DEFAULT;
 
     const DEFAULT_MODE: ShuffleMode = ShuffleMode::Direct;
@@ -870,6 +871,8 @@ mod tests {
             sorts::sort::SortExec, union::UnionExec,
         },
     };
+    use futures::FutureExt;
+    use tokio_util::sync::CancellationToken;
 
     fn empty_exec() -> Arc<dyn ExecutionPlan> {
         Arc::new(EmptyExec::new(SchemaRef::new(Schema::empty())))
@@ -911,13 +914,20 @@ mod tests {
     fn test_roundtrip_single_flight() -> datafusion::common::Result<()> {
         let codec = DistributedCodec;
         let ctx = create_context();
+        let worker_url = Url::parse("http://worker:50051").unwrap();
 
         let schema = schema_i32("a");
         let part = Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 4);
         let plan: Arc<dyn ExecutionPlan> = Arc::new(new_network_hash_shuffle_exec(
             part,
             EquivalenceProperties::new(schema),
-            dummy_stage(),
+            Stage::Remote(RemoteStage {
+                query_id: Default::default(),
+                num: 0,
+                workers: vec![worker_url.clone().into()],
+                runtime_stats: None,
+                dynamic_filter_anchors: vec![],
+            }),
             DEFAULT_MODE,
         ));
 
@@ -926,8 +936,37 @@ mod tests {
 
         let decoded = codec.try_decode(&buf, &[], &ctx, &default_proto_converter())?;
         assert_eq!(repr(&plan), repr(&decoded));
+        let boundary = decoded.downcast_ref::<NetworkShuffleExec>().unwrap();
+        let Stage::Remote(stage) = boundary.input_stage() else {
+            panic!("decoded input should be remote");
+        };
+        assert_eq!(stage.workers[0].ready_url()?, &worker_url);
 
         Ok(())
+    }
+
+    #[test]
+    fn pending_worker_location_cannot_be_encoded() {
+        let stage = Stage::Remote(RemoteStage {
+            query_id: Default::default(),
+            num: 0,
+            workers: vec![WorkerLocation::Pending {
+                url: futures::future::pending().boxed().shared(),
+                query_finished: CancellationToken::new(),
+            }],
+            runtime_stats: None,
+            dynamic_filter_anchors: vec![],
+        });
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(new_network_hash_shuffle_exec(
+            Partitioning::RoundRobinBatch(1),
+            EquivalenceProperties::new(schema_i32("a")),
+            stage,
+            DEFAULT_MODE,
+        ));
+        let error = DistributedCodec
+            .try_encode(plan, &mut vec![], &default_proto_converter())
+            .unwrap_err();
+        crate::assert_snapshot!(error, @"Execution error: Worker location is pending");
     }
 
     #[test]

@@ -64,7 +64,8 @@ pub use protocol::{
     get_distributed_channel_resolver,
 };
 pub use stage::{
-    DistributedTaskContext, Stage, display_plan_ascii, display_plan_graphviz, explain_analyze,
+    DistributedTaskContext, Stage, WorkerLocation, display_plan_ascii, display_plan_graphviz,
+    explain_analyze,
 };
 pub use work_unit_feed::{
     DistributedWorkUnitFeedContext, WorkUnit, WorkUnitFeed, WorkUnitFeedProto, WorkUnitFeedProvider,
