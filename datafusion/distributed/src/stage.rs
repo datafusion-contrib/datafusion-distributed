@@ -1,7 +1,7 @@
 use crate::coordinator::DistributedExec;
 use crate::execution_plans::{DistributedLeafExec, NetworkCoalesceExec};
 use crate::metrics::DISTRIBUTED_DATAFUSION_TASK_ID_LABEL;
-use datafusion::common::{HashMap, Statistics, config_err};
+use datafusion::common::{DataFusionError, HashMap, Statistics, config_err, exec_datafusion_err};
 use datafusion::common::{exec_err, plan_err};
 use datafusion::error::Result;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
@@ -12,8 +12,10 @@ use datafusion::physical_plan::{
     ColumnStatistics, ExecutionPlan, ExecutionPlanProperties, StatisticsArgs, StatisticsContext,
     displayable,
 };
+use futures::future::{BoxFuture, Shared, try_join_all};
 use itertools::Either;
 use std::collections::VecDeque;
+use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 use url::Url;
 use uuid::Uuid;
@@ -111,12 +113,78 @@ pub struct RemoteStage {
     pub query_id: Uuid,
     /// Our stage number
     pub num: usize,
-    /// The worker URLs to which queries should be issued.
-    pub workers: Vec<Url>,
+    /// The worker locations to which queries should be issued.
+    pub workers: Vec<WorkerLocation>,
     /// Statistics collected at runtime, if any.
     pub runtime_stats: Option<Arc<Statistics>>,
     /// Dynamic-filter consumers retained after the stage's plan is moved to its workers.
     pub dynamic_filter_anchors: Vec<Arc<dyn PhysicalExpr>>,
+}
+
+/// A task's selected worker URL or its in-progress routing result.
+/// Pending locations stay in the coordinator; worker plans require ready locations.
+#[derive(Clone)]
+pub struct WorkerLocation(Shared<BoxFuture<'static, Result<Url, Arc<DataFusionError>>>>);
+
+impl WorkerLocation {
+    pub(crate) fn new_pending() -> (Self, oneshot::Sender<Url>) {
+        let (tx, rx) = oneshot::channel::<Url>();
+        let fut = async move {
+            rx.await
+                .map_err(|err| Arc::new(exec_datafusion_err!("{err}")))
+        };
+
+        (Self(fut.boxed().shared()), tx)
+    }
+
+    /// Returns a concrete URL, or an error for a location whose routing has not completed yet.
+    /// A pending location whose routing already finished yields its result without polling.
+    pub fn ready_url(&self) -> Result<&Url> {
+        match self.0.peek() {
+            Some(Ok(url)) => Ok(url),
+            Some(Err(err)) => Err(DataFusionError::Shared(Arc::clone(err))),
+            None => exec_err!("Worker location is pending"),
+        }
+    }
+
+    pub(crate) async fn ensure_all_resolved(plan: &Arc<dyn ExecutionPlan>) -> Result<()> {
+        let mut remote_locations = vec![];
+        let _ = plan.apply(|plan| {
+            if let Some(nb) = plan.as_network_boundary()
+                && let Stage::Remote(remote) = nb.input_stage()
+            {
+                remote_locations.extend(remote.workers.clone());
+            }
+            Ok(TreeNodeRecursion::Continue)
+        });
+        let futures = remote_locations.into_iter().map(|loc| loc.0.clone());
+        try_join_all(futures)
+            .await
+            .map_err(DataFusionError::Shared)?;
+        Ok(())
+    }
+
+    pub(crate) async fn resolve(&self) -> Result<Url> {
+        self.0.clone().await.map_err(DataFusionError::Shared)
+    }
+}
+
+impl From<Url> for WorkerLocation {
+    fn from(url: Url) -> Self {
+        let fut = futures::future::ready(Ok(url)).boxed().shared();
+        // Do a polling cycle to the future so that it shows up as "Ready"
+        let _ = fut.clone().now_or_never();
+        Self(fut)
+    }
+}
+
+impl Debug for WorkerLocation {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self.ready_url() {
+            Ok(url) => f.debug_tuple("Ready").field(url).finish(),
+            Err(_) => f.write_str("Pending"),
+        }
+    }
 }
 
 impl Stage {
@@ -236,9 +304,10 @@ impl DistributedTaskContext {
 use crate::{DistributedMetricsFormat, NetworkShuffleExec, rewrite_distributed_plan_with_metrics};
 use crate::{NetworkBoundary, NetworkBoundaryExt};
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::common::DataFusionError;
 use datafusion::common::stats::Precision;
+use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::physical_expr::Partitioning;
+use futures::FutureExt;
 /// Be able to display a nice tree for stages.
 ///
 /// The challenge to doing this at the moment is that `TreeRenderVisitor`
@@ -252,6 +321,7 @@ use datafusion::physical_expr::Partitioning;
 /// In the meantime, we can make a dummy ExecutionPlan that will let us render
 /// the Stage tree.
 use std::fmt::Write;
+use tokio::sync::oneshot;
 
 /// explain_analyze renders an [ExecutionPlan] with metrics.
 pub async fn explain_analyze(

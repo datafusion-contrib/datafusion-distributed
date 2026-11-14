@@ -11,8 +11,8 @@ use crate::dynamic_filtering::{
 use crate::execution_plans::SamplerExec;
 use crate::stage::{LocalStage, RemoteStage};
 use crate::{
-    BytesCounterMetric, CoordinatorToWorkerMsg, LoadInfo, MaxGaugeMetric, NetworkBoundaryExt,
-    NetworkCoalesceExec, Stage, TaskCountAnnotation,
+    BytesCounterMetric, LoadInfo, MaxGaugeMetric, NetworkBoundaryExt, NetworkCoalesceExec, Stage,
+    TaskCountAnnotation,
 };
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -120,23 +120,13 @@ impl NetworkBoundaryBuilder for DynamicPlanBuilder<'_> {
 
         let mut load_info_rxs = Vec::with_capacity(input_stage.tasks);
 
-        let mut stage_coordinator = self.query_coordinator.stage_coordinator(&input_stage);
-
-        let mut futures = Vec::with_capacity(input_stage.tasks);
-        for task_i in 0..input_stage.tasks {
-            futures.push(stage_coordinator.init_bidirectional_stream(task_i));
-        }
-        let results = futures::future::try_join_all(futures).await?;
+        let stage_coordinator = self.query_coordinator.stage_coordinator(&input_stage);
 
         let mut workers = Vec::with_capacity(input_stage.tasks);
-        for (task_i, (url, worker_tx, worker_rx_stream)) in results.into_iter().enumerate() {
-            workers.push(url);
-            load_info_rxs.push({
-                let rx = stage_coordinator.worker_to_coordinator_task(task_i, worker_rx_stream);
-                UnboundedReceiverStream::new(rx)
-            });
-            let _ = worker_tx.send(CoordinatorToWorkerMsg::KickOffSampling);
-            stage_coordinator.coordinator_to_worker_task(task_i, worker_tx)?;
+        for task_i in 0..input_stage.tasks {
+            let (worker_loc, load_info_rx) = stage_coordinator.init_bidirectional_stream(task_i)?;
+            workers.push(worker_loc);
+            load_info_rxs.push(UnboundedReceiverStream::new(load_info_rx));
         }
         stage_coordinator.seal_dynamic_filter_stage()?;
 
