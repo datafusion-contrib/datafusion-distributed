@@ -299,19 +299,21 @@ impl ExecutionPlan for NetworkShuffleExec {
     fn with_new_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
-    ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
-        let mut self_clone = self.as_ref().clone();
-        match &mut self_clone.input_stage {
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        match &self.input_stage {
             Stage::Local(local) => {
+                let mut local = local.clone();
                 local.plan = require_one_child(children)?;
+                self.with_input_stage(Stage::Local(local))
+                    .map(|node| node as Arc<dyn ExecutionPlan>)
             }
             Stage::Remote(_) => {
                 if !children.is_empty() {
                     not_impl_err!("NetworkBoundary cannot accept children")?
                 }
+                Ok(self)
             }
         }
-        Ok(Arc::new(self_clone))
     }
 
     fn execute(
