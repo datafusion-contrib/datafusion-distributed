@@ -185,8 +185,8 @@ type AnnotationHashMap = ConcurrentHashMap<usize, (TaskCountAnnotation, Weak<dyn
 #[derive(Clone)]
 pub(crate) struct InjectNetworkBoundaryContext<'a> {
     pub(crate) d_cfg: &'a DistributedConfig,
+    pub(crate) cfg: &'a SessionConfig,
 
-    cfg: &'a SessionConfig,
     worker_resolver: Arc<WorkerResolverExtension>,
     nb_builder: &'a (dyn NetworkBoundaryBuilder + Send + Sync),
     task_counts: &'a AnnotationHashMap,
@@ -202,14 +202,18 @@ impl<'a> InjectNetworkBoundaryContext<'a> {
         })
     }
 
-    fn set_task_count(&self, plan: &Arc<dyn ExecutionPlan>, task_count: TaskCountAnnotation) {
+    pub(crate) fn set_task_count(
+        &self,
+        plan: &Arc<dyn ExecutionPlan>,
+        task_count: TaskCountAnnotation,
+    ) {
         self.task_counts
             .lock()
             .expect("task counts mutex poisoned")
             .insert(plan_ptr_key(plan), (task_count, Arc::downgrade(plan)));
     }
 
-    fn plan_with_task_count(
+    pub(crate) fn plan_with_task_count(
         &self,
         plan: Arc<dyn ExecutionPlan>,
         task_count: TaskCountAnnotation,
@@ -218,7 +222,7 @@ impl<'a> InjectNetworkBoundaryContext<'a> {
         plan
     }
 
-    fn plan_with_inherited_task_count(
+    pub(crate) fn plan_with_inherited_task_count(
         &self,
         plan: Arc<dyn ExecutionPlan>,
         f: impl FnOnce(Arc<dyn ExecutionPlan>) -> Result<Arc<dyn ExecutionPlan>>,
@@ -562,6 +566,9 @@ impl InjectNetworkBoundaryContext<'_> {
         } else if plan.is_network_boundary() {
             if let Some(shuffle) = plan.downcast_ref::<NetworkShuffleExec>()
                 && matches!(shuffle.mode, ShuffleMode::Direct)
+                // Salting only applies to hash partitioning: a round-robin shuffle (e.g. the
+                // probe side of a join switched to broadcast at runtime) stays direct.
+                && matches!(shuffle.producer_partitioning, Partitioning::Hash(_, _))
             {
                 let consumer_partitions = shuffle.producer_partitioning.partition_count();
                 // now that task_count is the final reconciled consumer count,
