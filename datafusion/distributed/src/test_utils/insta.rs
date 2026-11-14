@@ -12,10 +12,11 @@ macro_rules! assert_snapshot {
 }
 
 pub fn settings() -> insta::Settings {
-    // Safety: this is only used in tests, it may panic if used in parallel with other tests.
-    unsafe { env::set_var("INSTA_WORKSPACE_ROOT", env!("CARGO_MANIFEST_DIR")) };
-    let mut settings = insta::Settings::clone_current();
     let root = super::workspace_root().canonicalize().unwrap();
+    // `file!()` paths are relative to the workspace root, not to this crate's manifest dir.
+    // Safety: this is only used in tests, it may panic if used in parallel with other tests.
+    unsafe { env::set_var("INSTA_WORKSPACE_ROOT", &root) };
+    let mut settings = insta::Settings::clone_current();
     let root = root.to_str().unwrap();
     settings.add_filter(root.trim_start_matches("/"), "");
     settings.add_filter(
