@@ -8,6 +8,11 @@ message IcebergDataSource {
   optional uint64 fetch = 4;
   map<string, string> storage_properties = 5;
   optional bytes custom_file_io = 6;
+  // Filters pushed into the scan. A row must pass all of them.
+  DataFusionPhysicalExprNode filters = 7;
+  // Whether the scan takes part in dynamic filtering. It reports its filters to
+  // the operators that fill them in.
+  bool dynamic_filtering_enabled = 8;
 }
 
 message WorkUnitFeed {
@@ -17,6 +22,7 @@ message WorkUnitFeed {
 // The generated Rust fields use DataFusion's canonical protobuf types.
 message DataFusionSchema {}
 message DataFusionPartitioning {}
+message DataFusionPhysicalExprNode {}
 
 message ScanConfig {
   DataFusionSchema schema = 1;
@@ -24,6 +30,11 @@ message ScanConfig {
   optional uint64 fetch = 3;
   map<string, string> storage_properties = 4;
   optional bytes custom_file_io = 5;
+  // Filters pushed into the scan. A row must pass all of them.
+  DataFusionPhysicalExprNode filters = 6;
+  // Whether the scan takes part in dynamic filtering. It reports its filters to
+  // the operators that fill them in.
+  bool dynamic_filtering_enabled = 7;
 }
 message AssignedScan {
   ScanConfig config = 1;
