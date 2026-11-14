@@ -70,6 +70,13 @@ metrics matching any of them, like the bytes and rows of every node:
 dfd plan <plan dump> --stage 2 --metric bytes --metric rows
 ```
 
+Like `cargo test -- --exact` does with test names, `--exact` matches whole metric names instead, so
+`output_bytes` does not display `estimated_output_bytes` too:
+
+```bash
+dfd plan <plan dump> --metric output_bytes --exact
+```
+
 Besides their own metrics, stages show the `elapsed_compute` of all their nodes, and, when their
 output was estimated for choosing task counts dynamically, `output_bytes_q_error`: the ratio between
 the estimated and the actual bytes they returned, the larger over the smaller.

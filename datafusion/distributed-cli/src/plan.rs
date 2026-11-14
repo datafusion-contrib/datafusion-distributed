@@ -25,6 +25,11 @@ pub(super) struct Args {
     /// matching any of them, like `-m bytes -m rows`.
     #[clap(short, long = "metric", value_name = "TEXT")]
     metrics: Vec<String>,
+
+    /// Match the `--metric` filters with whole metric names, like `cargo test -- --exact` does with
+    /// test names, so `-m output_bytes --exact` leaves out `estimated_output_bytes`.
+    #[clap(long)]
+    exact: bool,
 }
 
 /// Displays a plan dump.
@@ -51,6 +56,7 @@ pub(super) fn run(args: Args) -> Result<()> {
     for filter in args.metrics {
         opts = opts.with_metric_filter(filter);
     }
+    opts = opts.with_exact_metric_filters(args.exact);
     print!("{}", display_plan_dump(dump, opts)?);
     Ok(())
 }
