@@ -3,7 +3,8 @@ use crate::distributed_planner::distributed_query_planner::DistributedQueryPlann
 use crate::events::{
     DesiredTaskCountHandlers, RandomRouteTaskHandler, RouteTaskHandlers, ScaleUpLeafNodeHandlers,
     SingleTaskChildUrlRouteTaskHandler, SingleTaskCoordinatorRouteTaskHandler,
-    file_scan_config_desired_task_count, file_scan_config_scale_up_leaf_node,
+    TaskFinishedHandlers, derived_stage_metrics, file_scan_config_desired_task_count,
+    file_scan_config_scale_up_leaf_node,
 };
 use datafusion::execution::SessionStateBuilder;
 use std::sync::Arc;
@@ -46,6 +47,9 @@ impl SessionStateBuilderExt for SessionStateBuilder {
                 Arc::new(RandomRouteTaskHandler),
             ],
         );
+
+        // Add worker-level TaskFinishedHandler defaults
+        TaskFinishedHandlers::push_builtin(cfg, Arc::new(derived_stage_metrics));
 
         let prev = std::mem::take(self.query_planner());
         self.with_query_planner(Arc::new(DistributedQueryPlanner { prev }))

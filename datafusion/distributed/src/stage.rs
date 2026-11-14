@@ -223,13 +223,17 @@ pub struct DistributedTaskContext {
 }
 
 impl DistributedTaskContext {
+    pub fn new_single_node() -> Self {
+        Self {
+            task_index: 0,
+            task_count: 1,
+        }
+    }
+
     pub fn from_ctx(ctx: &Arc<TaskContext>) -> Arc<Self> {
         ctx.session_config()
             .get_extension::<Self>()
-            .unwrap_or(Arc::new(DistributedTaskContext {
-                task_index: 0,
-                task_count: 1,
-            }))
+            .unwrap_or(Arc::new(Self::new_single_node()))
     }
 }
 

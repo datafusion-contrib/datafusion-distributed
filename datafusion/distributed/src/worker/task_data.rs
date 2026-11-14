@@ -41,7 +41,7 @@ pub struct TaskData {
 
 /// Records the first error and the number of finished partition streams of a task.
 #[derive(Debug, Default)]
-pub(super) struct TaskOutcomeTracker {
+pub(crate) struct TaskOutcomeTracker {
     first_error: OnceLock<Arc<DataFusionError>>,
     finished_partitions: AtomicUsize,
 }
@@ -49,7 +49,7 @@ pub(super) struct TaskOutcomeTracker {
 impl TaskOutcomeTracker {
     /// Wraps a partition stream to record its errors and its end. Errors are passed on as
     /// [DataFusionError::Shared], so that the tracker can keep a reference to them.
-    pub(super) fn track(
+    pub(crate) fn track(
         self: &Arc<Self>,
         stream: impl Stream<Item = Result<RecordBatch>> + Send + 'static,
     ) -> impl Stream<Item = Result<RecordBatch>> + Send + 'static {
@@ -72,7 +72,7 @@ impl TaskOutcomeTracker {
     }
 
     /// Returns the outcome of a task whose final plan has `partition_count` partitions.
-    pub(super) fn outcome(&self, partition_count: usize) -> TaskOutcome<'_> {
+    pub(crate) fn outcome(&self, partition_count: usize) -> TaskOutcome<'_> {
         if let Some(err) = self.first_error.get() {
             TaskOutcome::Failed(err)
         } else if self.finished_partitions.load(Ordering::Acquire) == partition_count {
