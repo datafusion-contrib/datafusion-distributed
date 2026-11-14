@@ -2,6 +2,7 @@
 mod tests {
     use datafusion::catalog::memory::DataSourceExec;
     use datafusion::common::assert_not_contains;
+    use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
     use datafusion::common::{HashMap, Result, assert_contains};
     use datafusion::execution::SessionState;
     use datafusion::physical_plan::display::DisplayableExecutionPlan;
@@ -17,9 +18,9 @@ mod tests {
     };
     use datafusion_distributed::{
         DefaultSessionBuilder, DistributedExec, DistributedExt, DistributedLeafExec,
-        DistributedMetricsFormat, NetworkCoalesceExec, NetworkShuffleExec, TaskKey, TaskMetrics,
-        WorkerQueryContext, display_plan_ascii, rewrite_distributed_plan_with_dynamic_filters,
-        rewrite_distributed_plan_with_metrics,
+        DistributedMetricsFormat, NetworkBoundaryExt, NetworkCoalesceExec, NetworkShuffleExec,
+        TaskKey, TaskMetrics, WorkerQueryContext, display_plan_ascii,
+        rewrite_distributed_plan_with_dynamic_filters, rewrite_distributed_plan_with_metrics,
     };
     use futures::TryStreamExt;
     use std::sync::Arc;
@@ -474,6 +475,40 @@ mod tests {
                 "{task_key:?} reported no metrics"
             );
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn derived_stage_level_metrics() -> Result<(), Box<dyn std::error::Error>> {
+        let (ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+        register_parquet_tables(&ctx).await?;
+
+        let df = ctx
+            .sql(r#"SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)"#)
+            .await?;
+        let plan = df.create_physical_plan().await?;
+        execute_stream(plan.clone(), ctx.task_ctx())?
+            .try_collect::<Vec<_>>()
+            .await?;
+        let plan = rewrite_with_metrics(plan, DistributedMetricsFormat::Aggregated).await;
+
+        // Find the first input stage metrics
+        let mut first_stage_metrics = None;
+        let _ = plan.apply(|plan| {
+            if let Some(nb) = plan.as_network_boundary() {
+                first_stage_metrics = Some(nb.input_stage().metrics());
+                return Ok(TreeNodeRecursion::Stop);
+            }
+            Ok(TreeNodeRecursion::Continue)
+        });
+
+        // Assert the "stage_elapsed_compute" metric is present in the stage metrics
+        let stage_elapsed_compute = first_stage_metrics
+            .unwrap()
+            .sum(|v| v.value().name() == "stage_elapsed_compute")
+            .unwrap();
+        assert!(stage_elapsed_compute.as_usize() > 0);
+
         Ok(())
     }
 

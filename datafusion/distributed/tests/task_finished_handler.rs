@@ -1,14 +1,15 @@
 #[cfg(all(feature = "integration", test))]
 mod tests {
     use datafusion::common::Result;
+    use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
     use datafusion::physical_plan::execute_stream;
     use datafusion::physical_plan::metrics::{Count, Metric, MetricValue, MetricsSet};
     use datafusion_distributed::test_utils::in_memory_channel_resolver::start_configured_in_memory_context;
     use datafusion_distributed::test_utils::parquet::register_parquet_tables;
     use datafusion_distributed::{
         DefaultSessionBuilder, DistributedExt, DistributedMetricsFormat,
-        MappedWorkerSessionBuilderExt, TaskFinishedEvent, TaskFinishedEventResponse,
-        TaskFinishedHandler, TaskOutcome, assert_snapshot, display_plan_ascii,
+        MappedWorkerSessionBuilderExt, NetworkBoundaryExt, TaskFinishedEvent,
+        TaskFinishedEventResponse, TaskFinishedHandler, TaskOutcome, assert_snapshot,
         rewrite_distributed_plan_with_metrics,
     };
     use futures::{StreamExt, TryStreamExt};
@@ -153,14 +154,24 @@ mod tests {
             rewrite_distributed_plan_with_metrics(plan, DistributedMetricsFormat::Aggregated)
                 .await?;
 
-        let stage_metrics = display_plan_ascii(plan.as_ref(), true)
-            .lines()
-            .filter_map(|line| Some(line.split_once(", plan_added_at")?.0.trim().to_string()))
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert_snapshot!(stage_metrics, @"
-        ┌───── Stage 2 ── tasks=3, partitions=3 finished_tasks={0:1, 1:1, 2:1}
-        ┌───── Stage 1 ── tasks=3, partitions=9 finished_tasks={0:1, 1:1, 2:1}
+        // Every task's `finished_tasks=1` is merged into its stage's metrics.
+        let mut stage_metrics = vec![];
+        plan.apply(|node| {
+            if let Some(boundary) = node.as_network_boundary() {
+                let stage = boundary.input_stage();
+                let finished_tasks = stage.metrics().sum_by_name("finished_tasks");
+                stage_metrics.push(format!(
+                    "Stage {} tasks={} finished_tasks={}",
+                    stage.num(),
+                    stage.task_count(),
+                    finished_tasks.map_or(0, |v| v.as_usize()),
+                ));
+            }
+            Ok(TreeNodeRecursion::Continue)
+        })?;
+        assert_snapshot!(stage_metrics.join("\n"), @"
+        Stage 2 tasks=3 finished_tasks=3
+        Stage 1 tasks=3 finished_tasks=3
         ");
         Ok(())
     }
