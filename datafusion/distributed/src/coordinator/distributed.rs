@@ -1,4 +1,4 @@
-use crate::common::require_one_child;
+use crate::common::{on_drop_stream, require_one_child};
 use crate::coordinator::prepare_dynamic_plan::prepare_dynamic_plan;
 use crate::coordinator::prepare_static_plan::prepare_static_plan;
 use crate::coordinator::query_coordinator::QueryCoordinator;
@@ -6,16 +6,23 @@ use crate::coordinator::store::{Store, task_keys_for_plan};
 use crate::dynamic_filtering::{
     is_local_dynamic_filtering_enabled, sever_dynamic_filter_relationships_in_plan_for_display,
 };
-use crate::{DistributedConfig, TaskCompletedDynamicFilters, TaskKey, TaskMetrics};
+use crate::events::TaskFinishedHandlers;
+use crate::worker::TaskOutcomeTracker;
+use crate::{
+    DistributedConfig, DistributedTaskContext, NetworkBoundaryExt, TaskCompletedDynamicFilters,
+    TaskKey, TaskMetrics,
+};
 use datafusion::common::internal_datafusion_err;
-use datafusion::common::tree_node::TreeNodeRecursion;
+use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::common::{HashMap, Result, exec_err};
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr_common::metrics::MetricsSet;
 use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
 use datafusion::physical_plan::stream::RecordBatchReceiverStreamBuilder;
-use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
+use datafusion::physical_plan::{
+    DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
+};
 use futures::StreamExt;
 use std::fmt::Formatter;
 use std::sync::{Arc, OnceLock};
@@ -221,6 +228,8 @@ impl ExecutionPlan for DistributedExec {
         let base_plan = Arc::clone(&self.base_plan);
         let prepared_plan = Arc::clone(&self.prepared_plan);
         let collect_dynamic_filters = self.completed_dynamic_filter_store.is_some();
+        let metrics = self.metrics.clone();
+        let outcome_tracker = Arc::new(TaskOutcomeTracker::default());
 
         let mut builder = RecordBatchReceiverStreamBuilder::new(self.schema(), 1);
         let tx = builder.tx();
@@ -265,7 +274,23 @@ impl ExecutionPlan for DistributedExec {
             prepared_plan.set(prepared).map_err(|_| {
                 internal_datafusion_err!("DistributedExec was already prepared for execution")
             })?;
-            let mut stream = head_stage.execute(partition, context)?;
+
+            let stream = head_stage.execute(partition, Arc::clone(&context))?;
+            let stream = outcome_tracker.track(stream);
+            let stream = on_drop_stream(stream, move || {
+                let new_metrics = TaskFinishedHandlers::handle(
+                    &head_stage,
+                    head_stage_task_key(&head_stage),
+                    DistributedTaskContext::new_single_node(),
+                    context.session_config(),
+                    outcome_tracker.outcome(head_stage.output_partitioning().partition_count()),
+                );
+                for metric in new_metrics {
+                    metrics.register(metric)
+                }
+            });
+            let mut stream = stream.boxed();
+
             while let Some(msg) = stream.next().await {
                 if tx.send(Ok(msg?)).await.is_err() {
                     break; // channel closed
@@ -279,5 +304,22 @@ impl ExecutionPlan for DistributedExec {
 
     fn metrics(&self) -> Option<MetricsSet> {
         Some(self.metrics.clone_inner())
+    }
+}
+
+fn head_stage_task_key(head_stage: &Arc<dyn ExecutionPlan>) -> TaskKey {
+    let mut query_id = None;
+    let _ = head_stage.apply(|plan| {
+        if let Some(nb) = plan.as_network_boundary() {
+            query_id = Some(nb.input_stage().query_id());
+            return Ok(TreeNodeRecursion::Stop);
+        }
+        Ok(TreeNodeRecursion::Continue)
+    });
+
+    TaskKey {
+        query_id: query_id.unwrap_or_default(),
+        stage_id: 0,
+        task_number: 0,
     }
 }
