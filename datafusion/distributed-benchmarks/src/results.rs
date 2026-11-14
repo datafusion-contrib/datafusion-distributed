@@ -101,13 +101,13 @@ impl BenchmarkRun {
             "=== Comparing {} results from branch '{}' [prev] with '{}' [new] ===",
             self.dataset, previous.branch, self.branch
         );
-        println!("{header}");
+        eprintln!("{header}");
         // Print machine information
-        println!("os:        {}", std::env::consts::OS);
-        println!("arch:      {}", std::env::consts::ARCH);
-        println!("cpu cores: {}", get_available_parallelism());
-        println!("workers:   {} -> {}", previous.workers, self.workers);
-        println!("{}", "=".repeat(header.len()));
+        eprintln!("os:        {}", std::env::consts::OS);
+        eprintln!("arch:      {}", std::env::consts::ARCH);
+        eprintln!("cpu cores: {}", get_available_parallelism());
+        eprintln!("workers:   {} -> {}", previous.workers, self.workers);
+        eprintln!("{}", "=".repeat(header.len()));
         for query in self.results.iter() {
             let Some(prev_query) = previous.results.iter().find(|v| v.id == query.id) else {
                 continue;
@@ -244,15 +244,15 @@ impl BenchResult {
         let new_err = self.iterations.iter().find_map(|v| v.error.clone());
         match (prev_err, new_err) {
             (Some(_prev_err), None) => {
-                println!("{}: Previously failed, but now succeeded 🟠", self.id);
+                eprintln!("{}: Previously failed, but now succeeded 🟠", self.id);
                 return;
             }
             (None, Some(_new_err)) => {
-                println!("{}: Previously succeeded, but now failed ❌", self.id);
+                eprintln!("{}: Previously succeeded, but now failed ❌", self.id);
                 return;
             }
             (Some(_prev_err), Some(_new_err)) => {
-                println!("{}: Previously failed, and now also failed ❌", self.id);
+                eprintln!("{}: Previously failed, and now also failed ❌", self.id);
                 return;
             }
             (None, None) => {}
@@ -267,7 +267,7 @@ impl BenchResult {
             let f = p50 as f64 / p50_prev as f64;
             (f, "slower", if f > 1.2 { "❌" } else { "✖" })
         };
-        println!(
+        eprintln!(
             "{:>8}: prev={p50_prev:>4} ms, new={p50:>4} ms, diff={f:.2} {tag} {emoji}",
             self.id
         );
@@ -324,7 +324,7 @@ pub fn print_comparison_total(base: &[BenchResult], new: &[BenchResult]) {
             let f = total_new as f64 / total_prev.max(1) as f64;
             (f, "slower", if f > 1.2 { "❌" } else { "✖" })
         };
-        println!(
+        eprintln!(
             "{:>8}: prev={total_prev} ms, new={total_new} ms, diff={f:.2} {tag} {emoji}",
             "TOTAL"
         );
@@ -336,9 +336,9 @@ pub fn print_comparison_total(base: &[BenchResult], new: &[BenchResult]) {
 
 fn print_q_error_comparison(label: &str, prev: Vec<f64>, new: Vec<f64>) {
     match (median(prev), median(new)) {
-        (Some(prev), Some(new)) => println!("{label:>8}: prev={prev:.2}x, new={new:.2}x"),
-        (Some(prev), None) => println!("{label:>8}: prev={prev:.2}x, new=n/a"),
-        (None, Some(new)) => println!("{label:>8}: prev=n/a, new={new:.2}x"),
+        (Some(prev), Some(new)) => eprintln!("{label:>8}: prev={prev:.2}x, new={new:.2}x"),
+        (Some(prev), None) => eprintln!("{label:>8}: prev={prev:.2}x, new=n/a"),
+        (None, Some(new)) => eprintln!("{label:>8}: prev=n/a, new={new:.2}x"),
         (None, None) => {}
     }
 }
