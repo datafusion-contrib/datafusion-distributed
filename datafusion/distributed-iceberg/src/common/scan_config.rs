@@ -1,4 +1,4 @@
-use crate::common::dynamic_filters::partition_skipper::PartitionSkipper;
+use crate::common::dynamic_filters::pruner::DynamicFilterPruner;
 use crate::{IcebergConfig, common::df_err};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::stats::Precision;
@@ -145,16 +145,17 @@ impl ScanConfig {
             .with_category(MetricCategory::Bytes)
             .gauge("bytes_scanned", partition);
 
-        let mut partition_skipper = self.partition_skipper(partition);
+        let mut pruner = self.dynamic_filter_pruner(partition);
         // The reader pulls a task when it starts reading that task's file. It reads ahead,
         // so with a LIMIT this can count files that never produced output. Skipped files
-        // are dropped before this, and the skipper counts them.
+        // are dropped before this, and the pruner counts them.
         let tasks = tasks
-            .try_filter(move |task| {
-                let skip = partition_skipper
-                    .as_mut()
-                    .is_some_and(|skipper| skipper.should_skip_task(task));
-                ready(!skip)
+            .try_filter_map(move |task| {
+                let task = match pruner.as_mut() {
+                    Some(pruner) => pruner.prune(task),
+                    None => Some(task),
+                };
+                ready(Ok(task))
             })
             .inspect_ok(move |_| files_opened.add(1))
             .boxed();
@@ -180,15 +181,15 @@ impl ScanConfig {
         Ok(Box::pin(LimitStream::new(stream, 0, self.fetch, metrics)))
     }
 
-    /// A skipper over the scan's dynamic filters. `None` when dynamic filtering is off or the
+    /// A pruner over the scan's dynamic filters. `None` when dynamic filtering is off or the
     /// scan has no dynamic filter.
-    fn partition_skipper(&self, partition: usize) -> Option<PartitionSkipper> {
+    fn dynamic_filter_pruner(&self, partition: usize) -> Option<DynamicFilterPruner> {
         if !self.dynamic_filtering_enabled {
             return None;
         }
         let dynamic_filters = dynamic_filters(self.filters.as_ref()?);
         (!dynamic_filters.is_empty())
-            .then(|| PartitionSkipper::new(dynamic_filters, &self.metrics, partition))
+            .then(|| DynamicFilterPruner::new(dynamic_filters, &self.metrics, partition))
     }
 }
 
