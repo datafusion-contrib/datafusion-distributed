@@ -73,6 +73,10 @@ fn generate_iceberg(repo_root: &Path) -> Result<(), Box<dyn std::error::Error>> 
             ".iceberg.DataFusionPartitioning",
             "::datafusion_proto::protobuf::Partitioning",
         )
+        .extern_path(
+            ".iceberg.DataFusionPhysicalExprNode",
+            "::datafusion_proto::protobuf::PhysicalExprNode",
+        )
         .compile_protos(&[proto_file], &[proto_dir])?;
 
     Ok(())

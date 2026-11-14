@@ -3,12 +3,14 @@ use crate::eager::planned_files::PlannedFiles;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{Statistics, exec_err};
+use datafusion::config::ConfigOptions;
 use datafusion::datasource::source::DataSource;
 use datafusion::error::Result;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::projection::ProjectionExprs;
 use datafusion::physical_expr::{EquivalenceProperties, Partitioning, PhysicalExpr};
 use datafusion::physical_plan::DisplayFormatType;
+use datafusion::physical_plan::filter_pushdown::{FilterPushdownPropagation, PushedDown};
 use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
 use futures::StreamExt;
 use iceberg::io::FileIO;
@@ -144,9 +146,9 @@ impl EagerIcebergDataSource {
 impl DataSource for EagerIcebergDataSource {
     fn apply_expressions(
         &self,
-        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
     ) -> Result<TreeNodeRecursion> {
-        Ok(TreeNodeRecursion::Continue)
+        self.scan.apply_expressions(f)
     }
     fn open(
         &self,
@@ -171,7 +173,7 @@ impl DataSource for EagerIcebergDataSource {
         if let Some(fetch) = self.scan.fetch {
             write!(f, ", fetch={fetch}")?;
         }
-        Ok(())
+        self.scan.fmt_dynamic_filters(f)
     }
     fn output_partitioning(&self) -> Partitioning {
         self.scan.partitioning.clone()
@@ -199,5 +201,22 @@ impl DataSource for EagerIcebergDataSource {
     }
     fn metrics(&self) -> ExecutionPlanMetricsSet {
         self.scan.metrics.clone()
+    }
+
+    fn try_pushdown_filters(
+        &self,
+        filters: Vec<Arc<dyn PhysicalExpr>>,
+        _config: &ConfigOptions,
+    ) -> Result<FilterPushdownPropagation<Arc<dyn DataSource>>> {
+        let result = FilterPushdownPropagation::with_parent_pushdown_result(vec![
+            PushedDown::No;
+            filters.len()
+        ]);
+        if filters.is_empty() {
+            return Ok(result);
+        }
+        let mut source = self.clone();
+        source.scan.push_filters(filters);
+        Ok(result.with_updated_node(Arc::new(source)))
     }
 }

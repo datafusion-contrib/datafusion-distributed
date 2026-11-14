@@ -1,10 +1,16 @@
 use crate::{IcebergConfig, common::df_err};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::stats::Precision;
+use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{ColumnStatistics, Statistics};
 use datafusion::error::Result;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
-use datafusion::physical_expr::Partitioning;
+use datafusion::physical_expr::expressions::{InListExpr, lit};
+use datafusion::physical_expr::{
+    DynamicFilterTracking, Partitioning, PhysicalExpr, conjunction, split_conjunction,
+};
+use datafusion::physical_expr_common::physical_expr::snapshot_physical_expr;
+use datafusion::physical_plan::apply_expression_roots;
 use datafusion::physical_plan::limit::LimitStream;
 use datafusion::physical_plan::metrics::{
     BaselineMetrics, ExecutionPlanMetricsSet, MetricBuilder, MetricCategory, MetricType,
@@ -30,6 +36,8 @@ pub(crate) struct ScanConfig {
     pub(crate) metrics: ExecutionPlanMetricsSet,
     pub(crate) iceberg_file_io: FileIO,
     pub(crate) iceberg_runtime: iceberg::Runtime,
+    pub(crate) filters: Option<Arc<dyn PhysicalExpr>>,
+    pub(crate) dynamic_filtering_enabled: bool,
     // Clones share the delete loader across this source's local partitions.
     reader: ArrowReader,
 }
@@ -57,8 +65,75 @@ impl ScanConfig {
             metrics: Default::default(),
             iceberg_file_io,
             iceberg_runtime,
+            filters: None,
+            dynamic_filtering_enabled: config.dynamic_filtering_enabled,
             reader,
         }
+    }
+
+    /// ANDs `filters` onto the scan's filters.
+    pub(crate) fn push_filters(&mut self, filters: Vec<Arc<dyn PhysicalExpr>>) {
+        self.filters = Some(conjunction(self.filters.take().into_iter().chain(filters)));
+    }
+
+    /// Visits the scan's filters when dynamic filtering is enabled.
+    pub(crate) fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        if !self.dynamic_filtering_enabled {
+            return Ok(TreeNodeRecursion::Continue);
+        }
+        apply_expression_roots(self.filters.iter(), f)
+    }
+
+    /// Writes the scan's dynamic filters into `f` when dynamic filtering is enabled. A join filter
+    /// can list thousands of keys, so each IN list prints as its count.
+    pub(crate) fn fmt_dynamic_filters(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if !self.dynamic_filtering_enabled {
+            return Ok(());
+        }
+        let Some(filters) = &self.filters else {
+            return Ok(());
+        };
+        let dynamic_filters: Vec<_> = split_conjunction(filters)
+            .into_iter()
+            .filter(|filter| DynamicFilterTracking::classify(filter).contains_dynamic_filter())
+            .cloned()
+            .collect();
+        if dynamic_filters.is_empty() {
+            return Ok(());
+        }
+        write!(f, ", dynamic_filters=")?;
+        for (i, filter) in dynamic_filters.into_iter().enumerate() {
+            if i > 0 {
+                write!(f, " AND ")?;
+            }
+            // A dynamic filter is at generation 1 until it gets its first values.
+            if filter.snapshot_generation() == 1 {
+                write!(f, "DynamicFilter [ empty ]")?;
+                continue;
+            }
+            let current = snapshot_physical_expr(filter)
+                .and_then(|current| {
+                    current.transform_up(|expr| match expr.downcast_ref::<InListExpr>() {
+                        Some(in_list) => {
+                            let not = if in_list.negated() { "NOT " } else { "" };
+                            let text = format!(
+                                "{} {not}IN ([{} elements])",
+                                in_list.expr(),
+                                in_list.len()
+                            );
+                            Ok(Transformed::yes(lit(text)))
+                        }
+                        None => Ok(Transformed::no(expr)),
+                    })
+                })
+                .map_err(|_| fmt::Error)?
+                .data;
+            write!(f, "DynamicFilter [ {current} ]")?;
+        }
+        Ok(())
     }
 
     pub(crate) fn open(
@@ -109,6 +184,8 @@ impl fmt::Debug for ScanConfig {
             .field("metrics", &self.metrics)
             .field("iceberg_file_io", &self.iceberg_file_io)
             .field("iceberg_runtime", &self.iceberg_runtime)
+            .field("filters", &self.filters)
+            .field("dynamic_filtering_enabled", &self.dynamic_filtering_enabled)
             .finish_non_exhaustive()
     }
 }
