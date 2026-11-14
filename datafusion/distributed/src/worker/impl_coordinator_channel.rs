@@ -5,7 +5,9 @@ use crate::dynamic_filtering::{
     apply_dynamic_filter_update, discover_dynamic_filter_consumers,
     discover_dynamic_filter_producers,
 };
-use crate::events::{TaskFinishedHandlers, WorkerPlanRewriteEvent, WorkerPlanRewriteHandlers};
+use crate::events::{
+    TaskFinishedHandlers, WorkerPlanRewriteEvent, WorkerPlanRewriteHandlers, derived_stage_metrics,
+};
 use crate::execution_plans::SamplerExec;
 use crate::protocol::LocalWorkerContext;
 use crate::work_unit_feed::{RemoteWorkUnitFeedRegistry, set_work_unit_received_time};
@@ -87,6 +89,9 @@ impl Worker {
             if shuffle_batch_size != 0 {
                 cfg = cfg.with_batch_size(shuffle_batch_size);
             }
+
+            // Add worker-level TaskFinishedHandler defaults
+            TaskFinishedHandlers::push_builtin(&mut cfg, Arc::new(derived_stage_metrics));
 
             let session_state = self
                 .session_builder
