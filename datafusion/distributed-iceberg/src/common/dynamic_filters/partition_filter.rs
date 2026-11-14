@@ -1,147 +1,77 @@
+//! A copy of iceberg-rust's `PartitionFilter`, which the iceberg-rust version this crate uses
+//! doesn't have. It has the same API, so moving to iceberg-rust's version means deleting this
+//! file and changing the import.
+//!
+//! The projection mirrors iceberg-rust's `InclusiveProjection`, and the evaluation mirrors its
+//! `ExpressionEvaluator`. Both are private in this version.
+
 use std::cmp::Ordering;
 use std::sync::Arc;
 
-use datafusion::common::HashMap;
-use datafusion::physical_expr::{PhysicalExpr, conjunction};
-use datafusion::physical_expr_common::physical_expr::{
-    snapshot_generation, snapshot_physical_expr,
-};
-use datafusion::physical_plan::metrics::{
-    ExecutionPlanMetricsSet, MetricBuilder, MetricType, PruningMetrics,
-};
 use iceberg::expr::{Bind, BoundPredicate, BoundReference, Predicate, PredicateOperator};
-use iceberg::scan::FileScanTask;
 use iceberg::spec::{
-    Datum, Literal, PartitionSpec, PrimitiveLiteral, PrimitiveType, Schema, Struct, Type,
+    Datum, Literal, PartitionSpec, PartitionSpecRef, PrimitiveLiteral, PrimitiveType, Schema,
+    SchemaRef, Struct, Type,
 };
-use iceberg::{Error, ErrorKind};
+use iceberg::{Error, ErrorKind, Result};
 
-use crate::common::dynamic_filters::physical_predicate::convert_physical_filter_to_predicate;
-
-/// Skips files whose partition value can't match the scan's dynamic filters.
-pub(crate) struct PartitionSkipper {
-    /// The scan's dynamic filters, combined with AND.
-    dynamic_filters: Arc<dyn PhysicalExpr>,
-
-    /// The generation of `dynamic_filters` that `predicate` was built from.
-    cached_snapshot_generation: u64,
-
-    /// The filters as an Iceberg predicate bound to the table schema.
-    predicate: Option<BoundPredicate>,
-
-    /// `predicate` projected onto each partition spec and bound to its partition schema, by spec
-    /// id. `None` keeps every file written with that spec. That happens when the projection
-    /// matches every partition, or when the spec's partition values can't be checked. Cleared
-    /// when `predicate` changes.
-    partition_predicates: HashMap<i32, Option<BoundPredicate>>,
-
-    /// The files checked. Pruned files were skipped and matched files were kept.
-    files: PruningMetrics,
+/// Checks whether a data file's partition can hold rows that match a filter, as a table scan
+/// does when it plans files.
+pub(crate) struct PartitionFilter {
+    /// The filter projected onto the spec's partition columns, bound to its partition schema.
+    predicate: BoundPredicate,
+    spec: PartitionSpecRef,
 }
 
-impl PartitionSkipper {
-    pub(crate) fn new(
-        dynamic_filters: Vec<Arc<dyn PhysicalExpr>>,
-        metrics: &ExecutionPlanMetricsSet,
-        partition: usize,
-    ) -> Self {
-        Self {
-            dynamic_filters: conjunction(dynamic_filters),
-            cached_snapshot_generation: 0,
-            predicate: None,
-            partition_predicates: HashMap::new(),
-            files: MetricBuilder::new(metrics)
-                .with_type(MetricType::Summary)
-                .pruning_metrics("files_pruned_by_partition", partition),
-        }
-    }
-
-    /// Whether no row in the task's partition can match the filters. Any error keeps the file.
-    pub(crate) fn should_skip_task(&mut self, task: &FileScanTask) -> bool {
-        let skip = self.can_skip(task);
-        if skip {
-            self.files.add_pruned(1);
+impl PartitionFilter {
+    /// Creates a partition filter for `filter` on data files written with `partition_spec`.
+    ///
+    /// If `partition_spec` uses a column that `schema` no longer has, every partition matches.
+    /// Returns an error if `filter` doesn't bind to `schema`, or if it can't be projected onto
+    /// `partition_spec`.
+    pub(crate) fn try_new(
+        filter: Predicate,
+        schema: SchemaRef,
+        partition_spec: &PartitionSpecRef,
+        case_sensitive: bool,
+    ) -> Result<Self> {
+        let filter = filter
+            .rewrite_not()
+            .bind(Arc::clone(&schema), case_sensitive)?;
+        let has_dropped_source_column = partition_spec
+            .fields()
+            .iter()
+            .any(|field| schema.field_by_id(field.source_id).is_none());
+        let predicate = if has_dropped_source_column {
+            BoundPredicate::AlwaysTrue
         } else {
-            self.files.add_matched(1);
-        }
-        skip
+            let partition_type = partition_spec.partition_type(&schema)?;
+            let partition_schema = Arc::new(
+                Schema::builder()
+                    .with_schema_id(partition_spec.spec_id())
+                    .with_fields(partition_type.fields().to_owned())
+                    .build()?,
+            );
+            project(&filter, partition_spec)?
+                .rewrite_not()
+                .bind(partition_schema, case_sensitive)?
+        };
+        Ok(Self {
+            predicate,
+            spec: Arc::clone(partition_spec),
+        })
     }
 
-    fn can_skip(&mut self, task: &FileScanTask) -> bool {
-        let (Some(spec), Some(partition)) = (task.partition_spec(), task.partition()) else {
-            return false;
-        };
-        if spec.is_unpartitioned() {
-            return false;
-        }
-        self.refresh(task);
-        let Some(predicate) = &self.predicate else {
-            return false;
-        };
-        // Every task in a scan has the same table schema, so the spec id is enough as a key.
-        let partition_predicate = self
-            .partition_predicates
-            .entry(spec.spec_id())
-            .or_insert_with(|| {
-                project_onto_spec(predicate, spec, task.schema())
-                    .ok()
-                    .filter(|projected| !matches!(projected, BoundPredicate::AlwaysTrue))
-            });
-        let Some(projected) = partition_predicate.as_ref() else {
-            return false;
-        };
-        match evaluate(projected, spec, partition) {
-            Ok(matches) => !matches,
-            // Files with the same spec would most likely fail the same way, so stop checking
-            // them until the filters change.
-            Err(_) => {
-                *partition_predicate = None;
-                false
-            }
-        }
+    /// Returns whether a data file with `partition` can hold rows that match the filter.
+    /// Returns an error if `partition` doesn't match the partition spec's fields.
+    pub(crate) fn can_match(&self, partition: &Struct) -> Result<bool> {
+        evaluate(&self.predicate, &self.spec, partition)
     }
-
-    /// Rebuilds the predicate when any of the filters has changed.
-    fn refresh(&mut self, task: &FileScanTask) {
-        // Read the generation before taking the snapshot. If a filter changes in between, the
-        // next file sees a newer generation and rebuilds.
-        let generation = snapshot_generation(&self.dynamic_filters);
-        if self.cached_snapshot_generation == generation {
-            return;
-        }
-        self.cached_snapshot_generation = generation;
-        self.partition_predicates.clear();
-        self.predicate = snapshot_physical_expr(Arc::clone(&self.dynamic_filters))
-            .ok()
-            .and_then(|snapshot| convert_physical_filter_to_predicate(&snapshot))
-            .and_then(|predicate| {
-                predicate
-                    .bind(task.schema_ref(), task.case_sensitive())
-                    .ok()
-            });
-    }
-}
-
-/// Projects a predicate on table columns onto a partition spec, then binds it to the spec's
-/// partition schema. Binding gives its values the partition columns' types, so they compare
-/// with the partition values.
-fn project_onto_spec(
-    predicate: &BoundPredicate,
-    spec: &PartitionSpec,
-    table_schema: &Schema,
-) -> iceberg::Result<BoundPredicate> {
-    let partition_type = spec.partition_type(table_schema)?;
-    let partition_schema = Schema::builder()
-        .with_fields(partition_type.fields().iter().cloned())
-        .build()?;
-    project(predicate, spec)?.bind(Arc::new(partition_schema), true)
 }
 
 /// Rewrites a predicate on table columns into one on the spec's partition columns. The result
 /// matches every partition that holds a matching row, and can match more.
-///
-/// Mirrors iceberg-rust's `InclusiveProjection`, which is private.
-fn project(predicate: &BoundPredicate, spec: &PartitionSpec) -> iceberg::Result<Predicate> {
+fn project(predicate: &BoundPredicate, spec: &PartitionSpec) -> Result<Predicate> {
     Ok(match predicate {
         BoundPredicate::AlwaysTrue => Predicate::AlwaysTrue,
         BoundPredicate::AlwaysFalse => Predicate::AlwaysFalse,
@@ -153,8 +83,8 @@ fn project(predicate: &BoundPredicate, spec: &PartitionSpec) -> iceberg::Result<
             let [left, right] = expr.inputs();
             project(left, spec)?.or(project(right, spec)?)
         }
-        // The filter translator turns each NOT into the opposite comparison, so none reach
-        // here. Keep the file if one shows up anyway.
+        // `PartitionFilter::try_new` rewrites every NOT away first, so none reach here. Keep
+        // the file if one shows up anyway.
         BoundPredicate::Not(_) => Predicate::AlwaysTrue,
         BoundPredicate::Unary(expr) => project_column(expr.term(), predicate, spec)?,
         BoundPredicate::Binary(expr) => project_column(expr.term(), predicate, spec)?,
@@ -168,7 +98,7 @@ fn project_column(
     column: &BoundReference,
     predicate: &BoundPredicate,
     spec: &PartitionSpec,
-) -> iceberg::Result<Predicate> {
+) -> Result<Predicate> {
     spec.fields()
         .iter()
         .filter(|field| field.source_id == column.field().id)
@@ -183,11 +113,7 @@ fn project_column(
 
 /// Evaluates a predicate bound to the partition schema against one partition value. Null values
 /// follow iceberg-rust's `ExpressionEvaluator`.
-fn evaluate(
-    predicate: &BoundPredicate,
-    spec: &PartitionSpec,
-    partition: &Struct,
-) -> iceberg::Result<bool> {
+fn evaluate(predicate: &BoundPredicate, spec: &PartitionSpec, partition: &Struct) -> Result<bool> {
     match predicate {
         BoundPredicate::AlwaysTrue => Ok(true),
         BoundPredicate::AlwaysFalse => Ok(false),
@@ -258,7 +184,7 @@ fn partition_value(
     column: &BoundReference,
     spec: &PartitionSpec,
     partition: &Struct,
-) -> iceberg::Result<Option<Datum>> {
+) -> Result<Option<Datum>> {
     let field = column.field();
     let position = spec
         .fields()
@@ -283,7 +209,7 @@ fn partition_value(
 
 /// Builds a `Datum` of type `r#type`. Also widens values written before a column's type was
 /// promoted, such as an int partition value of a column that is now a long.
-fn datum(r#type: &PrimitiveType, literal: &PrimitiveLiteral) -> iceberg::Result<Datum> {
+fn datum(r#type: &PrimitiveType, literal: &PrimitiveLiteral) -> Result<Datum> {
     Ok(match (r#type, literal) {
         (PrimitiveType::Boolean, PrimitiveLiteral::Boolean(value)) => Datum::bool(*value),
         (PrimitiveType::Int, PrimitiveLiteral::Int(value)) => Datum::int(*value),
@@ -328,7 +254,7 @@ fn datum(r#type: &PrimitiveType, literal: &PrimitiveLiteral) -> iceberg::Result<
 
 /// Orders two values of the same type. Values of different types are an error, so the file is
 /// kept.
-fn compare(value: &Datum, literal: &Datum) -> iceberg::Result<Ordering> {
+fn compare(value: &Datum, literal: &Datum) -> Result<Ordering> {
     if value.data_type() != literal.data_type() {
         return Err(type_mismatch(value, literal));
     }
@@ -337,7 +263,7 @@ fn compare(value: &Datum, literal: &Datum) -> iceberg::Result<Ordering> {
         .ok_or_else(|| type_mismatch(value, literal))
 }
 
-fn starts_with(value: &Datum, prefix: &Datum) -> iceberg::Result<bool> {
+fn starts_with(value: &Datum, prefix: &Datum) -> Result<bool> {
     match (value.literal(), prefix.literal()) {
         (PrimitiveLiteral::String(value), PrimitiveLiteral::String(prefix)) => {
             Ok(value.starts_with(prefix.as_str()))
