@@ -49,7 +49,12 @@ statistics. See `datafusion/distributed-benchmarks/README.md` for S3 output and 
 - Each run stores results under `testdata/<dataset>/.results/<current git branch>/` and compares
   against the previous run. Running on `main` overwrites `main`'s baseline.
 - Background load (other builds or tests, indexing) skews results heavily. Check it before
-  trusting numbers, and alternate the sides of a comparison over several rounds.
+  trusting numbers, and alternate the sides of a `dfbench` comparison over several rounds.
+- Criterion benches (`cargo bench -p datafusion-distributed-benchmarks --bench <name>`) already
+  take many samples per case, so run each side once instead of repeating runs: filter to the
+  case you care about (e.g. `-- 'plan_dump/generate/0$'`), save one side with
+  `-- --save-baseline <name>` and compare the other with `-- --baseline <name>`. Benches build
+  their fixtures for every case even when filtered, so a full run is much slower than one case.
 - CPU profiles: record with [samply](https://github.com/mstange/samply) and query them from the
   terminal with Mozilla's [profiler-cli](https://github.com/firefox-devtools/profiler/tree/main/profiler-cli)
   (`npm install -g @firefox-devtools/profiler-cli@latest`; run `profiler-cli guide` first):

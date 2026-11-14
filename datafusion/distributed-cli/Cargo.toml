@@ -2,7 +2,7 @@
 name = "datafusion-distributed-cli"
 version = "0.1.0"
 edition = "2024"
-description = "DataFusion's CLI with distributed execution capabilities"
+description = "DataFusion's CLI with distributed execution capabilities, and a viewer for DataFusion Distributed plan dumps"
 license = "Apache-2.0"
 documentation = "https://datafusion-contrib.github.io/datafusion-distributed/"
 repository = "https://github.com/datafusion-contrib/datafusion-distributed"

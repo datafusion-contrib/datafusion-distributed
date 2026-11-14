@@ -155,3 +155,34 @@ message MaxGauge {
   string name = 1;
   uint64 value = 2;
 }
+
+message StageDump {
+  uint64 stage_id = 1;
+  repeated MetricColumn metrics = 2;
+  PlanDump plan_dump = 3;
+  // The number of tasks the stage ran with.
+  uint64 tasks = 4;
+  // The number of partitions the stage spans across all its tasks.
+  uint64 partitions = 5;
+}
+
+message PlanDump {
+  string display = 1;
+  repeated MetricColumn metrics = 2;
+  repeated PlanDump children = 3;
+  // For network boundaries, the stage they read from. Its plan is not part of `children`.
+  StageDump input_stage = 4;
+}
+
+// One metric of a node with its values for every task, stored once instead of as one `Metric` per
+// task, which makes dumps much smaller.
+message MetricColumn {
+  // The metric's kind and name, with its values left unset.
+  Metric metric = 1;
+  // The task each group of values belongs to. Metrics that do not belong to a task are dumped as
+  // task 0's.
+  repeated uint64 tasks = 2;
+  // The values of the metric, as many per task as the metric has (e.g. `pruned` and `matched` for
+  // pruning metrics), one task after the other.
+  repeated uint64 values = 3;
+}
