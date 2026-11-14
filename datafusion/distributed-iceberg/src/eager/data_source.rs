@@ -22,6 +22,9 @@ use std::sync::Arc;
 pub struct EagerIcebergDataSource {
     pub(crate) scan: ScanConfig,
     pub(crate) statistics: Arc<Statistics>,
+    /// On-disk bytes of the planned files, for sizing scan tasks. Unknown when the statistics
+    /// are.
+    pub(crate) file_bytes: Option<usize>,
     pub(crate) files: Arc<PlannedFiles>,
     pub(crate) partitions: Arc<[Vec<usize>]>,
 }
@@ -54,6 +57,7 @@ impl EagerIcebergDataSource {
         }
         Ok(Self {
             statistics: Arc::new(Statistics::new_unknown(&schema)),
+            file_bytes: None,
             scan: ScanConfig::new(
                 schema,
                 Partitioning::UnknownPartitioning(partitions.len()),
@@ -138,6 +142,7 @@ impl EagerIcebergDataSource {
         source.partitions = groups.into();
         source.scan.metrics = Default::default();
         source.statistics = Arc::new(Statistics::new_unknown(&source.scan.schema));
+        source.file_bytes = None;
         Ok(source)
     }
 }

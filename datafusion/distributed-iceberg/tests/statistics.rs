@@ -29,9 +29,16 @@ mod tests {
 
     // Values from the generated taxi snapshot summary.
     const TAXI_ROWS: usize = 175_000;
-    const TAXI_BYTES: usize = 5_656_412;
+    // In-memory bytes per taxi row: a validity byte for each of the 13 columns, plus 4 bytes
+    // for each of the 3 Int32 and 1 Date32 columns and 8 bytes for each of the other 9.
+    const TAXI_ROW_BYTES: usize = 13 + 4 * 4 + 9 * 8;
     // The rows across both files of the metrics table.
     const METRICS_ROWS: usize = 9;
+    // In-memory bytes per metrics row: a validity byte for each of the 3 columns, plus an
+    // Int32, an Int64 and a Float64.
+    const METRICS_ROW_BYTES: usize = 3 + 4 + 8 + 8;
+    // The rows of the names table.
+    const NAMES_ROWS: usize = 4;
 
     #[tokio::test]
     async fn missing_snapshot_summary_statistics_are_absent() -> Result<()> {
@@ -60,7 +67,10 @@ mod tests {
             .await?;
         let stats = query_statistics(&harness, "SELECT * FROM taxi").await?;
         assert_eq!(stats.num_rows, Precision::Exact(TAXI_ROWS));
-        assert_eq!(stats.total_byte_size, Precision::Exact(TAXI_BYTES));
+        assert_eq!(
+            stats.total_byte_size,
+            Precision::Inexact(TAXI_ROWS * TAXI_ROW_BYTES)
+        );
 
         let filtered = query_statistics(
             &harness,
@@ -103,7 +113,7 @@ mod tests {
 
     #[tokio::test]
     async fn full_scan_without_column_stats() -> Result<(), Box<dyn Error>> {
-        let (table, files) = create_metrics_table().await?;
+        let table = create_metrics_table().await?;
         let harness = IcebergTestHarness::builder()
             .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
             .with_table(table)
@@ -115,12 +125,7 @@ mod tests {
         assert_eq!(stats.num_rows, Precision::Exact(METRICS_ROWS));
         assert_eq!(
             stats.total_byte_size,
-            Precision::Exact(
-                files
-                    .iter()
-                    .map(|file| file.file_size_in_bytes() as usize)
-                    .sum()
-            )
+            Precision::Inexact(METRICS_ROWS * METRICS_ROW_BYTES)
         );
         assert_eq!(
             stats.column_statistics,
@@ -131,7 +136,7 @@ mod tests {
 
     #[tokio::test]
     async fn full_scan_with_column_stats() -> Result<(), Box<dyn Error>> {
-        let (table, files) = create_metrics_table().await?;
+        let table = create_metrics_table().await?;
         let harness = IcebergTestHarness::builder()
             .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
             .with_table(table)
@@ -144,23 +149,18 @@ mod tests {
         assert_eq!(stats.num_rows, Precision::Exact(METRICS_ROWS));
         assert_eq!(
             stats.total_byte_size,
-            Precision::Exact(
-                files
-                    .iter()
-                    .map(|file| file.file_size_in_bytes() as usize)
-                    .sum()
-            )
+            Precision::Inexact(METRICS_ROWS * METRICS_ROW_BYTES)
         );
         assert_eq!(
             stats.column_statistics,
-            expected_column_statistics(&files).to_vec()
+            expected_column_statistics().to_vec()
         );
         Ok(())
     }
 
     #[tokio::test]
     async fn projection_without_column_stats() -> Result<(), Box<dyn Error>> {
-        let (table, _) = create_metrics_table().await?;
+        let table = create_metrics_table().await?;
         let harness = IcebergTestHarness::builder()
             .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
             .with_table(table)
@@ -183,7 +183,7 @@ mod tests {
 
     #[tokio::test]
     async fn projection_with_column_stats() -> Result<(), Box<dyn Error>> {
-        let (table, files) = create_metrics_table().await?;
+        let table = create_metrics_table().await?;
         let harness = IcebergTestHarness::builder()
             .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
             .with_table(table)
@@ -198,11 +198,60 @@ mod tests {
         .await?;
 
         assert_eq!(stats.num_rows, Precision::Exact(METRICS_ROWS));
-        let [vendor_id, passenger_count, trip_distance] = expected_column_statistics(&files);
+        let [vendor_id, passenger_count, trip_distance] = expected_column_statistics();
         assert_eq!(
             stats.column_statistics,
             vec![passenger_count, vendor_id, trip_distance]
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn string_and_binary_sizes_use_default_widths_without_column_stats()
+    -> Result<(), Box<dyn Error>> {
+        let (table, _) = create_names_table().await?;
+        let harness = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
+            .with_table(table)
+            .build()
+            .await?;
+        let stats = query_statistics(&harness, "SELECT name, payload FROM names").await?;
+
+        // Each value takes 50 bytes and a validity byte. The Utf8 name adds 4-byte offsets and
+        // the LargeBinary payload adds 8-byte offsets.
+        assert_eq!(
+            stats.total_byte_size,
+            Precision::Inexact(NAMES_ROWS * ((50 + 1 + 4) + (50 + 1 + 8)))
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn string_and_binary_sizes_scale_their_on_disk_sizes() -> Result<(), Box<dyn Error>> {
+        let (table, file) = create_names_table().await?;
+        let harness = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
+            .with_table(table)
+            .with_config_option("iceberg.column_stats_enabled", true)
+            .build()
+            .await?;
+        let stats = query_statistics(&harness, "SELECT name, payload FROM names").await?;
+
+        // Strings take 2.7 and binary 1.4 in-memory bytes per on-disk byte, as in Trino. Each
+        // row adds a validity byte, plus 4-byte offsets for the Utf8 name and 8-byte offsets
+        // for the LargeBinary payload.
+        let on_disk = |field_id| file.column_sizes()[&field_id] as f64;
+        let name = (on_disk(1) * 2.7).round() as usize + NAMES_ROWS * (1 + 4);
+        let payload = (on_disk(2) * 1.4).round() as usize + NAMES_ROWS * (1 + 8);
+        assert_eq!(
+            stats.column_statistics[0].byte_size,
+            Precision::Inexact(name)
+        );
+        assert_eq!(
+            stats.column_statistics[1].byte_size,
+            Precision::Inexact(payload)
+        );
+        assert_eq!(stats.total_byte_size, Precision::Inexact(name + payload));
         Ok(())
     }
 
@@ -218,7 +267,10 @@ mod tests {
         let stats = query_statistics(&harness, "SELECT * FROM taxi").await?;
 
         assert_eq!(stats.num_rows, Precision::Exact(42));
-        assert_eq!(stats.total_byte_size, Precision::Exact(4_242));
+        assert_eq!(
+            stats.total_byte_size,
+            Precision::Inexact(42 * TAXI_ROW_BYTES)
+        );
         Ok(())
     }
 
@@ -270,9 +322,34 @@ mod tests {
             .set_show_statistics(true)
             .indent(true)
             .to_string();
-        insta::assert_snapshot!(display, @r"
-        CooperativeExec, statistics=[Rows=Exact(175000), Bytes=Exact(5656412), [(Col[0]:)]]
-          DataSourceExec: format=iceberg, table=default.taxi, projection=[vendor_id], statistics=[Rows=Exact(175000), Bytes=Exact(5656412), [(Col[0]:)]]
+        insta::assert_snapshot!(display, @"
+        CooperativeExec, statistics=[Rows=Exact(175000), Bytes=Inexact(875000), [(Col[0]:)]]
+          DataSourceExec: format=iceberg, table=default.taxi, projection=[vendor_id], statistics=[Rows=Exact(175000), Bytes=Inexact(875000), [(Col[0]:)]]
+        ");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn join_builds_on_the_side_with_fewer_in_memory_bytes() -> Result<()> {
+        let harness = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
+            .with_table(create_taxi_table().await?)
+            .build()
+            .await?;
+        // Both sides read the same files. `a` reads four 8-byte columns and `b` reads an
+        // 8-byte and a 4-byte column, so `b` is smaller in memory and becomes the build side.
+        let plan = harness
+            .physical_plan(
+                "SELECT a.fare_amount, a.tip_amount, a.total_amount, b.vendor_id \
+                 FROM taxi a JOIN taxi b ON a.pickup_at = b.pickup_at",
+            )
+            .await?;
+        insta::assert_snapshot!(displayable(plan.as_ref()).indent(true), @"
+        HashJoinExec: mode=Partitioned, join_type=Inner, on=[(pickup_at@1, pickup_at@0)], projection=[fare_amount@3, tip_amount@4, total_amount@5, vendor_id@0]
+          RepartitionExec: partitioning=Hash([pickup_at@1], 4), input_partitions=4
+            DataSourceExec: format=iceberg, table=default.taxi, projection=[vendor_id, pickup_at]
+          RepartitionExec: partitioning=Hash([pickup_at@0], 4), input_partitions=4
+            DataSourceExec: format=iceberg, table=default.taxi, projection=[pickup_at, fare_amount, tip_amount, total_amount]
         ");
         Ok(())
     }
@@ -383,7 +460,7 @@ mod tests {
     // A table of two files on the current snapshot, committed separately. The second is
     // written without Parquet statistics for passenger_count, so its manifest entry has a
     // size for that column but no null count or bounds.
-    async fn create_metrics_table() -> Result<(FixtureTable, Vec<DataFile>), Box<dyn Error>> {
+    async fn create_metrics_table() -> Result<FixtureTable, Box<dyn Error>> {
         let schema = Schema::builder()
             .with_fields(vec![
                 NestedField::optional(1, "vendor_id", Type::Primitive(PrimitiveType::Int)).into(),
@@ -398,7 +475,7 @@ mod tests {
             .table(TableIdent::from_strs(["default", "metrics"])?, schema)
             .create()
             .await?;
-        let mut files = table
+        table
             .append()
             .file(record_batch!(
                 ("vendor_id", Int32, [Some(2), Some(9), None, None]),
@@ -413,51 +490,76 @@ mod tests {
                 EnabledStatistics::None,
             )
             .build();
-        files.extend(
-            table
-                .append()
-                .writer_properties(without_passenger_count_statistics)
-                .file(record_batch!(
-                    ("vendor_id", Int32, [Some(1), Some(5), None, None, None]),
-                    ("passenger_count", Int64, [30, 40, 35, 33, 31]),
-                    ("trip_distance", Float64, [4.0, 0.25, 1.0, 2.0, 3.0])
-                )?)
-                .commit()
-                .await?,
-        );
-        Ok((table, files))
+        table
+            .append()
+            .writer_properties(without_passenger_count_statistics)
+            .file(record_batch!(
+                ("vendor_id", Int32, [Some(1), Some(5), None, None, None]),
+                ("passenger_count", Int64, [30, 40, 35, 33, 31]),
+                ("trip_distance", Float64, [4.0, 0.25, 1.0, 2.0, 3.0])
+            )?)
+            .commit()
+            .await?;
+        Ok(table)
     }
 
     // The column statistics of the metrics table, in schema order, with column stats enabled.
-    fn expected_column_statistics(files: &[DataFile]) -> [ColumnStatistics; 3] {
-        let size = |field_id| {
-            let size = files
-                .iter()
-                .map(|file| file.column_sizes()[&field_id])
-                .sum::<u64>();
-            Precision::Inexact(size as usize)
-        };
+    // Fixed-width columns take a validity byte plus their value width for every row.
+    fn expected_column_statistics() -> [ColumnStatistics; 3] {
         [
             ColumnStatistics {
                 null_count: Precision::Exact(5),
                 min_value: Precision::Inexact(ScalarValue::Int32(Some(1))),
                 max_value: Precision::Inexact(ScalarValue::Int32(Some(9))),
-                byte_size: size(1),
+                byte_size: Precision::Inexact(METRICS_ROWS * (1 + 4)),
                 ..ColumnStatistics::new_unknown()
             },
             // The second file has no null count or bounds for passenger_count, so the totals
             // must stay unknown.
             ColumnStatistics {
-                byte_size: size(2),
+                byte_size: Precision::Inexact(METRICS_ROWS * (1 + 8)),
                 ..ColumnStatistics::new_unknown()
             },
             ColumnStatistics {
                 null_count: Precision::Exact(0),
                 min_value: Precision::Inexact(ScalarValue::Float64(Some(0.25))),
                 max_value: Precision::Inexact(ScalarValue::Float64(Some(4.0))),
-                byte_size: size(3),
+                byte_size: Precision::Inexact(METRICS_ROWS * (1 + 8)),
                 ..ColumnStatistics::new_unknown()
             },
         ]
+    }
+
+    // A table of one file with a string and a binary column, and that file.
+    async fn create_names_table() -> Result<(FixtureTable, DataFile), Box<dyn Error>> {
+        let schema = Schema::builder()
+            .with_fields(vec![
+                NestedField::optional(1, "name", Type::Primitive(PrimitiveType::String)).into(),
+                NestedField::optional(2, "payload", Type::Primitive(PrimitiveType::Binary)).into(),
+            ])
+            .build()?;
+        let fixtures = FixtureCatalog::try_new().await?;
+        let mut table = fixtures
+            .table(TableIdent::from_strs(["default", "names"])?, schema)
+            .create()
+            .await?;
+        // The payload strings are cast to the table's binary type.
+        let mut files = table
+            .append()
+            .file(record_batch!(
+                (
+                    "name",
+                    Utf8,
+                    [Some("alice"), Some("bob"), None, Some("carol")]
+                ),
+                (
+                    "payload",
+                    Utf8,
+                    [Some("a1b2"), None, Some("c3d4"), Some("e5f6")]
+                )
+            )?)
+            .commit()
+            .await?;
+        Ok((table, files.remove(0)))
     }
 }

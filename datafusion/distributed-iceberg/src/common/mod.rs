@@ -1,3 +1,4 @@
+pub(crate) mod arrow_bytes;
 mod error;
 
 pub(crate) use error::{df_err, iceberg_err};

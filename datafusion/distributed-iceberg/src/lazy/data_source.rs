@@ -1,4 +1,4 @@
-use crate::common::scan_config::{ScanConfig, stats_from_snapshot};
+use crate::common::scan_config::{ScanConfig, snapshot_file_bytes, stats_from_snapshot};
 use std::sync::Arc;
 
 use datafusion::common::tree_node::TreeNodeRecursion;
@@ -121,6 +121,13 @@ impl LazyIcebergDataSource {
     pub fn feed(&self) -> &WorkUnitFeed<IcebergWorkUnitFeed> {
         &self.feed
     }
+
+    /// On-disk size of the snapshot's data files, for sizing scan tasks. Unknown on a worker,
+    /// like the statistics.
+    pub(crate) fn file_bytes(&self) -> Option<usize> {
+        self.feed.inner()?;
+        snapshot_file_bytes(self.table_snapshot.as_ref())
+    }
 }
 
 impl DataSource for LazyIcebergDataSource {
@@ -177,13 +184,11 @@ impl DataSource for LazyIcebergDataSource {
         if self.feed.inner().is_none() {
             return Ok(Arc::new(Statistics::new_unknown(&self.scan.schema)));
         }
-        let mut stats = stats_from_snapshot(self.table_snapshot.clone(), &self.scan.schema)?;
-
-        if let Some(col_stats) = &self.column_stats {
-            stats.column_statistics = col_stats.clone();
-        }
-
-        Ok(Arc::new(stats))
+        Ok(Arc::new(stats_from_snapshot(
+            self.table_snapshot.clone(),
+            &self.scan.schema,
+            self.column_stats.clone(),
+        )))
     }
 
     fn with_fetch(&self, fetch: Option<usize>) -> Option<Arc<dyn DataSource>> {
