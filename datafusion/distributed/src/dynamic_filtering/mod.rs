@@ -2,11 +2,14 @@ mod apply;
 mod discovery;
 mod display;
 
-use crate::DistributedConfig;
-use crate::codec::roundtrip_pb;
+use crate::codec::{RoundtripProtoConverter, roundtrip_expr_pb, roundtrip_pb};
+use crate::stage::RemoteStage;
+use crate::{DistributedConfig, NetworkBoundaryExt, Stage};
 use datafusion::common::Result;
+use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::execution::TaskContext;
 use datafusion::execution::config::SessionConfig;
+use datafusion::physical_expr::expressions::DynamicFilterPhysicalExpr;
 use datafusion::physical_plan::ExecutionPlan;
 use std::sync::Arc;
 
@@ -178,14 +181,43 @@ pub(crate) fn maybe_roundtrip_plan_to_sever_in_memory_dynamic_filter_relationshi
     plan: Arc<dyn ExecutionPlan>,
     task_ctx: &Arc<TaskContext>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
-    let has_producers = !discover_dynamic_filter_producers(&plan)?.is_empty();
-    let has_consumers = !discover_dynamic_filter_consumers(&plan)?
-        .consumers
-        .is_empty();
+    // Only the nodes holding dynamic filters are round-tripped, all through the same converter,
+    // so nodes in the plan that shared a dynamic filter before still share it after.
+    let converter = RoundtripProtoConverter::default();
+    plan.transform_up(|node| {
+        if let Some(boundary) = node.as_network_boundary() {
+            // Network boundaries are not round-tripped as a whole, as their input stage might
+            // reference workers that are not known yet. Only their anchors are.
+            let Stage::Remote(stage) = boundary.input_stage() else {
+                return Ok(Transformed::no(node));
+            };
+            if stage.dynamic_filter_anchors.is_empty() {
+                return Ok(Transformed::no(node));
+            }
+            let schema = node.schema();
+            let anchors = stage
+                .dynamic_filter_anchors
+                .iter()
+                .map(|anchor| roundtrip_expr_pb(anchor, &schema, task_ctx, &converter))
+                .collect::<Result<_>>()?;
+            let stage = Stage::Remote(RemoteStage {
+                dynamic_filter_anchors: anchors,
+                ..stage.clone()
+            });
+            return Ok(Transformed::yes(boundary.with_input_stage(stage)?));
+        }
 
-    if has_producers || has_consumers {
-        roundtrip_pb(plan, task_ctx)
-    } else {
-        Ok(plan)
-    }
+        let mut has_dynamic_filters = !node.dynamic_expressions_produced().is_empty();
+        node.apply_expressions(&mut |root| {
+            root.apply(|expr| {
+                has_dynamic_filters |= expr.downcast_ref::<DynamicFilterPhysicalExpr>().is_some();
+                Ok(TreeNodeRecursion::Continue)
+            })
+        })?;
+        if !has_dynamic_filters {
+            return Ok(Transformed::no(node));
+        }
+        Ok(Transformed::yes(roundtrip_pb(node, task_ctx, &converter)?))
+    })
+    .map(|transformed| transformed.data)
 }

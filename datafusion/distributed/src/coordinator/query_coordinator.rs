@@ -1,4 +1,4 @@
-use crate::codec::roundtrip_pb;
+use crate::codec::{RoundtripProtoConverter, roundtrip_pb};
 use crate::common::{TreeNodeExt, now_ns, task_ctx_with_extension};
 use crate::config_extension_ext::get_config_extension_propagation_headers;
 use crate::coordinator::DynamicFilterRegistry;
@@ -449,7 +449,7 @@ impl<'a> StageCoordinator<'a> {
                 //
                 // Doing this roundtrip here is not super clean, but it transitions the feed with
                 // very little specialized code.
-                let plan = roundtrip_pb(plan, self.task_ctx)?;
+                let plan = roundtrip_pb(plan, self.task_ctx, &RoundtripProtoConverter::default())?;
                 return Ok(Transformed::yes(plan));
             };
 
