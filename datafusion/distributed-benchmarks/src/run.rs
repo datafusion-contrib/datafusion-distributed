@@ -36,7 +36,8 @@ use datafusion_distributed::test_utils::work_unit_file_scan::{
 };
 use datafusion_distributed::{
     DistributedConfig, DistributedExt, DistributedMetricsFormat, NetworkBoundaryExt,
-    SessionStateBuilderExt, display_plan_ascii, rewrite_distributed_plan_with_metrics,
+    SessionStateBuilderExt, display_plan_ascii, generate_plan_dump,
+    rewrite_distributed_plan_with_metrics,
 };
 use serde_yaml_ng::{Mapping, Value};
 use std::fs;
