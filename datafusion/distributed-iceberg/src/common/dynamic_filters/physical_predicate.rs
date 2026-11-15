@@ -132,7 +132,7 @@ fn both(left: Option<Converted>, right: Option<Converted>) -> Option<Converted> 
     }
 }
 
-/// Converts a NOT expession into an `iceberg::Predicate`
+/// Converts a NOT expression into an `iceberg::Predicate`
 ///
 /// NOT is evaluated against an inner expression
 /// It can be converted to a predicate *iff* the inner expression
