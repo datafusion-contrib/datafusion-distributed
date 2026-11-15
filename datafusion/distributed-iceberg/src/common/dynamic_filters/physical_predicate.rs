@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use datafusion::arrow::array::StructArray;
+use datafusion::functions::core::r#struct::StructFunc;
 use datafusion::logical_expr::Operator;
 use datafusion::physical_expr::expressions::{
     BinaryExpr, CaseExpr, Column, InListExpr, IsNotNullExpr, IsNullExpr, LikeExpr, Literal, NotExpr,
@@ -12,6 +14,7 @@ use iceberg::spec::{Datum, PrimitiveType};
 /// Turns a DataFusion filter into an iceberg predicate. The predicate matches every row that the
 /// filter would match, and *can* match more if the DF expression cannot be translated into an
 /// Iceberg predicate completely.
+///
 /// Returns `None` when no part of the filter can be converted.
 pub(crate) fn convert_physical_filter_to_predicate(
     filter: &Arc<dyn PhysicalExpr>,
@@ -23,8 +26,8 @@ pub(crate) fn convert_physical_filter_to_predicate(
 /// It can also match extra rows, so the caller must still apply the original filter.
 struct Converted {
     predicate: Predicate,
-    /// True if the predicate is false wherever the filter is false.
-    /// Only an exact predicate can go under a NOT.
+
+    /// True if the DataFusion filter could be completely represented by this `iceberg::Predicate`
     exact: bool,
 }
 
@@ -36,7 +39,7 @@ impl Converted {
         }
     }
 
-    fn wider(predicate: Predicate) -> Self {
+    fn inexact(predicate: Predicate) -> Self {
         Self {
             predicate,
             exact: false,
@@ -58,6 +61,10 @@ impl Converted {
     }
 }
 
+/// Converts a given `PhysicalExpr` into an `iceberg::Predicate`
+/// wrapped in `Converted` which records whether the conversion was exact or inexact
+///
+/// Returns None if the expression could not be converted
 fn convert(expr: &Arc<dyn PhysicalExpr>) -> Option<Converted> {
     if let Some(binary) = expr.downcast_ref::<BinaryExpr>() {
         return convert_binary(binary);
@@ -100,12 +107,16 @@ fn convert(expr: &Arc<dyn PhysicalExpr>) -> Option<Converted> {
     }
 }
 
+/// Converts a binary expression into an `iceberg::Predicate`
 fn convert_binary(binary: &BinaryExpr) -> Option<Converted> {
     let (left, right) = (binary.left(), binary.right());
     match binary.op() {
+        // An AND expression can be converted if *either* side can be converted
+        // If one of the sides are dropped, iceberg would return extra rows
+        // which would then be filtered out by DataFusion
         Operator::And => both(convert(left), convert(right)),
-        // An OR needs both sides. Turning `a = 1 OR f(b)` into `a = 1` would skip rows where
-        // only `f(b)` is true.
+        // An OR expression can only be converted if *both* sides can be converted
+        // We cannot drop one of the sides, as that would lead to data being skipped incorrectly
         Operator::Or => Some(convert(left)?.or(convert(right)?)),
         op => compare(left, *op, right).map(Converted::exact),
     }
@@ -116,19 +127,31 @@ fn convert_binary(binary: &BinaryExpr) -> Option<Converted> {
 fn both(left: Option<Converted>, right: Option<Converted>) -> Option<Converted> {
     match (left, right) {
         (Some(left), Some(right)) => Some(left.and(right)),
-        (Some(side), None) | (None, Some(side)) => Some(Converted::wider(side.predicate)),
+        (Some(side), None) | (None, Some(side)) => Some(Converted::inexact(side.predicate)),
         (None, None) => None,
     }
 }
 
-/// A NOT needs an exact predicate. In `NOT (a = 1 AND f(b))`, the inside becomes `a = 1`,
-/// and `NOT (a = 1)` would skip rows where `a = 1` but `f(b)` is false.
+/// Converts a NOT expession into an `iceberg::Predicate`
+///
+/// NOT is evaluated against an inner expression
+/// It can be converted to a predicate *iff* the inner expression
+/// can be converted *exactly*.
+///
+/// Eg. `NOT (a = 1 AND f(b) = True)`
+/// `f(b)` is not representable by an iceberg::Predicate, so it is dropped, and the inner
+/// expression becomes `(a = 1)` upon conversion.
+/// `NOT (a=1)` would skip rows where `a = 1` but `f(b)` is false, which is incorrect.
+///
+/// Returns None if the expression cannot be converted to a predicate
 fn convert_not(not: &NotExpr) -> Option<Converted> {
     convert(not.arg())
         .filter(|inner| inner.exact)
         .map(|inner| Converted::exact(inner.predicate.negate()))
 }
 
+/// Converts a CaseExpr into an `iceberg::Predicate`
+///
 /// In a CASE statement, each WHEN/THEN pair applies a filter over the rows.
 ///
 /// `CASE WHEN c1 THEN x WHEN c2 THEN y ELSE z END` becomes `(c1 AND x) OR (c2 AND y) OR z`.
@@ -158,26 +181,49 @@ fn convert_case(case: &CaseExpr) -> Option<Converted> {
     let predicate = case
         .when_then_expr()
         .iter()
+        // Converts each individual WHEN/THEN pair into a conjunctive pair
+        // WHEN x > 5 THEN y < 3 becomes (x > 5 AND y < 3)
+        // If either side is dropped because it can't be converted, the filter is still valid
+        // and will just match more rows
         .map(|(when, then)| both(convert_when(when), convert(then)))
+        // If there is an ELSE at the end, convert it into a predicate directly
         .chain(case.else_expr().map(convert))
         .collect::<Option<Vec<_>>>()?
         .into_iter()
         .map(|branch| branch.predicate)
+        // Combines all predicates in a disjunction, i.e, OR
+        // Multiple WHEN/THEN statements are joined together with ORs
+        // E.g:
+        // WHEN x > 5 THEN y ELSE
+        // WHEN x > 10 THEN z ELSE ...
+        // becomes
+        // (x > 5 AND y) OR (x > 10 AND z)
         .reduce(Predicate::or)?;
-    Some(Converted::wider(predicate))
+
+    // Each WHEN/THEN pair in a CASE statement is mutually exclusive
+    // Subsequent pairs are only executed if the previous one didn't match
+    // However, in our translation, we `OR` all of them together; subsequent pairs don't check
+    // whether the previous one matched or not
+    //
+    // This means that the filter can return *more* rows than if DataFusion was doing the
+    // filtering. Due to this, we mark this Predicate as inexact
+    Some(Converted::inexact(predicate))
 }
 
-/// Converts a column compared with a value, like `a < 5`.
-/// The value can come first too: `5 > a` becomes `a < 5`.
+/// Converts a column <-> value comparison into an `iceberg::Predicate`
 fn compare(
     left: &Arc<dyn PhysicalExpr>,
     op: Operator,
     right: &Arc<dyn PhysicalExpr>,
 ) -> Option<Predicate> {
+    // Try to match `<COLUMN> <op> <LITERAL>` first
+    // If unsuccessful, swap the order of the two inputs and check again
+    // If unsuccessful again, we can't convert this expression and we bail early
     let (column, op, datum) = match (column_name(left), literal_datum(right)) {
         (Some(column), Some(datum)) => (column, op, datum),
         _ => (column_name(right)?, op.swap()?, literal_datum(left)?),
     };
+
     let column = Reference::new(column);
     match op {
         Operator::Eq => Some(column.equal_to(datum)),
@@ -190,67 +236,94 @@ fn compare(
     }
 }
 
+/// Converts an InList into an `iceberg::Predicate`
 fn convert_in_list(in_list: &InListExpr) -> Option<Converted> {
     // Something like `struct(a, b) IN (...)`, which checks several columns at once.
     let Some(column) = column_name(in_list.expr()) else {
-        return convert_struct_in_list(in_list).map(Converted::wider);
+        return convert_struct_in_list(in_list).map(Converted::inexact);
     };
+
     let column = Reference::new(column);
     let values = in_list
         .list()
         .iter()
+        // We expect every value in the list to be a literal, i.e, x IN (1, 2, 3)
+        // If it isn't, we can't convert this list, and bail early
         .map(literal_value)
         .collect::<Option<Vec<_>>>()?;
-    let (nulls, values): (Vec<_>, Vec<_>) = values.into_iter().partition(|value| value.is_null());
-    let datums = values
+    let has_null = values.iter().any(|value| value.is_null());
+
+    // `x NOT IN (1, NULL)` would never match anything because x != NULL gives NULL for every row and matches nothing
+    if in_list.negated() && has_null {
+        return None;
+    }
+
+    let literals = values
         .into_iter()
+        .filter(|value| !value.is_null())
         .map(scalar_value_to_datum)
         .collect::<Option<Vec<_>>>()?;
-    let predicate = match (in_list.negated(), nulls.is_empty()) {
-        // `x IN (1, NULL)` matches the same rows as `x IN (1)`.
-        (false, _) => column.is_in(datums),
-        (true, true) => column.is_not_in(datums),
-        // `x NOT IN (1, NULL)` never matches anything. It's rare, so we don't convert it.
-        (true, false) => return None,
+
+    let predicate = if in_list.negated() {
+        column.is_not_in(literals)
+    } else {
+        column.is_in(literals)
     };
+
     Some(Converted::exact(predicate))
 }
 
+/// Converts a multi-column InList into an `iceberg::Predicate`
+///
 /// Hash joins on two or more columns build filters like `struct(a, b) IN ({1, 3}, {2, 4})`.
+///
 /// Iceberg can't check pairs, so each column is checked on its own:
-/// `a IN (1, 2) AND b IN (3, 4)`. This also matches pairs like `{1, 4}`, which is fine.
+/// `a IN (1, 2) AND b IN (3, 4)`. This can result in extra rows from  pairs like `{1, 4}`,
+/// which is okay.
+///
 /// A column with a NULL value is left out, because the join decides if NULL matches NULL.
 fn convert_struct_in_list(in_list: &InListExpr) -> Option<Predicate> {
+    // We can't safely split multi-column pairs and check them individually for a `NOT IN` expr
     if in_list.negated() {
         return None;
     }
-    let columns = in_list
-        .expr()
-        .downcast_ref::<ScalarFunctionExpr>()
-        .filter(|function| function.name() == "struct")?
-        .args();
+
+    let columns =
+        ScalarFunctionExpr::try_downcast_func::<StructFunc>(in_list.expr().as_ref())?.args();
+
     let items = in_list
         .list()
         .iter()
+        // If any of the items in the list aren't struct literals, we can't convert this
+        // and we bail early
         .map(|item| match literal_value(item)? {
             ScalarValue::Struct(item) => Some(item),
             _ => None,
         })
         .collect::<Option<Vec<_>>>()?;
+
+    // One IN list per plain column. A column left out only makes the filter match more rows.
     columns
         .iter()
         .enumerate()
         .filter_map(|(index, column)| {
-            let datums = items
-                .iter()
-                .map(|item| {
-                    let value = ScalarValue::try_from_array(item.columns().get(index)?, 0).ok()?;
-                    scalar_value_to_datum(&value)
-                })
-                .collect::<Option<Vec<_>>>()?;
-            Some(Reference::new(column_name(column)?).is_in(datums))
+            let column = column_name(column)?;
+            let values = field_values(&items, index)?;
+            Some(Reference::new(column).is_in(values))
         })
         .reduce(Predicate::and)
+}
+
+/// Field `index` of each struct as an Iceberg value, or `None` if any of them can't be converted.
+/// Each struct is a one-row array, so its value is in row 0.
+fn field_values(items: &[&Arc<StructArray>], index: usize) -> Option<Vec<Datum>> {
+    items
+        .iter()
+        .map(|item| {
+            let field = item.columns().get(index)?;
+            scalar_value_to_datum(&ScalarValue::try_from_array(field, 0).ok()?)
+        })
+        .collect()
 }
 
 /// Only simple prefix patterns: `a LIKE 'abc%'` becomes `a STARTS WITH 'abc'`.

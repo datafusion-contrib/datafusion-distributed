@@ -23,15 +23,14 @@ pub(crate) struct DynamicFilterPruner {
     /// The generation of `dynamic_filters` that `predicate` was built from.
     cached_snapshot_generation: u64,
 
-    /// The filters as an Iceberg predicate. `None` when no part of them converts.
+    /// The dynamic filters are stored as iceberg Predicates after being converted
+    /// `None` if the filters can't be converted
     predicate: Option<Predicate>,
 
-    /// A partition filter for each partition spec, by spec id. `None` keeps every file written
-    /// with that spec, because its partition values can't be checked. Cleared when `predicate`
-    /// changes.
+    /// A map of partition spec IDs to their corresponding partition filter executors
     partition_filters: HashMap<i32, Option<PartitionFilter>>,
 
-    /// The files checked. Pruned files were skipped and matched files were kept.
+    /// Metrics to track pruning
     files: PruningMetrics,
 }
 
@@ -52,14 +51,16 @@ impl DynamicFilterPruner {
         }
     }
 
-    /// The task to read, or `None` to skip it. Any error keeps the task.
-    pub(crate) fn prune(&mut self, task: FileScanTask) -> Option<FileScanTask> {
-        if self.can_skip(&task) {
+    /// Whether the filters rule out every row in the task's partition. Counts the task as pruned
+    /// or matched
+    pub(crate) fn should_prune(&mut self, task: &FileScanTask) -> bool {
+        let prune = self.can_skip(task);
+        if prune {
             self.files.add_pruned(1);
-            return None;
+        } else {
+            self.files.add_matched(1);
         }
-        self.files.add_matched(1);
-        Some(task)
+        prune
     }
 
     /// Whether no row in the task's partition can match the filters.
@@ -74,7 +75,19 @@ impl DynamicFilterPruner {
         let Some(predicate) = &self.predicate else {
             return false;
         };
-        // Every task in a scan has the same table schema, so the spec id is enough as a key.
+
+        // Every `FileScanTask` within a scan has the same Iceberg schema, taken from the selected
+        // Iceberg snapshot.
+        // The only difference in partition filters can come from the partition spec being different
+        // between data files.
+        // The PartitionFilter struct -
+        // 1. Binds the `Predicate`, which just contains column names and values, to the actual
+        //    schema, resolving column names to Iceberg field IDs etc.
+        // 2. Projects the column filter into a partition filter. A partition spec is not limited
+        //    to just direct column filters; it can have expressions like `bucket(2, x)` or
+        //    `day(ts)`. A column filter like `ts >= '2024-03-15 10:00'` becomes
+        //    `ts_day >= 2024-03-15` which can be checked against every data file's partition value.
+        // These steps can be expensive, so we maintain a cache of a `PartitionFilter` per spec ID.
         let partition_filter = self
             .partition_filters
             .entry(spec.spec_id())
@@ -90,21 +103,23 @@ impl DynamicFilterPruner {
         let Some(filter) = partition_filter.as_ref() else {
             return false;
         };
-        match filter.can_match(partition) {
-            Ok(matches) => !matches,
-            // Files with the same spec would most likely fail the same way, so stop checking
-            // them until the filters change.
-            Err(_) => {
-                *partition_filter = None;
-                false
-            }
-        }
+
+        // Check whether the file can be dropped, based on the partition values.
+        // If there's an error while evaluating the filter,
+        // we return `false` so that the file is not skipped
+        filter.can_match(partition).is_ok_and(|matches| !matches)
     }
 
     /// Rebuilds the predicate when any of the filters has changed.
     fn refresh(&mut self) {
-        // Read the generation before taking the snapshot. If a filter changes in between, the
-        // next file sees a newer generation and rebuilds.
+        // Read the current generation before snapshotting the filters.
+        // The two reads aren't atomic, so a filter can change between them.
+        //
+        // In this order, the snapshot can be newer than the generation we have stored
+        // which is okay - because we're still doing the most 'efficient' pruning
+        //
+        // In the opposite order, we could store a newer generation but an older filter,
+        // which would prune less until the filter updated.
         let generation = snapshot_generation(&self.dynamic_filters);
         if self.cached_snapshot_generation == generation {
             return;
