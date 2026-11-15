@@ -17,6 +17,7 @@ parquet = { version = "59" }
 structopt = { version = "0.3.26" }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.141"
+serde_yaml_ng = "0.10"
 env_logger = "0.11.8"
 futures = "0.3.31"
 arrow = { version = "59", features = ["test_utils"] }

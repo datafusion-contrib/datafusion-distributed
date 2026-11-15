@@ -16,7 +16,9 @@ DATASET=$(target/release/dfbench prepare-tpch --scale-factor 10)   # only the pa
 target/release/dfbench run --dataset $DATASET --workers 8 -i 5
 ```
 
-`dfbench run --help` lists all options.
+`dfbench run --help` lists all options. Config options (`datafusion.*`, `distributed.*`) come from
+a local, gitignored `.df-bench.yaml` in the current directory (or `--config-path <file>`),
+overridden by repeated `-c key=value` flags, e.g. `-c distributed.dynamic_task_count=true`.
 
 ## Iceberg
 

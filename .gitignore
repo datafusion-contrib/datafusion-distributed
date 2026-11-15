@@ -11,3 +11,4 @@ testdata/clickbench/*
 !testdata/clickbench/queries
 codegen/target/*
 codegen/Cargo.lock
+.df-bench*

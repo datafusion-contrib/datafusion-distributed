@@ -111,7 +111,8 @@ cargo run -p datafusion-distributed-benchmarks --release -- run --dataset $DATAS
 The same command is used for running distributed benchmarks:
 
 ```shell
-cargo run -p datafusion-distributed-benchmarks --release -- run --workers 8 --dataset $DATASET --file-scan-config-bytes-per-partition 16777216
+cargo run -p datafusion-distributed-benchmarks --release -- run --workers 8 --dataset $DATASET \
+  -c distributed.file_scan_config_bytes_per_partition=16777216
 ```
 
 - `--workers`: Amount of localhost workers used in the query. They all run in
@@ -120,9 +121,25 @@ cargo run -p datafusion-distributed-benchmarks --release -- run --workers 8 --da
   attached to the benchmark process observes both the coordinator and the
   workers on the same threads.
 - `--dataset`: Dataset path, as above.
-- `--file-scan-config-bytes-per-partition`: How many bytes each partition is
-  expected to scan. Lower values produce more partitions/tasks. Defaults to the
-  engine default when unset.
+- `-c key=value`: Sets any `datafusion.*` or `distributed.*` config option, and
+  can be repeated. These take precedence over the config file.
+
+### Config options
+
+Config options are read from the `.df-bench.yaml` file in the current directory
+when present, or from the file given with `--config-path`. It holds flat
+`key: value` pairs, applied in file order on top of any `DATAFUSION_*`
+environment variables, and `-c key=value` flags are applied last:
+
+```yaml
+datafusion.execution.target_partitions: 8
+distributed.broadcast_joins: true
+```
+
+`distributed.dynamic_plan_remainder_replanning` only takes effect together with
+`distributed.dynamic_task_count: true`. Metrics are collected by default, as
+`--debug` and dynamic task count read them; set `distributed.collect_metrics: false`
+to turn them off.
 
 ### Iceberg benchmarks
 
@@ -164,9 +181,9 @@ Run each representation with its format-specific binary, then compare them with
 
 ```shell
 cargo run -p datafusion-distributed-benchmarks --release -- run \
-  --workers 2 --dataset $DATASET --partitions 2
+  --workers 2 --dataset $DATASET -c datafusion.execution.target_partitions=2
 cargo run -p datafusion-distributed-iceberg-benchmarks --release -- run \
-  --workers 2 --dataset $ICEBERG --partitions 2
+  --workers 2 --dataset $ICEBERG -c datafusion.execution.target_partitions=2
 
 dfbench compare $DATASET $ICEBERG
 dfbench compare $DATASET@base $ICEBERG@candidate
