@@ -1,23 +1,38 @@
 //! Benchmark encoding and decoding an eager Iceberg scan with many assigned files.
 //!
-//! Each assigned file is encoded with iceberg-rust's `FileScanTask` serialization, which embeds the
-//! table schema in every file. Plan size and codec time therefore grow with files × schema width.
-//! The coordinator pays this when it sends a task, and again when dynamic filtering copies a task
-//! plan; workers pay the decode. The cases cover a narrow and a wide schema at increasing file
-//! counts. `drop` measures freeing a decoded scan, whose files each own a separate schema.
+//! ```shell
+//! cargo bench -p datafusion-distributed-iceberg-benchmarks --bench eager_scan_codec -- --save-baseline main
+//! # Run the same benchmark on the candidate revision:
+//! cargo bench -p datafusion-distributed-iceberg-benchmarks --bench eager_scan_codec -- --baseline main
+//! ```
+//!
+//! Each assigned file is encoded with iceberg-rust's `FileScanTask` serialization, which embeds
+//! the table's schema, name mapping, partition spec and the scan predicate in every file. Plan
+//! size and codec time therefore grow with files × table width. The coordinator pays this when
+//! it sends a task, and again when dynamic filtering copies a task plan; workers pay the decode.
+//!
+//! The cases cover a narrow and a wide table at increasing file counts in one scan, and a plan of
+//! many small scans, as a query over a union of tables produces. `drop` measures freeing a
+//! decoded plan. Before timing, every case checks that decoding returns the files it encoded.
+
+#[path = "wide_table/mod.rs"]
+mod wide_table;
 
 use criterion::{
     BatchSize, BenchmarkId, Criterion, SamplingMode, Throughput, criterion_group, criterion_main,
 };
+use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::common::{Result, exec_datafusion_err};
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::union::UnionExec;
 use datafusion_distributed_iceberg::iceberg::arrow::schema_to_arrow_schema;
+use datafusion_distributed_iceberg::iceberg::expr::{Bind, BoundPredicate, Reference};
 use datafusion_distributed_iceberg::iceberg::io::{FileIOBuilder, LocalFsStorageFactory};
 use datafusion_distributed_iceberg::iceberg::scan::FileScanTask;
 use datafusion_distributed_iceberg::iceberg::spec::{
-    DataFileFormat, NestedField, PrimitiveType, Schema, StructType, Type,
+    DataFileFormat, Literal, NameMapping, PartitionSpec, Schema, Struct,
 };
 use datafusion_distributed_iceberg::{EagerIcebergCodec, EagerIcebergDataSource, iceberg};
 use datafusion_proto::physical_plan::AsExecutionPlan;
@@ -25,27 +40,39 @@ use datafusion_proto::protobuf::PhysicalPlanNode;
 use prost::Message;
 use std::sync::Arc;
 use tokio::runtime::Builder as RuntimeBuilder;
+use wide_table::{FILTER_COLUMN, iceberg_schema, name_mapping, partition_spec};
 
-/// Local output partitions of the scan, as with the default `target_partitions` of 16.
+/// Local output partitions of each scan, as with the default `target_partitions` of 16.
 const PARTITIONS: usize = 16;
+/// Distinct values of the partition column across files.
+const PARTITION_VALUES: usize = 30;
 
-struct SchemaShape {
+struct Case {
     name: &'static str,
     columns: usize,
+    scans: usize,
+    files_per_scan: usize,
 }
 
-const SHAPES: [SchemaShape; 2] = [
-    SchemaShape {
-        name: "narrow",
-        columns: 16,
-    },
-    SchemaShape {
-        name: "wide",
-        columns: 100,
-    },
-];
+const fn case(name: &'static str, columns: usize, scans: usize, files_per_scan: usize) -> Case {
+    Case {
+        name,
+        columns,
+        scans,
+        files_per_scan,
+    }
+}
 
-const FILE_COUNTS: [usize; 3] = [100, 1_000, 2_200];
+const CASES: [Case; 7] = [
+    case("narrow", 16, 1, 100),
+    case("narrow", 16, 1, 1_000),
+    case("narrow", 16, 1, 2_200),
+    case("wide", 100, 1, 100),
+    case("wide", 100, 1, 1_000),
+    case("wide", 100, 1, 2_200),
+    // About as many files as the largest single scan, spread over many small scans.
+    case("wide", 100, 200, 10),
+];
 
 fn eager_scan_codec(c: &mut Criterion) {
     let rt = RuntimeBuilder::new_multi_thread()
@@ -61,33 +88,43 @@ fn eager_scan_codec(c: &mut Criterion) {
     group.sample_size(10);
     group.sampling_mode(SamplingMode::Flat);
 
-    for shape in &SHAPES {
-        let schema = Arc::new(iceberg_schema(shape.columns).expect("iceberg schema"));
-        for files in FILE_COUNTS {
-            let plan = eager_scan(&schema, files, &task_ctx).expect("eager scan");
-            let bytes = encode(&plan, &codec).expect("encode");
-            let id = format!("{}/{files}_files", shape.name);
-            println!(
-                "eager_scan_codec/{id}: {} bytes, {} bytes per file",
-                bytes.len(),
-                bytes.len() / files
-            );
+    for case in &CASES {
+        let table = Table::new(case.columns).expect("table");
+        let plan = table
+            .plan(case.scans, case.files_per_scan, &task_ctx)
+            .expect("eager scan plan");
+        let bytes = encode(&plan, &codec).expect("encode");
+        let decoded = decode(&bytes, &codec, &task_ctx).expect("decode");
+        assert!(
+            planned_files(&decoded) == planned_files(&plan),
+            "decoding must return the encoded files"
+        );
 
-            group.throughput(Throughput::Elements(files as u64));
-            group.bench_function(BenchmarkId::new("encode", &id), |b| {
-                b.iter(|| encode(&plan, &codec).unwrap())
-            });
-            group.bench_function(BenchmarkId::new("decode", &id), |b| {
-                b.iter(|| decode(&bytes, &codec, &task_ctx).unwrap())
-            });
-            group.bench_function(BenchmarkId::new("drop", &id), |b| {
-                b.iter_batched(
-                    || decode(&bytes, &codec, &task_ctx).unwrap(),
-                    drop,
-                    BatchSize::PerIteration,
-                )
-            });
-        }
+        let files = case.scans * case.files_per_scan;
+        let id = match case.scans {
+            1 => format!("{}/{files}_files", case.name),
+            scans => format!("{}/{scans}_scans_{}_files", case.name, case.files_per_scan),
+        };
+        println!(
+            "eager_scan_codec/{id}: {} bytes, {} bytes per file",
+            bytes.len(),
+            bytes.len() / files
+        );
+
+        group.throughput(Throughput::Elements(files as u64));
+        group.bench_function(BenchmarkId::new("encode", &id), |b| {
+            b.iter(|| encode(&plan, &codec).unwrap())
+        });
+        group.bench_function(BenchmarkId::new("decode", &id), |b| {
+            b.iter(|| decode(&bytes, &codec, &task_ctx).unwrap())
+        });
+        group.bench_function(BenchmarkId::new("drop", &id), |b| {
+            b.iter_batched(
+                || decode(&bytes, &codec, &task_ctx).unwrap(),
+                drop,
+                BatchSize::PerIteration,
+            )
+        });
     }
 
     group.finish();
@@ -108,83 +145,116 @@ fn decode(
     proto.try_into_physical_plan(task_ctx, codec)
 }
 
-/// An eager scan over `files` synthetic data files spread across [`PARTITIONS`] partitions.
-/// Every file shares one `Arc<Schema>`, as files planned from one table snapshot do.
-fn eager_scan(
-    schema: &Arc<Schema>,
-    files: usize,
-    task_ctx: &TaskContext,
-) -> Result<Arc<dyn ExecutionPlan>> {
-    let field_ids = schema
-        .as_struct()
-        .fields()
-        .iter()
-        .map(|field| field.id)
-        .collect::<Vec<_>>();
-    let mut groups = vec![Vec::new(); PARTITIONS];
-    for file in 0..files {
-        let task = FileScanTask::builder()
+/// The files of every eager Iceberg scan in `plan`, in plan order.
+fn planned_files(plan: &Arc<dyn ExecutionPlan>) -> Vec<FileScanTask> {
+    let mut files = vec![];
+    plan.apply(|node| {
+        if let Some(source) = node
+            .downcast_ref::<DataSourceExec>()
+            .and_then(|exec| exec.data_source().downcast_ref::<EagerIcebergDataSource>())
+        {
+            files.extend(source.planned_files().cloned());
+        }
+        Ok(TreeNodeRecursion::Continue)
+    })
+    .expect("visit plan");
+    files
+}
+
+/// The values every file planned from one table snapshot shares.
+struct Table {
+    schema: Arc<Schema>,
+    field_ids: Vec<i32>,
+    predicate: BoundPredicate,
+    partition_spec: Arc<PartitionSpec>,
+    name_mapping: Arc<NameMapping>,
+}
+
+impl Table {
+    fn new(columns: usize) -> Result<Self> {
+        let schema = Arc::new(iceberg_schema(columns)?);
+        let field_ids = schema
+            .as_struct()
+            .fields()
+            .iter()
+            .map(|field| field.id)
+            .collect();
+        let predicate = Reference::new(FILTER_COLUMN)
+            .is_null()
+            .bind(Arc::clone(&schema), true)
+            .map_err(|error| exec_datafusion_err!("cannot bind predicate: {error}"))?;
+        Ok(Self {
+            partition_spec: Arc::new(partition_spec(&schema)?),
+            name_mapping: Arc::new(name_mapping(&schema)),
+            schema,
+            field_ids,
+            predicate,
+        })
+    }
+
+    /// A plan of `scans` eager scans, unioned if more than one, each over `files_per_scan`
+    /// synthetic data files spread across [`PARTITIONS`] partitions.
+    fn plan(
+        &self,
+        scans: usize,
+        files_per_scan: usize,
+        task_ctx: &TaskContext,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let mut inputs = (0..scans)
+            .map(|scan| self.scan(scan, files_per_scan, task_ctx))
+            .collect::<Result<Vec<_>>>()?;
+        if inputs.len() == 1 {
+            return Ok(inputs.remove(0));
+        }
+        UnionExec::try_new(inputs)
+    }
+
+    fn scan(
+        &self,
+        scan: usize,
+        files: usize,
+        task_ctx: &TaskContext,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let mut groups = vec![Vec::new(); PARTITIONS.min(files)];
+        for file in 0..files {
+            groups[file % PARTITIONS.min(files)].push(self.file(scan, file)?);
+        }
+        let arrow_schema = Arc::new(
+            schema_to_arrow_schema(&self.schema)
+                .map_err(|error| exec_datafusion_err!("cannot convert schema: {error}"))?,
+        );
+        let file_io = FileIOBuilder::new(Arc::new(LocalFsStorageFactory)).build();
+        let source = EagerIcebergDataSource::from_file_groups(
+            arrow_schema,
+            groups,
+            file_io,
+            iceberg::Runtime::current(),
+            None,
+            task_ctx,
+        )?;
+        Ok(DataSourceExec::from_data_source(source))
+    }
+
+    /// A synthetic data file holding the table's shared values, as planned files do.
+    fn file(&self, scan: usize, file: usize) -> Result<FileScanTask> {
+        let partition_value = Literal::long((file % PARTITION_VALUES) as i64);
+        FileScanTask::builder()
             .with_file_size_in_bytes(64 * 1024 * 1024)
             .with_start(0)
             .with_length(64 * 1024 * 1024)
             .with_record_count(Some(100_000))
-            .with_data_file_path(format!("s3://example/data/{file:06}.parquet"))
+            .with_data_file_path(format!("s3://example/data/{scan:04}/{file:06}.parquet"))
             .with_data_file_format(DataFileFormat::Parquet)
-            .with_schema(Arc::clone(schema))
-            .with_project_field_ids(field_ids.clone())
+            .with_schema(Arc::clone(&self.schema))
+            .with_project_field_ids(self.field_ids.clone())
+            .with_predicate(Some(self.predicate.clone()))
+            .with_partition(Some(Struct::from_iter([Some(partition_value)])))
+            .with_partition_spec(Some(Arc::clone(&self.partition_spec)))
+            .with_name_mapping(Some(Arc::clone(&self.name_mapping)))
             .with_case_sensitive(true)
             .build()
-            .map_err(|error| exec_datafusion_err!("cannot build file scan task: {error}"))?;
-        groups[file % PARTITIONS].push(task);
+            .map_err(|error| exec_datafusion_err!("cannot build file scan task: {error}"))
     }
-    let arrow_schema = Arc::new(
-        schema_to_arrow_schema(schema)
-            .map_err(|error| exec_datafusion_err!("cannot convert schema: {error}"))?,
-    );
-    let file_io = FileIOBuilder::new(Arc::new(LocalFsStorageFactory)).build();
-    let source = EagerIcebergDataSource::from_file_groups(
-        arrow_schema,
-        groups,
-        file_io,
-        iceberg::Runtime::current(),
-        None,
-        task_ctx,
-    )?;
-    Ok(DataSourceExec::from_data_source(source))
-}
-
-/// A table schema of `columns` optional columns. Every eighth column is a struct of four fields,
-/// standing in for the nested columns common in wide tables.
-fn iceberg_schema(columns: usize) -> Result<Schema> {
-    // Top-level columns take ids 1..=columns; nested fields take the ids after them.
-    let fields = (0..columns).map(|column| {
-        let field_type = if column % 8 == 7 {
-            let first_child_id = columns + 1 + (column / 8) * 4;
-            let children = (0..4)
-                .map(|child| {
-                    Arc::new(NestedField::optional(
-                        (first_child_id + child) as i32,
-                        format!("nested_attribute_{child}"),
-                        Type::Primitive(PrimitiveType::String),
-                    ))
-                })
-                .collect::<Vec<_>>();
-            Type::Struct(StructType::new(children))
-        } else if column % 3 == 0 {
-            Type::Primitive(PrimitiveType::Long)
-        } else {
-            Type::Primitive(PrimitiveType::String)
-        };
-        Arc::new(NestedField::optional(
-            (column + 1) as i32,
-            format!("resource_attribute_column_{column:04}"),
-            field_type,
-        ))
-    });
-    Schema::builder()
-        .with_fields(fields)
-        .build()
-        .map_err(|error| exec_datafusion_err!("cannot build schema: {error}"))
 }
 
 criterion_group!(benches, eager_scan_codec);
