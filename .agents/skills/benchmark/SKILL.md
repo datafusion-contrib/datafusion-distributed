@@ -16,7 +16,9 @@ DATASET=$(target/release/dfbench prepare-tpch --scale-factor 10)   # only the pa
 target/release/dfbench run --dataset $DATASET --workers 8 -i 5
 ```
 
-`dfbench run --help` lists all options.
+`dfbench run --help` lists all options. Config options (`datafusion.*`, `distributed.*`) come from
+a local, gitignored `.df-bench.yaml` in the current directory (or `--config-path <file>`),
+overridden by repeated `-c key=value` flags, e.g. `-c distributed.dynamic_task_count=true`.
 
 ## Iceberg
 
@@ -48,8 +50,16 @@ statistics. See `datafusion/distributed-benchmarks/README.md` for S3 output and 
   so a profiler attached to `dfbench` sees everything.
 - Each run stores results under `testdata/<dataset>/.results/<current git branch>/` and compares
   against the previous run. Running on `main` overwrites `main`'s baseline.
+- `dfbench run` already repeats every query `-i` times and reports the p50, so one run per
+  configuration is enough; never repeat whole runs in rounds. For more reliable numbers, raise
+  `-i` (e.g. `-i 10`).
 - Background load (other builds or tests, indexing) skews results heavily. Check it before
-  trusting numbers, and alternate the sides of a comparison over several rounds.
+  trusting numbers.
+- Criterion benches (`cargo bench -p datafusion-distributed-benchmarks --bench <name>`) already
+  take many samples per case, so run each side once instead of repeating runs: filter to the
+  case you care about (e.g. `-- 'plan_dump/generate/0$'`), save one side with
+  `-- --save-baseline <name>` and compare the other with `-- --baseline <name>`. Benches build
+  their fixtures for every case even when filtered, so a full run is much slower than one case.
 - CPU profiles: record with [samply](https://github.com/mstange/samply) and query them from the
   terminal with Mozilla's [profiler-cli](https://github.com/firefox-devtools/profiler/tree/main/profiler-cli)
   (`npm install -g @firefox-devtools/profiler-cli@latest`; run `profiler-cli guide` first):
