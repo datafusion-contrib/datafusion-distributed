@@ -55,38 +55,45 @@ fn metrics_collection(c: &mut Criterion) {
             // skip it.
             continue;
         }
-        let ctx = ctx.clone();
+        for (label_mode, preserve_labels) in
+            [("no_preserve_labels", false), ("preserve_labels", true)]
+        {
+            let ctx = ctx
+                .clone()
+                .with_distributed_preserve_metric_labels(preserve_labels)
+                .unwrap();
 
-        let (plan, plan_with_metrics) = rt
-            .block_on(async move {
-                let sql = tpch::get_query(query)?;
-                let df = ctx.sql(&sql).await?;
-                let plan = df.create_physical_plan().await?;
-                if !plan.is::<DistributedExec>() {
-                    panic!("The plan was not distributed")
-                }
-                let _ = collect(Arc::clone(&plan), ctx.task_ctx()).await?;
-                let plan_with_metrics = rewrite_distributed_plan_with_metrics(
-                    Arc::clone(&plan),
-                    DistributedMetricsFormat::PerTask,
-                )
-                .await?;
-                Ok::<_, DataFusionError>((plan, plan_with_metrics))
-            })
-            .unwrap();
+            let (plan, plan_with_metrics) = rt
+                .block_on(async move {
+                    let sql = tpch::get_query(query)?;
+                    let df = ctx.sql(&sql).await?;
+                    let plan = df.create_physical_plan().await?;
+                    if !plan.is::<DistributedExec>() {
+                        panic!("The plan was not distributed")
+                    }
+                    let _ = collect(Arc::clone(&plan), ctx.task_ctx()).await?;
+                    let plan_with_metrics = rewrite_distributed_plan_with_metrics(
+                        Arc::clone(&plan),
+                        DistributedMetricsFormat::PerTask,
+                    )
+                    .await?;
+                    Ok::<_, DataFusionError>((plan, plan_with_metrics))
+                })
+                .unwrap();
 
-        group.bench_function(BenchmarkId::new("rewrite", i), |b| {
-            b.iter(|| {
-                rt.block_on(rewrite_distributed_plan_with_metrics(
-                    Arc::clone(&plan),
-                    DistributedMetricsFormat::PerTask,
-                ))
-            })
-        });
+            group.bench_function(BenchmarkId::new(format!("rewrite/{label_mode}"), i), |b| {
+                b.iter(|| {
+                    rt.block_on(rewrite_distributed_plan_with_metrics(
+                        Arc::clone(&plan),
+                        DistributedMetricsFormat::PerTask,
+                    ))
+                })
+            });
 
-        group.bench_function(BenchmarkId::new("display", i), |b| {
-            b.iter(|| display_plan_ascii(plan_with_metrics.as_ref(), true))
-        });
+            group.bench_function(BenchmarkId::new(format!("display/{label_mode}"), i), |b| {
+                b.iter(|| display_plan_ascii(plan_with_metrics.as_ref(), true))
+            });
+        }
     }
 
     group.finish()

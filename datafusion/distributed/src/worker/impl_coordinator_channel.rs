@@ -163,6 +163,7 @@ impl Worker {
         let task_finished_task_ctx = Arc::clone(&task_data.task_ctx);
         let d_cfg = DistributedConfig::from_session_config(task_data.task_ctx.session_config())?;
         let aggregate_metrics = d_cfg.aggregate_metrics_on_workers_before_collection;
+        let preserve_metric_labels = d_cfg.preserve_metric_labels;
 
         // This tokio task takes ownership of the final-report senders that keep the
         // worker->coordinator stream alive. As soon as this task ends, the runtime metrics and
@@ -273,10 +274,13 @@ impl Worker {
                     let mut pre_order_plan_metrics = vec![];
                     let _ = plan.apply_with_dt_ctx(d_ctx, |node, _| {
                         let metrics = node.metrics().unwrap_or_default();
-                        pre_order_plan_metrics.push(match aggregate_metrics {
-                            true => aggregate_by_name(&metrics),
-                            false => metrics,
-                        });
+                        pre_order_plan_metrics.push(
+                            match (aggregate_metrics, preserve_metric_labels) {
+                                (true, true) => aggregate_by_name(&metrics),
+                                (true, false) => metrics.aggregate_by_name(),
+                                (false, _) => metrics,
+                            },
+                        );
                         Ok(TreeNodeRecursion::Continue)
                     });
 

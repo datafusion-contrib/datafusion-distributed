@@ -34,6 +34,10 @@ extensions_options! {
         /// worker metrics are available in `rewrite_distributed_plan_with_metrics`, at a cost
         /// that grows with the partition count.
         pub aggregate_metrics_on_workers_before_collection: bool, default = true
+        /// Preserve labels shared by every instance of a metric when aggregating worker metrics.
+        /// When disabled, use DataFusion's aggregation, which drops labels. Has no effect when
+        /// aggregate_metrics_on_workers_before_collection is disabled.
+        pub preserve_metric_labels: bool, default = true
         /// Collect completed dynamic filters from worker tasks so that they can be displayed in
         /// the distributed plan. This does not control whether dynamic filtering is used during
         /// query execution.
