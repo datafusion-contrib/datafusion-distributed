@@ -1,11 +1,21 @@
-//! A copy of iceberg-rust's `PartitionFilter`, which the iceberg-rust version this crate uses
-//! doesn't have. It has the same API, so moving to iceberg-rust's version means deleting this
-//! file and changing the import.
+//! A copy of the code iceberg-rust uses to skip data files by their partition values. That
+//! code isn't part of iceberg-rust's public API yet. When it becomes public, this file should
+//! be deleted and its callers should use the public API.
+//! Ref: https://github.com/apache/iceberg-rust/issues/3675
 //!
-//! The projection mirrors iceberg-rust's `InclusiveProjection`, and the evaluation mirrors its
-//! `ExpressionEvaluator`. Both are private in this version.
+//! Each part of this file copies one part of iceberg-rust:
+//!
+//! | This file                    | iceberg-rust                                                 |
+//! |------------------------------|--------------------------------------------------------------|
+//! | `PartitionFilter::try_new`   | `TableScanBuilder::with_filter`, `PartitionFilterCache::get` |
+//! | `PartitionFilter::can_match` | `ExpressionEvaluator::eval`                                  |
+//! | `project`, `project_column`  | `InclusiveProjection`                                        |
+//! | `evaluate`                   | `ExpressionEvaluatorVisitor`                                 |
+//! | `partition_value`, `datum`   | `StructAccessor::get`                                        |
+//!
+//! The copy works the same way as iceberg-rust, except for one case in `datum` that's
+//! explained there.
 
-use std::cmp::Ordering;
 use std::sync::Arc;
 
 use iceberg::expr::{Bind, BoundPredicate, BoundReference, Predicate, PredicateOperator};
@@ -83,9 +93,14 @@ fn project(predicate: &BoundPredicate, spec: &PartitionSpec) -> Result<Predicate
             let [left, right] = expr.inputs();
             project(left, spec)?.or(project(right, spec)?)
         }
-        // `PartitionFilter::try_new` rewrites every NOT away first, so none reach here. Keep
-        // the file if one shows up anyway.
-        BoundPredicate::Not(_) => Predicate::AlwaysTrue,
+        // `PartitionFilter::try_new` removes every NOT first, so none should reach here. If one
+        // does, this returns an error, as iceberg-rust does.
+        BoundPredicate::Not(_) => {
+            return Err(Error::new(
+                ErrorKind::Unexpected,
+                "found a NOT that `PartitionFilter::try_new` should have removed",
+            ));
+        }
         BoundPredicate::Unary(expr) => project_column(expr.term(), predicate, spec)?,
         BoundPredicate::Binary(expr) => project_column(expr.term(), predicate, spec)?,
         BoundPredicate::Set(expr) => project_column(expr.term(), predicate, spec)?,
@@ -111,22 +126,31 @@ fn project_column(
         })
 }
 
-/// Evaluates a predicate bound to the partition schema against one partition value. Null values
-/// follow iceberg-rust's `ExpressionEvaluator`.
+/// Checks whether one data file's partition values pass a filter on the partition columns.
 fn evaluate(predicate: &BoundPredicate, spec: &PartitionSpec, partition: &Struct) -> Result<bool> {
     match predicate {
         BoundPredicate::AlwaysTrue => Ok(true),
         BoundPredicate::AlwaysFalse => Ok(false),
         BoundPredicate::And(expr) => {
             let [left, right] = expr.inputs();
-            Ok(evaluate(left, spec, partition)? && evaluate(right, spec, partition)?)
+            let (left, right) = (
+                evaluate(left, spec, partition)?,
+                evaluate(right, spec, partition)?,
+            );
+            Ok(left && right)
         }
         BoundPredicate::Or(expr) => {
             let [left, right] = expr.inputs();
-            Ok(evaluate(left, spec, partition)? || evaluate(right, spec, partition)?)
+            let (left, right) = (
+                evaluate(left, spec, partition)?,
+                evaluate(right, spec, partition)?,
+            );
+            Ok(left || right)
         }
-        // A projection never makes a NOT. Keep the file if one shows up anyway.
-        BoundPredicate::Not(_) => Ok(true),
+        BoundPredicate::Not(_) => Err(Error::new(
+            ErrorKind::Unexpected,
+            "found a NOT that `PartitionFilter::try_new` should have removed",
+        )),
         BoundPredicate::Unary(expr) => {
             let value = partition_value(expr.term(), spec, partition)?;
             let is_nan = value.as_ref().is_some_and(Datum::is_nan);
@@ -147,14 +171,14 @@ fn evaluate(predicate: &BoundPredicate, spec: &PartitionSpec, partition: &Struct
             };
             let literal = expr.literal();
             Ok(match expr.op() {
-                PredicateOperator::StartsWith => starts_with(&value, literal)?,
-                PredicateOperator::NotStartsWith => !starts_with(&value, literal)?,
-                PredicateOperator::LessThan => compare(&value, literal)?.is_lt(),
-                PredicateOperator::LessThanOrEq => compare(&value, literal)?.is_le(),
-                PredicateOperator::GreaterThan => compare(&value, literal)?.is_gt(),
-                PredicateOperator::GreaterThanOrEq => compare(&value, literal)?.is_ge(),
-                PredicateOperator::Eq => compare(&value, literal)?.is_eq(),
-                PredicateOperator::NotEq => compare(&value, literal)?.is_ne(),
+                PredicateOperator::StartsWith => starts_with(&value, literal),
+                PredicateOperator::NotStartsWith => !starts_with(&value, literal),
+                PredicateOperator::LessThan => &value < literal,
+                PredicateOperator::LessThanOrEq => &value <= literal,
+                PredicateOperator::GreaterThan => &value > literal,
+                PredicateOperator::GreaterThanOrEq => &value >= literal,
+                PredicateOperator::Eq => &value == literal,
+                PredicateOperator::NotEq => &value != literal,
                 _ => true,
             })
         }
@@ -162,12 +186,6 @@ fn evaluate(predicate: &BoundPredicate, spec: &PartitionSpec, partition: &Struct
             let Some(value) = partition_value(expr.term(), spec, partition)? else {
                 return Ok(matches!(expr.op(), PredicateOperator::NotIn));
             };
-            // Binding gives every value in the set the column's type, so checking one is enough.
-            if let Some(literal) = expr.literals().iter().next()
-                && literal.data_type() != value.data_type()
-            {
-                return Err(type_mismatch(&value, literal));
-            }
             let contains = expr.literals().contains(&value);
             Ok(match expr.op() {
                 PredicateOperator::In => contains,
@@ -178,8 +196,11 @@ fn evaluate(predicate: &BoundPredicate, spec: &PartitionSpec, partition: &Struct
     }
 }
 
-/// The partition value for a reference bound to the partition schema, with the partition
-/// column's type. `None` is a null value.
+/// Returns the partition value that `column` points to, with the partition column's type.
+/// Returns `None` when the value is null.
+///
+/// iceberg-rust reads this value with `StructAccessor::get`, which isn't public. So this finds
+/// the value's position by looking up its partition field ID in the spec.
 fn partition_value(
     column: &BoundReference,
     spec: &PartitionSpec,
@@ -190,25 +211,37 @@ fn partition_value(
         .fields()
         .iter()
         .position(|partition_field| partition_field.field_id == field.id)
-        .ok_or_else(|| invalid(format!("partition field {} is not in the spec", field.id)))?;
+        .ok_or_else(|| {
+            Error::new(
+                ErrorKind::DataInvalid,
+                format!("partition field {} is not in the spec", field.id),
+            )
+        })?;
     let Some(value) = partition.fields().get(position) else {
-        return Err(invalid(format!("the partition has no value at {position}")));
+        return Err(Error::new(
+            ErrorKind::DataInvalid,
+            format!("the partition has no value at {position}"),
+        ));
     };
     let Some(value) = value else {
         return Ok(None);
     };
     let (Literal::Primitive(literal), Type::Primitive(r#type)) = (value, field.field_type.as_ref())
     else {
-        return Err(invalid(format!(
-            "partition field {} is not a primitive",
-            field.id
-        )));
+        return Err(Error::new(
+            ErrorKind::DataInvalid,
+            format!("partition field {} is not a primitive", field.id),
+        ));
     };
     datum(r#type, literal).map(Some)
 }
 
-/// Builds a `Datum` of type `r#type`. Also widens values written before a column's type was
-/// promoted, such as an int partition value of a column that is now a long.
+/// Builds a `Datum` of type `r#type` from a stored partition value. iceberg-rust uses
+/// `Datum::new` for this, which isn't public, so this uses the public constructors.
+///
+/// If a column changed from int to long, or from float to double, older files still store
+/// values of the old type. This converts them to the new type. Newer iceberg-rust versions do
+/// the same conversion when they read manifests.
 fn datum(r#type: &PrimitiveType, literal: &PrimitiveLiteral) -> Result<Datum> {
     Ok(match (r#type, literal) {
         (PrimitiveType::Boolean, PrimitiveLiteral::Boolean(value)) => Datum::bool(*value),
@@ -247,39 +280,25 @@ fn datum(r#type: &PrimitiveType, literal: &PrimitiveLiteral) -> Result<Datum> {
         (PrimitiveType::Uuid, PrimitiveLiteral::UInt128(value)) => {
             Datum::try_from_bytes(&value.to_be_bytes(), PrimitiveType::Uuid)?
         }
-        // A value that doesn't fit its column's type. Keep the file.
-        _ => return Err(invalid(format!("can't read a {type} partition value"))),
+        // The stored value doesn't fit its column's type, which we don't expect in a valid
+        // table. iceberg-rust builds the value anyway. None of its comparisons then match, so
+        // it skips the file. The public constructors can't build a value like that, so this
+        // returns an error and we don't skip this file.
+        _ => {
+            return Err(Error::new(
+                ErrorKind::DataInvalid,
+                format!("can't read a {type} partition value"),
+            ));
+        }
     })
 }
 
-/// Orders two values of the same type. Values of different types are an error, so the file is
-/// kept.
-fn compare(value: &Datum, literal: &Datum) -> Result<Ordering> {
-    if value.data_type() != literal.data_type() {
-        return Err(type_mismatch(value, literal));
-    }
-    value
-        .partial_cmp(literal)
-        .ok_or_else(|| type_mismatch(value, literal))
-}
-
-fn starts_with(value: &Datum, prefix: &Datum) -> Result<bool> {
+/// Returns whether `value` starts with `prefix`
+fn starts_with(value: &Datum, prefix: &Datum) -> bool {
     match (value.literal(), prefix.literal()) {
         (PrimitiveLiteral::String(value), PrimitiveLiteral::String(prefix)) => {
-            Ok(value.starts_with(prefix.as_str()))
+            value.starts_with(prefix.as_str())
         }
-        _ => Err(type_mismatch(value, prefix)),
+        _ => false,
     }
-}
-
-fn type_mismatch(value: &Datum, literal: &Datum) -> Error {
-    invalid(format!(
-        "can't compare a {} partition value with a {} value",
-        value.data_type(),
-        literal.data_type()
-    ))
-}
-
-fn invalid(message: String) -> Error {
-    Error::new(ErrorKind::DataInvalid, message)
 }
