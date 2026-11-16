@@ -95,3 +95,13 @@ pbpaste | dfd plan --stage 2
 
 The output is colored when printed to a terminal, unless `NO_COLOR` is set. `FORCE_COLOR=1` keeps
 the colors through a pipe, e.g. into `less -R`.
+
+### Inspecting plan dumps with coding agents
+
+The `plan-dump` agent skill teaches coding agents like Claude Code, Codex or Cursor to inspect plan
+dumps with `dfd plan`: finding where a query spends its time, or comparing two plans of the same
+query. Add it to your own project with:
+
+```bash
+npx skills add datafusion-contrib/datafusion-distributed --skill plan-dump
+```

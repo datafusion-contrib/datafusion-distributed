@@ -1,6 +1,9 @@
 ---
 name: benchmark
 description: Run, compare and profile the local dfbench benchmarks (TPC-H, TPC-DS, ClickBench, over Parquet or Iceberg). Use when asked to benchmark a change, compare branches or flag configurations, verify a performance claim, or find where time goes.
+metadata:
+  # Only for contributors to this repository, so `npx skills add` does not offer it.
+  internal: true
 ---
 
 # Benchmarking DataFusion Distributed
