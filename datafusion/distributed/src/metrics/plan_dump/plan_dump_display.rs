@@ -653,7 +653,7 @@ mod tests {
 
     #[tokio::test]
     async fn stages_show_the_cpu_time_of_their_nodes() -> Result<()> {
-        let query = r#"SELECT "RainToday", count(*) FROM weather GROUP BY "RainToday""#;
+        let query = r#"SELECT "MinTemp", "RainToday" FROM weather WHERE "Rainfall" > 0"#;
         let plan = TestPlanBuilder::default()
             .executed_physical_plan(query)
             .await;
@@ -661,32 +661,26 @@ mod tests {
         let dump = generate_plan_dump(&plan)?;
 
         let display = display_plan_dump(dump, DisplayPlanDumpOptions::default())?;
-        with_settings!({ filters => vec![(TIMES, "<time>")] }, {
+        let filters = vec![(TIMES, "<time>"), (BYTES, "<bytes>")];
+        with_settings!({ filters => filters }, {
             assert_snapshot!(display, @r"
             DistributedExec
-            │ output_rows=2
+            │ output_rows=103
             │ elapsed_compute=<time>
-            │ output_bytes=640.0 B
+            │ output_bytes=<bytes>
             │ dynamic_filter_updates_received=0
             │ local_coordinator_channels=0
-            │ remote_coordinator_channels=6
+            │ remote_coordinator_channels=3
             │ plan_send_latency_avg=<time>
             │ plan_send_latency_max=<time>
-            │ plan_bytes_sent=19.7 KB
-            └─ Stage 2 (Coalesce) tasks=3 partitions=4
-               │ output_rows=2
-               │ elapsed_compute={0:<time>, 1:<time>, 2:<time>}
-               │ output_bytes=48.0 B
-               │ plan_added_at={0:<time>, 1:<time>, 2:<time>}
-               │ plan_executed_at={0:<time>, 1:<time>, 2:<time>}
-               │ plan_finished_at={0:<time>, 1:<time>, 2:<time>}
-               └─ Stage 1 (Shuffle) tasks=3 partitions=12
-                    output_rows=6
-                    elapsed_compute={0:<time>, 1:<time>, 2:<time>}
-                    output_bytes=144.0 B
-                    plan_added_at={0:<time>, 1:<time>, 2:<time>}
-                    plan_executed_at={0:<time>, 1:<time>, 2:<time>}
-                    plan_finished_at={0:<time>, 1:<time>, 2:<time>}
+            │ plan_bytes_sent=<bytes>
+            └─ Stage 1 (Coalesce) tasks=3 partitions=12
+                 output_rows=103
+                 elapsed_compute={0:<time>, 1:<time>, 2:<time>}
+                 output_bytes=<bytes>
+                 plan_added_at={0:<time>, 1:<time>, 2:<time>}
+                 plan_executed_at={0:<time>, 1:<time>, 2:<time>}
+                 plan_finished_at={0:<time>, 1:<time>, 2:<time>}
             ");
         });
         Ok(())
@@ -694,7 +688,7 @@ mod tests {
 
     #[tokio::test]
     async fn metrics_aggregated_across_tasks() -> Result<()> {
-        let query = r#"SELECT "RainToday", count(*) FROM weather GROUP BY "RainToday""#;
+        let query = r#"SELECT "MinTemp", "RainToday" FROM weather WHERE "Rainfall" > 0"#;
         let plan = TestPlanBuilder::default()
             .executed_physical_plan(query)
             .await;
@@ -704,32 +698,26 @@ mod tests {
         let opts = DisplayPlanDumpOptions::default()
             .with_metrics_format(DistributedMetricsFormat::Aggregated);
         let display = display_plan_dump(dump, opts)?;
-        with_settings!({ filters => vec![(TIMES, "<time>")] }, {
+        let filters = vec![(TIMES, "<time>"), (BYTES, "<bytes>")];
+        with_settings!({ filters => filters }, {
             assert_snapshot!(display, @r"
             DistributedExec
-            │ output_rows=2
+            │ output_rows=103
             │ elapsed_compute=<time>
-            │ output_bytes=640.0 B
+            │ output_bytes=<bytes>
             │ dynamic_filter_updates_received=0
             │ local_coordinator_channels=0
-            │ remote_coordinator_channels=6
+            │ remote_coordinator_channels=3
             │ plan_send_latency_avg=<time>
             │ plan_send_latency_max=<time>
-            │ plan_bytes_sent=19.7 KB
-            └─ Stage 2 (Coalesce) tasks=3 partitions=4
-               │ output_rows=2
-               │ elapsed_compute=<time>
-               │ output_bytes=48.0 B
-               │ plan_added_at=<time>
-               │ plan_executed_at=<time>
-               │ plan_finished_at=<time>
-               └─ Stage 1 (Shuffle) tasks=3 partitions=12
-                    output_rows=6
-                    elapsed_compute=<time>
-                    output_bytes=144.0 B
-                    plan_added_at=<time>
-                    plan_executed_at=<time>
-                    plan_finished_at=<time>
+            │ plan_bytes_sent=<bytes>
+            └─ Stage 1 (Coalesce) tasks=3 partitions=12
+                 output_rows=103
+                 elapsed_compute=<time>
+                 output_bytes=<bytes>
+                 plan_added_at=<time>
+                 plan_executed_at=<time>
+                 plan_finished_at=<time>
             ");
         });
         Ok(())
@@ -745,44 +733,20 @@ mod tests {
 
         let dump = generate_plan_dump(&plan)?;
 
-        let display = display_plan_dump(dump, DisplayPlanDumpOptions::default())?;
+        // The q-error is derived from the output_bytes of the stage reading stage 1, which the
+        // filters leave out, as metrics are filtered once derived.
+        let opts = DisplayPlanDumpOptions::default()
+            .with_metric_filter("estimated_output_bytes")
+            .with_metric_filter("q_error");
+        let display = display_plan_dump(dump, opts)?;
         // Estimates come from sampling the stage's output while it runs, which is not deterministic.
-        let filters = vec![(TIMES, "<time>"), (ESTIMATES, "$1=<estimate>")];
-        with_settings!({ filters => filters }, {
+        with_settings!({ filters => vec![(ESTIMATES, "$1=<estimate>")] }, {
             assert_snapshot!(display, @r"
             DistributedExec
-            │ output_rows=2
-            │ elapsed_compute=<time>
-            │ output_bytes=640.0 B
-            │ dynamic_filter_updates_received=0
-            │ local_coordinator_channels=0
-            │ remote_coordinator_channels=4
-            │ plan_send_latency_avg=<time>
-            │ plan_send_latency_max=<time>
-            │ plan_bytes_sent=19.0 KB
             └─ Stage 2 (Coalesce) tasks=1 partitions=4
-               │ output_rows=2
-               │ elapsed_compute=<time>
-               │ output_bytes=48.0 B
-               │ cpu_cost=<estimate>
-               │ memory_cost=<estimate>
-               │ network_cost=<estimate>
-               │ plan_added_at=<time>
-               │ plan_executed_at=<time>
-               │ plan_finished_at=<time>
                └─ Stage 1 (Shuffle) tasks=3 partitions=4
-                    output_rows=6
-                    elapsed_compute={0:<time>, 1:<time>, 2:<time>}
-                    output_bytes=144.0 B
-                    cpu_cost=<estimate>
                     estimated_output_bytes=<estimate>
-                    estimated_pct_sampled=100
-                    memory_cost=<estimate>
-                    network_cost=<estimate>
                     output_bytes_q_error=<estimate>
-                    plan_added_at={0:<time>, 1:<time>, 2:<time>}
-                    plan_executed_at={0:<time>, 1:<time>, 2:<time>}
-                    plan_finished_at={0:<time>, 1:<time>, 2:<time>}
             ");
         });
         Ok(())
@@ -790,7 +754,7 @@ mod tests {
 
     #[tokio::test]
     async fn metrics_filtered_by_name() -> Result<()> {
-        let query = r#"SELECT "RainToday", count(*) FROM weather GROUP BY "RainToday""#;
+        let query = r#"SELECT "MinTemp", "RainToday" FROM weather WHERE "Rainfall" > 0"#;
         let plan = TestPlanBuilder::default()
             .executed_physical_plan(query)
             .await;
@@ -799,44 +763,29 @@ mod tests {
 
         // Only the metrics containing any of the filters are displayed.
         let opts = DisplayPlanDumpOptions::default()
-            .with_stage_id(2)
-            .with_metric_filter("output_rows")
-            .with_metric_filter("spill_count");
+            .with_stage_id(1)
+            .with_metric_filter("elapsed_compute")
+            .with_metric_filter("spill");
         let display = display_plan_dump(dump, opts)?;
-        assert_snapshot!(display, @r"
-        Stage 2 (Coalesce) tasks=3 partitions=4
-        │ output_rows=2
-        └─ ProjectionExec: expr=[RainToday@0 as RainToday, count(Int64(1))@1 as count(*)]
-           │ output_rows={0:0, 1:1, 2:1}
-           └─ AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
-              │ output_rows={0:0, 1:1, 2:1}
-              │ spill_count={0:0, 1:0, 2:0}
-              └─ [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
-                   output_rows={0:0, 1:3, 2:3}
-        ");
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn metric_filters_apply_after_deriving_metrics() -> Result<()> {
-        let query = r#"SELECT "RainToday", count(*) FROM weather GROUP BY "RainToday""#;
-        let plan = TestPlanBuilder::default()
-            .distributed_dynamic_task_count(true)
-            .executed_physical_plan(query)
-            .await;
-
-        let dump = generate_plan_dump(&plan)?;
-
-        // The q-error is derived from the output_bytes of the stage reading stage 1, which the
-        // filter leaves out.
-        let opts = DisplayPlanDumpOptions::default().with_metric_filter("q_error");
-        let display = display_plan_dump(dump, opts)?;
-        with_settings!({ filters => vec![(ESTIMATES, "$1=<estimate>")] }, {
+        let filters = vec![(TIMES, "<time>"), (BYTES, "<bytes>")];
+        with_settings!({ filters => filters }, {
             assert_snapshot!(display, @r"
-            DistributedExec
-            └─ Stage 2 (Coalesce) tasks=1 partitions=4
-               └─ Stage 1 (Shuffle) tasks=3 partitions=4
-                    output_bytes_q_error=<estimate>
+            Stage 1 (Coalesce) tasks=3 partitions=12
+            │ elapsed_compute={0:<time>, 1:<time>, 2:<time>}
+            └─ FilterExec: Rainfall@1 > 0, projection=[MinTemp@0, RainToday@2]
+               │ elapsed_compute={0:<time>, 1:<time>, 2:<time>}
+               └─ RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+                  │ elapsed_compute={0:<time>, 1:<time>, 2:<time>}
+                  │ spill_count={0:0, 1:0, 2:0}
+                  │ spilled_bytes={0:<bytes>, 1:<bytes>, 2:<bytes>}
+                  │ spilled_rows={0:0, 1:0, 2:0}
+                  └─ DistributedLeafExec:
+                     ├─ t0: DataSourceExec: file_groups={3 groups}, projection=[MinTemp, Rainfall, RainToday], file_type=parquet, predicate=Rainfall@2 > 0, pruning_predicate=Rainfall_null_count@1 != row_count@2 AND Rainfall_max@0 > 0, required_guarantees=[]
+                     │    elapsed_compute=<time>
+                     ├─ t1: DataSourceExec: file_groups={3 groups}, projection=[MinTemp, Rainfall, RainToday], file_type=parquet, predicate=Rainfall@2 > 0, pruning_predicate=Rainfall_null_count@1 != row_count@2 AND Rainfall_max@0 > 0, required_guarantees=[]
+                     │    elapsed_compute={1:<time>}
+                     └─ t2: DataSourceExec: file_groups={3 groups}, projection=[MinTemp, Rainfall, RainToday], file_type=parquet, predicate=Rainfall@2 > 0, pruning_predicate=Rainfall_null_count@1 != row_count@2 AND Rainfall_max@0 > 0, required_guarantees=[]
+                          elapsed_compute={2:<time>}
             ");
         });
         Ok(())
@@ -844,26 +793,33 @@ mod tests {
 
     #[tokio::test]
     async fn exact_metric_filters_match_whole_names() -> Result<()> {
-        let query = r#"SELECT "RainToday", count(*) FROM weather GROUP BY "RainToday""#;
+        let query = r#"SELECT "MinTemp", "RainToday" FROM weather WHERE "Rainfall" > 0"#;
         let plan = TestPlanBuilder::default()
-            .distributed_dynamic_task_count(true)
             .executed_physical_plan(query)
             .await;
 
         let dump = generate_plan_dump(&plan)?;
 
-        // Without matching exactly, estimated_output_bytes and output_bytes_q_error would show too.
+        // Without matching exactly, output_rows_skew would show too.
         let opts = DisplayPlanDumpOptions::default()
-            .with_metric_filter("output_bytes")
+            .with_stage_id(1)
+            .with_metric_filter("output_rows")
             .with_exact_metric_filters(true);
         let display = display_plan_dump(dump, opts)?;
         assert_snapshot!(display, @r"
-        DistributedExec
-        │ output_bytes=640.0 B
-        └─ Stage 2 (Coalesce) tasks=1 partitions=4
-           │ output_bytes=48.0 B
-           └─ Stage 1 (Shuffle) tasks=3 partitions=4
-                output_bytes=144.0 B
+        Stage 1 (Coalesce) tasks=3 partitions=12
+        │ output_rows=103
+        └─ FilterExec: Rainfall@1 > 0, projection=[MinTemp@0, RainToday@2]
+           │ output_rows={0:71, 1:0, 2:32}
+           └─ RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+              │ output_rows={0:220, 1:0, 2:112}
+              └─ DistributedLeafExec:
+                 ├─ t0: DataSourceExec: file_groups={3 groups}, projection=[MinTemp, Rainfall, RainToday], file_type=parquet, predicate=Rainfall@2 > 0, pruning_predicate=Rainfall_null_count@1 != row_count@2 AND Rainfall_max@0 > 0, required_guarantees=[]
+                 │    output_rows=220
+                 ├─ t1: DataSourceExec: file_groups={3 groups}, projection=[MinTemp, Rainfall, RainToday], file_type=parquet, predicate=Rainfall@2 > 0, pruning_predicate=Rainfall_null_count@1 != row_count@2 AND Rainfall_max@0 > 0, required_guarantees=[]
+                 │    output_rows={1:0}
+                 └─ t2: DataSourceExec: file_groups={3 groups}, projection=[MinTemp, Rainfall, RainToday], file_type=parquet, predicate=Rainfall@2 > 0, pruning_predicate=Rainfall_null_count@1 != row_count@2 AND Rainfall_max@0 > 0, required_guarantees=[]
+                      output_rows={2:112}
         ");
         Ok(())
     }
@@ -905,6 +861,10 @@ mod tests {
 
     /// Durations, which change from one execution to another.
     const TIMES: &str = r"\d+(\.\d+)?(ns|µs|ms|s)\b";
+
+    /// Sizes in bytes, which depend on how batches are cut and, for the plans sent to workers, on
+    /// the absolute paths of the files they read.
+    const BYTES: &str = r"\d+(\.\d+)? (B|KB|MB|GB|TB)\b";
 
     /// Metrics computed from the estimated output of a stage.
     const ESTIMATES: &str =
