@@ -2,6 +2,7 @@ use crate::codec::{set_distributed_user_codec, set_distributed_user_codec_arc};
 use crate::config_extension_ext::{
     set_distributed_option_extension, set_distributed_option_extension_from_headers,
 };
+use crate::distributed_planner::add_distributed_blacklisted_node;
 use crate::events::{
     DesiredTaskCountHandler, DesiredTaskCountHandlers, RouteTaskHandler, RouteTaskHandlers,
     ScaleUpLeafNodeHandler, ScaleUpLeafNodeHandlers, TaskFinishedHandler, TaskFinishedHandlers,
@@ -842,6 +843,26 @@ pub trait DistributedExt: Sized {
     /// Same as [DistributedExt::with_distributed_task_finished_handler] but with an in-place
     /// mutation.
     fn set_distributed_task_finished_handler<T: TaskFinishedHandler>(&mut self, handler: T);
+
+    /// Prevents distributed planning for any plan containing a node of type `T`. Such plans are
+    /// left untouched and run on a single node.
+    ///
+    /// This is different from providing a [DesiredTaskCountHandler] that returns an exact count of
+    /// 1 in the sense that the distributed planner is fully disabled, instead of just throttling
+    /// that particular node to 1 task.
+    ///
+    /// ```rust
+    /// # use datafusion::execution::SessionStateBuilder;
+    /// # use datafusion::physical_plan::empty::EmptyExec;
+    /// # use datafusion_distributed::DistributedExt;
+    ///
+    /// SessionStateBuilder::new()
+    ///     .with_distributed_blacklisted_node::<EmptyExec>();
+    /// ```
+    fn with_distributed_blacklisted_node<T: ExecutionPlan>(self) -> Self;
+
+    /// Same as [DistributedExt::with_distributed_blacklisted_node] but with an in-place mutation.
+    fn set_distributed_blacklisted_node<T: ExecutionPlan>(&mut self);
 }
 
 /// Trait to have a unified interface for getting structs & properties from SessionConfig that are used in distributed context.
@@ -1062,6 +1083,10 @@ impl DistributedExt for SessionConfig {
         TaskFinishedHandlers::push_custom(self, Arc::new(h));
     }
 
+    fn set_distributed_blacklisted_node<T: ExecutionPlan>(&mut self) {
+        add_distributed_blacklisted_node::<T>(self);
+    }
+
     delegate! {
         to self {
             #[call(set_distributed_option_extension)]
@@ -1189,6 +1214,10 @@ impl DistributedExt for SessionConfig {
             #[call(set_distributed_task_finished_handler)]
             #[expr($;self)]
             fn with_distributed_task_finished_handler<H: TaskFinishedHandler>(mut self, h: H) -> Self;
+
+            #[call(set_distributed_blacklisted_node)]
+            #[expr($;self)]
+            fn with_distributed_blacklisted_node<T: ExecutionPlan>(mut self) -> Self;
         }
     }
 }
@@ -1362,6 +1391,11 @@ impl DistributedExt for SessionStateBuilder {
             #[call(set_distributed_task_finished_handler)]
             #[expr($;self)]
             fn with_distributed_task_finished_handler<H: TaskFinishedHandler>(mut self, h: H) -> Self;
+
+            fn set_distributed_blacklisted_node<T: ExecutionPlan>(&mut self);
+            #[call(set_distributed_blacklisted_node)]
+            #[expr($;self)]
+            fn with_distributed_blacklisted_node<T: ExecutionPlan>(mut self) -> Self;
         }
     }
 }
@@ -1537,6 +1571,11 @@ impl DistributedExt for SessionState {
             #[call(set_distributed_task_finished_handler)]
             #[expr($;self)]
             fn with_distributed_task_finished_handler<H: TaskFinishedHandler>(mut self, h: H) -> Self;
+
+            fn set_distributed_blacklisted_node<T: ExecutionPlan>(&mut self);
+            #[call(set_distributed_blacklisted_node)]
+            #[expr($;self)]
+            fn with_distributed_blacklisted_node<T: ExecutionPlan>(mut self) -> Self;
         }
     }
 }
@@ -1705,6 +1744,11 @@ impl DistributedExt for SessionContext {
             #[call(set_distributed_task_finished_handler)]
             #[expr($;self)]
             fn with_distributed_task_finished_handler<H: TaskFinishedHandler>(self, h: H) -> Self;
+
+            fn set_distributed_blacklisted_node<T: ExecutionPlan>(&mut self);
+            #[call(set_distributed_blacklisted_node)]
+            #[expr($;self)]
+            fn with_distributed_blacklisted_node<T: ExecutionPlan>(self) -> Self;
         }
     }
 }
