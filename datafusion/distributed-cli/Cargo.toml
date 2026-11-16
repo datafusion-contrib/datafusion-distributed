@@ -2,7 +2,7 @@
 name = "datafusion-distributed-cli"
 version = "0.1.0"
 edition = "2024"
-description = "DataFusion's CLI with distributed execution capabilities"
+description = "DataFusion's CLI with distributed execution capabilities, and a viewer for DataFusion Distributed plan dumps"
 license = "Apache-2.0"
 documentation = "https://datafusion-contrib.github.io/datafusion-distributed/"
 repository = "https://github.com/datafusion-contrib/datafusion-distributed"
@@ -14,6 +14,7 @@ datafusion-distributed = { path = "../distributed", version = "4.0.0", features 
 datafusion-cli = { version = "55", default-features = false }
 tokio = { version = "1.48", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
+prost = { version = "0.14", features = ["no-recursion-limit"]}
 env_logger = "0.11"
 dirs = "6"
 

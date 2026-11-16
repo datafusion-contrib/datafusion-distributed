@@ -9,4 +9,5 @@ mod store;
 
 pub use distributed::DistributedExec;
 pub(crate) use dynamic_filter_registry::DynamicFilterRegistry;
+pub(crate) use prepare_dynamic_plan::ESTIMATED_OUTPUT_BYTES_METRIC;
 pub(crate) use store::Store;

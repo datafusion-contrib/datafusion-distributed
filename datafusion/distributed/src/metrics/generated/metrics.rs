@@ -232,3 +232,46 @@ pub struct MaxGauge {
     #[prost(uint64, tag = "2")]
     pub value: u64,
 }
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct StageDump {
+    #[prost(uint64, tag = "1")]
+    pub stage_id: u64,
+    #[prost(message, repeated, tag = "2")]
+    pub metrics: ::prost::alloc::vec::Vec<MetricColumn>,
+    #[prost(message, optional, boxed, tag = "3")]
+    pub plan_dump: ::core::option::Option<::prost::alloc::boxed::Box<PlanDump>>,
+    /// The number of tasks the stage ran with.
+    #[prost(uint64, tag = "4")]
+    pub tasks: u64,
+    /// The number of partitions the stage spans across all its tasks.
+    #[prost(uint64, tag = "5")]
+    pub partitions: u64,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PlanDump {
+    #[prost(string, tag = "1")]
+    pub display: ::prost::alloc::string::String,
+    #[prost(message, repeated, tag = "2")]
+    pub metrics: ::prost::alloc::vec::Vec<MetricColumn>,
+    #[prost(message, repeated, tag = "3")]
+    pub children: ::prost::alloc::vec::Vec<PlanDump>,
+    /// For network boundaries, the stage they read from. Its plan is not part of `children`.
+    #[prost(message, optional, boxed, tag = "4")]
+    pub input_stage: ::core::option::Option<::prost::alloc::boxed::Box<StageDump>>,
+}
+/// One metric of a node with its values for every task, stored once instead of as one `Metric` per
+/// task, which makes dumps much smaller.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct MetricColumn {
+    /// The metric's kind and name, with its values left unset.
+    #[prost(message, optional, tag = "1")]
+    pub metric: ::core::option::Option<Metric>,
+    /// The task each group of values belongs to. Metrics that do not belong to a task are dumped as
+    /// task 0's.
+    #[prost(uint64, repeated, tag = "2")]
+    pub tasks: ::prost::alloc::vec::Vec<u64>,
+    /// The values of the metric, as many per task as the metric has (e.g. `pruned` and `matched` for
+    /// pruning metrics), one task after the other.
+    #[prost(uint64, repeated, tag = "3")]
+    pub values: ::prost::alloc::vec::Vec<u64>,
+}

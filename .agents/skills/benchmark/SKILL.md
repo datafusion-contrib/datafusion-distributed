@@ -20,6 +20,12 @@ target/release/dfbench run --dataset $DATASET --workers 8 -i 5
 a local, gitignored `.df-bench.yaml` in the current directory (or `--config-path <file>`),
 overridden by repeated `-c key=value` flags, e.g. `-c distributed.dynamic_task_count=true`.
 
+## Plan dumps
+
+`--debug` prints a plan dump per iteration to stdout (everything else goes to stderr), which
+`dfd plan` (`-p datafusion-distributed-cli`) inspects; see the `plan-dump` skill. `dfbench` reads
+`DATAFUSION_*` env vars, e.g. `DATAFUSION_OPTIMIZER_JOIN_REORDERING=false`.
+
 ## Iceberg
 
 The same benchmarks run over Iceberg tables with the `dfbench-iceberg` binary, which takes the

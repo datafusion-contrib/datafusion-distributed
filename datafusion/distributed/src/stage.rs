@@ -511,6 +511,11 @@ fn sorted_for_display_by_task_id(metrics: MetricsSet) -> MetricsSet {
 /// See
 /// https://github.com/apache/datafusion/blob/b463a9f9e3c9603eb2db7113125fea3a1b7f5455/datafusion/physical-plan/src/display.rs#L421.
 fn format_metrics_by_task(metrics: &MetricsSet) -> String {
+    format_each_metric_by_task(metrics).join(", ")
+}
+
+/// Like [format_metrics_by_task], but returning one `name=value` entry per metric name.
+pub(crate) fn format_each_metric_by_task(metrics: &MetricsSet) -> Vec<String> {
     let aggregated = aggregate_by_task_id(metrics);
     let sorted = sorted_for_display_by_task_id(aggregated).timestamps_removed();
 
@@ -537,8 +542,7 @@ fn format_metrics_by_task(metrics: &MetricsSet) -> String {
             true => format!("{name}={{{}}}", entries.join(", ")),
             false => format!("{name}={}", entries.join(", ")),
         })
-        .collect::<Vec<_>>()
-        .join(", ")
+        .collect()
 }
 
 /// Wraps a formatted metrics string into the `, metrics=[...]` suffix used in plan displays.
@@ -561,7 +565,7 @@ fn find_task_id_label(metric: &Metric) -> Option<&Label> {
 /// Splits a [MetricsSet] into a map from task index to the metrics belonging to that task.
 /// Only metrics that carry a [DISTRIBUTED_DATAFUSION_TASK_ID_LABEL] are included; metrics without
 /// that label are dropped. Returns an empty map when no task-labelled metrics are present.
-fn metrics_by_task_id(metrics: &MetricsSet) -> HashMap<usize, MetricsSet> {
+pub(crate) fn metrics_by_task_id(metrics: &MetricsSet) -> HashMap<usize, MetricsSet> {
     let mut map: HashMap<usize, MetricsSet> = HashMap::new();
     for metric in metrics.iter() {
         let Some(task_id) =
@@ -575,17 +579,22 @@ fn metrics_by_task_id(metrics: &MetricsSet) -> HashMap<usize, MetricsSet> {
 }
 
 fn format_tasks_for_stage(n_tasks: usize, head: &Arc<dyn ExecutionPlan>) -> String {
+    let partitions = stage_partition_count(n_tasks, head);
+    format!("tasks={n_tasks}, partitions={partitions}")
+}
+
+/// The number of partitions a stage with `head` at its top spans across its `n_tasks` tasks.
+pub(crate) fn stage_partition_count(n_tasks: usize, head: &Arc<dyn ExecutionPlan>) -> usize {
     let partitioning = head.properties().output_partitioning();
     let input_partitions = partitioning.partition_count();
     let hash_shuffle = matches!(partitioning, Partitioning::Hash(_, _));
     // In a hash shuffle every task reads the same partition range, so the stage spans
     // `input_partitions` distinct partitions. Otherwise each task owns its own slice, for a total
     // of `n_tasks * input_partitions`.
-    let partitions = match hash_shuffle {
+    match hash_shuffle {
         true => input_partitions,
         false => n_tasks * input_partitions,
-    };
-    format!("tasks={n_tasks}, partitions={partitions}")
+    }
 }
 
 // num_colors must agree with the colorscheme selected from
