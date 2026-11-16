@@ -2476,6 +2476,7 @@ dependencies = [
  "datafusion-distributed",
  "dirs",
  "env_logger",
+ "prost",
  "tokio",
 ]
 
