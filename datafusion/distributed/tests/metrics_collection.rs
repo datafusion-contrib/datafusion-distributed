@@ -5,6 +5,7 @@ mod tests {
     use datafusion::common::{HashMap, Result, assert_contains};
     use datafusion::execution::SessionState;
     use datafusion::physical_plan::display::DisplayableExecutionPlan;
+    use datafusion::physical_plan::filter::FilterExec;
     use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
     use datafusion::physical_plan::{ExecutionPlan, execute_stream};
     use datafusion::prelude::SessionContext;
@@ -16,7 +17,7 @@ mod tests {
         row_generator_desired_task_count_handler, row_generator_scale_up_leaf_node_handler,
     };
     use datafusion_distributed::{
-        DefaultSessionBuilder, DistributedExec, DistributedExt, DistributedLeafExec,
+        BroadcastExec, DefaultSessionBuilder, DistributedExec, DistributedExt, DistributedLeafExec,
         DistributedMetricsFormat, NetworkCoalesceExec, NetworkShuffleExec, TaskKey, TaskMetrics,
         WorkerQueryContext, display_plan_ascii, rewrite_distributed_plan_with_dynamic_filters,
         rewrite_distributed_plan_with_metrics,
@@ -201,6 +202,41 @@ mod tests {
         let value = node_metrics::<NetworkShuffleExec>(&d_physical, "network_latency_sum", 1);
         assert!(value > 0);
         let value = node_metrics::<NetworkShuffleExec>(&d_physical, "network_latency_count", 1);
+        assert!(value > 0);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_metrics_collection_in_broadcast_join() -> Result<(), Box<dyn std::error::Error>> {
+        let (mut d_ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+        d_ctx.set_distributed_broadcast_joins(true)?;
+
+        let query = r#"
+        SELECT count(*)
+        FROM weather a
+        JOIN weather b ON a."RainToday" = b."RainToday"
+        WHERE b."MinTemp" > 15.0
+        "#;
+
+        let s_ctx = SessionContext::default();
+        let (_, mut d_physical) = execute(&s_ctx, &d_ctx, query).await?;
+        d_physical =
+            rewrite_with_metrics(d_physical.clone(), DistributedMetricsFormat::Aggregated).await;
+        println!("{}", display_plan_ascii(d_physical.as_ref(), true));
+
+        // The filtered side is the smaller one, so it is the build side under BroadcastExec, and
+        // every consumer task reads all of it.
+        let input_rows = node_metrics::<FilterExec>(&d_physical, "output_rows", 0);
+        let output_rows = node_metrics::<BroadcastExec>(&d_physical, "output_rows", 0);
+        assert_eq!(output_rows, 3 * input_rows);
+        let input_bytes = node_metrics::<FilterExec>(&d_physical, "output_bytes", 0);
+        let output_bytes = node_metrics::<BroadcastExec>(&d_physical, "output_bytes", 0);
+        assert_eq!(output_bytes, 3 * input_bytes);
+        // Batches are buffered once per task, not once per consumer.
+        let max_mem_used = node_metrics::<BroadcastExec>(&d_physical, "max_mem_used", 0);
+        assert!(max_mem_used < output_bytes);
+        let value = node_metrics::<BroadcastExec>(&d_physical, "elapsed_compute", 0);
         assert!(value > 0);
 
         Ok(())

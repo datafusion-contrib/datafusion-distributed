@@ -1,4 +1,5 @@
 use crate::common::{OnceLockResult, require_one_child};
+use crate::execution_plans::children_isolator_union::ObservedStream;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::runtime::SpawnedTask;
@@ -7,6 +8,9 @@ use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_plan::metrics::{
+    BaselineMetrics, ExecutionPlanMetricsSet, Gauge, MetricBuilder, MetricValue, MetricsSet, Time,
+};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties, internal_err,
@@ -15,6 +19,7 @@ use futures::{Stream, StreamExt};
 use std::collections::VecDeque;
 use std::fmt::Formatter;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context, Poll};
 use tokio_stream::wrappers::WatchStream;
@@ -84,10 +89,17 @@ pub struct BroadcastExec {
     consumer_task_count: usize,
     properties: Arc<PlanProperties>,
     queues: Vec<OnceLockResult<StreamAndTask>>,
+    metrics: ExecutionPlanMetricsSet,
+    /// Time spent buffering input batches. It is not tied to an output partition, as each input
+    /// partition is buffered once for all of them.
+    producer_compute: Time,
+    /// Peak bytes buffered across all input partitions, waiting for slower consumer tasks.
+    max_mem_used: Gauge,
+    buffered_bytes: Arc<AtomicUsize>,
 }
 
 type BroadcastMessage =
-    std::result::Result<(RecordBatch, Arc<MemoryReservation>), Arc<DataFusionError>>;
+    std::result::Result<(RecordBatch, Arc<BufferedBatch>), Arc<DataFusionError>>;
 type StreamAndTask = (BroadcastReaders<BroadcastMessage>, Arc<SpawnedTask<()>>);
 
 impl BroadcastExec {
@@ -102,11 +114,24 @@ impl BroadcastExec {
             .map(|_| OnceLock::new())
             .collect();
 
+        let metrics = ExecutionPlanMetricsSet::new();
+        let producer_compute = Time::new();
+        MetricBuilder::new(&metrics).build(MetricValue::ElapsedCompute(producer_compute.clone()));
+        let max_mem_used = Gauge::new();
+        MetricBuilder::new(&metrics).build(MetricValue::PeakMemoryUsage {
+            name: "max_mem_used".into(),
+            gauge: max_mem_used.clone(),
+        });
+
         Self {
             input,
             consumer_task_count,
             properties: Arc::new(properties),
             queues,
+            metrics,
+            producer_compute,
+            max_mem_used,
+            buffered_bytes: Arc::default(),
         }
     }
 
@@ -178,6 +203,10 @@ impl ExecutionPlan for BroadcastExec {
         )))
     }
 
+    fn metrics(&self) -> Option<MetricsSet> {
+        Some(self.metrics.clone_inner())
+    }
+
     fn execute(
         &self,
         partition: usize,
@@ -188,6 +217,7 @@ impl ExecutionPlan for BroadcastExec {
         let consumer_task = partition / input_partition_count;
 
         let input = Arc::clone(&self.input);
+        let baseline_metrics = BaselineMetrics::new(&self.metrics, partition);
 
         let queue_or_err = self.queues[real_partition].get_or_init(|| {
             let queue = BroadcastQueue::new(self.consumer_task_count);
@@ -196,6 +226,9 @@ impl ExecutionPlan for BroadcastExec {
             let pool = Arc::clone(context.memory_pool());
             let mut stream = input.execute(real_partition, context).map_err(Arc::new)?;
             let cancel = queue.shared.cancel.clone();
+            let elapsed_compute = self.producer_compute.clone();
+            let max_mem_used = self.max_mem_used.clone();
+            let buffered_bytes = Arc::clone(&self.buffered_bytes);
             let task = SpawnedTask::spawn(async move {
                 let mem_consumer = MemoryConsumer::new(format!("BroadcastExec[{real_partition}]"));
 
@@ -207,12 +240,20 @@ impl ExecutionPlan for BroadcastExec {
                     let Some(msg) = msg else { break };
                     match msg {
                         Ok(record_batch) => {
+                            let _timer = elapsed_compute.timer();
+                            let size = record_batch.get_array_memory_size();
                             let reservation = mem_consumer.clone_with_new_id().register(&pool);
-                            reservation.grow(record_batch.get_array_memory_size());
-                            if !queue.push(Ok((record_batch, Arc::new(reservation)))) {
+                            reservation.grow(size);
+                            let buffered = buffered_bytes.fetch_add(size, Ordering::Relaxed) + size;
+                            let batch = BufferedBatch {
+                                reservation,
+                                buffered_bytes: Arc::clone(&buffered_bytes),
+                            };
+                            if !queue.push(Ok((record_batch, Arc::new(batch)))) {
                                 // If there are no remaining readers, short-circuit.
                                 break;
                             }
+                            max_mem_used.set_max(buffered);
                         }
                         Err(err) => {
                             let _ = queue.push(Err(Arc::new(err)));
@@ -224,25 +265,50 @@ impl ExecutionPlan for BroadcastExec {
 
             Ok::<_, Arc<DataFusionError>>((readers, Arc::new(task)))
         });
-        let (consumer, task) = match queue_or_err {
+        let (mut consumer, task) = match queue_or_err {
             Ok((readers, task)) => (readers.claim(consumer_task)?, Arc::clone(task)),
             Err(err) => return Err(DataFusionError::Shared(Arc::clone(err))),
         };
-        Ok(Box::pin(RecordBatchStreamAdapter::new(
+        let elapsed_compute = baseline_metrics.elapsed_compute().clone();
+        let consumer = futures::stream::poll_fn(move |cx| {
+            let _timer = elapsed_compute.timer();
+            consumer.poll_next_unpin(cx)
+        });
+        let stream = Box::pin(RecordBatchStreamAdapter::new(
             self.schema(),
             consumer
                 .map(|msg| match msg {
-                    Ok((batch, _reservation)) => Ok(batch),
+                    Ok((batch, _buffered)) => Ok(batch),
                     Err(e) => Err(DataFusionError::Shared(e)),
                 })
                 .inspect(move |_| {
                     let _ = &task;
                 }),
+        ));
+        Ok(Box::pin(ObservedStream::new(
+            stream,
+            baseline_metrics,
+            None,
         )))
     }
 
     fn schema(&self) -> SchemaRef {
         self.input.schema()
+    }
+}
+
+/// Memory held by a batch while it waits in a [BroadcastQueue]. It is released once every reader
+/// has read the batch and the entry is evicted.
+#[derive(Debug)]
+struct BufferedBatch {
+    reservation: MemoryReservation,
+    buffered_bytes: Arc<AtomicUsize>,
+}
+
+impl Drop for BufferedBatch {
+    fn drop(&mut self) {
+        self.buffered_bytes
+            .fetch_sub(self.reservation.size(), Ordering::Relaxed);
     }
 }
 
@@ -796,6 +862,37 @@ mod tests {
         assert_int32_batch_values(&batches0[0], &[0]);
         assert_int32_batch_values(&batches1[0], &[0]);
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn broadcast_exec_tracks_buffered_memory() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int32Array::from(vec![0, 1, 2]))],
+        )?;
+        let batch_size = batch.get_array_memory_size();
+        let input = Arc::new(MockExec::new_partitioned(
+            vec![vec![Ok(batch.clone()), Ok(batch)]],
+            Arc::clone(&schema),
+        ));
+        let broadcast = Arc::new(BroadcastExec::new(input, 2));
+        let task_ctx = SessionContext::new().task_ctx();
+
+        for partition in 0..2 {
+            datafusion::physical_plan::common::collect(
+                broadcast.execute(partition, Arc::clone(&task_ctx))?,
+            )
+            .await?;
+        }
+
+        // Each batch is buffered once, no matter how many consumers read it.
+        assert!(broadcast.max_mem_used.value() <= 2 * batch_size);
+        assert!(broadcast.max_mem_used.value() >= batch_size);
+        assert_eq!(broadcast.buffered_bytes.load(Ordering::SeqCst), 0);
+        let output_rows = broadcast.metrics().unwrap().output_rows().unwrap();
+        assert_eq!(output_rows, 12);
         Ok(())
     }
 
