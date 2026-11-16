@@ -266,9 +266,13 @@ impl ExecutionPlan for DistributedExec {
                 internal_datafusion_err!("DistributedExec was already prepared for execution")
             })?;
             let mut stream = head_stage.execute(partition, context)?;
+            // Send a failure through the channel too, behind the batches already
+            // waiting there. Returned from this task instead, it could reach the
+            // consumer before them.
             while let Some(msg) = stream.next().await {
-                if tx.send(Ok(msg?)).await.is_err() {
-                    break; // channel closed
+                let failed = msg.is_err();
+                if tx.send(msg).await.is_err() || failed {
+                    break; // channel closed, or the stream failed
                 }
             }
             Ok(())

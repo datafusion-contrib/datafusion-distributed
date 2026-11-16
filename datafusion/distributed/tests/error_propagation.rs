@@ -1,6 +1,9 @@
 #[cfg(all(feature = "integration", test))]
 mod tests {
     use async_trait::async_trait;
+    use datafusion::arrow::array::Int32Array;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
     use datafusion::common::{assert_contains, exec_err};
     use datafusion::error::DataFusionError;
@@ -12,24 +15,27 @@ mod tests {
         DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
         execute_stream,
     };
+    use datafusion::prelude::{SessionConfig, SessionContext};
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
+    use datafusion_distributed::test_utils::mock_exec::MockExec;
     use datafusion_distributed::test_utils::parquet::register_parquet_tables;
     use datafusion_distributed::test_utils::routing::UrlEmitterRouteTaskHandler;
     use datafusion_distributed::{
-        DefaultSessionBuilder, DistributedExt, RouteTaskEvent, RouteTaskEventResponse,
-        RouteTaskHandler, WorkerQueryContext, ok_or_some_err,
+        DefaultSessionBuilder, DistributedConfig, DistributedExec, DistributedExt, RouteTaskEvent,
+        RouteTaskEventResponse, RouteTaskHandler, WorkerQueryContext, ok_or_some_err,
     };
     use datafusion_proto::physical_plan::{
         PhysicalExtensionCodec, PhysicalProtoConverterExtension,
     };
     use datafusion_proto::protobuf::proto_error;
-    use futures::{StreamExt, TryStreamExt, stream};
+    use futures::{FutureExt, StreamExt, TryStreamExt, stream};
     use prost::Message;
     use std::error::Error;
     use std::fmt::Formatter;
     use std::sync::Arc;
     use std::time::Duration;
     use test_case::test_case;
+    use tokio::sync::Notify;
     use tokio::time::timeout;
 
     #[tokio::test]
@@ -91,6 +97,40 @@ mod tests {
             .await?
             .expect_err("worker channel error must fail the query");
         assert_contains!(error.to_string(), "injected worker channel error");
+        Ok(())
+    }
+
+    /// The head stage yields one row and then fails. The output is read only once
+    /// the head stage has yielded the failure, so the row is already waiting in
+    /// `DistributedExec`'s output channel. A pending first read makes the next read
+    /// check the forwarding task's result before that channel: the case in which a
+    /// failure returned from the task overtook the row.
+    ///
+    /// `DistributedExec` wraps a `MockExec` head stage rather than a planned query, so
+    /// that the test controls when the head stage fails relative to the reads.
+    #[tokio::test]
+    async fn head_stage_error_follows_buffered_row() -> Result<(), Box<dyn Error>> {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let row = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int32Array::from(vec![1]))],
+        )?;
+        let failed = Arc::new(Notify::new());
+        let head = MockExec::new(vec![Ok(row), exec_err!("late failure")], schema)
+            .with_use_task(false)
+            .with_error_notify(Arc::clone(&failed));
+        let config =
+            SessionConfig::new().with_distributed_option_extension(DistributedConfig::default());
+        let task_ctx = SessionContext::new_with_config(config).task_ctx();
+        let mut output = DistributedExec::new(Arc::new(head)).execute(0, task_ctx)?;
+
+        assert!(output.next().now_or_never().is_none());
+        failed.notified().await;
+
+        let first = output.next().await.expect("the row")?;
+        assert_eq!(first.num_rows(), 1);
+        let failure = output.next().await.expect("the failure").unwrap_err();
+        assert_contains!(failure.to_string(), "late failure");
         Ok(())
     }
 
