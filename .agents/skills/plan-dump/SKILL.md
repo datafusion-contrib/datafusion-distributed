@@ -9,6 +9,9 @@ A plan dump is one base64 line holding an executed plan with its stages and per-
 produced by `generate_plan_dump` after `rewrite_distributed_plan_with_metrics`. `dfd plan`
 takes a dump as an argument, a file path, or stdin.
 
+`dfd` is the CLI of DataFusion Distributed. Install it with `cargo install datafusion-distributed-cli`,
+or, inside its repository, run it with `cargo run -p datafusion-distributed-cli -- plan`.
+
 ## Storing dumps
 
 Dumps come from benchmark output, log files, or a remote observability stack. Save each one
