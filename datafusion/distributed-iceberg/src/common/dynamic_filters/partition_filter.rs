@@ -238,18 +238,12 @@ fn partition_value(
 
 /// Builds a `Datum` of type `r#type` from a stored partition value. iceberg-rust uses
 /// `Datum::new` for this, which isn't public, so this uses the public constructors.
-///
-/// If a column changed from int to long, or from float to double, older files still store
-/// values of the old type. This converts them to the new type. Newer iceberg-rust versions do
-/// the same conversion when they read manifests.
 fn datum(r#type: &PrimitiveType, literal: &PrimitiveLiteral) -> Result<Datum> {
     Ok(match (r#type, literal) {
         (PrimitiveType::Boolean, PrimitiveLiteral::Boolean(value)) => Datum::bool(*value),
         (PrimitiveType::Int, PrimitiveLiteral::Int(value)) => Datum::int(*value),
-        (PrimitiveType::Long, PrimitiveLiteral::Int(value)) => Datum::long(*value),
         (PrimitiveType::Long, PrimitiveLiteral::Long(value)) => Datum::long(*value),
         (PrimitiveType::Float, PrimitiveLiteral::Float(value)) => Datum::float(value.0),
-        (PrimitiveType::Double, PrimitiveLiteral::Float(value)) => Datum::double(value.0),
         (PrimitiveType::Double, PrimitiveLiteral::Double(value)) => Datum::double(value.0),
         (PrimitiveType::Date, PrimitiveLiteral::Int(value)) => Datum::date(*value),
         (PrimitiveType::Time, PrimitiveLiteral::Long(value)) => Datum::time_micros(*value)?,
@@ -280,10 +274,11 @@ fn datum(r#type: &PrimitiveType, literal: &PrimitiveLiteral) -> Result<Datum> {
         (PrimitiveType::Uuid, PrimitiveLiteral::UInt128(value)) => {
             Datum::try_from_bytes(&value.to_be_bytes(), PrimitiveType::Uuid)?
         }
-        // The stored value doesn't fit its column's type, which we don't expect in a valid
-        // table. iceberg-rust builds the value anyway. None of its comparisons then match, so
-        // it skips the file. The public constructors can't build a value like that, so this
-        // returns an error and we don't skip this file.
+        // The stored value doesn't fit its column's type. This happens in files written before
+        // a column was widened, for example from int to long. iceberg-rust builds the value
+        // anyway. None of its comparisons then match, so it skips the file. The public
+        // constructors can't build a value like that, so we return an error and don't skip
+        // the file.
         _ => {
             return Err(Error::new(
                 ErrorKind::DataInvalid,
