@@ -96,7 +96,12 @@ return `PushedDown::No` for these filters, so DataFusion still checks every row.
 or aggregate only computes a dynamic filter when a scan below it is a consumer of that
 filter. Enable `iceberg.dynamic_filtering_enabled` to make Iceberg scans consumers of the
 dynamic filters pushed into them. With it on, `EXPLAIN` shows them on the scan as
-`dynamic_filters=`. Scans don't skip data with these filters yet.
+`dynamic_filters=`. Just before iceberg-rust's Parquet reader opens each file, the scan
+checks the latest version of the filters:
+
+- It skips the file if the file's partition value can't match them.
+- Otherwise, it gives the filters to the Parquet reader, which uses them to skip row groups,
+  and to drop the rows that don't match.
 
 ```bash
 cargo test -p datafusion-distributed-iceberg -p datafusion-distributed-iceberg-test-tools
