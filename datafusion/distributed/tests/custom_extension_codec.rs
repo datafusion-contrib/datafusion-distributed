@@ -7,8 +7,8 @@ mod tests {
     use datafusion::physical_expr::{EquivalenceProperties, PhysicalExpr};
     use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
     use datafusion::physical_plan::{
-        DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
-        execute_stream,
+        ChildrenPropertiesMode, DisplayAs, DisplayFormatType, ExecutionPlan,
+        ExecutionPlanProperties, PlanProperties, ReplaceChildrenOptions, execute_stream,
     };
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::parquet::register_parquet_tables;
@@ -119,11 +119,22 @@ mod tests {
             Ok(TreeNodeRecursion::Continue)
         }
 
+        fn replace_children(
+            self: Arc<Self>,
+            children: Vec<Arc<dyn ExecutionPlan>>,
+            _options: ReplaceChildrenOptions,
+        ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+            Ok(Arc::new(CustomPassThroughExec::new(children[0].clone())))
+        }
+
         fn with_new_children(
             self: Arc<Self>,
             children: Vec<Arc<dyn ExecutionPlan>>,
         ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
-            Ok(Arc::new(CustomPassThroughExec::new(children[0].clone())))
+            self.replace_children(
+                children,
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            )
         }
 
         fn execute(
