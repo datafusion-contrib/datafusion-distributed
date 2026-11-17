@@ -8,7 +8,7 @@ use datafusion::physical_plan::common::compute_record_batch_statistics;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::stream::{RecordBatchReceiverStream, RecordBatchStreamAdapter};
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
-use futures::{Stream, stream};
+use futures::{Stream, StreamExt, stream};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -33,6 +33,7 @@ pub struct MockExec {
     permit_open: Option<Arc<AtomicBool>>,
     permit_notify: Option<Arc<Notify>>,
     execute_counts: Option<Arc<Vec<AtomicUsize>>>,
+    error_notify: Option<Arc<Notify>>,
     cache: Arc<PlanProperties>,
 }
 
@@ -56,6 +57,7 @@ impl MockExec {
             permit_open: None,
             permit_notify: None,
             execute_counts: None,
+            error_notify: None,
             cache,
         }
     }
@@ -77,6 +79,7 @@ impl MockExec {
             permit_open: None,
             permit_notify: None,
             execute_counts: None,
+            error_notify: None,
             cache,
         }
     }
@@ -114,6 +117,12 @@ impl MockExec {
         self
     }
 
+    /// Notify when the stream yields an error, as the error is handed to its reader.
+    pub fn with_error_notify(mut self, error_notify: Arc<Notify>) -> Self {
+        self.error_notify = Some(error_notify);
+        self
+    }
+
     /// This function creates the cache object that stores the plan properties such as schema, equivalence properties, ordering, partitioning, etc.
     fn compute_properties(schema: SchemaRef, partitions: usize) -> Arc<PlanProperties> {
         Arc::new(PlanProperties::new(
@@ -121,6 +130,20 @@ impl MockExec {
             Partitioning::UnknownPartitioning(partitions),
             EmissionType::Incremental,
             Boundedness::Bounded,
+        ))
+    }
+
+    fn notify_errors(&self, stream: SendableRecordBatchStream) -> SendableRecordBatchStream {
+        let Some(error_notify) = self.error_notify.clone() else {
+            return stream;
+        };
+        Box::pin(RecordBatchStreamAdapter::new(
+            stream.schema(),
+            stream.inspect(move |item| {
+                if item.is_err() {
+                    error_notify.notify_one();
+                }
+            }),
         ))
     }
 }
@@ -225,7 +248,7 @@ impl ExecutionPlan for MockExec {
                 Ok(())
             });
             // returned stream simply reads off the rx stream
-            Ok(builder.build())
+            Ok(self.notify_errors(builder.build()))
         } else {
             let delay = self.delay;
             let permit_open = self.permit_open.clone();
@@ -261,10 +284,10 @@ impl ExecutionPlan for MockExec {
             } else {
                 Box::pin(stream::iter(data))
             };
-            Ok(Box::pin(RecordBatchStreamAdapter::new(
+            Ok(self.notify_errors(Box::pin(RecordBatchStreamAdapter::new(
                 self.schema(),
                 stream,
-            )))
+            ))))
         }
     }
 
