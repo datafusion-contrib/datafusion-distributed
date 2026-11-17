@@ -150,11 +150,14 @@ impl ScanConfig {
         // so with a LIMIT this can count files that never produced output. Skipped files
         // are dropped before this, and the pruner counts them.
         let tasks = tasks
-            .try_filter(move |task| {
-                let prune = pruner
-                    .as_mut()
-                    .is_some_and(|pruner| pruner.should_prune(task));
-                ready(!prune)
+            .try_filter_map(move |mut task| {
+                if let Some(pruner) = pruner.as_mut() {
+                    if pruner.should_prune(&task) {
+                        return ready(Ok(None));
+                    }
+                    task = pruner.with_reader_filter(task);
+                }
+                ready(Ok(Some(task)))
             })
             .inspect_ok(move |_| files_opened.add(1))
             .boxed();

@@ -13,9 +13,12 @@ use iceberg::scan::FileScanTask;
 
 use crate::common::dynamic_filters::partition_filter::PartitionFilter;
 use crate::common::dynamic_filters::physical_predicate::convert_physical_filter_to_predicate;
+use crate::common::dynamic_filters::row_group_filter::reader_filter;
+use crate::common::dynamic_filters::task_filter::and_predicate;
 
-/// Uses the scan's dynamic filters on each file just before the reader starts it. Skips files
-/// whose partition value can't match the filters.
+/// Applies the scan's dynamic filters to each file just before iceberg-rust's `ArrowReader` opens
+/// it. It skips files whose partition value can't match the filters. For the other files, it can
+/// add the filters to the file's own filter, so `ArrowReader` can skip row groups.
 pub(crate) struct DynamicFilterPruner {
     /// The scan's dynamic filters, combined with AND.
     dynamic_filters: Arc<dyn PhysicalExpr>,
@@ -61,6 +64,24 @@ impl DynamicFilterPruner {
             self.files.add_matched(1);
         }
         prune
+    }
+
+    /// Adds the dynamic filters to the task's own filter, so iceberg-rust's `ArrowReader` can use
+    /// them to skip row groups. Returns the task unchanged if adding them fails.
+    pub(crate) fn with_reader_filter(&mut self, task: FileScanTask) -> FileScanTask {
+        self.refresh();
+        let Some(predicate) = &self.predicate else {
+            return task;
+        };
+
+        // Some data files may not contain identity partition columns in their rows.
+        // `ArrowReader` reads a column the file doesn't store as NULL, so a filter on it drops
+        // every row in the file. The same goes for columns added later with a default value.
+        // We accept this until iceberg-rust fixes it.
+        //
+        // We AND onto the task's existing filter, so `ArrowReader` still applies the query's
+        // WHERE clause.
+        and_predicate(&task, reader_filter(predicate)).unwrap_or(task)
     }
 
     /// Whether no row in the task's partition can match the filters.
