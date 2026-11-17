@@ -24,11 +24,6 @@ let state = SessionStateBuilder::new()
 When enabled, each worker streams the metrics for its tasks back to the coordinator on a dedicated
 channel, so they are not lost even if the result stream is dropped early (for example by a `LIMIT`).
 
-Worker metrics aggregation preserves labels that have the same value in every instance of a
-metric by default. Set `with_distributed_preserve_metric_labels(false)` to use DataFusion's
-aggregation, which drops those labels. This option has no effect when
-`with_distributed_aggregate_metrics_on_workers_before_collection(false)` disables aggregation.
-
 Workers can add their own task-scoped metrics with a
 [task finished handler](../advanced/03-plan-hooks.md#task-finished-handlers). These metrics appear
 with the other task metrics, such as `plan_finished_at`, in each stage header.

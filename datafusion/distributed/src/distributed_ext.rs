@@ -388,20 +388,6 @@ pub trait DistributedExt: Sized {
         enabled: bool,
     ) -> Result<(), DataFusionError>;
 
-    /// Preserves labels shared by every instance of a metric when aggregating worker metrics.
-    /// Enabled by default. Disabling this uses DataFusion's aggregation, which drops labels.
-    /// Has no effect when worker metrics aggregation is disabled.
-    fn with_distributed_preserve_metric_labels(
-        self,
-        enabled: bool,
-    ) -> Result<Self, DataFusionError>;
-
-    /// Same as [DistributedExt::with_distributed_preserve_metric_labels] but with an in-place mutation.
-    fn set_distributed_preserve_metric_labels(
-        &mut self,
-        enabled: bool,
-    ) -> Result<(), DataFusionError>;
-
     /// Collects completed dynamic filters from worker tasks so they can be displayed in the
     /// distributed plan. This does not enable or disable dynamic filtering during execution.
     fn with_distributed_dynamic_filter_collection(
@@ -929,15 +915,6 @@ impl DistributedExt for SessionConfig {
         Ok(())
     }
 
-    fn set_distributed_preserve_metric_labels(
-        &mut self,
-        enabled: bool,
-    ) -> Result<(), DataFusionError> {
-        let d_cfg = DistributedConfig::from_config_options_mut(self.options_mut())?;
-        d_cfg.preserve_metric_labels = enabled;
-        Ok(())
-    }
-
     fn set_distributed_dynamic_filter_collection(
         &mut self,
         enabled: bool,
@@ -1127,10 +1104,6 @@ impl DistributedExt for SessionConfig {
             #[expr($?;Ok(self))]
             fn with_distributed_aggregate_metrics_on_workers_before_collection(mut self, enabled: bool) -> Result<Self, DataFusionError>;
 
-            #[call(set_distributed_preserve_metric_labels)]
-            #[expr($?;Ok(self))]
-            fn with_distributed_preserve_metric_labels(mut self, enabled: bool) -> Result<Self, DataFusionError>;
-
             #[call(set_distributed_dynamic_filter_collection)]
             #[expr($?;Ok(self))]
             fn with_distributed_dynamic_filter_collection(mut self, enabled: bool) -> Result<Self, DataFusionError>;
@@ -1277,11 +1250,6 @@ impl DistributedExt for SessionStateBuilder {
             #[call(set_distributed_aggregate_metrics_on_workers_before_collection)]
             #[expr($?;Ok(self))]
             fn with_distributed_aggregate_metrics_on_workers_before_collection(mut self, enabled: bool) -> Result<Self, DataFusionError>;
-
-            fn set_distributed_preserve_metric_labels(&mut self, enabled: bool) -> Result<(), DataFusionError>;
-            #[call(set_distributed_preserve_metric_labels)]
-            #[expr($?;Ok(self))]
-            fn with_distributed_preserve_metric_labels(mut self, enabled: bool) -> Result<Self, DataFusionError>;
 
             fn set_distributed_dynamic_filter_collection(&mut self, enabled: bool) -> Result<(), DataFusionError>;
             #[call(set_distributed_dynamic_filter_collection)]
@@ -1458,11 +1426,6 @@ impl DistributedExt for SessionState {
             #[expr($?;Ok(self))]
             fn with_distributed_aggregate_metrics_on_workers_before_collection(mut self, enabled: bool) -> Result<Self, DataFusionError>;
 
-            fn set_distributed_preserve_metric_labels(&mut self, enabled: bool) -> Result<(), DataFusionError>;
-            #[call(set_distributed_preserve_metric_labels)]
-            #[expr($?;Ok(self))]
-            fn with_distributed_preserve_metric_labels(mut self, enabled: bool) -> Result<Self, DataFusionError>;
-
             fn set_distributed_dynamic_filter_collection(&mut self, enabled: bool) -> Result<(), DataFusionError>;
             #[call(set_distributed_dynamic_filter_collection)]
             #[expr($?;Ok(self))]
@@ -1630,11 +1593,6 @@ impl DistributedExt for SessionContext {
             #[call(set_distributed_aggregate_metrics_on_workers_before_collection)]
             #[expr($?;Ok(self))]
             fn with_distributed_aggregate_metrics_on_workers_before_collection(self, enabled: bool) -> Result<Self, DataFusionError>;
-
-            fn set_distributed_preserve_metric_labels(&mut self, enabled: bool) -> Result<(), DataFusionError>;
-            #[call(set_distributed_preserve_metric_labels)]
-            #[expr($?;Ok(self))]
-            fn with_distributed_preserve_metric_labels(self, enabled: bool) -> Result<Self, DataFusionError>;
 
             fn set_distributed_dynamic_filter_collection(&mut self, enabled: bool) -> Result<(), DataFusionError>;
             #[call(set_distributed_dynamic_filter_collection)]
