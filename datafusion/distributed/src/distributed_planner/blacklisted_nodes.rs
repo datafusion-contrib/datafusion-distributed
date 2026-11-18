@@ -29,5 +29,11 @@ pub(crate) fn contains_blacklisted_node(
         return Ok(false);
     };
     // `as_ref()` is needed: calling `type_id()` on the `Arc` returns the Arc's own type id.
-    plan.exists(|node| Ok(blacklisted.0.contains(&node.as_ref().type_id())))
+    plan.exists(|node| {
+        let type_id = match node.downcast_delegate() {
+            Some(delegate) => delegate.type_id(),
+            None => node.as_ref().type_id(),
+        };
+        Ok(blacklisted.0.contains(&type_id))
+    })
 }
