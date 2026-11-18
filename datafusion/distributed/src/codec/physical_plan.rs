@@ -1,14 +1,18 @@
 use super::DistributedCodec;
 use datafusion::arrow::datatypes::{Schema, SchemaRef};
-use datafusion::common::Result;
+use datafusion::common::{Result, internal_datafusion_err};
 use datafusion::execution::TaskContext;
-use datafusion::physical_expr::{Partitioning, PhysicalExpr};
+use datafusion::physical_expr::{LexOrdering, Partitioning, PhysicalExpr};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::bytes::{
     physical_plan_from_bytes_with_proto_converter, physical_plan_to_bytes_with_proto_converter,
 };
-use datafusion_proto::physical_plan::from_proto::parse_protobuf_partitioning;
-use datafusion_proto::physical_plan::to_proto::serialize_partitioning;
+use datafusion_proto::physical_plan::from_proto::{
+    parse_physical_sort_exprs, parse_protobuf_partitioning,
+};
+use datafusion_proto::physical_plan::to_proto::{
+    serialize_partitioning, serialize_physical_sort_exprs,
+};
 use datafusion_proto::physical_plan::{
     DeduplicatingProtoConverter, PhysicalPlanDecodeContext, PhysicalProtoConverterExtension,
 };
@@ -99,4 +103,37 @@ pub(crate) fn decode_partitioning(
     let converter = new_proto_converter();
     parse_protobuf_partitioning(Some(&proto_partitioning), &decode_ctx, &schema, &converter)?
         .ok_or_else(|| proto_error("Could not parse partitioning"))
+}
+
+/// Protobuf wrapper for a [LexOrdering], as upstream has no message for a list of
+/// sort expressions.
+#[derive(Clone, PartialEq, ::prost::Message)]
+struct LexOrderingProto {
+    #[prost(message, repeated, tag = "1")]
+    sort_exprs: Vec<protobuf::PhysicalSortExprNode>,
+}
+
+pub(crate) fn encode_lex_ordering(
+    ordering: &LexOrdering,
+    task_ctx: &TaskContext,
+) -> Result<Vec<u8>> {
+    let codec = DistributedCodec::new_combined_with_user(task_ctx.session_config());
+    let converter = new_proto_converter();
+    let sort_exprs = serialize_physical_sort_exprs(ordering.iter().cloned(), &codec, &converter)?;
+    Ok(LexOrderingProto { sort_exprs }.encode_to_vec())
+}
+
+pub(crate) fn decode_lex_ordering(
+    encoded: &[u8],
+    input_schema: &Schema,
+    task_ctx: &TaskContext,
+) -> Result<LexOrdering> {
+    let proto = LexOrderingProto::decode(encoded).map_err(|err| proto_error(err.to_string()))?;
+    let codec = DistributedCodec::new_combined_with_user(task_ctx.session_config());
+    let decode_ctx = PhysicalPlanDecodeContext::new(task_ctx, &codec);
+    let converter = new_proto_converter();
+    let sort_exprs =
+        parse_physical_sort_exprs(&proto.sort_exprs, &decode_ctx, input_schema, &converter)?;
+    LexOrdering::new(sort_exprs)
+        .ok_or_else(|| internal_datafusion_err!("Cannot decode an empty LexOrdering"))
 }

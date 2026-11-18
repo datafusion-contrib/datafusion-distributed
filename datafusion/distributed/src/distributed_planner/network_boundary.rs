@@ -6,8 +6,10 @@ use crate::{
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::Result;
 use datafusion::execution::TaskContext;
-use datafusion::physical_expr::Partitioning;
+use datafusion::physical_expr::{LexOrdering, Partitioning};
+use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
+use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion::physical_plan::{
     ChildrenPropertiesMode, ExecutionPlan, ExecutionPlanProperties, ReplaceChildrenOptions,
 };
@@ -47,6 +49,13 @@ pub enum ProducerHead {
         /// Whether the producer must preserve its input's output ordering.
         preserve_order: bool,
     },
+    /// The head node should be a [CoalescePartitionsExec].
+    CoalescePartitionsExec { fetch: Option<usize> },
+    /// The head node should be a [SortPreservingMergeExec].
+    SortPreservingMergeExec {
+        fetch: Option<usize>,
+        lex_ordering: MaybeEncoded<LexOrdering>,
+    },
 }
 
 /// Extension trait for downcasting dynamic types to [NetworkBoundary].
@@ -83,6 +92,13 @@ impl ProducerHead {
                 partitioning: MaybeEncoded::Decoded(partitioning.decode(schema, ctx)?),
                 preserve_order,
             },
+            Self::SortPreservingMergeExec {
+                fetch,
+                lex_ordering,
+            } => Self::SortPreservingMergeExec {
+                fetch,
+                lex_ordering: MaybeEncoded::Decoded(lex_ordering.decode(&schema, ctx)?),
+            },
             v => v,
         })
     }
@@ -94,6 +110,10 @@ impl ProducerHead {
             Arc::clone(r_exec.input())
         } else if let Some(b_exec) = input.downcast_ref::<BroadcastExec>() {
             Arc::clone(b_exec.input())
+        } else if let Some(c_exec) = input.downcast_ref::<CoalescePartitionsExec>() {
+            Arc::clone(c_exec.input())
+        } else if let Some(s_exec) = input.downcast_ref::<SortPreservingMergeExec>() {
+            Arc::clone(s_exec.input())
         } else {
             input
         };
@@ -113,6 +133,16 @@ impl ProducerHead {
                 } else {
                     repartition
                 })
+            }
+            ProducerHead::CoalescePartitionsExec { fetch } => {
+                Arc::new(CoalescePartitionsExec::new(input).with_fetch(fetch))
+            }
+            ProducerHead::SortPreservingMergeExec {
+                fetch,
+                lex_ordering,
+            } => {
+                let lex_ordering = lex_ordering.try_decoded()?;
+                Arc::new(SortPreservingMergeExec::new(lex_ordering, input).with_fetch(fetch))
             }
         };
         Ok(plan)

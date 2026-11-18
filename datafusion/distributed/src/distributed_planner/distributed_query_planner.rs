@@ -8,7 +8,6 @@ use crate::distributed_planner::insert_children_isolator_union::insert_children_
 use crate::distributed_planner::normalize_collect_joins::normalize_collect_joins;
 use crate::distributed_planner::partial_reduce_below_network_shuffles::partial_reduce_below_network_shuffles;
 use crate::distributed_planner::prepare_network_boundaries::prepare_network_boundaries;
-use crate::distributed_planner::push_fetch_into_network_coalesce::push_fetch_into_network_coalesce;
 use crate::events::{ScaleUpLeafNodeEvent, ScaleUpLeafNodeHandlers};
 use crate::explain_analyze::DistributedAnalyzeExec;
 use crate::{DistributedConfig, DistributedExec, NetworkBoundaryExt};
@@ -135,7 +134,6 @@ pub fn create_distributed_plan(
             if !plan.exists(|plan| Ok(plan.is_network_boundary()))? {
                 return Ok(plan);
             }
-            let plan = push_fetch_into_network_coalesce(plan)?;
             return Ok(create_distributed_exec(Arc::clone(&plan), d_cfg));
         }
 
@@ -166,7 +164,6 @@ pub fn create_distributed_plan(
         }
 
         let plan = partial_reduce_below_network_shuffles(plan, cfg)?;
-        let plan = push_fetch_into_network_coalesce(plan)?;
 
         Ok(create_distributed_exec(Arc::clone(&plan), d_cfg))
     })

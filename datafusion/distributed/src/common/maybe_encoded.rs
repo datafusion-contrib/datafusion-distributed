@@ -1,11 +1,11 @@
 use crate::codec::{
-    decode_execution_plan, decode_partitioning, decode_physical_expr, encode_execution_plan,
-    encode_partitioning, encode_physical_expr,
+    decode_execution_plan, decode_lex_ordering, decode_partitioning, decode_physical_expr,
+    encode_execution_plan, encode_lex_ordering, encode_partitioning, encode_physical_expr,
 };
 use datafusion::arrow::datatypes::{Schema, SchemaRef};
 use datafusion::common::{Result, internal_err};
 use datafusion::execution::TaskContext;
-use datafusion::physical_expr::{Partitioning, PhysicalExpr};
+use datafusion::physical_expr::{LexOrdering, Partitioning, PhysicalExpr};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::protobuf::PhysicalExprNode;
 use datafusion_proto::protobuf::proto_error;
@@ -121,6 +121,25 @@ impl MaybeEncoded<Arc<dyn PhysicalExpr>> {
                 .map_err(|error| proto_error(error.to_string())),
             Self::Decoded(expression) => encode_physical_expr(expression, task_ctx),
         }
+    }
+}
+
+impl MaybeEncoded<LexOrdering> {
+    /// Returns the encoded [`LexOrdering`] as protobuf bytes:
+    /// - If in `Decoded` state, it encodes it using the codecs registered in the [`TaskContext`].
+    /// - If in `Encoded` state, it passes through the existing bytes.
+    pub fn encode(self, ctx: &Arc<TaskContext>) -> Result<Vec<u8>> {
+        match self {
+            Self::Encoded(encoded) => Ok(encoded),
+            Self::Decoded(lex_ordering) => encode_lex_ordering(&lex_ordering, ctx),
+        }
+    }
+
+    /// Returns the decoded [`LexOrdering`].
+    /// - If in `Decoded` state, it passes through the ordering.
+    /// - If in `Encoded` state, it decodes it using the provided schema and task context.
+    pub fn decode(self, input_schema: &Schema, task_ctx: &TaskContext) -> Result<LexOrdering> {
+        self.decode_with(|encoded| decode_lex_ordering(&encoded, input_schema, task_ctx))
     }
 }
 
