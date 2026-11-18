@@ -158,7 +158,6 @@ pub(crate) struct TestPlanBuilder {
     prefer_hash_join: Option<bool>,
     hash_join_single_partition_threshold: Option<usize>,
     hash_join_single_partition_threshold_rows: Option<usize>,
-    distributed_blacklisted_nodes: Vec<fn(&mut SessionConfig)>,
 }
 
 #[cfg(test)]
@@ -180,7 +179,6 @@ impl TestPlanBuilder {
             prefer_hash_join: None,
             hash_join_single_partition_threshold: None,
             hash_join_single_partition_threshold_rows: None,
-            distributed_blacklisted_nodes: vec![],
         }
     }
 
@@ -262,12 +260,6 @@ impl TestPlanBuilder {
         self
     }
 
-    pub fn with_distributed_blacklisted_node<T: ExecutionPlan>(mut self) -> Self {
-        self.distributed_blacklisted_nodes
-            .push(|cfg| cfg.set_distributed_blacklisted_node::<T>());
-        self
-    }
-
     fn build_config(&self) -> SessionConfig {
         let mut d_cfg = DistributedConfig {
             broadcast_joins: self.broadcast_joins,
@@ -315,9 +307,6 @@ impl TestPlanBuilder {
                 .options_mut()
                 .optimizer
                 .hash_join_single_partition_threshold_rows = value
-        }
-        for blacklist in &self.distributed_blacklisted_nodes {
-            blacklist(&mut config);
         }
         config
     }
@@ -403,7 +392,6 @@ impl Default for TestPlanBuilder {
             prefer_hash_join: None,
             hash_join_single_partition_threshold: None,
             hash_join_single_partition_threshold_rows: None,
-            distributed_blacklisted_nodes: vec![],
         }
     }
 }
