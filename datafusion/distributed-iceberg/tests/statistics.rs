@@ -217,7 +217,8 @@ mod tests {
             .await?;
         let stats = query_statistics(&harness, "SELECT * FROM taxi").await?;
 
-        assert_eq!(stats.num_rows, Precision::Exact(42));
+        // This historical summary omits the optional delete-file count.
+        assert_eq!(stats.num_rows, Precision::Inexact(42));
         assert_eq!(stats.total_byte_size, Precision::Exact(4_242));
         Ok(())
     }
@@ -317,6 +318,33 @@ mod tests {
         | count(*) |
         +----------+
         | 175000   |
+        +----------+
+        ");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn count_star_applies_position_deletes() -> Result<(), Box<dyn Error>> {
+        let (mut table, files) = create_metrics_table().await?;
+        // Nine data rows, with two positions removed from the first file.
+        table
+            .append()
+            .position_deletes(&files[0], [0, 2])
+            .commit()
+            .await?;
+        let harness = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
+            .with_table(table)
+            .with_config_option("iceberg.eager_file_planning", false)
+            .build()
+            .await?;
+        let (_, batches) = harness.query("SELECT count(*) FROM metrics").await?;
+
+        insta::assert_snapshot!(batches, @"
+        +----------+
+        | count(*) |
+        +----------+
+        | 7        |
         +----------+
         ");
         Ok(())

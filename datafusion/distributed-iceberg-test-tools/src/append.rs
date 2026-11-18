@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use datafusion::arrow::array::{RecordBatch, new_null_array};
+use datafusion::arrow::array::{Int64Array, RecordBatch, StringArray, new_null_array};
 use datafusion::arrow::compute::cast;
 use datafusion::arrow::datatypes::SchemaRef as ArrowSchemaRef;
 use datafusion::common::{exec_err, not_impl_err};
@@ -11,9 +11,12 @@ use datafusion::parquet::file::properties::WriterProperties;
 use iceberg::arrow::{RecordBatchPartitionSplitter, schema_to_arrow_schema};
 use iceberg::spec::{
     DataFile, DataFileFormat, FormatVersion, MAIN_BRANCH, ManifestListWriter,
-    ManifestWriterBuilder, Operation, Snapshot, SnapshotSummaryCollector, Summary,
+    ManifestWriterBuilder, Operation, PartitionKey, Snapshot, SnapshotSummaryCollector, Summary,
 };
 use iceberg::writer::base_writer::data_file_writer::DataFileWriterBuilder;
+use iceberg::writer::base_writer::position_delete_writer::{
+    PositionDeleteFileWriterBuilder, position_delete_schema,
+};
 use iceberg::writer::file_writer::ParquetWriterBuilder;
 use iceberg::writer::file_writer::location_generator::{
     DefaultFileNameGenerator, DefaultLocationGenerator,
@@ -24,18 +27,18 @@ use iceberg::writer::{IcebergWriter, IcebergWriterBuilder};
 use crate::FixtureTable;
 use crate::error::df_err;
 
-/// One commit that adds data files, started by [`FixtureTable::append`].
+/// One commit that adds data or position delete files, started by [`FixtureTable::append`].
 ///
 /// Each [`Append::file`] becomes exactly one Parquet data file, so tests
 /// control how rows are laid out across files. [`Append::commit`] adds them
 /// all in one snapshot on top of the current one. Snapshots are numbered 1,
 /// 2, 3, ..., unlike iceberg-rust's `fast_append`, which picks random ids, so
-/// that tests can show snapshot ids. Only adds data files: no deletes, and
-/// format version 2 only.
+/// that tests can show snapshot ids. Supports format version 2 only.
 pub struct Append<'a> {
     table: &'a mut FixtureTable,
     writer_properties: WriterProperties,
     files: Vec<RecordBatch>,
+    position_deletes: Vec<(DataFile, Vec<i64>)>,
 }
 
 impl<'a> Append<'a> {
@@ -44,6 +47,7 @@ impl<'a> Append<'a> {
             table,
             writer_properties: WriterProperties::default(),
             files: Vec::new(),
+            position_deletes: Vec::new(),
         }
     }
 
@@ -63,8 +67,19 @@ impl<'a> Append<'a> {
         self
     }
 
-    /// Writes the data files and commits them as a new snapshot of the main
-    /// branch. Returns the data files in the order they were added.
+    /// Adds a position delete file for the given data file's zero-based row positions.
+    pub fn position_deletes(
+        mut self,
+        file: &DataFile,
+        positions: impl IntoIterator<Item = i64>,
+    ) -> Self {
+        self.position_deletes
+            .push((file.clone(), positions.into_iter().collect()));
+        self
+    }
+
+    /// Writes the data and delete files and commits them as a new snapshot of the
+    /// main branch. Returns only the data files, in the order they were added.
     pub async fn commit(self) -> Result<Vec<DataFile>> {
         let table = self.table.table();
         let metadata = table.metadata();
@@ -125,31 +140,80 @@ impl<'a> Append<'a> {
             data_files.extend(writer.close().await.map_err(df_err)?);
         }
 
-        let mut manifest_writer = ManifestWriterBuilder::new(
-            file_io
-                .new_output(format!(
-                    "{}/metadata/snap-{snapshot_id}-m0.avro",
-                    metadata.location()
-                ))
-                .map_err(df_err)?,
-            Some(snapshot_id),
-            schema.clone(),
-            partition_spec.as_ref().clone(),
-        )
-        .build_v2_data();
-        let mut summary = SnapshotSummaryCollector::default();
-        for data_file in &data_files {
-            manifest_writer
-                .add_file(data_file.clone(), sequence_number)
-                .map_err(df_err)?;
-            summary.add_file(data_file, schema.clone(), partition_spec.clone());
-        }
-        let mut manifests = vec![
-            manifest_writer
-                .write_manifest_file()
+        let mut delete_files = Vec::new();
+        let delete_schema = position_delete_schema();
+        let delete_writer_builder =
+            PositionDeleteFileWriterBuilder::new(RollingFileWriterBuilder::new(
+                ParquetWriterBuilder::new(WriterProperties::default(), delete_schema.clone()),
+                usize::MAX,
+                file_io.clone(),
+                DefaultLocationGenerator::new(metadata).map_err(df_err)?,
+                DefaultFileNameGenerator::new(
+                    format!("{snapshot_id}-deletes"),
+                    None,
+                    DataFileFormat::Parquet,
+                ),
+            ));
+        for (file, mut positions) in self.position_deletes {
+            positions.sort_unstable();
+            positions.dedup();
+            let batch = RecordBatch::try_new(
+                Arc::new(schema_to_arrow_schema(&delete_schema).map_err(df_err)?),
+                vec![
+                    Arc::new(StringArray::from(vec![file.file_path(); positions.len()])),
+                    Arc::new(Int64Array::from(positions)),
+                ],
+            )?;
+            let partition_key = PartitionKey::new(
+                partition_spec.as_ref().clone(),
+                schema.clone(),
+                file.partition().clone(),
+            );
+            let mut writer = delete_writer_builder
+                .build(Some(partition_key))
                 .await
-                .map_err(df_err)?,
-        ];
+                .map_err(df_err)?;
+            writer.write(batch).await.map_err(df_err)?;
+            delete_files.extend(writer.close().await.map_err(df_err)?);
+        }
+
+        let mut manifests = Vec::new();
+        let mut summary = SnapshotSummaryCollector::default();
+        for (name, files, is_delete) in
+            [("m0", &data_files, false), ("deletes", &delete_files, true)]
+        {
+            if files.is_empty() {
+                continue;
+            }
+            let builder = ManifestWriterBuilder::new(
+                file_io
+                    .new_output(format!(
+                        "{}/metadata/snap-{snapshot_id}-{name}.avro",
+                        metadata.location()
+                    ))
+                    .map_err(df_err)?,
+                Some(snapshot_id),
+                schema.clone(),
+                partition_spec.as_ref().clone(),
+            );
+            let mut manifest_writer = if is_delete {
+                builder.build_v2_deletes()
+            } else {
+                builder.build_v2_data()
+            };
+            for data_file in files {
+                manifest_writer
+                    .add_file(data_file.clone(), sequence_number)
+                    .map_err(df_err)?;
+                summary.add_file(data_file, schema.clone(), partition_spec.clone());
+            }
+            manifests.push(
+                manifest_writer
+                    .write_manifest_file()
+                    .await
+                    .map_err(df_err)?,
+            );
+        }
         if let Some(parent) = metadata.current_snapshot() {
             let parent_manifests = table
                 .manifest_list_reader(parent)
@@ -183,7 +247,11 @@ impl<'a> Append<'a> {
             .with_timestamp_ms(now_ms())
             .with_manifest_list(manifest_list)
             .with_summary(Summary {
-                operation: Operation::Append,
+                operation: if delete_files.is_empty() {
+                    Operation::Append
+                } else {
+                    Operation::Overwrite
+                },
                 additional_properties: with_totals(
                     summary.build(),
                     metadata.current_snapshot().map(|parent| parent.summary()),

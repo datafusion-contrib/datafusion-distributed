@@ -197,6 +197,7 @@ impl fmt::Debug for ScanConfig {
 /// https://github.com/apache/iceberg-rust/blob/4168a0b2950dc5f85588e5cb3ab6796e5228b309/crates/iceberg/src/spec/snapshot_summary.rs#L46-L47
 const TOTAL_RECORDS: &str = "total-records";
 const TOTAL_FILE_SIZE: &str = "total-files-size";
+const TOTAL_DELETE_FILES: &str = "total-delete-files";
 
 /// Getting stats out of snapshot's additional properties (no I/O overhead)
 pub(crate) fn stats_from_snapshot(
@@ -213,10 +214,23 @@ pub(crate) fn stats_from_snapshot(
     };
     let props = &snap.summary().additional_properties;
 
+    // total-records counts data rows before merge-on-read deletes. Only an
+    // explicit zero delete-file count makes it safe to answer COUNT(*) from
+    // this summary. Missing or invalid optional counts must also force a scan.
+    let has_no_deletes = props
+        .get(TOTAL_DELETE_FILES)
+        .and_then(|v| v.parse::<u64>().ok())
+        == Some(0);
     let num_rows = props
         .get(TOTAL_RECORDS)
         .and_then(|v| v.parse().ok())
-        .map(Precision::Exact)
+        .map(|rows| {
+            if has_no_deletes {
+                Precision::Exact(rows)
+            } else {
+                Precision::Inexact(rows)
+            }
+        })
         .unwrap_or(Precision::Absent);
     let total_byte_size = props
         .get(TOTAL_FILE_SIZE)

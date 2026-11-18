@@ -165,7 +165,7 @@ impl FixtureTable {
         self.table.metadata_location_result().map_err(df_err)
     }
 
-    /// Starts a commit that appends data files.
+    /// Starts a commit that adds data or position delete files.
     pub fn append(&mut self) -> Append<'_> {
         Append::new(self)
     }
