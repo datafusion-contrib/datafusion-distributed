@@ -1,4 +1,6 @@
+use crate::common::arrow_bytes::column_arrow_bytes;
 use crate::common::df_err;
+use datafusion::arrow::datatypes::DataType;
 use datafusion::common::runtime::JoinSet;
 use datafusion::common::stats::Precision;
 use datafusion::common::{ColumnStatistics, HashMap, Result};
@@ -36,10 +38,11 @@ fn ndv_from_metadata(table: &Table, snapshot_id: i64) -> HashMap<i32, usize> {
     ndvs
 }
 
-/// Reading table statistics from data-files concurrently
+/// Reading table statistics from data-files concurrently, for each column's field id and Arrow
+/// type. Column sizes are in-memory estimates from [column_arrow_bytes].
 pub async fn compute_column_stats(
     table: Table,
-    fields_ids: Vec<i32>,
+    columns: Vec<(i32, DataType)>,
     snapshot: Option<SnapshotRef>,
 ) -> Result<Vec<ColumnStatistics>> {
     match snapshot {
@@ -73,18 +76,18 @@ pub async fn compute_column_stats(
 
             for manifest_file in manifests {
                 let table = table.clone();
-                let fields_ids = fields_ids.clone();
+                let columns = columns.clone();
 
                 join_set.spawn(async move {
                     let manifest = table.manifest_reader().read(&manifest_file).await?;
 
-                    let mut col_stats: Vec<Option<ColumnStatistics>> = vec![None; fields_ids.len()];
+                    let mut col_stats: Vec<Option<ColumnStatistics>> = vec![None; columns.len()];
 
                     for entry in manifest.entries().iter().filter(|e| e.is_alive()) {
                         let df = entry.data_file();
 
-                        for (i, &id) in fields_ids.iter().enumerate() {
-                            let next = data_file_col_stats(df, id);
+                        for (i, (id, data_type)) in columns.iter().enumerate() {
+                            let next = data_file_col_stats(df, *id, data_type);
                             col_stats[i] = Some(merge_col_stats(col_stats[i].take(), next));
                         }
                     }
@@ -93,7 +96,7 @@ pub async fn compute_column_stats(
                 });
             }
 
-            let mut merged: Vec<Option<ColumnStatistics>> = vec![None; fields_ids.len()];
+            let mut merged: Vec<Option<ColumnStatistics>> = vec![None; columns.len()];
             while let Some(result) = join_set.join_next().await {
                 let manifest_stats = result
                     .map_err(|e| DataFusionError::ExecutionJoin(Box::new(e)))?
@@ -111,7 +114,7 @@ pub async fn compute_column_stats(
                 .collect();
 
             let ndvs = ndv_from_metadata(&table, actual_snapshot.snapshot_id());
-            for (cs, id) in merged.iter_mut().zip(fields_ids.iter()) {
+            for (cs, (id, _)) in merged.iter_mut().zip(columns.iter()) {
                 if let Some(&ndv) = ndvs.get(id) {
                     cs.distinct_count = Precision::Inexact(ndv);
                 }
@@ -127,7 +130,7 @@ pub async fn compute_column_stats(
 
             Ok(merged)
         }
-        None => Ok(vec![ColumnStatistics::new_unknown(); fields_ids.len()]),
+        None => Ok(vec![ColumnStatistics::new_unknown(); columns.len()]),
     }
 }
 
@@ -146,7 +149,7 @@ fn merge_col_stats(acc: Option<ColumnStatistics>, next: ColumnStatistics) -> Col
     }
 }
 
-fn data_file_col_stats(df: &DataFile, id: i32) -> ColumnStatistics {
+fn data_file_col_stats(df: &DataFile, id: i32, data_type: &DataType) -> ColumnStatistics {
     ColumnStatistics {
         null_count: df
             .null_value_counts()
@@ -165,11 +168,11 @@ fn data_file_col_stats(df: &DataFile, id: i32) -> ColumnStatistics {
             .and_then(datum_to_scalar)
             .map(Precision::Inexact)
             .unwrap_or(Precision::Absent),
-        byte_size: df
-            .column_sizes()
-            .get(&id)
-            .map(|n| Precision::Inexact(*n as usize))
-            .unwrap_or(Precision::Absent),
+        byte_size: column_arrow_bytes(
+            data_type,
+            df.record_count(),
+            df.column_sizes().get(&id).copied(),
+        ),
         sum_value: Precision::Absent,
         distinct_count: Precision::Absent,
     }

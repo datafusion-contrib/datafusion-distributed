@@ -21,9 +21,11 @@ const DEFAULT_DATA_SIZE_PER_COLUMN: usize = 50;
 /// cost-based decisions about data shuffling and task count assignation. This implementation
 /// provides estimates for all types following Trino's cost model.
 ///
+/// Data sources can use it to size columns that have no statistics with the same defaults.
+///
 /// Reference: Trino's PlanNodeStatsEstimate.getOutputSizeForSymbol()
 /// https://github.com/trinodb/trino/blob/458/core/trino-main/src/main/java/io/trino/cost/PlanNodeStatsEstimate.java#L89-L114
-pub(super) fn default_bytes_for_datatype(data_type: &DataType) -> usize {
+pub fn default_bytes_for_datatype(data_type: &DataType) -> usize {
     // 1 byte for validity bitmap per row (Arrow uses 1 bit, but we round up for estimation).
     // Trino calls this the "is null" boolean array.
     // Reference: PlanNodeStatsEstimate.java:98-99
