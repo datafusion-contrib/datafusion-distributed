@@ -31,15 +31,16 @@ mod tests {
         insta::with_settings!({
             filters => [(r"[^ \[\],]*(build_side|probe_side)_[^ /\\:]+\.parquet", "$1.parquet")],
         }, {
-            assert_snapshot!(display, @"
+            assert_snapshot!(display, @r"
             ┌───── DistributedExec
             │ CoalescePartitionsExec
-            │   [Stage 3] => NetworkCoalesceExec: output_partitions=8, input_tasks=2
+            │   [Stage 3] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
             └──────────────────────────────────────────────────
-              ┌───── Stage 3 ── tasks=2, partitions=4
-              │ HashJoinExec: mode=Partitioned, join_type=Inner, on=[(id@0, id@0)], projection=[id@0]
-              │   [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=2
-              │   [Stage 2] => NetworkShuffleExec: output_partitions=4, input_tasks=2
+              ┌───── Stage 3 ── tasks=2, partitions=2
+              │ CoalescePartitionsExec
+              │   HashJoinExec: mode=Partitioned, join_type=Inner, on=[(id@0, id@0)], projection=[id@0]
+              │     [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=2
+              │     [Stage 2] => NetworkShuffleExec: output_partitions=4, input_tasks=2
               └──────────────────────────────────────────────────
                 ┌───── Stage 1 ── tasks=2, partitions=8
                 │ RepartitionExec: partitioning=Hash([id@0], 8), input_partitions=1

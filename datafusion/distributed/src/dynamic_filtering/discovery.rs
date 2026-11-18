@@ -251,11 +251,12 @@ mod tests {
         .await?;
         assert_snapshot!(display, @r"
         Stage 5 remote_producers=[1]
-          AggregateExec
-            HashJoinExec producers=[1]
-              NetworkShuffleExec
-              AggregateExec
-                NetworkShuffleExec anchors=[1]
+          CoalescePartitionsExec
+            AggregateExec
+              HashJoinExec producers=[1]
+                NetworkShuffleExec
+                AggregateExec
+                  NetworkShuffleExec anchors=[1]
         Stage 4
           RepartitionExec
             AggregateExec
@@ -302,13 +303,14 @@ mod tests {
         .await?;
         assert_snapshot!(display, @r"
         Stage 4 remote_producers=[1]
-          AggregateExec
-            HashJoinExec producers=[1]
-              AggregateExec
-                NetworkShuffleExec
-              ProjectionExec
+          CoalescePartitionsExec
+            AggregateExec
+              HashJoinExec producers=[1]
                 AggregateExec
-                  NetworkShuffleExec anchors=[1]
+                  NetworkShuffleExec
+                ProjectionExec
+                  AggregateExec
+                    NetworkShuffleExec anchors=[1]
         Stage 3
           RepartitionExec
             AggregateExec
@@ -350,11 +352,12 @@ mod tests {
         .await?;
         assert_snapshot!(display, @r"
         Stage 5
-          AggregateExec
-            HashJoinExec producers=[1]
-              NetworkShuffleExec
-              AggregateExec
+          CoalescePartitionsExec
+            AggregateExec
+              HashJoinExec producers=[1]
                 NetworkShuffleExec
+                AggregateExec
+                  NetworkShuffleExec
         Stage 4
           RepartitionExec
             AggregateExec

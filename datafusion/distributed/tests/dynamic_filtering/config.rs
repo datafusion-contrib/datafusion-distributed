@@ -41,19 +41,20 @@ mod tests {
         .without_remote_dynamic_filters()
         .execute()
         .await?;
-        assert_snapshot!(display, @"
+        assert_snapshot!(display, @r"
         ┌───── DistributedExec
         │ ProjectionExec: expr=[count(Int64(1))@0 as count(*)]
         │   AggregateExec: mode=Final, gby=[], aggr=[count(Int64(1))]
         │     CoalescePartitionsExec
-        │       [Stage 3] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
+        │       [Stage 3] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 3 ── tasks=2, partitions=3
-          │ AggregateExec: mode=Partial, gby=[], aggr=[count(Int64(1))]
-          │   HashJoinExec: mode=Partitioned, join_type=RightSemi, on=[(key@0, RainToday@0)], projection=[]
-          │     AggregateExec: mode=FinalPartitioned, gby=[key@0 as key], aggr=[]
-          │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=2
-          │     [Stage 2] => NetworkShuffleExec: output_partitions=3, input_tasks=2
+          ┌───── Stage 3 ── tasks=2, partitions=2
+          │ CoalescePartitionsExec
+          │   AggregateExec: mode=Partial, gby=[], aggr=[count(Int64(1))]
+          │     HashJoinExec: mode=Partitioned, join_type=RightSemi, on=[(key@0, RainToday@0)], projection=[]
+          │       AggregateExec: mode=FinalPartitioned, gby=[key@0 as key], aggr=[]
+          │         [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=2
+          │       [Stage 2] => NetworkShuffleExec: output_partitions=3, input_tasks=2
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=2, partitions=6
             │ RepartitionExec: partitioning=Hash([key@0], 6), input_partitions=3

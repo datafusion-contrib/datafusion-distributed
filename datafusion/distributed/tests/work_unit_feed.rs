@@ -56,14 +56,15 @@ mod tests {
         .await?;
 
         assert_snapshot!(plan + &results,
-            @"
+            @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST]
-        │   [Stage 1] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
+        │   [Stage 1] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── tasks=2, partitions=4
-          │ SortExec: expr=[task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
-          │   RowGeneratorExec: tag=source, tasks=2, partition_ops=[[rows(1), rows(1)], [rows(2)], [rows(1)], [rows(2), rows(1)]]
+          ┌───── Stage 1 ── tasks=2, partitions=2
+          │ SortPreservingMergeExec: [task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST]
+          │   SortExec: expr=[task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
+          │     RowGeneratorExec: tag=source, tasks=2, partition_ops=[[rows(1), rows(1)], [rows(2)], [rows(1)], [rows(2), rows(1)]]
           └──────────────────────────────────────────────────
         +--------+------+-----------+--------+
         | tag    | task | partition | letter |
@@ -95,14 +96,15 @@ mod tests {
         .await?;
 
         assert_snapshot!(plan + &results,
-            @"
+            @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST]
-        │   [Stage 1] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
+        │   [Stage 1] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── tasks=2, partitions=4
-          │ SortExec: expr=[task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
-          │   RowGeneratorExec: tag=source, tasks=2, partition_ops=[[rows(3)], [], [], [rows(1)]]
+          ┌───── Stage 1 ── tasks=2, partitions=2
+          │ SortPreservingMergeExec: [task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST]
+          │   SortExec: expr=[task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
+          │     RowGeneratorExec: tag=source, tasks=2, partition_ops=[[rows(3)], [], [], [rows(1)]]
           └──────────────────────────────────────────────────
         +--------+------+-----------+--------+
         | tag    | task | partition | letter |
@@ -129,14 +131,15 @@ mod tests {
         .await?;
 
         assert_snapshot!(plan + &results,
-            @"
+            @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST]
-        │   [Stage 1] => NetworkCoalesceExec: output_partitions=6, input_tasks=3
+        │   [Stage 1] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── tasks=3, partitions=6
-          │ SortExec: expr=[task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
-          │   RowGeneratorExec: tag=source, tasks=3, partition_ops=[[rows(2)], [rows(1)], [rows(3)], [rows(1)], [rows(2)], [rows(1)]]
+          ┌───── Stage 1 ── tasks=3, partitions=3
+          │ SortPreservingMergeExec: [task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST]
+          │   SortExec: expr=[task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
+          │     RowGeneratorExec: tag=source, tasks=3, partition_ops=[[rows(2)], [rows(1)], [rows(3)], [rows(1)], [rows(2)], [rows(1)]]
           └──────────────────────────────────────────────────
         +--------+------+-----------+--------+
         | tag    | task | partition | letter |
@@ -172,17 +175,18 @@ mod tests {
         .await?;
 
         assert_snapshot!(plan + &results,
-            @"
+            @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST]
-        │   [Stage 1] => NetworkCoalesceExec: output_partitions=12, input_tasks=3
+        │   [Stage 1] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── tasks=3, partitions=12
-          │ DistributedUnionExec: t0:[c0(0/2)] t1:[c0(1/2)] t2:[c1]
-          │   SortExec: expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
-          │     RowGeneratorExec: tag=left, tasks=2, partition_ops=[[rows(2)], [rows(1)], [rows(3)], [rows(1)]]
-          │   SortExec: expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
-          │     RowGeneratorExec: tag=right, tasks=2, partition_ops=[[rows(1)], [rows(2)], [rows(1)], [rows(1)]]
+          ┌───── Stage 1 ── tasks=3, partitions=3
+          │ SortPreservingMergeExec: [tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST]
+          │   DistributedUnionExec: t0:[c0(0/2)] t1:[c0(1/2)] t2:[c1]
+          │     SortExec: expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
+          │       RowGeneratorExec: tag=left, tasks=2, partition_ops=[[rows(2)], [rows(1)], [rows(3)], [rows(1)]]
+          │     SortExec: expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
+          │       RowGeneratorExec: tag=right, tasks=2, partition_ops=[[rows(1)], [rows(2)], [rows(1)], [rows(1)]]
           └──────────────────────────────────────────────────
         +-------+------+-----------+--------+
         | tag   | task | partition | letter |
@@ -220,16 +224,17 @@ mod tests {
         .await?;
 
         assert_snapshot!(plan + &results,
-            @"
+            @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [letter@1 ASC NULLS LAST]
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── tasks=2, partitions=3
-          │ ProjectionExec: expr=[count(Int64(1))@1 as cnt, letter@0 as letter]
-          │   SortExec: expr=[letter@0 ASC NULLS LAST], preserve_partitioning=[true]
-          │     AggregateExec: mode=FinalPartitioned, gby=[letter@0 as letter], aggr=[count(Int64(1))]
-          │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=2
+          ┌───── Stage 2 ── tasks=2, partitions=2
+          │ SortPreservingMergeExec: [letter@1 ASC NULLS LAST]
+          │   ProjectionExec: expr=[count(Int64(1))@1 as cnt, letter@0 as letter]
+          │     SortExec: expr=[letter@0 ASC NULLS LAST], preserve_partitioning=[true]
+          │       AggregateExec: mode=FinalPartitioned, gby=[letter@0 as letter], aggr=[count(Int64(1))]
+          │         [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=2
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=2, partitions=6
             │ RepartitionExec: partitioning=Hash([letter@0], 6), input_partitions=2
@@ -267,17 +272,18 @@ mod tests {
         .await?;
 
         assert_snapshot!(plan + &results,
-            @"
+            @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [a_task@0 ASC NULLS LAST, a_letter@1 ASC NULLS LAST, b_task@2 ASC NULLS LAST, b_letter@3 ASC NULLS LAST]
-        │   [Stage 3] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
+        │   [Stage 3] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 3 ── tasks=2, partitions=3
-          │ ProjectionExec: expr=[task@2 as a_task, letter@3 as a_letter, task@0 as b_task, letter@1 as b_letter]
-          │   SortExec: expr=[task@2 ASC NULLS LAST, letter@1 ASC NULLS LAST, task@0 ASC NULLS LAST], preserve_partitioning=[true]
-          │     HashJoinExec: mode=Partitioned, join_type=Inner, on=[(letter@1, letter@1)]
-          │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=2
-          │       [Stage 2] => NetworkShuffleExec: output_partitions=3, input_tasks=2
+          ┌───── Stage 3 ── tasks=2, partitions=2
+          │ SortPreservingMergeExec: [a_task@0 ASC NULLS LAST, b_letter@3 ASC NULLS LAST, b_task@2 ASC NULLS LAST]
+          │   ProjectionExec: expr=[task@2 as a_task, letter@3 as a_letter, task@0 as b_task, letter@1 as b_letter]
+          │     SortExec: expr=[task@2 ASC NULLS LAST, letter@1 ASC NULLS LAST, task@0 ASC NULLS LAST], preserve_partitioning=[true]
+          │       HashJoinExec: mode=Partitioned, join_type=Inner, on=[(letter@1, letter@1)]
+          │         [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=2
+          │         [Stage 2] => NetworkShuffleExec: output_partitions=3, input_tasks=2
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=2, partitions=6
             │ RepartitionExec: partitioning=Hash([letter@1], 6), input_partitions=2
@@ -333,16 +339,17 @@ mod tests {
         assert_snapshot!(plan + &results, @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST]
-        │   [Stage 1] => NetworkCoalesceExec: output_partitions=6, input_tasks=3
+        │   [Stage 1] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── tasks=3, partitions=6
-          │ DistributedUnionExec: t0:[c0] t1:[c1] t2:[c2]
-          │   SortExec: expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
-          │     RowGeneratorExec: tag=x, tasks=2, partition_ops=[[rows(2)], [rows(1)]]
-          │   SortExec: expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
-          │     RowGeneratorExec: tag=y, tasks=2, partition_ops=[[rows(1)], [rows(3)]]
-          │   SortExec: expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
-          │     RowGeneratorExec: tag=z, tasks=2, partition_ops=[[rows(1)], [rows(1)]]
+          ┌───── Stage 1 ── tasks=3, partitions=3
+          │ SortPreservingMergeExec: [tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST]
+          │   DistributedUnionExec: t0:[c0] t1:[c1] t2:[c2]
+          │     SortExec: expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
+          │       RowGeneratorExec: tag=x, tasks=2, partition_ops=[[rows(2)], [rows(1)]]
+          │     SortExec: expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
+          │       RowGeneratorExec: tag=y, tasks=2, partition_ops=[[rows(1)], [rows(3)]]
+          │     SortExec: expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
+          │       RowGeneratorExec: tag=z, tasks=2, partition_ops=[[rows(1)], [rows(1)]]
           └──────────────────────────────────────────────────
         +-----+------+-----------+--------+
         | tag | task | partition | letter |
@@ -393,43 +400,50 @@ mod tests {
         │   [Stage 7] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
           ┌───── Stage 7 ── tasks=2, partitions=2
-          │ DistributedUnionExec: t0:[c0] t1:[c1]
-          │   SortExec: TopK(fetch=1000000), expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[false]
-          │     CoalescePartitionsExec
-          │       [Stage 3] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
-          │   SortExec: TopK(fetch=1000000), expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[false]
-          │     CoalescePartitionsExec
-          │       [Stage 6] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
+          │ SortPreservingMergeExec: [tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST]
+          │   DistributedUnionExec: t0:[c0] t1:[c1]
+          │     SortExec: TopK(fetch=1000000), expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[false]
+          │       CoalescePartitionsExec
+          │         [Stage 3] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
+          │     SortExec: TopK(fetch=1000000), expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[false]
+          │       CoalescePartitionsExec
+          │         [Stage 6] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
           └──────────────────────────────────────────────────
             ┌───── Stage 3 ── tasks=2, partitions=2
-            │ DistributedUnionExec: t0:[c0] t1:[c1]
-            │   CoalescePartitionsExec: fetch=1000000
-            │     [Stage 1] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
-            │   CoalescePartitionsExec: fetch=1000000
-            │     [Stage 2] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
+            │ CoalescePartitionsExec
+            │   DistributedUnionExec: t0:[c0] t1:[c1]
+            │     CoalescePartitionsExec: fetch=1000000
+            │       [Stage 1] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
+            │     CoalescePartitionsExec: fetch=1000000
+            │       [Stage 2] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
             └──────────────────────────────────────────────────
-              ┌───── Stage 1 ── tasks=2, partitions=4
-              │ LocalLimitExec: fetch=1000000
-              │   RowGeneratorExec: tag=a, tasks=2, partition_ops=[[rows(2)], [rows(1)], [rows(1)], [rows(2)]]
+              ┌───── Stage 1 ── tasks=2, partitions=2
+              │ CoalescePartitionsExec: fetch=1000000
+              │   LocalLimitExec: fetch=1000000
+              │     RowGeneratorExec: tag=a, tasks=2, partition_ops=[[rows(2)], [rows(1)], [rows(1)], [rows(2)]]
               └──────────────────────────────────────────────────
-              ┌───── Stage 2 ── tasks=2, partitions=4
-              │ LocalLimitExec: fetch=1000000
-              │   RowGeneratorExec: tag=b, tasks=2, partition_ops=[[rows(1)], [rows(2)], [rows(2)], [rows(1)]]
+              ┌───── Stage 2 ── tasks=2, partitions=2
+              │ CoalescePartitionsExec: fetch=1000000
+              │   LocalLimitExec: fetch=1000000
+              │     RowGeneratorExec: tag=b, tasks=2, partition_ops=[[rows(1)], [rows(2)], [rows(2)], [rows(1)]]
               └──────────────────────────────────────────────────
             ┌───── Stage 6 ── tasks=2, partitions=2
-            │ DistributedUnionExec: t0:[c0] t1:[c1]
-            │   CoalescePartitionsExec: fetch=1000000
-            │     [Stage 4] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
-            │   CoalescePartitionsExec: fetch=1000000
-            │     [Stage 5] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
+            │ CoalescePartitionsExec
+            │   DistributedUnionExec: t0:[c0] t1:[c1]
+            │     CoalescePartitionsExec: fetch=1000000
+            │       [Stage 4] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
+            │     CoalescePartitionsExec: fetch=1000000
+            │       [Stage 5] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
             └──────────────────────────────────────────────────
-              ┌───── Stage 4 ── tasks=2, partitions=4
-              │ LocalLimitExec: fetch=1000000
-              │   RowGeneratorExec: tag=c, tasks=2, partition_ops=[[rows(3)], [rows(1)], [rows(1)], [rows(2)]]
+              ┌───── Stage 4 ── tasks=2, partitions=2
+              │ CoalescePartitionsExec: fetch=1000000
+              │   LocalLimitExec: fetch=1000000
+              │     RowGeneratorExec: tag=c, tasks=2, partition_ops=[[rows(3)], [rows(1)], [rows(1)], [rows(2)]]
               └──────────────────────────────────────────────────
-              ┌───── Stage 5 ── tasks=2, partitions=4
-              │ LocalLimitExec: fetch=1000000
-              │   RowGeneratorExec: tag=d, tasks=2, partition_ops=[[rows(1)], [rows(1)], [rows(2)], [rows(1)]]
+              ┌───── Stage 5 ── tasks=2, partitions=2
+              │ CoalescePartitionsExec: fetch=1000000
+              │   LocalLimitExec: fetch=1000000
+              │     RowGeneratorExec: tag=d, tasks=2, partition_ops=[[rows(1)], [rows(1)], [rows(2)], [rows(1)]]
               └──────────────────────────────────────────────────
         +-----+------+-----------+--------+
         | tag | task | partition | letter |
@@ -480,14 +494,15 @@ mod tests {
         assert_snapshot!(plan + &results, @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST]
-        │   [Stage 1] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
+        │   [Stage 1] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── tasks=2, partitions=6
-          │ DistributedUnionExec: t0:[c0(0/2), c1] t1:[c0(1/2)]
-          │   SortExec: expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
-          │     RowGeneratorExec: tag=feed, tasks=2, partition_ops=[[rows(2)], [rows(1)], [rows(1)], [rows(2)]]
-          │   ProjectionExec: expr=[static as tag, 0 as task, 0 as partition, x as letter]
-          │     PlaceholderRowExec
+          ┌───── Stage 1 ── tasks=2, partitions=2
+          │ SortPreservingMergeExec: [tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST]
+          │   DistributedUnionExec: t0:[c0(0/2), c1] t1:[c0(1/2)]
+          │     SortExec: expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
+          │       RowGeneratorExec: tag=feed, tasks=2, partition_ops=[[rows(2)], [rows(1)], [rows(1)], [rows(2)]]
+          │     ProjectionExec: expr=[static as tag, 0 as task, 0 as partition, x as letter]
+          │       PlaceholderRowExec
           └──────────────────────────────────────────────────
         +--------+------+-----------+--------+
         | tag    | task | partition | letter |
@@ -525,13 +540,14 @@ mod tests {
         assert_snapshot!(plan + &results, @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [tag@0 ASC NULLS LAST, letter@1 ASC NULLS LAST]
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
         └──────────────────────────────────────────────────
           ┌───── Stage 2 ── tasks=3, partitions=3
-          │ ProjectionExec: expr=[tag@0 as tag, letter@1 as letter, count(Int64(1))@2 as cnt]
-          │   SortExec: expr=[tag@0 ASC NULLS LAST, letter@1 ASC NULLS LAST], preserve_partitioning=[true]
-          │     AggregateExec: mode=FinalPartitioned, gby=[tag@0 as tag, letter@1 as letter], aggr=[count(Int64(1))]
-          │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=3
+          │ SortPreservingMergeExec: [tag@0 ASC NULLS LAST, letter@1 ASC NULLS LAST]
+          │   ProjectionExec: expr=[tag@0 as tag, letter@1 as letter, count(Int64(1))@2 as cnt]
+          │     SortExec: expr=[tag@0 ASC NULLS LAST, letter@1 ASC NULLS LAST], preserve_partitioning=[true]
+          │       AggregateExec: mode=FinalPartitioned, gby=[tag@0 as tag, letter@1 as letter], aggr=[count(Int64(1))]
+          │         [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=3
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=3, partitions=9
             │ RepartitionExec: partitioning=Hash([tag@0, letter@1], 9), input_partitions=4
@@ -577,16 +593,17 @@ mod tests {
         assert_snapshot!(plan + &results, @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [a_tag@0 ASC NULLS LAST, letter@1 ASC NULLS LAST, cnt@2 ASC NULLS LAST]
-        │   [Stage 3] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
+        │   [Stage 3] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 3 ── tasks=2, partitions=3
-          │ SortExec: expr=[a_tag@0 ASC NULLS LAST, letter@1 ASC NULLS LAST, cnt@2 ASC NULLS LAST], preserve_partitioning=[true]
-          │   ProjectionExec: expr=[tag@0 as a_tag, letter@1 as letter, cnt@2 as cnt]
-          │     HashJoinExec: mode=Partitioned, join_type=Inner, on=[(letter@1, letter@0)], projection=[tag@0, letter@1, cnt@3]
-          │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=2
-          │       ProjectionExec: expr=[letter@0 as letter, count(Int64(1))@1 as cnt]
-          │         AggregateExec: mode=FinalPartitioned, gby=[letter@0 as letter], aggr=[count(Int64(1))]
-          │           [Stage 2] => NetworkShuffleExec: output_partitions=3, input_tasks=2
+          ┌───── Stage 3 ── tasks=2, partitions=2
+          │ SortPreservingMergeExec: [a_tag@0 ASC NULLS LAST, letter@1 ASC NULLS LAST, cnt@2 ASC NULLS LAST]
+          │   SortExec: expr=[a_tag@0 ASC NULLS LAST, letter@1 ASC NULLS LAST, cnt@2 ASC NULLS LAST], preserve_partitioning=[true]
+          │     ProjectionExec: expr=[tag@0 as a_tag, letter@1 as letter, cnt@2 as cnt]
+          │       HashJoinExec: mode=Partitioned, join_type=Inner, on=[(letter@1, letter@0)], projection=[tag@0, letter@1, cnt@3]
+          │         [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=2
+          │         ProjectionExec: expr=[letter@0 as letter, count(Int64(1))@1 as cnt]
+          │           AggregateExec: mode=FinalPartitioned, gby=[letter@0 as letter], aggr=[count(Int64(1))]
+          │             [Stage 2] => NetworkShuffleExec: output_partitions=3, input_tasks=2
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=2, partitions=6
             │ RepartitionExec: partitioning=Hash([letter@1], 6), input_partitions=2
@@ -630,15 +647,16 @@ mod tests {
         assert_snapshot!(plan + &results, @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [a_task@1 ASC NULLS LAST, a_partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST, b_task@5 ASC NULLS LAST, b_partition@6 ASC NULLS LAST]
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── tasks=2, partitions=4
-          │ SortExec: expr=[a_task@1 ASC NULLS LAST, a_partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST, b_task@5 ASC NULLS LAST, b_partition@6 ASC NULLS LAST], preserve_partitioning=[true]
-          │   ProjectionExec: expr=[tag@0 as a_tag, task@1 as a_task, partition@2 as a_partition, letter@3 as letter, tag@4 as b_tag, task@5 as b_task, partition@6 as b_partition]
-          │     HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(letter@3, letter@3)], projection=[tag@0, task@1, partition@2, letter@3, tag@4, task@5, partition@6]
-          │       CoalescePartitionsExec
-          │         [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=2, stage_partitions=4, input_tasks=2
-          │       RowGeneratorExec: tag=build, tasks=2, partition_ops=[[rows(1)], [rows(2)], [rows(1)], [rows(3)]]
+          ┌───── Stage 2 ── tasks=2, partitions=2
+          │ SortPreservingMergeExec: [a_task@1 ASC NULLS LAST, a_partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST, b_task@5 ASC NULLS LAST, b_partition@6 ASC NULLS LAST]
+          │   SortExec: expr=[a_task@1 ASC NULLS LAST, a_partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST, b_task@5 ASC NULLS LAST, b_partition@6 ASC NULLS LAST], preserve_partitioning=[true]
+          │     ProjectionExec: expr=[tag@0 as a_tag, task@1 as a_task, partition@2 as a_partition, letter@3 as letter, tag@4 as b_tag, task@5 as b_task, partition@6 as b_partition]
+          │       HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(letter@3, letter@3)], projection=[tag@0, task@1, partition@2, letter@3, tag@4, task@5, partition@6]
+          │         CoalescePartitionsExec
+          │           [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=2, stage_partitions=4, input_tasks=2
+          │         RowGeneratorExec: tag=build, tasks=2, partition_ops=[[rows(1)], [rows(2)], [rows(1)], [rows(3)]]
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=2, partitions=8
             │ BroadcastExec: input_partitions=2, consumer_tasks=2, output_partitions=4
@@ -776,14 +794,15 @@ mod tests {
         assert_snapshot!(plan + &results, @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST]
-        │   [Stage 1] => NetworkCoalesceExec: output_partitions=12, input_tasks=3
+        │   [Stage 1] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── tasks=3, partitions=12
-          │ DistributedUnionExec: t0:[c0(0/2)] t1:[c0(1/2)] t2:[c1]
-          │   SortExec: expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
-          │     RowGeneratorExec: tag=fast, tasks=2, partition_ops=[[rows(1)], [rows(1)], [rows(1)], [rows(1)]]
-          │   SortExec: expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
-          │     RowGeneratorExec: tag=slow, tasks=2, partition_ops=[[wait(500), rows(1)], [rows(1)], [rows(1)], [rows(1)]]
+          ┌───── Stage 1 ── tasks=3, partitions=3
+          │ SortPreservingMergeExec: [tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST]
+          │   DistributedUnionExec: t0:[c0(0/2)] t1:[c0(1/2)] t2:[c1]
+          │     SortExec: expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
+          │       RowGeneratorExec: tag=fast, tasks=2, partition_ops=[[rows(1)], [rows(1)], [rows(1)], [rows(1)]]
+          │     SortExec: expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
+          │       RowGeneratorExec: tag=slow, tasks=2, partition_ops=[[wait(500), rows(1)], [rows(1)], [rows(1)], [rows(1)]]
           └──────────────────────────────────────────────────
         +------+------+-----------+--------+
         | tag  | task | partition | letter |
@@ -822,16 +841,17 @@ mod tests {
         assert_snapshot!(plan + &results, @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [tag@1 ASC NULLS LAST, tag@0 ASC NULLS LAST]
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── tasks=3, partitions=9
-          │ SortExec: expr=[tag@1 ASC NULLS LAST, tag@0 ASC NULLS LAST], preserve_partitioning=[true]
-          │   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(letter@1, letter@1)], projection=[tag@0, tag@2]
-          │     CoalescePartitionsExec
-          │       [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=1, stage_partitions=3, input_tasks=3
-          │     DistributedUnionExec: t0:[c0(0/2)] t1:[c0(1/2)] t2:[c1]
-          │       RowGeneratorExec: tag=small_a, tasks=1, partition_ops=[[rows(1)], [rows(1)], [rows(1)]]
-          │       RowGeneratorExec: tag=small_b, tasks=1, partition_ops=[[rows(1)], [rows(1)], [rows(1)]]
+          ┌───── Stage 2 ── tasks=3, partitions=3
+          │ SortPreservingMergeExec: [tag@1 ASC NULLS LAST, tag@0 ASC NULLS LAST]
+          │   SortExec: expr=[tag@1 ASC NULLS LAST, tag@0 ASC NULLS LAST], preserve_partitioning=[true]
+          │     HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(letter@1, letter@1)], projection=[tag@0, tag@2]
+          │       CoalescePartitionsExec
+          │         [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=1, stage_partitions=3, input_tasks=3
+          │       DistributedUnionExec: t0:[c0(0/2)] t1:[c0(1/2)] t2:[c1]
+          │         RowGeneratorExec: tag=small_a, tasks=1, partition_ops=[[rows(1)], [rows(1)], [rows(1)]]
+          │         RowGeneratorExec: tag=small_b, tasks=1, partition_ops=[[rows(1)], [rows(1)], [rows(1)]]
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=3, partitions=9
             │ BroadcastExec: input_partitions=1, consumer_tasks=3, output_partitions=3

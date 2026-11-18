@@ -606,7 +606,7 @@ mod tests {
         let display = display_plan_dump(dump, DisplayPlanDumpOptions::default())?;
         assert_snapshot!(display, @r"
         DistributedExec
-        └─ Stage 2 (Coalesce) tasks=3 partitions=4
+        └─ Stage 2 (Coalesce) tasks=3 partitions=3
            └─ Stage 1 (Shuffle) tasks=3 partitions=12
         ");
         Ok(())
@@ -622,10 +622,11 @@ mod tests {
         let opts = DisplayPlanDumpOptions::default().with_stage_id(2);
         let display = display_plan_dump(dump, opts)?;
         assert_snapshot!(display, @r"
-        Stage 2 (Coalesce) tasks=3 partitions=4
-        └─ ProjectionExec: expr=[RainToday@0 as RainToday, count(Int64(1))@1 as count(*)]
-           └─ AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
-              └─ [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
+        Stage 2 (Coalesce) tasks=3 partitions=3
+        └─ CoalescePartitionsExec
+           └─ ProjectionExec: expr=[RainToday@0 as RainToday, count(Int64(1))@1 as count(*)]
+              └─ AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
+                 └─ [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
         ");
         Ok(())
     }
@@ -640,13 +641,14 @@ mod tests {
         let opts = DisplayPlanDumpOptions::default().with_stage_id(1);
         let display = display_plan_dump(dump, opts)?;
         assert_snapshot!(display, @r"
-        Stage 1 (Coalesce) tasks=3 partitions=12
-        └─ FilterExec: Rainfall@1 > 0, projection=[MinTemp@0, RainToday@2]
-           └─ RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
-              └─ DistributedLeafExec:
-                 ├─ t0: DataSourceExec: file_groups={3 groups}, projection=[MinTemp, Rainfall, RainToday], file_type=parquet, predicate=Rainfall@2 > 0, pruning_predicate=Rainfall_null_count@1 != row_count@2 AND Rainfall_max@0 > 0, required_guarantees=[]
-                 ├─ t1: DataSourceExec: file_groups={3 groups}, projection=[MinTemp, Rainfall, RainToday], file_type=parquet, predicate=Rainfall@2 > 0, pruning_predicate=Rainfall_null_count@1 != row_count@2 AND Rainfall_max@0 > 0, required_guarantees=[]
-                 └─ t2: DataSourceExec: file_groups={3 groups}, projection=[MinTemp, Rainfall, RainToday], file_type=parquet, predicate=Rainfall@2 > 0, pruning_predicate=Rainfall_null_count@1 != row_count@2 AND Rainfall_max@0 > 0, required_guarantees=[]
+        Stage 1 (Coalesce) tasks=3 partitions=3
+        └─ CoalescePartitionsExec
+           └─ FilterExec: Rainfall@1 > 0, projection=[MinTemp@0, RainToday@2]
+              └─ RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+                 └─ DistributedLeafExec:
+                    ├─ t0: DataSourceExec: file_groups={3 groups}, projection=[MinTemp, Rainfall, RainToday], file_type=parquet, predicate=Rainfall@2 > 0, pruning_predicate=Rainfall_null_count@1 != row_count@2 AND Rainfall_max@0 > 0, required_guarantees=[]
+                    ├─ t1: DataSourceExec: file_groups={3 groups}, projection=[MinTemp, Rainfall, RainToday], file_type=parquet, predicate=Rainfall@2 > 0, pruning_predicate=Rainfall_null_count@1 != row_count@2 AND Rainfall_max@0 > 0, required_guarantees=[]
+                    └─ t2: DataSourceExec: file_groups={3 groups}, projection=[MinTemp, Rainfall, RainToday], file_type=parquet, predicate=Rainfall@2 > 0, pruning_predicate=Rainfall_null_count@1 != row_count@2 AND Rainfall_max@0 > 0, required_guarantees=[]
         ");
         Ok(())
     }
@@ -674,7 +676,7 @@ mod tests {
             │ plan_send_latency_avg=<time>
             │ plan_send_latency_max=<time>
             │ plan_bytes_sent=<bytes>
-            └─ Stage 1 (Coalesce) tasks=3 partitions=12
+            └─ Stage 1 (Coalesce) tasks=3 partitions=3
                  output_rows=103
                  elapsed_compute={0:<time>, 1:<time>, 2:<time>}
                  output_bytes=<bytes>
@@ -711,7 +713,7 @@ mod tests {
             │ plan_send_latency_avg=<time>
             │ plan_send_latency_max=<time>
             │ plan_bytes_sent=<bytes>
-            └─ Stage 1 (Coalesce) tasks=3 partitions=12
+            └─ Stage 1 (Coalesce) tasks=3 partitions=3
                  output_rows=103
                  elapsed_compute=<time>
                  output_bytes=<bytes>
@@ -743,7 +745,7 @@ mod tests {
         with_settings!({ filters => vec![(ESTIMATES, "$1=<estimate>")] }, {
             assert_snapshot!(display, @r"
             DistributedExec
-            └─ Stage 2 (Coalesce) tasks=1 partitions=4
+            └─ Stage 2 (Coalesce) tasks=1 partitions=1
                └─ Stage 1 (Shuffle) tasks=3 partitions=4
                     estimated_output_bytes=<estimate>
                     output_bytes_q_error=<estimate>
@@ -770,22 +772,24 @@ mod tests {
         let filters = vec![(TIMES, "<time>"), (BYTES, "<bytes>")];
         with_settings!({ filters => filters }, {
             assert_snapshot!(display, @r"
-            Stage 1 (Coalesce) tasks=3 partitions=12
+            Stage 1 (Coalesce) tasks=3 partitions=3
             │ elapsed_compute={0:<time>, 1:<time>, 2:<time>}
-            └─ FilterExec: Rainfall@1 > 0, projection=[MinTemp@0, RainToday@2]
+            └─ CoalescePartitionsExec
                │ elapsed_compute={0:<time>, 1:<time>, 2:<time>}
-               └─ RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+               └─ FilterExec: Rainfall@1 > 0, projection=[MinTemp@0, RainToday@2]
                   │ elapsed_compute={0:<time>, 1:<time>, 2:<time>}
-                  │ spill_count={0:0, 1:0, 2:0}
-                  │ spilled_bytes={0:<bytes>, 1:<bytes>, 2:<bytes>}
-                  │ spilled_rows={0:0, 1:0, 2:0}
-                  └─ DistributedLeafExec:
-                     ├─ t0: DataSourceExec: file_groups={3 groups}, projection=[MinTemp, Rainfall, RainToday], file_type=parquet, predicate=Rainfall@2 > 0, pruning_predicate=Rainfall_null_count@1 != row_count@2 AND Rainfall_max@0 > 0, required_guarantees=[]
-                     │    elapsed_compute=<time>
-                     ├─ t1: DataSourceExec: file_groups={3 groups}, projection=[MinTemp, Rainfall, RainToday], file_type=parquet, predicate=Rainfall@2 > 0, pruning_predicate=Rainfall_null_count@1 != row_count@2 AND Rainfall_max@0 > 0, required_guarantees=[]
-                     │    elapsed_compute={1:<time>}
-                     └─ t2: DataSourceExec: file_groups={3 groups}, projection=[MinTemp, Rainfall, RainToday], file_type=parquet, predicate=Rainfall@2 > 0, pruning_predicate=Rainfall_null_count@1 != row_count@2 AND Rainfall_max@0 > 0, required_guarantees=[]
-                          elapsed_compute={2:<time>}
+                  └─ RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+                     │ elapsed_compute={0:<time>, 1:<time>, 2:<time>}
+                     │ spill_count={0:0, 1:0, 2:0}
+                     │ spilled_bytes={0:<bytes>, 1:<bytes>, 2:<bytes>}
+                     │ spilled_rows={0:0, 1:0, 2:0}
+                     └─ DistributedLeafExec:
+                        ├─ t0: DataSourceExec: file_groups={3 groups}, projection=[MinTemp, Rainfall, RainToday], file_type=parquet, predicate=Rainfall@2 > 0, pruning_predicate=Rainfall_null_count@1 != row_count@2 AND Rainfall_max@0 > 0, required_guarantees=[]
+                        │    elapsed_compute=<time>
+                        ├─ t1: DataSourceExec: file_groups={3 groups}, projection=[MinTemp, Rainfall, RainToday], file_type=parquet, predicate=Rainfall@2 > 0, pruning_predicate=Rainfall_null_count@1 != row_count@2 AND Rainfall_max@0 > 0, required_guarantees=[]
+                        │    elapsed_compute={1:<time>}
+                        └─ t2: DataSourceExec: file_groups={3 groups}, projection=[MinTemp, Rainfall, RainToday], file_type=parquet, predicate=Rainfall@2 > 0, pruning_predicate=Rainfall_null_count@1 != row_count@2 AND Rainfall_max@0 > 0, required_guarantees=[]
+                             elapsed_compute={2:<time>}
             ");
         });
         Ok(())
@@ -807,19 +811,21 @@ mod tests {
             .with_exact_metric_filters(true);
         let display = display_plan_dump(dump, opts)?;
         assert_snapshot!(display, @r"
-        Stage 1 (Coalesce) tasks=3 partitions=12
+        Stage 1 (Coalesce) tasks=3 partitions=3
         │ output_rows=103
-        └─ FilterExec: Rainfall@1 > 0, projection=[MinTemp@0, RainToday@2]
+        └─ CoalescePartitionsExec
            │ output_rows={0:71, 1:0, 2:32}
-           └─ RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
-              │ output_rows={0:220, 1:0, 2:112}
-              └─ DistributedLeafExec:
-                 ├─ t0: DataSourceExec: file_groups={3 groups}, projection=[MinTemp, Rainfall, RainToday], file_type=parquet, predicate=Rainfall@2 > 0, pruning_predicate=Rainfall_null_count@1 != row_count@2 AND Rainfall_max@0 > 0, required_guarantees=[]
-                 │    output_rows=220
-                 ├─ t1: DataSourceExec: file_groups={3 groups}, projection=[MinTemp, Rainfall, RainToday], file_type=parquet, predicate=Rainfall@2 > 0, pruning_predicate=Rainfall_null_count@1 != row_count@2 AND Rainfall_max@0 > 0, required_guarantees=[]
-                 │    output_rows={1:0}
-                 └─ t2: DataSourceExec: file_groups={3 groups}, projection=[MinTemp, Rainfall, RainToday], file_type=parquet, predicate=Rainfall@2 > 0, pruning_predicate=Rainfall_null_count@1 != row_count@2 AND Rainfall_max@0 > 0, required_guarantees=[]
-                      output_rows={2:112}
+           └─ FilterExec: Rainfall@1 > 0, projection=[MinTemp@0, RainToday@2]
+              │ output_rows={0:71, 1:0, 2:32}
+              └─ RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+                 │ output_rows={0:220, 1:0, 2:112}
+                 └─ DistributedLeafExec:
+                    ├─ t0: DataSourceExec: file_groups={3 groups}, projection=[MinTemp, Rainfall, RainToday], file_type=parquet, predicate=Rainfall@2 > 0, pruning_predicate=Rainfall_null_count@1 != row_count@2 AND Rainfall_max@0 > 0, required_guarantees=[]
+                    │    output_rows=220
+                    ├─ t1: DataSourceExec: file_groups={3 groups}, projection=[MinTemp, Rainfall, RainToday], file_type=parquet, predicate=Rainfall@2 > 0, pruning_predicate=Rainfall_null_count@1 != row_count@2 AND Rainfall_max@0 > 0, required_guarantees=[]
+                    │    output_rows={1:0}
+                    └─ t2: DataSourceExec: file_groups={3 groups}, projection=[MinTemp, Rainfall, RainToday], file_type=parquet, predicate=Rainfall@2 > 0, pruning_predicate=Rainfall_null_count@1 != row_count@2 AND Rainfall_max@0 > 0, required_guarantees=[]
+                         output_rows={2:112}
         ");
         Ok(())
     }
