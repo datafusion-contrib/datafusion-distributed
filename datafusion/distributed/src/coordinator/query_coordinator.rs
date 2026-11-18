@@ -8,7 +8,8 @@ use crate::coordinator::spawner::Spawner;
 use crate::dynamic_filtering::{
     dynamic_filter_remote_producer_ids, is_local_dynamic_filtering_enabled,
     is_remote_dynamic_filtering_enabled,
-    maybe_roundtrip_plan_to_sever_in_memory_dynamic_filter_relationships,
+    maybe_roundtrip_plan_to_sever_in_memory_dynamic_filter_relationships, sibling_topk_enabled,
+    sibling_topk_producer_ids,
 };
 use crate::events::{
     RouteTaskEvent, RouteTaskEventResponse, RouteTaskHandlers, new_coordinator_to_worker_dialer,
@@ -164,8 +165,11 @@ impl<'a> StageCoordinator<'a> {
         };
 
         if is_remote_dynamic_filtering_enabled(session_config)? {
-            self.dynamic_filter_registry
-                .register_task(&plan, task_key)?;
+            self.dynamic_filter_registry.register_task(
+                &plan,
+                task_key,
+                sibling_topk_enabled(session_config)?,
+            )?;
         }
 
         let mut headers = get_config_extension_propagation_headers(session_config)?;
@@ -487,7 +491,13 @@ impl<'a> StageCoordinator<'a> {
         };
         let dynamic_filter_remote_producer_ids =
             if dynamic_filtering_enabled && remote_dynamic_filtering_enabled {
-                dynamic_filter_remote_producer_ids(&plan)?
+                let mut ids = dynamic_filter_remote_producer_ids(&plan)?;
+                if sibling_topk_enabled(session_config)? {
+                    ids.extend(sibling_topk_producer_ids(&plan)?);
+                    ids.sort_unstable();
+                    ids.dedup();
+                }
+                ids
             } else {
                 vec![]
             };

@@ -1,5 +1,6 @@
 use crate::common::OnceLockResult;
 use crate::common::now_ns;
+use crate::dynamic_filtering::SiblingTopKConsumers;
 use crate::{
     MaxLatencyMetric, ProducerHead, TaskCompletedDynamicFilters, TaskMetrics, TaskOutcome,
 };
@@ -22,6 +23,7 @@ pub struct TaskData {
     /// Task context suitable for execute different partitions from the same task.
     pub(crate) task_ctx: Arc<TaskContext>,
     pub(crate) base_plan: Arc<dyn ExecutionPlan>,
+    pub(super) sibling_topk_consumers: SiblingTopKConsumers,
     pub(crate) final_plan: Arc<OnceLockResult<Arc<dyn ExecutionPlan>>>,
     /// Sender half of the metrics channel. `impl_coordinator_channel` takes this (via
     /// `Option::take`) when the coordinator channel reaches EOS, sending the collected metrics

@@ -94,8 +94,8 @@ pub struct SetPlanRequest {
     pub task_count: usize,
     /// The subplan the worker is expected to execute.
     pub plan: MaybeEncoded<Arc<dyn ExecutionPlan>>,
-    /// Producer expression IDs whose consumers cross a network boundary. Workers observe and
-    /// report updates to the coordinator.
+    /// Producer expression IDs with consumers in other tasks, including eligible sibling
+    /// Top-K consumers. Workers observe and report updates to the coordinator.
     pub dynamic_filter_remote_producer_ids: Vec<u64>,
     /// Information about all the work unit feeds that will be streamed from coordinator to worker.
     /// This information is needed here because at the moment of setting the plan, all the appropriate

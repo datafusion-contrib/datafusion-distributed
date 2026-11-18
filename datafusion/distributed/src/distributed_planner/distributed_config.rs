@@ -41,6 +41,10 @@ extensions_options! {
         /// Control whether dynamic filters are distributed across network boundaries. This does
         /// not control intra-stage filter behavior.
         pub remote_dynamic_filters: bool, default = true
+        /// Share fetched-sort bounds between sibling tasks while keeping local bounds independent.
+        /// Requires remote dynamic filters and DataFusion's general and Top-K filter pushdown.
+        /// Disabled by default because sharing adds overhead when remote bounds cannot prune work.
+        pub enable_sibling_topk_filter_pushdown: bool, default = false
         /// Enable broadcast joins for CollectLeft hash joins. When enabled, the build side of
         /// a CollectLeft join is broadcast to all consumer tasks.
         pub broadcast_joins: bool, default = true

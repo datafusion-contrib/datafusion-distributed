@@ -212,6 +212,7 @@ pub async fn register_plan_on_worker(
         .write(Ok(TaskData {
             task_ctx,
             base_plan: plan,
+            sibling_topk_consumers: Default::default(),
             final_plan: Default::default(),
             metrics_tx: Arc::new(std::sync::Mutex::new(Some(metrics_tx))),
             completed_dynamic_filters_tx: Arc::new(std::sync::Mutex::new(Some(dynamic_filters_tx))),

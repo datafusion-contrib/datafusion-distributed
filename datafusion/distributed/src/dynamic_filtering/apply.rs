@@ -10,6 +10,9 @@ use std::sync::Arc;
 
 /// Applies a `source` dynamic filter expression to a `target` dynamic filter expression.
 ///
+/// `expected_source_id` identifies the producer on the wire. The target can have a different
+/// runtime ID when remote updates use independent state from a task-local producer.
+///
 /// This function always uses the original children of the dynamic filter expression
 /// when applying an update. See below.
 ///
@@ -48,6 +51,7 @@ use std::sync::Arc;
 /// update(`key > 123`). We should not call `update(source.current())` or
 /// `update(phone_number > 123)`, or else the update fails.
 pub(crate) fn apply_dynamic_filter_update(
+    expected_source_id: u64,
     target: &Arc<DynamicFilterPhysicalExpr>,
     source: &MaybeEncoded<Arc<dyn PhysicalExpr>>,
     source_schema: &Schema,
@@ -62,7 +66,7 @@ pub(crate) fn apply_dynamic_filter_update(
     // TODO: Avoid needing to encode to proto:
     //  https://github.com/datafusion-contrib/datafusion-distributed/issues/768/
     let source_proto = source.to_proto(task_ctx)?;
-    if source_proto.expr_id != target.expression_id() {
+    if source_proto.expr_id != Some(expected_source_id) {
         return internal_err!("dynamic filter update has a mismatched expression ID");
     }
     let Some(ExprType::DynamicFilter(source_dynamic_filter)) = source_proto.expr_type else {
