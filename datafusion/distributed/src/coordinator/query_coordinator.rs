@@ -290,8 +290,12 @@ impl<'a> StageCoordinator<'a> {
             stage_id: self.stage_id,
             task_number: task_i,
         };
-        let mut task_metrics = self.metrics_store.clone();
-        let mut completed_dynamic_filter_store = self.completed_dynamic_filter_store.clone();
+        // Completes this task's report waits however the task below ends, even if it's never polled.
+        let mut reports = TaskReports {
+            task_key,
+            metrics_store: self.metrics_store.clone(),
+            completed_dynamic_filter_store: self.completed_dynamic_filter_store.clone(),
+        };
         let dynamic_filter_registry = Arc::clone(self.dynamic_filter_registry);
         let task_ctx = Arc::clone(self.task_ctx);
         let (load_info_tx, load_info_rx) = unbounded_channel();
@@ -302,12 +306,12 @@ impl<'a> StageCoordinator<'a> {
             while let Some(msg) = worker_to_coordinator_stream.try_next().await? {
                 match msg {
                     WorkerToCoordinatorMsg::TaskMetrics(metrics) => {
-                        if let Some(task_metrics) = task_metrics.take() {
-                            task_metrics.insert(task_key, metrics);
+                        if let Some(store) = reports.metrics_store.take() {
+                            store.insert(task_key, metrics);
                         }
                     }
                     WorkerToCoordinatorMsg::TaskCompletedDynamicFilters(filters) => {
-                        if let Some(store) = completed_dynamic_filter_store.take() {
+                        if let Some(store) = reports.completed_dynamic_filter_store.take() {
                             store.insert(task_key, filters);
                         }
                     }
@@ -324,13 +328,6 @@ impl<'a> StageCoordinator<'a> {
                         let _ = load_info_tx_opt.take();
                     }
                 };
-            }
-            // An unexecuted task sends no final reports; still complete its waits.
-            if let Some(store) = task_metrics {
-                store.insert(task_key, TaskMetrics::default());
-            }
-            if let Some(store) = completed_dynamic_filter_store {
-                store.insert(task_key, TaskCompletedDynamicFilters::default());
             }
             let _ = load_info_tx_opt.take();
             Ok::<_, DataFusionError>(())
@@ -496,6 +493,25 @@ impl<'a> StageCoordinator<'a> {
             work_unit_feed_declarations,
             dynamic_filter_remote_producer_ids,
         })
+    }
+}
+
+/// Completes missing report waits when the worker-to-coordinator task ends, including when it
+/// fails or when the task is dropped before its first poll.
+struct TaskReports {
+    task_key: TaskKey,
+    metrics_store: Option<Arc<Store<TaskMetrics>>>,
+    completed_dynamic_filter_store: Option<Arc<Store<TaskCompletedDynamicFilters>>>,
+}
+
+impl Drop for TaskReports {
+    fn drop(&mut self) {
+        if let Some(store) = self.metrics_store.take() {
+            store.insert(self.task_key, TaskMetrics::default());
+        }
+        if let Some(store) = self.completed_dynamic_filter_store.take() {
+            store.insert(self.task_key, TaskCompletedDynamicFilters::default());
+        }
     }
 }
 
