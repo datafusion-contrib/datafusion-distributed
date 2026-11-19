@@ -9,22 +9,21 @@ use crate::dynamic_filtering::{
     is_remote_dynamic_filtering_enabled, orphan_dynamic_filter_consumers,
 };
 use crate::execution_plans::SamplerExec;
-use crate::stage::{LocalStage, RemoteStage, WorkerLocation};
+use crate::stage::{LocalStage, RemoteStage};
 use crate::{
-    BytesCounterMetric, CoordinatorToWorkerMsg, LoadInfo, MaxGaugeMetric, NetworkBoundaryExt,
-    NetworkCoalesceExec, Stage, TaskCountAnnotation,
+    BytesCounterMetric, LoadInfo, MaxGaugeMetric, NetworkBoundaryExt, NetworkCoalesceExec, Stage,
+    TaskCountAnnotation,
 };
 use async_trait::async_trait;
 use dashmap::DashMap;
 use datafusion::common::stats::Precision;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
-use datafusion::common::{DataFusionError, Result, exec_err, plan_err};
+use datafusion::common::{Result, exec_err, plan_err};
 use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::{
     ColumnStatistics, ExecutionPlan, ExecutionPlanProperties, Statistics, StatisticsArgs,
     StatisticsContext,
 };
-use futures::future::try_join_all;
 use futures::{Stream, StreamExt};
 use std::any::TypeId;
 use std::num::NonZeroUsize;
@@ -36,6 +35,7 @@ pub(super) async fn prepare_dynamic_plan(
     base_plan: &Arc<dyn ExecutionPlan>,
 ) -> Result<PreparedPlan> {
     let plans_for_viz = PlanReconstructor::default();
+
     let head_stage = inject_network_boundaries(
         Arc::clone(base_plan),
         DynamicPlanBuilder {
@@ -45,31 +45,6 @@ pub(super) async fn prepare_dynamic_plan(
         query_coordinator.session_config(),
     )
     .await?;
-    let head_stage = head_stage
-        .transform_down(|plan| {
-            let Some(boundary) = plan.as_network_boundary() else {
-                return Ok(Transformed::no(plan));
-            };
-            let Stage::Local(stage) = boundary.input_stage() else {
-                return Ok(Transformed::no(plan));
-            };
-            let dynamic_filter_anchors =
-                if is_remote_dynamic_filtering_enabled(query_coordinator.session_config())? {
-                    orphan_dynamic_filter_consumers(&stage.plan)?
-                } else {
-                    vec![]
-                };
-            Ok(Transformed::yes(boundary.with_input_stage(
-                Stage::Remote(RemoteStage {
-                    query_id: stage.query_id,
-                    num: stage.num,
-                    workers: query_coordinator.start_pending_stage(stage),
-                    runtime_stats: None,
-                    dynamic_filter_anchors,
-                }),
-            )?))
-        })?
-        .data;
 
     Ok(PreparedPlan {
         plan_for_viz: plans_for_viz.reconstruct(&head_stage)?,
@@ -90,15 +65,18 @@ impl NetworkBoundaryBuilder for DynamicPlanBuilder<'_> {
         nb_type: TypeId,
         nb_ctx: &'a InjectNetworkBoundaryContext<'a>,
     ) -> Result<NetworkBoundaryBuilderResult> {
-        // A deferred coalesce becomes a concrete destination before another worker stage
-        // consumes it. Preserve the planner's pointer-keyed annotations when replacing nodes.
-        let prepared = prepare_worker_inputs(self.query_coordinator, &input_stage.plan).await?;
-        nb_ctx.copy_task_counts(&input_stage.plan, &prepared)?;
-        input_stage.plan = prepared;
         let mut metrics = MetricsSet::new();
 
-        // Leaf statistics and runtime statistics from sampled network boundaries estimate
-        // the compute cost of the next stage.
+        // At this point, input_stage.plan has two kind of leaf nodes:
+        // - The ones that naturally do not read from any children, like DataSourceExec
+        // - Network boundaries whose Stage was set to Stage::Remote by a previous iteration
+        //   of this same function.
+        // Both types of leaf nodes contain very valuable and accurate statistics that are used
+        // here for computing an estimation of the compute cost (measured in bytes):
+        // - DataSourceExec (or natural leaf nodes) contain stats pulled directly from their
+        //   data source, like parquet files.
+        // - Network boundaries contain statistics collected from runtime information, gathered
+        //   by the SamplerExec injected by this same function.
         let cost = calculate_cost(&input_stage.plan)?;
         metrics.push(BytesCounterMetric::new_metric(
             "cpu_cost",
@@ -124,23 +102,14 @@ impl NetworkBoundaryBuilder for DynamicPlanBuilder<'_> {
             .task_count(&input_stage.plan)?
             .merge(TaskCountAnnotation::soft(compute_based_task_count))?;
 
+        // Propagate the final task_count inferred based on runtime statistics and compute cost.
+        // Here is where leaf nodes are scaled up by ScaleUpLeafNodeHandler, and the
+        // plan is finally left ready for distribution.
         input_stage.plan =
             nb_ctx.propagate_task_count_until_network_boundaries(&input_stage.plan, task_count)?;
         input_stage.tasks = task_count.as_usize();
-
-        if nb_type == TypeId::of::<NetworkCoalesceExec>() {
-            let input_properties = Arc::clone(input_stage.plan.properties());
-            self.plans_for_viz
-                .insert(input_stage.num, Arc::clone(&input_stage.plan), metrics);
-            // Coalesces require no sampling. Leave their setup to the consuming stage;
-            // the coordinator can then execute each task as its own setup completes.
-            return Ok(NetworkBoundaryBuilderResult {
-                consumer_task_count: TaskCountAnnotation::exact(NonZeroUsize::MIN, 0.0),
-                input_stage: Stage::Local(input_stage),
-                input_properties,
-            });
-        }
-
+        // In order to infer the compute the cost of the stage above this one, here a sampler
+        // is injected to gather runtime statistics.
         input_stage.plan = ProducerHead::insert_sampler(input_stage.plan)?;
         let dynamic_filter_anchors =
             if is_remote_dynamic_filtering_enabled(self.query_coordinator.session_config())? {
@@ -148,78 +117,48 @@ impl NetworkBoundaryBuilder for DynamicPlanBuilder<'_> {
             } else {
                 vec![]
             };
-        let futures = (0..input_stage.tasks).map(|task_i| {
-            let setup = self.query_coordinator.start_task(&input_stage, task_i);
-            async move {
-                let (url, tx, load_info) = setup.await?;
-                let _ = tx.send(CoordinatorToWorkerMsg::KickOffSampling);
-                Ok::<_, DataFusionError>((url, UnboundedReceiverStream::new(load_info)))
-            }
-        });
-        let (workers, load_info_rxs): (Vec<_>, Vec<_>) =
-            try_join_all(futures).await?.into_iter().unzip();
-        self.query_coordinator
-            .stage_coordinator(&input_stage)
-            .seal_dynamic_filter_stage()?;
 
-        let (stats, new_metrics) =
-            gather_runtime_statistics(load_info_rxs, &input_stage.plan).await?;
-        metrics.extend(new_metrics);
+        let (workers, load_info_rxs) = self.query_coordinator.start_stage(&input_stage);
+
+        let (stats, consumer_tc) = if nb_type == TypeId::of::<NetworkCoalesceExec>() {
+            (None, TaskCountAnnotation::exact(NonZeroUsize::MIN, 0.0))
+        } else {
+            let (stats, new_metrics) = gather_runtime_statistics(
+                load_info_rxs
+                    .into_iter()
+                    .map(UnboundedReceiverStream::new)
+                    .collect(),
+                &input_stage.plan,
+            )
+            .await?;
+            metrics.extend(new_metrics);
+            // returning Desired(0) here is our way to tell the planner that we don't care
+            // about the task count assigned to the network boundary in the consumer stage,
+            // and we don't want it to affect other task count decisions. A 0.0 hint does
+            // not mask smaller fractional values via max-merge, and does not inflate
+            // UNION sums when this boundary sits under a child of a
+            // ChildrenIsolatorUnionExec.
+            (Some(Arc::new(stats)), TaskCountAnnotation::soft(0.0))
+        };
+
+        // Capture the output partitioning of the (rescaled, sampler-wrapped) input plan
+        // before it's moved: the returned stage is remote and carries no plan to read it
+        // back from.
         let input_properties = Arc::clone(input_stage.plan.properties());
         self.plans_for_viz
             .insert(input_stage.num, input_stage.plan, metrics);
         Ok(NetworkBoundaryBuilderResult {
-            // A zero soft hint leaves the consumer's task count to its other inputs.
-            consumer_task_count: TaskCountAnnotation::soft(0.0),
+            consumer_task_count: consumer_tc,
             input_stage: Stage::Remote(RemoteStage {
                 query_id: input_stage.query_id,
                 num: input_stage.num,
-                workers: workers.into_iter().map(WorkerLocation::from).collect(),
-                runtime_stats: Some(Arc::new(stats)),
+                workers,
+                runtime_stats: stats,
                 dynamic_filter_anchors,
             }),
             input_properties,
         })
     }
-}
-
-async fn prepare_worker_inputs(
-    query_coordinator: &Arc<QueryCoordinator>,
-    plan: &Arc<dyn ExecutionPlan>,
-) -> Result<Arc<dyn ExecutionPlan>> {
-    let prepared = Arc::clone(plan).transform_up_async(async |plan| {
-        let Some(boundary) = plan.as_network_boundary() else {
-            return Ok(Transformed::no(plan));
-        };
-        let Stage::Local(stage) = boundary.input_stage() else {
-            return Ok(Transformed::no(plan));
-        };
-        let dynamic_filter_anchors =
-            if is_remote_dynamic_filtering_enabled(query_coordinator.session_config())? {
-                orphan_dynamic_filter_consumers(&stage.plan)?
-            } else {
-                vec![]
-            };
-        let workers =
-            try_join_all((0..stage.tasks).map(|task| query_coordinator.start_task(stage, task)))
-                .await?
-                .into_iter()
-                .map(|(url, ..)| WorkerLocation::from(url))
-                .collect();
-        query_coordinator
-            .stage_coordinator(stage)
-            .seal_dynamic_filter_stage()?;
-        Ok(Transformed::yes(boundary.with_input_stage(
-            Stage::Remote(RemoteStage {
-                query_id: stage.query_id,
-                num: stage.num,
-                workers,
-                runtime_stats: None,
-                dynamic_filter_anchors,
-            }),
-        )?))
-    });
-    Ok(prepared.await?.data)
 }
 
 /// Reconstructs the plan dynamically as stages get transitioned to Remote and get sent to the
