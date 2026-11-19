@@ -11,7 +11,8 @@
 //! dispatching tasks. To stress the headers, the session carries a user config extension next to
 //! `DistributedConfig` with large string options, integer, float and boolean options, and options
 //! with long names. `defaults` leaves every option at its default; `few_overrides` changes a
-//! handful of options of each kind, as a typical session would.
+//! handful of options of each kind, as a typical session would; `all_overrides` changes every
+//! option of the user extension.
 //! An untimed preflight reports the config headers a worker received per task.
 
 use criterion::{Criterion, criterion_group, criterion_main};
@@ -35,15 +36,15 @@ use tokio::runtime::Builder as RuntimeBuilder;
 const NUM_WORKERS: usize = 32;
 const QUERY: &str = "SELECT * FROM url_emitter(128, 128, 'config_propagation')";
 const CONFIG_HEADER_PREFIX: &str = "x-datafusion-distributed-config-";
-/// Size of each [LargeOptions] string value, both default and overridden. With every option
-/// sent, the config headers stay just under the 16 KiB HTTP/2 header list limit that hyper
-/// applies by default; beyond it the worker rejects the task.
-const STRING_BYTES: usize = 1024;
-/// Shared name of the [LargeOptions] options with long keys, followed by their index.
-const LONG_KEY: &str = "option_with_a_deliberately_long_name_to_stress_the_header_keys";
+/// Size of each [LargeOptions] string value, both default and overridden.
+const STRING_BYTES: usize = 4 * 1024;
 
 /// Scenario name and how many [LargeOptions] options of each kind are changed from their default.
-const SCENARIOS: [(&str, usize); 2] = [("defaults", 0), ("few_overrides", 4)];
+const SCENARIOS: [(&str, usize); 3] = [
+    ("defaults", 0),
+    ("few_overrides", 4),
+    ("all_overrides", usize::MAX),
+];
 
 fn config_propagation(c: &mut Criterion) {
     let rt = RuntimeBuilder::new_multi_thread()
@@ -69,13 +70,18 @@ fn config_propagation(c: &mut Criterion) {
         ctx.set_distributed_user_codec(URLEmitterExtensionCodec);
         ctx.register_udtf("url_emitter", Arc::new(URLEmitterFunction));
         let mut options = LargeOptions::default();
-        for i in 0..overridden {
-            let string = "y".repeat(STRING_BYTES);
-            options.set(&format!("string_{i:02}"), &string).unwrap();
-            options.set(&format!("integer_{i:02}"), "1").unwrap();
-            options.set(&format!("float_{i:02}"), "1.5").unwrap();
-            options.set(&format!("boolean_{i:02}"), "true").unwrap();
-            options.set(&format!("{LONG_KEY}_{i:02}"), "1").unwrap();
+        for entry in LargeOptions::default().entries() {
+            let (kind, index) = entry.key.rsplit_once('_').unwrap();
+            if index.parse::<usize>().unwrap() >= overridden {
+                continue;
+            }
+            let value = match kind {
+                "string" => "y".repeat(STRING_BYTES),
+                "float" => "1.5".to_string(),
+                "boolean" => "true".to_string(),
+                _ => "1".to_string(),
+            };
+            options.set(&entry.key, &value).unwrap();
         }
         ctx.set_distributed_option_extension(options);
 
@@ -123,6 +129,32 @@ extensions_options! {
         pub string_03: String, default = "x".repeat(STRING_BYTES)
         pub string_04: String, default = "x".repeat(STRING_BYTES)
         pub string_05: String, default = "x".repeat(STRING_BYTES)
+        pub string_06: String, default = "x".repeat(STRING_BYTES)
+        pub string_07: String, default = "x".repeat(STRING_BYTES)
+        pub string_08: String, default = "x".repeat(STRING_BYTES)
+        pub string_09: String, default = "x".repeat(STRING_BYTES)
+        pub string_10: String, default = "x".repeat(STRING_BYTES)
+        pub string_11: String, default = "x".repeat(STRING_BYTES)
+        pub string_12: String, default = "x".repeat(STRING_BYTES)
+        pub string_13: String, default = "x".repeat(STRING_BYTES)
+        pub string_14: String, default = "x".repeat(STRING_BYTES)
+        pub string_15: String, default = "x".repeat(STRING_BYTES)
+        pub string_16: String, default = "x".repeat(STRING_BYTES)
+        pub string_17: String, default = "x".repeat(STRING_BYTES)
+        pub string_18: String, default = "x".repeat(STRING_BYTES)
+        pub string_19: String, default = "x".repeat(STRING_BYTES)
+        pub string_20: String, default = "x".repeat(STRING_BYTES)
+        pub string_21: String, default = "x".repeat(STRING_BYTES)
+        pub string_22: String, default = "x".repeat(STRING_BYTES)
+        pub string_23: String, default = "x".repeat(STRING_BYTES)
+        pub string_24: String, default = "x".repeat(STRING_BYTES)
+        pub string_25: String, default = "x".repeat(STRING_BYTES)
+        pub string_26: String, default = "x".repeat(STRING_BYTES)
+        pub string_27: String, default = "x".repeat(STRING_BYTES)
+        pub string_28: String, default = "x".repeat(STRING_BYTES)
+        pub string_29: String, default = "x".repeat(STRING_BYTES)
+        pub string_30: String, default = "x".repeat(STRING_BYTES)
+        pub string_31: String, default = "x".repeat(STRING_BYTES)
         pub integer_00: usize, default = 0
         pub integer_01: usize, default = 0
         pub integer_02: usize, default = 0

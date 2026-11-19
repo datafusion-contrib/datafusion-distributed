@@ -10,6 +10,10 @@ use tokio::net::TcpListener;
 use tonic::transport::Server;
 use url::Url;
 
+/// HTTP/2 header list limit of the localhost workers, raised from hyper's default 16 KiB so that
+/// sessions carrying large config extensions can still dispatch tasks.
+const MAX_HEADER_LIST_BYTES: u32 = 1024 * 1024;
+
 /// Create workers and context on localhost with a fixed number of target partitions.
 ///
 /// Creates `num_workers` listeners, all bound to a random OS decided port on `127.0.0.1`, then
@@ -54,6 +58,7 @@ where
 
         join_set.spawn(async move {
             Server::builder()
+                .http2_max_header_list_size(MAX_HEADER_LIST_BYTES)
                 .add_service(worker.into_worker_server())
                 .serve_with_incoming(incoming)
                 .await
