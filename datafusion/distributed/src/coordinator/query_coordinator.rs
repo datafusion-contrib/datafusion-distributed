@@ -152,6 +152,8 @@ impl QueryCoordinator {
                         stream
                     }
                     Err(error) => {
+                        // The stage supervisor propagates the location error. End the reader
+                        // normally so it completes any missing final reports.
                         let _ = location_tx.send(Err(Arc::new(error)));
                         empty().boxed()
                     }

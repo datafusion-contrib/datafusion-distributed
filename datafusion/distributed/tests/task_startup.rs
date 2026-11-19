@@ -108,6 +108,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dropping_output_cancels_unstarted_tasks_and_completes_reports() -> Result<()> {
+        let gate = TaskGate::default();
+        let ctx = with_emitter(start_in_memory_context(2, build_worker).await)
+            .with_distributed_dynamic_task_count(true)?
+            .with_distributed_metrics_collection(true)?
+            .with_distributed_route_task_handler(gate.clone());
+        ctx.sql("SET datafusion.execution.target_partitions = 2")
+            .await?;
+        let plan = ctx.sql(SCAN).await?.create_physical_plan().await?;
+        let mut output = execute_stream(Arc::clone(&plan), ctx.task_ctx())?;
+
+        let first = timeout(WAIT, output.try_next()).await.unwrap()?.unwrap();
+        assert_eq!(first.num_rows(), 1);
+        drop(output);
+
+        timeout(WAIT, gate.exited.cancelled()).await.unwrap();
+        assert!(!gate.release.is_cancelled());
+        timeout(
+            WAIT,
+            rewrite_distributed_plan_with_metrics(plan, DistributedMetricsFormat::Aggregated),
+        )
+        .await
+        .unwrap()?;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn limit_cancels_unstarted_tasks_and_completes_reports() -> Result<()> {
         let gate = TaskGate::default();
         let ctx = with_emitter(start_in_memory_context(2, build_worker).await)
