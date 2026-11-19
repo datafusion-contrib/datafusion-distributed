@@ -81,3 +81,14 @@ statistics. See `datafusion/distributed-benchmarks/README.md` for S3 output and 
 
   Workers share Tokio's threads, so select all busy `tokio-rt-worker` threads at once
   (`profiler-cli thread select t-1,t-2,...`) to see the whole process.
+
+  Answer profile questions with profiler-cli itself, not ad-hoc scripts over its `--json` output:
+  - To break CPU time into categories (IPC, transport, joins...), filter by function handles:
+    `--includes-function f-1,f-2` keeps samples containing any of them, and pushing earlier
+    categories as `--excludes-function` filters (`filter push`) makes the next count exclusive.
+    `thread functions --search <name>` lists the handles; generic code has one per instantiation.
+  - `--includes-suffix f-N` with `samples-bottom-up` shows who reaches a hot leaf, such as a lock
+    wait in `__ulock_wait2`.
+  - Call-tree output, including `--json`, is truncated to `--max-lines` (default 100).
+  - `cargo bench ... -- --profile-time <secs> <filter>` loops a criterion bench without analysis,
+    which is what to record. Set `CARGO_PROFILE_BENCH_DEBUG=line-tables-only` for inlined frames.
