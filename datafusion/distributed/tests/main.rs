@@ -21,6 +21,7 @@ mod multi_task_collect_join_repros;
 mod passthrough_headers;
 mod shuffle;
 mod sorted_data_source;
+mod startup_overlap;
 mod stateful_data_cleanup;
 mod stateful_execution_plan;
 mod task_estimator_test;
