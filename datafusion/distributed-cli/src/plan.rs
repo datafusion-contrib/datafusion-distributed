@@ -31,9 +31,10 @@ pub(super) struct Args {
     #[clap(long)]
     exact: bool,
 
-    /// Display the metrics of all stages added up into totals for the whole query, like its CPU
-    /// time or the bytes that crossed the network, instead of the plan. With `--stage`, the totals
-    /// are those of that stage only, and with `--metric`, only the matching metrics are added up.
+    /// Display the metrics reported by every node added up into totals for the whole query, like
+    /// its CPU time, instead of the plan. Metrics derived for displaying stages are left out. With
+    /// `--stage`, the totals are those of the nodes of that stage only, and with `--metric`, only
+    /// the matching metrics are added up.
     #[clap(short, long)]
     totals: bool,
 }

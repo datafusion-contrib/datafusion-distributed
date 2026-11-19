@@ -35,7 +35,7 @@ pub struct DisplayPlanDumpOptions {
     metric_filters: Vec<String>,
     /// Whether metric names must be equal to a filter instead of containing it.
     exact_metric_filters: bool,
-    /// Whether the metrics of every stage are displayed added up into totals for the whole query.
+    /// Whether the metrics of every node are displayed added up into totals for the whole query.
     totals: bool,
 }
 
@@ -89,11 +89,12 @@ impl DisplayPlanDumpOptions {
         self
     }
 
-    /// Displays the metrics of all stages added up into totals for the whole query, like the CPU
-    /// time it took or the bytes that crossed the network, instead of the plan. Each metric is
-    /// added up its own way, like counts being summed and maximums keeping the biggest value.
-    /// With [Self::with_stage_id], the totals are those of that stage only, and with
-    /// [Self::with_metric_filter], only the totals of the matching metrics are displayed.
+    /// Displays the metrics reported by every node of the query added up into totals, like the CPU
+    /// time it took, instead of the plan. Each metric is added up its own way, like counts being
+    /// summed and maximums keeping the biggest value. Metrics derived for displaying stages are
+    /// left out, as they are computed from the nodes' own. With [Self::with_stage_id], the totals
+    /// are those of the nodes of that stage only, and with [Self::with_metric_filter], only the
+    /// totals of the matching metrics are displayed.
     pub fn with_totals(mut self, totals: bool) -> Self {
         self.totals = totals;
         self
@@ -126,7 +127,9 @@ pub fn display_plan_dump(plan: String, opts: DisplayPlanDumpOptions) -> Result<S
     let head = StageDump::decode(encoded.as_slice())
         .map_err(|err| exec_datafusion_err!("Plan dump does not contain a plan: {err}"))?;
 
-    let mut head = decode_stage(head, None)?;
+    // Totals add up the metrics the nodes reported, which the derived ones would count twice.
+    let derive_metrics = !opts.totals;
+    let mut head = decode_stage(head, None, derive_metrics)?;
     // Metrics are filtered once decoded, so that the metrics derived from them do not depend on
     // the filters.
     if !opts.metric_filters.is_empty() {
@@ -190,28 +193,38 @@ pub(super) struct DecodedPlan {
 }
 
 /// Decodes a stage read by `boundary`, a network boundary with its display and metrics, and adds
-/// the metrics derived for it.
-fn decode_stage(stage: StageDump, boundary: Option<(&str, &MetricsSet)>) -> Result<DecodedStage> {
+/// the metrics derived for it if `derive_metrics`.
+fn decode_stage(
+    stage: StageDump,
+    boundary: Option<(&str, &MetricsSet)>,
+    derive_metrics: bool,
+) -> Result<DecodedStage> {
     let mut decoded = DecodedStage {
         id: stage.stage_id,
         tasks: stage.tasks,
         partitions: stage.partitions,
         boundary_kind: boundary.map(|(display, _)| boundary_kind(display).to_string()),
         metrics: undump_metrics(&stage.metrics)?,
-        plan: stage.plan_dump.map(|plan| decode_plan(*plan)).transpose()?,
+        plan: (stage.plan_dump)
+            .map(|plan| decode_plan(*plan, derive_metrics))
+            .transpose()?,
     };
+    if !derive_metrics {
+        return Ok(decoded);
+    }
     for metric in stage_derived_metrics(&decoded, boundary.map(|(_, metrics)| metrics)) {
         decoded.metrics.push(metric);
     }
     Ok(decoded)
 }
 
-fn decode_plan(plan: PlanDump) -> Result<DecodedPlan> {
+fn decode_plan(plan: PlanDump, derive_metrics: bool) -> Result<DecodedPlan> {
     let metrics = undump_metrics(&plan.metrics)?;
     let input_stage = match plan.input_stage {
         Some(stage) => Some(Box::new(decode_stage(
             *stage,
             Some((&plan.display, &metrics)),
+            derive_metrics,
         )?)),
         None => None,
     };
@@ -219,7 +232,7 @@ fn decode_plan(plan: PlanDump) -> Result<DecodedPlan> {
         children: plan
             .children
             .into_iter()
-            .map(decode_plan)
+            .map(|child| decode_plan(child, derive_metrics))
             .collect::<Result<_>>()?,
         display: plan.display,
         metrics,
@@ -355,13 +368,27 @@ fn stage_tree(stage: &DecodedStage, format: DistributedMetricsFormat, paint: Pai
     node
 }
 
-/// The metrics of `stages`, added up by name. Metrics are filtered once decoded, so only the
-/// totals of the metrics matching the filters are displayed. Tasks of different stages are
-/// unrelated, so the totals are never displayed per task.
+/// The metrics reported by `stages` and by their nodes, added up by name. Metrics are filtered
+/// once decoded, so only the totals of the metrics matching the filters are displayed. Tasks of
+/// different stages are unrelated, so the totals are never displayed per task.
 fn totals_node(stages: Vec<&DecodedStage>, paint: Paint) -> Node {
+    fn collect(plan: &DecodedPlan, totals: &mut MetricsSet) {
+        for metric in plan.metrics.iter() {
+            totals.push(Arc::clone(metric));
+        }
+        // The stage a network boundary reads from is one of `stages`, if it is added up.
+        for child in &plan.children {
+            collect(child, totals);
+        }
+    }
     let mut totals = MetricsSet::new();
-    for metric in stages.iter().flat_map(|stage| stage.metrics.iter()) {
-        totals.push(Arc::clone(metric));
+    for stage in stages {
+        for metric in stage.metrics.iter() {
+            totals.push(Arc::clone(metric));
+        }
+        if let Some(plan) = &stage.plan {
+            collect(plan, &mut totals);
+        }
     }
     Node {
         label: paint.stage("Totals"),
@@ -904,7 +931,7 @@ mod tests {
 
         let dump = generate_plan_dump(&plan)?;
 
-        // Only stage 1 is added up, leaving out the rows of stage 2 and of the head stage.
+        // Only the nodes of stage 1 are added up, leaving out the rows of stage 2 and of the head.
         let opts = DisplayPlanDumpOptions::default()
             .with_totals(true)
             .with_stage_id(1)
@@ -913,7 +940,7 @@ mod tests {
         let display = display_plan_dump(dump, opts)?;
         assert_snapshot!(display, @r"
         Totals
-          output_rows=6
+          output_rows=378
         ");
         Ok(())
     }
