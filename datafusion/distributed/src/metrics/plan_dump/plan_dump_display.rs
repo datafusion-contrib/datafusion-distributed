@@ -35,6 +35,8 @@ pub struct DisplayPlanDumpOptions {
     metric_filters: Vec<String>,
     /// Whether metric names must be equal to a filter instead of containing it.
     exact_metric_filters: bool,
+    /// Whether the metrics of every node are displayed added up into totals for the whole query.
+    totals: bool,
 }
 
 impl Default for DisplayPlanDumpOptions {
@@ -45,6 +47,7 @@ impl Default for DisplayPlanDumpOptions {
             metrics_format: DistributedMetricsFormat::PerTask,
             metric_filters: vec![],
             exact_metric_filters: false,
+            totals: false,
         }
     }
 }
@@ -86,6 +89,17 @@ impl DisplayPlanDumpOptions {
         self
     }
 
+    /// Displays the metrics reported by every node of the query added up into totals, like the CPU
+    /// time it took, instead of the plan. Each metric is added up its own way, like counts being
+    /// summed and maximums keeping the biggest value. Metrics derived for displaying stages are
+    /// left out, as they are computed from the nodes' own. With [Self::with_stage_id], the totals
+    /// are those of the nodes of that stage only, and with [Self::with_metric_filter], only the
+    /// totals of the matching metrics are displayed.
+    pub fn with_totals(mut self, totals: bool) -> Self {
+        self.totals = totals;
+        self
+    }
+
     fn matches_metric_filters(&self, name: &str) -> bool {
         let mut filters = self.metric_filters.iter();
         match self.exact_metric_filters {
@@ -113,7 +127,9 @@ pub fn display_plan_dump(plan: String, opts: DisplayPlanDumpOptions) -> Result<S
     let head = StageDump::decode(encoded.as_slice())
         .map_err(|err| exec_datafusion_err!("Plan dump does not contain a plan: {err}"))?;
 
-    let mut head = decode_stage(head, None)?;
+    // Totals add up the metrics the nodes reported, which the derived ones would count twice.
+    let derive_metrics = !opts.totals;
+    let mut head = decode_stage(head, None, derive_metrics)?;
     // Metrics are filtered once decoded, so that the metrics derived from them do not depend on
     // the filters.
     if !opts.metric_filters.is_empty() {
@@ -124,6 +140,14 @@ pub fn display_plan_dump(plan: String, opts: DisplayPlanDumpOptions) -> Result<S
     let format = opts.metrics_format;
     let single_node = input_stages(&head).is_empty();
     let tree = match (opts.stage_id, &head.plan) {
+        // Without a stage filter, the totals are those of the whole query.
+        (None, _) if opts.totals => totals_node(all_stages(&head), paint),
+        (Some(id), _) if opts.totals => {
+            let Some(stage) = find_stage(&head, id as u64) else {
+                return exec_err!("Stage {id} not found in the plan dump");
+            };
+            totals_node(vec![stage], paint)
+        }
         // A plan without stages is a single-node plan, which is displayed as its nodes.
         (None | Some(HEAD_STAGE_ID), Some(plan)) if single_node => {
             operator_tree(plan, format, paint)
@@ -169,28 +193,38 @@ pub(super) struct DecodedPlan {
 }
 
 /// Decodes a stage read by `boundary`, a network boundary with its display and metrics, and adds
-/// the metrics derived for it.
-fn decode_stage(stage: StageDump, boundary: Option<(&str, &MetricsSet)>) -> Result<DecodedStage> {
+/// the metrics derived for it if `derive_metrics`.
+fn decode_stage(
+    stage: StageDump,
+    boundary: Option<(&str, &MetricsSet)>,
+    derive_metrics: bool,
+) -> Result<DecodedStage> {
     let mut decoded = DecodedStage {
         id: stage.stage_id,
         tasks: stage.tasks,
         partitions: stage.partitions,
         boundary_kind: boundary.map(|(display, _)| boundary_kind(display).to_string()),
         metrics: undump_metrics(&stage.metrics)?,
-        plan: stage.plan_dump.map(|plan| decode_plan(*plan)).transpose()?,
+        plan: (stage.plan_dump)
+            .map(|plan| decode_plan(*plan, derive_metrics))
+            .transpose()?,
     };
+    if !derive_metrics {
+        return Ok(decoded);
+    }
     for metric in stage_derived_metrics(&decoded, boundary.map(|(_, metrics)| metrics)) {
         decoded.metrics.push(metric);
     }
     Ok(decoded)
 }
 
-fn decode_plan(plan: PlanDump) -> Result<DecodedPlan> {
+fn decode_plan(plan: PlanDump, derive_metrics: bool) -> Result<DecodedPlan> {
     let metrics = undump_metrics(&plan.metrics)?;
     let input_stage = match plan.input_stage {
         Some(stage) => Some(Box::new(decode_stage(
             *stage,
             Some((&plan.display, &metrics)),
+            derive_metrics,
         )?)),
         None => None,
     };
@@ -198,7 +232,7 @@ fn decode_plan(plan: PlanDump) -> Result<DecodedPlan> {
         children: plan
             .children
             .into_iter()
-            .map(decode_plan)
+            .map(|child| decode_plan(child, derive_metrics))
             .collect::<Result<_>>()?,
         display: plan.display,
         metrics,
@@ -332,6 +366,44 @@ fn stage_tree(stage: &DecodedStage, format: DistributedMetricsFormat, paint: Pai
         .map(|input| stage_tree(input, format, paint))
         .collect();
     node
+}
+
+/// The metrics reported by `stages` and by their nodes, added up by name. Metrics are filtered
+/// once decoded, so only the totals of the metrics matching the filters are displayed. Tasks of
+/// different stages are unrelated, so the totals are never displayed per task.
+fn totals_node(stages: Vec<&DecodedStage>, paint: Paint) -> Node {
+    fn collect(plan: &DecodedPlan, totals: &mut MetricsSet) {
+        for metric in plan.metrics.iter() {
+            totals.push(Arc::clone(metric));
+        }
+        // The stage a network boundary reads from is one of `stages`, if it is added up.
+        for child in &plan.children {
+            collect(child, totals);
+        }
+    }
+    let mut totals = MetricsSet::new();
+    for stage in stages {
+        for metric in stage.metrics.iter() {
+            totals.push(Arc::clone(metric));
+        }
+        if let Some(plan) = &stage.plan {
+            collect(plan, &mut totals);
+        }
+    }
+    Node {
+        label: paint.stage("Totals"),
+        metrics: metric_lines(&totals, DistributedMetricsFormat::Aggregated, paint),
+        children: vec![],
+    }
+}
+
+/// `stage` and every stage it reads from, directly or not.
+fn all_stages(stage: &DecodedStage) -> Vec<&DecodedStage> {
+    let mut stages = vec![stage];
+    for input in input_stages(stage) {
+        stages.extend(all_stages(input));
+    }
+    stages
 }
 
 /// The nodes of a stage as a tree. Network boundaries are leaves: the stages they read from are
@@ -820,6 +892,55 @@ mod tests {
                  │    output_rows={1:0}
                  └─ t2: DataSourceExec: file_groups={3 groups}, projection=[MinTemp, Rainfall, RainToday], file_type=parquet, predicate=Rainfall@2 > 0, pruning_predicate=Rainfall_null_count@1 != row_count@2 AND Rainfall_max@0 > 0, required_guarantees=[]
                       output_rows={2:112}
+        ");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn totals_add_up_the_metrics_of_every_stage() -> Result<()> {
+        let query = r#"SELECT "RainToday", count(*) FROM weather GROUP BY "RainToday""#;
+        let plan = TestPlanBuilder::default()
+            .executed_physical_plan(query)
+            .await;
+
+        let dump = generate_plan_dump(&plan)?;
+
+        let opts = DisplayPlanDumpOptions::default()
+            .with_totals(true)
+            .with_metric_filter("elapsed_compute")
+            .with_metric_filter("output_bytes")
+            .with_exact_metric_filters(true);
+        let display = display_plan_dump(dump, opts)?;
+        let filters = vec![(TIMES, "<time>"), (BYTES, "<bytes>")];
+        with_settings!({ filters => filters }, {
+            assert_snapshot!(display, @r"
+            Totals
+              elapsed_compute=<time>
+              output_bytes=<bytes>
+            ");
+        });
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn totals_of_a_single_stage() -> Result<()> {
+        let query = r#"SELECT "RainToday", count(*) FROM weather GROUP BY "RainToday""#;
+        let plan = TestPlanBuilder::default()
+            .executed_physical_plan(query)
+            .await;
+
+        let dump = generate_plan_dump(&plan)?;
+
+        // Only the nodes of stage 1 are added up, leaving out the rows of stage 2 and of the head.
+        let opts = DisplayPlanDumpOptions::default()
+            .with_totals(true)
+            .with_stage_id(1)
+            .with_metric_filter("output_rows")
+            .with_exact_metric_filters(true);
+        let display = display_plan_dump(dump, opts)?;
+        assert_snapshot!(display, @r"
+        Totals
+          output_rows=378
         ");
         Ok(())
     }

@@ -19,6 +19,11 @@ takes a dump as an argument, a file path, or stdin.
   `--exact` matches whole names.
   - `-m output_rows --exact` on the stage tree gives a compact skeleton of the whole plan.
   - `-m none --exact` hides every metric, leaving plain node lines to grep.
+- **Query totals.** `-t` prints each metric reported by any node added up across the query
+  instead of the plan, like the total CPU time with `-t -m elapsed_compute --exact`. With
+  `--stage N` it only adds up the nodes of that stage, and `-m` filters apply. Stage-level
+  derived metrics are left out, so `output_rows`/`output_bytes` add up every node's output, not
+  what crossed the network.
 - **Long lines.** Node lines are long, so cut them when scanning.
 - **Stage-level metrics:**
   - `elapsed_compute` is the CPU time of all the stage's nodes.
