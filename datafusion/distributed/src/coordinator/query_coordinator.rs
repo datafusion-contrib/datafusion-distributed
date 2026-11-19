@@ -10,24 +10,23 @@ use crate::dynamic_filtering::{
     is_remote_dynamic_filtering_enabled,
     maybe_roundtrip_plan_to_sever_in_memory_dynamic_filter_relationships,
 };
-use crate::events::{
-    RouteTaskEvent, RouteTaskEventResponse, RouteTaskHandlers, new_coordinator_to_worker_dialer,
-};
+use crate::events::{RouteTaskEvent, RouteTaskEventResponse, RouteTaskHandlers};
 use crate::execution_plans::{ChildrenIsolatorUnionExec, DistributedLeafExec};
 use crate::passthrough_headers::get_passthrough_headers;
 use crate::stage::LocalStage;
 use crate::work_unit_feed::WorkUnitFeedRegistry;
 use crate::work_unit_feed::{build_work_unit_batch_msg, set_work_unit_send_time};
 use crate::{
-    CoordinatorToWorkerMsg, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedGetterExt,
-    DistributedTaskContext, DistributedWorkUnitFeedContext, LoadInfo, LocalWorkerContext,
-    MaybeEncoded, SetPlanRequest, TaskCompletedDynamicFilters, TaskKey, TaskMetrics,
-    WorkUnitFeedDeclaration, WorkerToCoordinatorMsg, get_distributed_channel_resolver,
+    CoordinatorToWorkerDialer, CoordinatorToWorkerMsg, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL,
+    DistributedGetterExt, DistributedTaskContext, DistributedWorkUnitFeedContext, LoadInfo,
+    LocalWorkerContext, MaybeEncoded, SetPlanRequest, TaskCompletedDynamicFilters, TaskKey,
+    TaskMetrics, WorkUnitFeedDeclaration, WorkerToCoordinatorMsg, get_distributed_channel_resolver,
 };
-use datafusion::common::Result;
+use async_trait::async_trait;
 use datafusion::common::instant::Instant;
 use datafusion::common::tree_node::{Transformed, TreeNodeRecursion};
 use datafusion::common::{DataFusionError, internal_err};
+use datafusion::common::{Result, internal_datafusion_err};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr_common::metrics::{ExecutionPlanMetricsSet, Label, MetricBuilder};
 use datafusion::physical_plan::metrics::Count;
@@ -38,10 +37,12 @@ use datafusion::prelude::SessionConfig;
 use futures::future::try_join_all;
 use futures::stream::BoxStream;
 use futures::{StreamExt, TryStreamExt};
-use std::sync::{Arc, Mutex};
+use http::HeaderMap;
+use std::sync::{Arc, LazyLock, Mutex};
 use tokio::select;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio_stream::wrappers::UnboundedReceiverStream;
+use tokio_util::sync::CancellationToken;
 use url::Url;
 use uuid::Uuid;
 
@@ -171,76 +172,23 @@ impl<'a> StageCoordinator<'a> {
         let mut headers = get_config_extension_propagation_headers(session_config)?;
         headers.extend(get_passthrough_headers(session_config));
 
-        let metrics = self.metrics.clone();
-        let metrics_set = self.metrics_set.clone();
-        // Stores the last coordinator_to_worker_tx that was attempted for establishing a
-        // connection with the remote worker. If dialing a remote worker fails, and it's retried,
-        // this will hold the channel belonging to the last retry
-        let coordinator_to_worker_tx_slot = Mutex::new(None);
-
-        let dialer = new_coordinator_to_worker_dialer(|url| {
-            let (coordinator_to_worker_tx, coordinator_to_worker_rx) = unbounded_channel();
-            coordinator_to_worker_tx_slot
-                .lock()
-                .unwrap()
-                .replace(coordinator_to_worker_tx);
-
-            let coordinator_to_worker_stream =
-                UnboundedReceiverStream::new(coordinator_to_worker_rx)
-                    .map(set_work_unit_send_time)
-                    // Keep the request side of the channel open until the query ends. Workers interpret this
-                    // end-of-stream (EOS) as a query finished/aborted signal. The flow looks like this:
-                    // 1. Execution ends normally. All Arrow RecordBatches are emitted.
-                    // 2. The end stream notifier guard is dropped in `DistributedExec::execute()`.
-                    // 3. Here, the coordinator->worker channel is gracefully ended.
-                    // 4. The coordinator->worker channel EOS is received in `impl_coordinator_channel.rs`.
-                    // 5. The metrics and final dynamic filters are sent back in the
-                    //    worker->coordinator channel, and then that channel is closed.
-                    .take_until(self.spawner.query_finished().cancelled_owned())
-                    .boxed();
-
-            let set_plan_request = SetPlanRequest {
+        let dialer = Dialer {
+            metrics: self.metrics.clone(),
+            metrics_set: self.metrics_set.clone(),
+            task_ctx: Arc::clone(self.task_ctx),
+            query_finished: self.spawner.query_finished(),
+            headers,
+            set_plan_request_template: SetPlanRequest {
                 task_key,
                 task_count: self.task_count,
                 plan: MaybeEncoded::Decoded(Arc::clone(&plan)),
-                dynamic_filter_remote_producer_ids: dynamic_filter_remote_producer_ids.clone(),
-                work_unit_feed_declarations: work_unit_feed_declarations.clone(),
-                target_worker_url: url.clone(),
+                dynamic_filter_remote_producer_ids,
+                work_unit_feed_declarations,
+                target_worker_url: URL_PLACEHOLDER.clone(),
                 query_start_time_ns: self.metrics.instantiation_time,
-            };
-            let task_ctx = Arc::clone(self.task_ctx);
-            let headers = headers.clone();
-            let metrics = metrics.clone();
-            let metrics_set = metrics_set.clone();
-
-            async move {
-                let mut client = match LocalWorkerContext::from_ctx(&task_ctx) {
-                    Some(lw) if lw.self_url == url => {
-                        metrics.local_coordinator_channels.add(1);
-                        Ok(lw.to_worker_channel())
-                    }
-                    _ => {
-                        metrics.remote_coordinator_channels.add(1);
-                        let ch_resolver = get_distributed_channel_resolver(task_ctx.as_ref());
-                        ch_resolver.get_worker_client_for_url(&url).await
-                    }
-                }?;
-                let worker_to_coordinator_stream = client
-                    .coordinator_channel(
-                        headers,
-                        set_plan_request,
-                        coordinator_to_worker_stream,
-                        metrics_set,
-                        &task_ctx,
-                    )
-                    .await?;
-
-                Ok::<_, DataFusionError>(RouteTaskEventResponse {
-                    url,
-                    worker_to_coordinator_stream,
-                })
-            }
-        });
+            },
+            coordinator_to_worker_tx: Mutex::new(None),
+        };
 
         let worker_resolver = session_config.get_distributed_worker_resolver()?;
 
@@ -259,12 +207,9 @@ impl<'a> StageCoordinator<'a> {
         let Some(response) = RouteTaskHandlers::handle(ev).await.transpose()? else {
             return internal_err!("No RouteTaskHandler returned a response");
         };
-        metrics.plan_send_latency.record(&start);
+        self.metrics.plan_send_latency.record(&start);
 
-        let Some(coordinator_to_worker_tx) = coordinator_to_worker_tx_slot.lock().unwrap().take()
-        else {
-            return internal_err!("Missing coordinator_to_worker_tx");
-        };
+        let coordinator_to_worker_tx = dialer.coordinator_to_worker_tx()?;
         self.dynamic_filter_registry
             .register_sender(task_key, coordinator_to_worker_tx.clone())?;
 
@@ -554,6 +499,77 @@ impl CoordinatorToWorkerMetrics {
         }
     }
 }
+
+struct Dialer {
+    // Contextual
+    metrics: CoordinatorToWorkerMetrics,
+    metrics_set: ExecutionPlanMetricsSet,
+    task_ctx: Arc<TaskContext>,
+    query_finished: CancellationToken,
+    headers: HeaderMap,
+    set_plan_request_template: SetPlanRequest,
+    // Results
+    coordinator_to_worker_tx: Mutex<Option<UnboundedSender<CoordinatorToWorkerMsg>>>,
+}
+
+impl Dialer {
+    fn coordinator_to_worker_tx(&self) -> Result<UnboundedSender<CoordinatorToWorkerMsg>> {
+        let entry = self.coordinator_to_worker_tx.lock().unwrap().take();
+        entry.ok_or_else(|| internal_datafusion_err!("No coordinator->worker channel was created"))
+    }
+}
+
+#[async_trait]
+impl CoordinatorToWorkerDialer for Dialer {
+    async fn dial(&self, url: Url) -> Result<RouteTaskEventResponse> {
+        let (coordinator_to_worker_tx, coordinator_to_worker_rx) = unbounded_channel();
+        *self.coordinator_to_worker_tx.lock().unwrap() = Some(coordinator_to_worker_tx);
+
+        let coordinator_to_worker_stream = UnboundedReceiverStream::new(coordinator_to_worker_rx)
+            .map(set_work_unit_send_time)
+            // Keep the request side of the channel open until the query ends. Workers interpret this
+            // end-of-stream (EOS) as a query finished/aborted signal. The flow looks like this:
+            // 1. Execution ends normally. All Arrow RecordBatches are emitted.
+            // 2. The end stream notifier guard is dropped in `DistributedExec::execute()`.
+            // 3. Here, the coordinator->worker channel is gracefully ended.
+            // 4. The coordinator->worker channel EOS is received in `impl_coordinator_channel.rs`.
+            // 5. The metrics and final dynamic filters are sent back in the
+            //    worker->coordinator channel, and then that channel is closed.
+            .take_until(self.query_finished.clone().cancelled_owned())
+            .boxed();
+
+        let mut set_plan_request = self.set_plan_request_template.clone();
+        set_plan_request.target_worker_url = url.clone();
+
+        let mut client = match LocalWorkerContext::from_ctx(&self.task_ctx) {
+            Some(lw) if lw.self_url == url => {
+                self.metrics.local_coordinator_channels.add(1);
+                Ok(lw.to_worker_channel())
+            }
+            _ => {
+                self.metrics.remote_coordinator_channels.add(1);
+                let ch_resolver = get_distributed_channel_resolver(self.task_ctx.as_ref());
+                ch_resolver.get_worker_client_for_url(&url).await
+            }
+        }?;
+        let worker_to_coordinator_stream = client
+            .coordinator_channel(
+                self.headers.clone(),
+                set_plan_request,
+                coordinator_to_worker_stream,
+                self.metrics_set.clone(),
+                &self.task_ctx,
+            )
+            .await?;
+
+        Ok::<_, DataFusionError>(RouteTaskEventResponse {
+            url,
+            worker_to_coordinator_stream,
+        })
+    }
+}
+
+static URL_PLACEHOLDER: LazyLock<Url> = LazyLock::new(|| Url::parse("http://127.0.0.1").unwrap());
 
 #[cfg(test)]
 mod tests {
