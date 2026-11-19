@@ -377,7 +377,7 @@ mod tests {
             0,
         );
 
-        assert_metrics_equal::<SortPreservingMergeExec, SortPreservingMergeExec>(
+        assert_metrics_equal::<SortPreservingMergeExec, NetworkCoalesceExec>(
             ["output_rows", "output_bytes"],
             &s_physical,
             &d_physical,

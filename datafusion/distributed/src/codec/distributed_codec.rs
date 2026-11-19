@@ -178,6 +178,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 partitioning,
                 input_stage,
                 equivalence_classes,
+                fetch,
             }) => {
                 let schema: Schema = schema
                     .as_ref()
@@ -208,11 +209,14 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     proto_converter,
                 )?;
 
-                Ok(Arc::new(new_network_coalesce_tasks_exec(
-                    partitioning,
-                    equivalence_properties,
-                    parse_stage_proto(input_stage, inputs, dynamic_filter_anchors)?,
-                )))
+                Ok(Arc::new(
+                    new_network_coalesce_tasks_exec(
+                        partitioning,
+                        equivalence_properties,
+                        parse_stage_proto(input_stage, inputs, dynamic_filter_anchors)?,
+                    )
+                    .with_fetch(fetch.map(|v| v as usize)),
+                ))
             }
             DistributedExecNode::NetworkBroadcast(NetworkBroadcastExecProto {
                 schema,
@@ -420,6 +424,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     self,
                     proto_converter,
                 )?,
+                fetch: node.fetch.map(|v| v as u64),
             };
 
             let wrapper = DistributedExecProto {
@@ -787,6 +792,9 @@ pub struct NetworkCoalesceExecProto {
     input_stage: Option<StageProto>,
     #[prost(message, repeated, tag = "4")]
     equivalence_classes: Vec<EquivalenceClassProto>,
+    /// Row limit the producer head applies per input task.
+    #[prost(uint64, optional, tag = "5")]
+    fetch: Option<u64>,
 }
 
 fn new_network_coalesce_tasks_exec(
@@ -803,6 +811,7 @@ fn new_network_coalesce_tasks_exec(
         )),
         worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
         input_stage,
+        fetch: None,
     }
 }
 

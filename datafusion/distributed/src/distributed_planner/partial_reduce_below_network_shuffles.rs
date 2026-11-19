@@ -117,15 +117,16 @@ mod tests {
             .distributed_cardinality_effect_task_scale_factor(1.5)
             .physical_plan_as_ascii(query, false)
             .await;
-        assert_snapshot!(physical_plan_ascii, @"
+        assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec
         │ CoalescePartitionsExec
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=8, input_tasks=2
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── tasks=2, partitions=4
-          │ ProjectionExec: expr=[RainToday@0 as RainToday, count(Int64(1))@1 as count(*)]
-          │   AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
-          │     [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
+          ┌───── Stage 2 ── tasks=2, partitions=2
+          │ CoalescePartitionsExec
+          │   ProjectionExec: expr=[RainToday@0 as RainToday, count(Int64(1))@1 as count(*)]
+          │     AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
+          │       [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=3, partitions=8
             │ AggregateExec: mode=PartialReduce, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]

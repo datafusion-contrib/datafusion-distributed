@@ -108,12 +108,13 @@ mod tests {
         assert_snapshot!(&distributed_plan, @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [f_dkey@0 ASC NULLS LAST, timestamp@1 ASC NULLS LAST]
-        │   [Stage 3] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
+        │   [Stage 3] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
           ┌───── Stage 3 ── tasks=2, partitions=2
-          │ HashJoinExec: mode=Partitioned, join_type=Inner, on=[(d_dkey@3, f_dkey@2)], projection=[f_dkey@6, timestamp@4, value@5, env@0, service@1, host@2]
-          │   [Stage 1] => NetworkShuffleExec: output_partitions=2, input_tasks=2
-          │   [Stage 2] => NetworkShuffleExec: output_partitions=2, input_tasks=2, sort_exprs=[f_dkey@2 ASC NULLS LAST, timestamp@0 ASC NULLS LAST]
+          │ SortPreservingMergeExec: [f_dkey@0 ASC NULLS LAST, timestamp@1 ASC NULLS LAST]
+          │   HashJoinExec: mode=Partitioned, join_type=Inner, on=[(d_dkey@3, f_dkey@2)], projection=[f_dkey@6, timestamp@4, value@5, env@0, service@1, host@2]
+          │     [Stage 1] => NetworkShuffleExec: output_partitions=2, input_tasks=2
+          │     [Stage 2] => NetworkShuffleExec: output_partitions=2, input_tasks=2, sort_exprs=[f_dkey@2 ASC NULLS LAST, timestamp@0 ASC NULLS LAST]
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=2, partitions=4
             │ RepartitionExec: partitioning=Hash([d_dkey@3], 4), input_partitions=2

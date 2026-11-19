@@ -8,7 +8,6 @@ use crate::distributed_planner::insert_children_isolator_union::insert_children_
 use crate::distributed_planner::normalize_collect_joins::normalize_collect_joins;
 use crate::distributed_planner::partial_reduce_below_network_shuffles::partial_reduce_below_network_shuffles;
 use crate::distributed_planner::prepare_network_boundaries::prepare_network_boundaries;
-use crate::distributed_planner::push_fetch_into_network_coalesce::push_fetch_into_network_coalesce;
 use crate::events::{ScaleUpLeafNodeEvent, ScaleUpLeafNodeHandlers};
 use crate::explain_analyze::DistributedAnalyzeExec;
 use crate::{DistributedConfig, DistributedExec, NetworkBoundaryExt};
@@ -135,7 +134,6 @@ pub fn create_distributed_plan(
             if !plan.exists(|plan| Ok(plan.is_network_boundary()))? {
                 return Ok(plan);
             }
-            let plan = push_fetch_into_network_coalesce(plan)?;
             return Ok(create_distributed_exec(Arc::clone(&plan), d_cfg));
         }
 
@@ -166,7 +164,6 @@ pub fn create_distributed_plan(
         }
 
         let plan = partial_reduce_below_network_shuffles(plan, cfg)?;
-        let plan = push_fetch_into_network_coalesce(plan)?;
 
         Ok(create_distributed_exec(Arc::clone(&plan), d_cfg))
     })
@@ -225,13 +222,14 @@ mod tests {
         assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec
         │ CoalescePartitionsExec
-        │   [Stage 1] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
+        │   [Stage 1] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── tasks=3, partitions=9
-          │ DistributedLeafExec:
-          │   t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp, MaxTemp, Rainfall, Evaporation, Sunshine, WindGustDir, WindGustSpeed, WindDir9am, WindDir3pm, WindSpeed9am, WindSpeed3pm, Humidity9am, Humidity3pm, Pressure9am, Pressure3pm, Cloud9am, Cloud3pm, Temp9am, Temp3pm, RainToday, RISK_MM, RainTomorrow], file_type=parquet
-          │   t1: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp, MaxTemp, Rainfall, Evaporation, Sunshine, WindGustDir, WindGustSpeed, WindDir9am, WindDir3pm, WindSpeed9am, WindSpeed3pm, Humidity9am, Humidity3pm, Pressure9am, Pressure3pm, Cloud9am, Cloud3pm, Temp9am, Temp3pm, RainToday, RISK_MM, RainTomorrow], file_type=parquet
-          │   t2: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp, MaxTemp, Rainfall, Evaporation, Sunshine, WindGustDir, WindGustSpeed, WindDir9am, WindDir3pm, WindSpeed9am, WindSpeed3pm, Humidity9am, Humidity3pm, Pressure9am, Pressure3pm, Cloud9am, Cloud3pm, Temp9am, Temp3pm, RainToday, RISK_MM, RainTomorrow], file_type=parquet
+          ┌───── Stage 1 ── tasks=3, partitions=3
+          │ CoalescePartitionsExec
+          │   DistributedLeafExec:
+          │     t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp, MaxTemp, Rainfall, Evaporation, Sunshine, WindGustDir, WindGustSpeed, WindDir9am, WindDir3pm, WindSpeed9am, WindSpeed3pm, Humidity9am, Humidity3pm, Pressure9am, Pressure3pm, Cloud9am, Cloud3pm, Temp9am, Temp3pm, RainToday, RISK_MM, RainTomorrow], file_type=parquet
+          │     t1: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp, MaxTemp, Rainfall, Evaporation, Sunshine, WindGustDir, WindGustSpeed, WindDir9am, WindDir3pm, WindSpeed9am, WindSpeed3pm, Humidity9am, Humidity3pm, Pressure9am, Pressure3pm, Cloud9am, Cloud3pm, Temp9am, Temp3pm, RainToday, RISK_MM, RainTomorrow], file_type=parquet
+          │     t2: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp, MaxTemp, Rainfall, Evaporation, Sunshine, WindGustDir, WindGustSpeed, WindDir9am, WindDir3pm, WindSpeed9am, WindSpeed3pm, Humidity9am, Humidity3pm, Pressure9am, Pressure3pm, Cloud9am, Cloud3pm, Temp9am, Temp3pm, RainToday, RISK_MM, RainTomorrow], file_type=parquet
           └──────────────────────────────────────────────────
         ");
     }
@@ -245,16 +243,17 @@ mod tests {
             .distributed_cardinality_effect_task_scale_factor(1.5)
             .physical_plan_as_ascii(query, false)
             .await;
-        assert_snapshot!(physical_plan_ascii, @"
+        assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [count(*)@0 ASC NULLS LAST]
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=8, input_tasks=2
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── tasks=2, partitions=4
-          │ ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday]
-          │   SortExec: expr=[count(Int64(1))@1 ASC NULLS LAST], preserve_partitioning=[true]
-          │     AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
-          │       [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
+          ┌───── Stage 2 ── tasks=2, partitions=2
+          │ SortPreservingMergeExec: [count(*)@0 ASC NULLS LAST]
+          │   ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday]
+          │     SortExec: expr=[count(Int64(1))@1 ASC NULLS LAST], preserve_partitioning=[true]
+          │       AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
+          │         [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=3, partitions=8
             │ RepartitionExec: partitioning=Hash([RainToday@0], 8), input_partitions=3
@@ -276,16 +275,17 @@ mod tests {
             .num_workers(2)
             .physical_plan_as_ascii(query, false)
             .await;
-        assert_snapshot!(physical_plan_ascii, @"
+        assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [count(*)@0 ASC NULLS LAST]
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=8, input_tasks=2
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── tasks=2, partitions=4
-          │ ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday]
-          │   SortExec: expr=[count(Int64(1))@1 ASC NULLS LAST], preserve_partitioning=[true]
-          │     AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
-          │       [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=2
+          ┌───── Stage 2 ── tasks=2, partitions=2
+          │ SortPreservingMergeExec: [count(*)@0 ASC NULLS LAST]
+          │   ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday]
+          │     SortExec: expr=[count(Int64(1))@1 ASC NULLS LAST], preserve_partitioning=[true]
+          │       AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
+          │         [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=2
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=2, partitions=8
             │ RepartitionExec: partitioning=Hash([RainToday@0], 8), input_partitions=3
@@ -374,16 +374,17 @@ mod tests {
             .distributed_cardinality_effect_task_scale_factor(1.5)
             .physical_plan_as_ascii(query, false)
             .await;
-        assert_snapshot!(physical_plan_ascii, @"
+        assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [count(*)@0 ASC NULLS LAST]
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=8, input_tasks=2
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── tasks=2, partitions=4
-          │ ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday]
-          │   SortExec: expr=[count(Int64(1))@1 ASC NULLS LAST], preserve_partitioning=[true]
-          │     AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
-          │       [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
+          ┌───── Stage 2 ── tasks=2, partitions=2
+          │ SortPreservingMergeExec: [count(*)@0 ASC NULLS LAST]
+          │   ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday]
+          │     SortExec: expr=[count(Int64(1))@1 ASC NULLS LAST], preserve_partitioning=[true]
+          │       AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
+          │         [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=3, partitions=8
             │ RepartitionExec: partitioning=Hash([RainToday@0], 8), input_partitions=3
@@ -404,15 +405,16 @@ mod tests {
         let physical_plan_ascii = TestPlanBuilder::default()
             .physical_plan_as_ascii(query, false)
             .await;
-        assert_snapshot!(physical_plan_ascii, @"
+        assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec
         │ CoalescePartitionsExec
-        │   [Stage 3] => NetworkCoalesceExec: output_partitions=12, input_tasks=3
+        │   [Stage 3] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 3 ── tasks=3, partitions=4
-          │ HashJoinExec: mode=Partitioned, join_type=Left, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
-          │   [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
-          │   [Stage 2] => NetworkShuffleExec: output_partitions=4, input_tasks=3
+          ┌───── Stage 3 ── tasks=3, partitions=3
+          │ CoalescePartitionsExec
+          │   HashJoinExec: mode=Partitioned, join_type=Left, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
+          │     [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
+          │     [Stage 2] => NetworkShuffleExec: output_partitions=4, input_tasks=3
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=3, partitions=12
             │ RepartitionExec: partitioning=Hash([RainToday@1], 12), input_partitions=3
@@ -513,14 +515,15 @@ mod tests {
         assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [MinTemp@0 DESC]
-        │   [Stage 1] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
+        │   [Stage 1] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── tasks=3, partitions=9
-          │ SortExec: expr=[MinTemp@0 DESC], preserve_partitioning=[true]
-          │   DistributedLeafExec:
-          │     t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp, MaxTemp, Rainfall, Evaporation, Sunshine, WindGustDir, WindGustSpeed, WindDir9am, WindDir3pm, WindSpeed9am, WindSpeed3pm, Humidity9am, Humidity3pm, Pressure9am, Pressure3pm, Cloud9am, Cloud3pm, Temp9am, Temp3pm, RainToday, RISK_MM, RainTomorrow], file_type=parquet, sort_order_for_reorder=[MinTemp@0 DESC], reverse_row_groups=true
-          │     t1: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp, MaxTemp, Rainfall, Evaporation, Sunshine, WindGustDir, WindGustSpeed, WindDir9am, WindDir3pm, WindSpeed9am, WindSpeed3pm, Humidity9am, Humidity3pm, Pressure9am, Pressure3pm, Cloud9am, Cloud3pm, Temp9am, Temp3pm, RainToday, RISK_MM, RainTomorrow], file_type=parquet, sort_order_for_reorder=[MinTemp@0 DESC], reverse_row_groups=true
-          │     t2: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp, MaxTemp, Rainfall, Evaporation, Sunshine, WindGustDir, WindGustSpeed, WindDir9am, WindDir3pm, WindSpeed9am, WindSpeed3pm, Humidity9am, Humidity3pm, Pressure9am, Pressure3pm, Cloud9am, Cloud3pm, Temp9am, Temp3pm, RainToday, RISK_MM, RainTomorrow], file_type=parquet, sort_order_for_reorder=[MinTemp@0 DESC], reverse_row_groups=true
+          ┌───── Stage 1 ── tasks=3, partitions=3
+          │ SortPreservingMergeExec: [MinTemp@0 DESC]
+          │   SortExec: expr=[MinTemp@0 DESC], preserve_partitioning=[true]
+          │     DistributedLeafExec:
+          │       t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp, MaxTemp, Rainfall, Evaporation, Sunshine, WindGustDir, WindGustSpeed, WindDir9am, WindDir3pm, WindSpeed9am, WindSpeed3pm, Humidity9am, Humidity3pm, Pressure9am, Pressure3pm, Cloud9am, Cloud3pm, Temp9am, Temp3pm, RainToday, RISK_MM, RainTomorrow], file_type=parquet, sort_order_for_reorder=[MinTemp@0 DESC], reverse_row_groups=true
+          │       t1: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp, MaxTemp, Rainfall, Evaporation, Sunshine, WindGustDir, WindGustSpeed, WindDir9am, WindDir3pm, WindSpeed9am, WindSpeed3pm, Humidity9am, Humidity3pm, Pressure9am, Pressure3pm, Cloud9am, Cloud3pm, Temp9am, Temp3pm, RainToday, RISK_MM, RainTomorrow], file_type=parquet, sort_order_for_reorder=[MinTemp@0 DESC], reverse_row_groups=true
+          │       t2: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp, MaxTemp, Rainfall, Evaporation, Sunshine, WindGustDir, WindGustSpeed, WindDir9am, WindDir3pm, WindSpeed9am, WindSpeed3pm, Humidity9am, Humidity3pm, Pressure9am, Pressure3pm, Cloud9am, Cloud3pm, Temp9am, Temp3pm, RainToday, RISK_MM, RainTomorrow], file_type=parquet, sort_order_for_reorder=[MinTemp@0 DESC], reverse_row_groups=true
           └──────────────────────────────────────────────────
         ");
     }
@@ -534,16 +537,17 @@ mod tests {
             .distributed_cardinality_effect_task_scale_factor(1.5)
             .physical_plan_as_ascii(query, false)
             .await;
-        assert_snapshot!(physical_plan_ascii, @"
+        assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec
         │ ProjectionExec: expr=[RainToday@0 as RainToday, count(Int64(1))@1 as count(*)]
         │   CoalescePartitionsExec: fetch=10
-        │     [Stage 2] => NetworkCoalesceExec: output_partitions=8, input_tasks=2
+        │     [Stage 2] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── tasks=2, partitions=4
-          │ LocalLimitExec: fetch=10
-          │   AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
-          │     [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
+          ┌───── Stage 2 ── tasks=2, partitions=2
+          │ CoalescePartitionsExec: fetch=10
+          │   LocalLimitExec: fetch=10
+          │     AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
+          │       [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=3, partitions=8
             │ RepartitionExec: partitioning=Hash([RainToday@0], 8), input_partitions=3
@@ -565,14 +569,15 @@ mod tests {
             .distributed_cardinality_effect_task_scale_factor(1.5)
             .physical_plan_as_ascii(query, false)
             .await;
-        assert_snapshot!(physical_plan_ascii, @"
+        assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec
         │ CoalescePartitionsExec
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=8, input_tasks=2
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── tasks=2, partitions=4
-          │ AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday, WindGustDir@1 as WindGustDir], aggr=[]
-          │   [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
+          ┌───── Stage 2 ── tasks=2, partitions=2
+          │ CoalescePartitionsExec
+          │   AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday, WindGustDir@1 as WindGustDir], aggr=[]
+          │     [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=3, partitions=8
             │ RepartitionExec: partitioning=Hash([RainToday@0, WindGustDir@1], 8), input_partitions=3
@@ -613,17 +618,18 @@ mod tests {
             .num_workers(2)
             .physical_plan_as_ascii(query, false)
             .await;
-        assert_snapshot!(physical_plan_ascii, @"
+        assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec
         │ CoalescePartitionsExec
-        │   [Stage 1] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
+        │   [Stage 1] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── tasks=2, partitions=4
-          │ DistributedUnionExec: t0:[c0] t1:[c1]
-          │   DistributedLeafExec:
-          │     t0: DataSourceExec: file_groups={2 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[1 as Int64(1)], file_type=parquet
-          │   DistributedLeafExec:
-          │     t0: DataSourceExec: file_groups={2 groups: [[/testdata/flights-1m.parquet:<int>..<int>], [/testdata/flights-1m.parquet:<int>..<int>]]}, projection=[1 as Int64(1)], file_type=parquet
+          ┌───── Stage 1 ── tasks=2, partitions=2
+          │ CoalescePartitionsExec
+          │   DistributedUnionExec: t0:[c0] t1:[c1]
+          │     DistributedLeafExec:
+          │       t0: DataSourceExec: file_groups={2 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[1 as Int64(1)], file_type=parquet
+          │     DistributedLeafExec:
+          │       t0: DataSourceExec: file_groups={2 groups: [[/testdata/flights-1m.parquet:<int>..<int>], [/testdata/flights-1m.parquet:<int>..<int>]]}, projection=[1 as Int64(1)], file_type=parquet
           └──────────────────────────────────────────────────
         ");
     }
@@ -639,17 +645,18 @@ mod tests {
             .distributed_max_tasks_per_stage(2)
             .physical_plan_as_ascii(query, false)
             .await;
-        assert_snapshot!(physical_plan_ascii, @"
+        assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec
         │ CoalescePartitionsExec
-        │   [Stage 1] => NetworkCoalesceExec: output_partitions=8, input_tasks=2
+        │   [Stage 1] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── tasks=2, partitions=8
-          │ DistributedUnionExec: t0:[c0] t1:[c1]
-          │   DistributedLeafExec:
-          │     t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[1 as Int64(1)], file_type=parquet
-          │   DistributedLeafExec:
-          │     t0: DataSourceExec: file_groups={4 groups: [[/testdata/flights-1m.parquet:<int>..<int>], [/testdata/flights-1m.parquet:<int>..<int>], [/testdata/flights-1m.parquet:<int>..<int>], [/testdata/flights-1m.parquet:<int>..<int>]]}, projection=[1 as Int64(1)], file_type=parquet
+          ┌───── Stage 1 ── tasks=2, partitions=2
+          │ CoalescePartitionsExec
+          │   DistributedUnionExec: t0:[c0] t1:[c1]
+          │     DistributedLeafExec:
+          │       t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[1 as Int64(1)], file_type=parquet
+          │     DistributedLeafExec:
+          │       t0: DataSourceExec: file_groups={4 groups: [[/testdata/flights-1m.parquet:<int>..<int>], [/testdata/flights-1m.parquet:<int>..<int>], [/testdata/flights-1m.parquet:<int>..<int>], [/testdata/flights-1m.parquet:<int>..<int>]]}, projection=[1 as Int64(1)], file_type=parquet
           └──────────────────────────────────────────────────
         ");
     }
@@ -668,23 +675,24 @@ mod tests {
         assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec
         │ CoalescePartitionsExec
-        │   [Stage 1] => NetworkCoalesceExec: output_partitions=24, input_tasks=6
+        │   [Stage 1] => NetworkCoalesceExec: output_partitions=6, input_tasks=6
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── tasks=6, partitions=24
-          │ DistributedUnionExec: t0:[c0(0/3)] t1:[c0(1/3)] t2:[c0(2/3)] t3:[c1(0/3)] t4:[c1(1/3)] t5:[c1(2/3)]
-          │   FilterExec: MinTemp@0 > 10
-          │     RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
-          │       DistributedLeafExec:
-          │         t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp, RainToday], file_type=parquet, predicate=MinTemp@0 > 10, pruning_predicate=MinTemp_null_count@1 != row_count@2 AND MinTemp_max@0 > 10, required_guarantees=[]
-          │         t1: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp, RainToday], file_type=parquet, predicate=MinTemp@0 > 10, pruning_predicate=MinTemp_null_count@1 != row_count@2 AND MinTemp_max@0 > 10, required_guarantees=[]
-          │         t2: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp, RainToday], file_type=parquet, predicate=MinTemp@0 > 10, pruning_predicate=MinTemp_null_count@1 != row_count@2 AND MinTemp_max@0 > 10, required_guarantees=[]
-          │   ProjectionExec: expr=[MaxTemp@0 as MinTemp, RainToday@1 as RainToday]
-          │     FilterExec: MaxTemp@0 < 30
+          ┌───── Stage 1 ── tasks=6, partitions=6
+          │ CoalescePartitionsExec
+          │   DistributedUnionExec: t0:[c0(0/3)] t1:[c0(1/3)] t2:[c0(2/3)] t3:[c1(0/3)] t4:[c1(1/3)] t5:[c1(2/3)]
+          │     FilterExec: MinTemp@0 > 10
           │       RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
           │         DistributedLeafExec:
-          │           t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=MaxTemp@1 < 30, pruning_predicate=MaxTemp_null_count@1 != row_count@2 AND MaxTemp_min@0 < 30, required_guarantees=[]
-          │           t1: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=MaxTemp@1 < 30, pruning_predicate=MaxTemp_null_count@1 != row_count@2 AND MaxTemp_min@0 < 30, required_guarantees=[]
-          │           t2: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=MaxTemp@1 < 30, pruning_predicate=MaxTemp_null_count@1 != row_count@2 AND MaxTemp_min@0 < 30, required_guarantees=[]
+          │           t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp, RainToday], file_type=parquet, predicate=MinTemp@0 > 10, pruning_predicate=MinTemp_null_count@1 != row_count@2 AND MinTemp_max@0 > 10, required_guarantees=[]
+          │           t1: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp, RainToday], file_type=parquet, predicate=MinTemp@0 > 10, pruning_predicate=MinTemp_null_count@1 != row_count@2 AND MinTemp_max@0 > 10, required_guarantees=[]
+          │           t2: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp, RainToday], file_type=parquet, predicate=MinTemp@0 > 10, pruning_predicate=MinTemp_null_count@1 != row_count@2 AND MinTemp_max@0 > 10, required_guarantees=[]
+          │     ProjectionExec: expr=[MaxTemp@0 as MinTemp, RainToday@1 as RainToday]
+          │       FilterExec: MaxTemp@0 < 30
+          │         RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+          │           DistributedLeafExec:
+          │             t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=MaxTemp@1 < 30, pruning_predicate=MaxTemp_null_count@1 != row_count@2 AND MaxTemp_min@0 < 30, required_guarantees=[]
+          │             t1: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=MaxTemp@1 < 30, pruning_predicate=MaxTemp_null_count@1 != row_count@2 AND MaxTemp_min@0 < 30, required_guarantees=[]
+          │             t2: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=MaxTemp@1 < 30, pruning_predicate=MaxTemp_null_count@1 != row_count@2 AND MaxTemp_min@0 < 30, required_guarantees=[]
           └──────────────────────────────────────────────────
         ");
     }
@@ -702,20 +710,21 @@ mod tests {
         assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec
         │ CoalescePartitionsExec
-        │   [Stage 1] => NetworkCoalesceExec: output_partitions=12, input_tasks=3
+        │   [Stage 1] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── tasks=3, partitions=12
-          │ DistributedUnionExec: t0:[c0(0/2)] t1:[c0(1/2)] t2:[c1]
-          │   FilterExec: MinTemp@0 > 10
-          │     RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
-          │       DistributedLeafExec:
-          │         t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp, RainToday], file_type=parquet, predicate=MinTemp@0 > 10, pruning_predicate=MinTemp_null_count@1 != row_count@2 AND MinTemp_max@0 > 10, required_guarantees=[]
-          │         t1: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp, RainToday], file_type=parquet, predicate=MinTemp@0 > 10, pruning_predicate=MinTemp_null_count@1 != row_count@2 AND MinTemp_max@0 > 10, required_guarantees=[]
-          │   ProjectionExec: expr=[MaxTemp@0 as MinTemp, RainToday@1 as RainToday]
-          │     FilterExec: MaxTemp@0 < 30
+          ┌───── Stage 1 ── tasks=3, partitions=3
+          │ CoalescePartitionsExec
+          │   DistributedUnionExec: t0:[c0(0/2)] t1:[c0(1/2)] t2:[c1]
+          │     FilterExec: MinTemp@0 > 10
           │       RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
           │         DistributedLeafExec:
-          │           t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=MaxTemp@1 < 30, pruning_predicate=MaxTemp_null_count@1 != row_count@2 AND MaxTemp_min@0 < 30, required_guarantees=[]
+          │           t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp, RainToday], file_type=parquet, predicate=MinTemp@0 > 10, pruning_predicate=MinTemp_null_count@1 != row_count@2 AND MinTemp_max@0 > 10, required_guarantees=[]
+          │           t1: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp, RainToday], file_type=parquet, predicate=MinTemp@0 > 10, pruning_predicate=MinTemp_null_count@1 != row_count@2 AND MinTemp_max@0 > 10, required_guarantees=[]
+          │     ProjectionExec: expr=[MaxTemp@0 as MinTemp, RainToday@1 as RainToday]
+          │       FilterExec: MaxTemp@0 < 30
+          │         RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+          │           DistributedLeafExec:
+          │             t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=MaxTemp@1 < 30, pruning_predicate=MaxTemp_null_count@1 != row_count@2 AND MaxTemp_min@0 < 30, required_guarantees=[]
           └──────────────────────────────────────────────────
         ");
     }
@@ -735,24 +744,25 @@ mod tests {
         assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec
         │ CoalescePartitionsExec
-        │   [Stage 1] => NetworkCoalesceExec: output_partitions=12, input_tasks=3
+        │   [Stage 1] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── tasks=3, partitions=12
-          │ DistributedUnionExec: t0:[c0] t1:[c1] t2:[c2]
-          │   FilterExec: MinTemp@0 > 10
-          │     RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
-          │       DistributedLeafExec:
-          │         t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp, RainToday], file_type=parquet, predicate=MinTemp@0 > 10, pruning_predicate=MinTemp_null_count@1 != row_count@2 AND MinTemp_max@0 > 10, required_guarantees=[]
-          │   ProjectionExec: expr=[MaxTemp@0 as MinTemp, RainToday@1 as RainToday]
-          │     FilterExec: MaxTemp@0 < 30
+          ┌───── Stage 1 ── tasks=3, partitions=3
+          │ CoalescePartitionsExec
+          │   DistributedUnionExec: t0:[c0] t1:[c1] t2:[c2]
+          │     FilterExec: MinTemp@0 > 10
           │       RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
           │         DistributedLeafExec:
-          │           t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=MaxTemp@1 < 30, pruning_predicate=MaxTemp_null_count@1 != row_count@2 AND MaxTemp_min@0 < 30, required_guarantees=[]
-          │   ProjectionExec: expr=[Temp9am@0 as MinTemp, RainToday@1 as RainToday]
-          │     FilterExec: Temp9am@0 > 15
-          │       RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
-          │         DistributedLeafExec:
-          │           t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[Temp9am, RainToday], file_type=parquet, predicate=Temp9am@17 > 15, pruning_predicate=Temp9am_null_count@1 != row_count@2 AND Temp9am_max@0 > 15, required_guarantees=[]
+          │           t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp, RainToday], file_type=parquet, predicate=MinTemp@0 > 10, pruning_predicate=MinTemp_null_count@1 != row_count@2 AND MinTemp_max@0 > 10, required_guarantees=[]
+          │     ProjectionExec: expr=[MaxTemp@0 as MinTemp, RainToday@1 as RainToday]
+          │       FilterExec: MaxTemp@0 < 30
+          │         RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+          │           DistributedLeafExec:
+          │             t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=MaxTemp@1 < 30, pruning_predicate=MaxTemp_null_count@1 != row_count@2 AND MaxTemp_min@0 < 30, required_guarantees=[]
+          │     ProjectionExec: expr=[Temp9am@0 as MinTemp, RainToday@1 as RainToday]
+          │       FilterExec: Temp9am@0 > 15
+          │         RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+          │           DistributedLeafExec:
+          │             t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[Temp9am, RainToday], file_type=parquet, predicate=Temp9am@17 > 15, pruning_predicate=Temp9am_null_count@1 != row_count@2 AND Temp9am_max@0 > 15, required_guarantees=[]
           └──────────────────────────────────────────────────
         ");
     }
@@ -776,34 +786,35 @@ mod tests {
         assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec
         │ CoalescePartitionsExec
-        │   [Stage 1] => NetworkCoalesceExec: output_partitions=24, input_tasks=3
+        │   [Stage 1] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── tasks=3, partitions=24
-          │ DistributedUnionExec: t0:[c0, c3] t1:[c1, c4] t2:[c2]
-          │   FilterExec: MinTemp@0 > 10
-          │     RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
-          │       DistributedLeafExec:
-          │         t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp, RainToday], file_type=parquet, predicate=MinTemp@0 > 10, pruning_predicate=MinTemp_null_count@1 != row_count@2 AND MinTemp_max@0 > 10, required_guarantees=[]
-          │   ProjectionExec: expr=[MaxTemp@0 as MinTemp, RainToday@1 as RainToday]
-          │     FilterExec: MaxTemp@0 < 30
+          ┌───── Stage 1 ── tasks=3, partitions=3
+          │ CoalescePartitionsExec
+          │   DistributedUnionExec: t0:[c0, c3] t1:[c1, c4] t2:[c2]
+          │     FilterExec: MinTemp@0 > 10
           │       RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
           │         DistributedLeafExec:
-          │           t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=MaxTemp@1 < 30, pruning_predicate=MaxTemp_null_count@1 != row_count@2 AND MaxTemp_min@0 < 30, required_guarantees=[]
-          │   ProjectionExec: expr=[Temp9am@0 as MinTemp, RainToday@1 as RainToday]
-          │     FilterExec: Temp9am@0 > 15
-          │       RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
-          │         DistributedLeafExec:
-          │           t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[Temp9am, RainToday], file_type=parquet, predicate=Temp9am@17 > 15, pruning_predicate=Temp9am_null_count@1 != row_count@2 AND Temp9am_max@0 > 15, required_guarantees=[]
-          │   ProjectionExec: expr=[Temp3pm@0 as MinTemp, RainToday@1 as RainToday]
-          │     FilterExec: Temp3pm@0 < 25
-          │       RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
-          │         DistributedLeafExec:
-          │           t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[Temp3pm, RainToday], file_type=parquet, predicate=Temp3pm@18 < 25, pruning_predicate=Temp3pm_null_count@1 != row_count@2 AND Temp3pm_min@0 < 25, required_guarantees=[]
-          │   ProjectionExec: expr=[Rainfall@0 as MinTemp, RainToday@1 as RainToday]
-          │     FilterExec: Rainfall@0 > 5
-          │       RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
-          │         DistributedLeafExec:
-          │           t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[Rainfall, RainToday], file_type=parquet, predicate=Rainfall@2 > 5, pruning_predicate=Rainfall_null_count@1 != row_count@2 AND Rainfall_max@0 > 5, required_guarantees=[]
+          │           t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp, RainToday], file_type=parquet, predicate=MinTemp@0 > 10, pruning_predicate=MinTemp_null_count@1 != row_count@2 AND MinTemp_max@0 > 10, required_guarantees=[]
+          │     ProjectionExec: expr=[MaxTemp@0 as MinTemp, RainToday@1 as RainToday]
+          │       FilterExec: MaxTemp@0 < 30
+          │         RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+          │           DistributedLeafExec:
+          │             t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=MaxTemp@1 < 30, pruning_predicate=MaxTemp_null_count@1 != row_count@2 AND MaxTemp_min@0 < 30, required_guarantees=[]
+          │     ProjectionExec: expr=[Temp9am@0 as MinTemp, RainToday@1 as RainToday]
+          │       FilterExec: Temp9am@0 > 15
+          │         RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+          │           DistributedLeafExec:
+          │             t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[Temp9am, RainToday], file_type=parquet, predicate=Temp9am@17 > 15, pruning_predicate=Temp9am_null_count@1 != row_count@2 AND Temp9am_max@0 > 15, required_guarantees=[]
+          │     ProjectionExec: expr=[Temp3pm@0 as MinTemp, RainToday@1 as RainToday]
+          │       FilterExec: Temp3pm@0 < 25
+          │         RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+          │           DistributedLeafExec:
+          │             t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[Temp3pm, RainToday], file_type=parquet, predicate=Temp3pm@18 < 25, pruning_predicate=Temp3pm_null_count@1 != row_count@2 AND Temp3pm_min@0 < 25, required_guarantees=[]
+          │     ProjectionExec: expr=[Rainfall@0 as MinTemp, RainToday@1 as RainToday]
+          │       FilterExec: Rainfall@0 > 5
+          │         RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+          │           DistributedLeafExec:
+          │             t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[Rainfall, RainToday], file_type=parquet, predicate=Rainfall@2 > 5, pruning_predicate=Rainfall_null_count@1 != row_count@2 AND Rainfall_max@0 > 5, required_guarantees=[]
           └──────────────────────────────────────────────────
         ");
     }
@@ -819,19 +830,20 @@ mod tests {
             .broadcast_joins(true)
             .physical_plan_as_ascii(query, false)
             .await;
-        assert_snapshot!(physical_plan_ascii, @"
+        assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec
         │ CoalescePartitionsExec
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── tasks=3, partitions=9
-          │ HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
-          │   CoalescePartitionsExec
-          │     [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=9, input_tasks=3
-          │   DistributedLeafExec:
-          │     t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
-          │     t1: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
-          │     t2: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
+          ┌───── Stage 2 ── tasks=3, partitions=3
+          │ CoalescePartitionsExec
+          │   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
+          │     CoalescePartitionsExec
+          │       [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=9, input_tasks=3
+          │     DistributedLeafExec:
+          │       t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
+          │       t1: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
+          │       t2: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=3, partitions=27
             │ BroadcastExec: input_partitions=3, consumer_tasks=3, output_partitions=9
@@ -855,19 +867,20 @@ mod tests {
             .broadcast_joins(true)
             .physical_plan_as_ascii(query, false)
             .await;
-        assert_snapshot!(physical_plan_ascii, @"
+        assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec
         │ CoalescePartitionsExec
-        │   [Stage 3] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
+        │   [Stage 3] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 3 ── tasks=3, partitions=9
-          │ HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@2, RainToday@1)], projection=[MinTemp@0, MaxTemp@1, Rainfall@3]
-          │   CoalescePartitionsExec
-          │     [Stage 2] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=9, input_tasks=3
-          │   DistributedLeafExec:
-          │     t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[Rainfall, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
-          │     t1: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[Rainfall, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
-          │     t2: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[Rainfall, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
+          ┌───── Stage 3 ── tasks=3, partitions=3
+          │ CoalescePartitionsExec
+          │   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@2, RainToday@1)], projection=[MinTemp@0, MaxTemp@1, Rainfall@3]
+          │     CoalescePartitionsExec
+          │       [Stage 2] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=9, input_tasks=3
+          │     DistributedLeafExec:
+          │       t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[Rainfall, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
+          │       t1: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[Rainfall, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
+          │       t2: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[Rainfall, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
           └──────────────────────────────────────────────────
             ┌───── Stage 2 ── tasks=3, partitions=27
             │ BroadcastExec: input_partitions=3, consumer_tasks=3, output_partitions=9
@@ -904,15 +917,16 @@ mod tests {
         │ CoalescePartitionsExec
         │   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
         │     CoalescePartitionsExec
-        │       [Stage 1] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
+        │       [Stage 1] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
         │     DistributedLeafExec:
         │       t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── tasks=3, partitions=9
-          │ DistributedLeafExec:
-          │   t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp, RainToday], file_type=parquet
-          │   t1: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp, RainToday], file_type=parquet
-          │   t2: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp, RainToday], file_type=parquet
+          ┌───── Stage 1 ── tasks=3, partitions=3
+          │ CoalescePartitionsExec
+          │   DistributedLeafExec:
+          │     t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp, RainToday], file_type=parquet
+          │     t1: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp, RainToday], file_type=parquet
+          │     t2: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp, RainToday], file_type=parquet
           └──────────────────────────────────────────────────
         ");
 
@@ -920,19 +934,20 @@ mod tests {
             .broadcast_joins(true)
             .physical_plan_as_ascii(query, false)
             .await;
-        assert_snapshot!(physical_plan_ascii, @"
+        assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec
         │ CoalescePartitionsExec
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── tasks=3, partitions=9
-          │ HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
-          │   CoalescePartitionsExec
-          │     [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=9, input_tasks=3
-          │   DistributedLeafExec:
-          │     t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
-          │     t1: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
-          │     t2: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
+          ┌───── Stage 2 ── tasks=3, partitions=3
+          │ CoalescePartitionsExec
+          │   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
+          │     CoalescePartitionsExec
+          │       [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=9, input_tasks=3
+          │     DistributedLeafExec:
+          │       t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
+          │       t1: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
+          │       t2: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=3, partitions=27
             │ BroadcastExec: input_partitions=3, consumer_tasks=3, output_partitions=9
@@ -963,28 +978,29 @@ mod tests {
             .broadcast_joins(true)
             .physical_plan_as_ascii(query, false)
             .await;
-        assert_snapshot!(physical_plan_ascii, @"
+        assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec
         │ CoalescePartitionsExec
-        │   [Stage 4] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
+        │   [Stage 4] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 4 ── tasks=3, partitions=9
-          │ DistributedUnionExec: t0:[c0] t1:[c1] t2:[c2]
-          │   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
-          │     CoalescePartitionsExec
-          │       [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=3, input_tasks=3
-          │     DistributedLeafExec:
-          │       t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
-          │   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
-          │     CoalescePartitionsExec
-          │       [Stage 2] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=3, input_tasks=3
-          │     DistributedLeafExec:
-          │       t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
-          │   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
-          │     CoalescePartitionsExec
-          │       [Stage 3] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=3, input_tasks=3
-          │     DistributedLeafExec:
-          │       t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
+          ┌───── Stage 4 ── tasks=3, partitions=3
+          │ CoalescePartitionsExec
+          │   DistributedUnionExec: t0:[c0] t1:[c1] t2:[c2]
+          │     HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
+          │       CoalescePartitionsExec
+          │         [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=3, input_tasks=3
+          │       DistributedLeafExec:
+          │         t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
+          │     HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
+          │       CoalescePartitionsExec
+          │         [Stage 2] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=3, input_tasks=3
+          │       DistributedLeafExec:
+          │         t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
+          │     HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
+          │       CoalescePartitionsExec
+          │         [Stage 3] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=3, input_tasks=3
+          │       DistributedLeafExec:
+          │         t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=3, partitions=9
             │ BroadcastExec: input_partitions=3, consumer_tasks=1, output_partitions=3
@@ -1022,19 +1038,20 @@ mod tests {
             .desired_task_count_handler(build_side_one_desired_task_count_handler)
             .physical_plan_as_ascii(query, false)
             .await;
-        assert_snapshot!(physical_plan_ascii, @"
+        assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec
         │ CoalescePartitionsExec
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── tasks=3, partitions=9
-          │ HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
-          │   CoalescePartitionsExec
-          │     [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=9, input_tasks=1
-          │   DistributedLeafExec:
-          │     t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
-          │     t1: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
-          │     t2: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
+          ┌───── Stage 2 ── tasks=3, partitions=3
+          │ CoalescePartitionsExec
+          │   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
+          │     CoalescePartitionsExec
+          │       [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=9, input_tasks=1
+          │     DistributedLeafExec:
+          │       t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
+          │       t1: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
+          │       t2: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=1, partitions=9
             │ BroadcastExec: input_partitions=3, consumer_tasks=3, output_partitions=9

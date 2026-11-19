@@ -204,6 +204,10 @@ message ExecuteTaskRequest {
     BroadcastExecHead broadcast = 7;
     // The boundary executing the task is a NetworkShuffleExec.
     RepartitionExecHead repartition = 8;
+    // The boundary executing the task is a NetworkCoalesceExec with no ordering requirements.
+    CoalescePartitionsExecHead coalesce_partitions = 9;
+    // The boundary executing the task is a NetworkCoalesceExec with specific requirements.
+    SortPreservingMergeExecHead sort_preserving_merge = 10;
   }
 }
 
@@ -222,6 +226,17 @@ message RepartitionExecHead {
   bytes partitioning = 1;
   // Whether the producer must preserve its input's output ordering.
   bool preserve_order = 2;
+}
+
+// Head needed by a NetworkCoalesceExec in case no ordering is specified.
+message CoalescePartitionsExecHead {
+  optional uint64 fetch = 1;
+}
+
+// Head needed by a NetworkCoalesceExec in case a specific ordering is specified.
+message SortPreservingMergeExecHead {
+  optional uint64 fetch = 1;
+  bytes lex_ordering = 2;
 }
 
 // A key that uniquely identifies a task in a query.

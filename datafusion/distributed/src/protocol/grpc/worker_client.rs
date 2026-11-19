@@ -31,6 +31,7 @@ use futures::future::{Either, pending, ready};
 use futures::stream::{BoxStream, select};
 use futures::{FutureExt, Stream, StreamExt, TryStreamExt};
 use http::{Extensions, HeaderMap};
+use num_traits::AsPrimitive;
 use pin_project::{pin_project, pinned_drop};
 use prost::Message;
 use std::borrow::Cow;
@@ -496,6 +497,22 @@ pub(super) fn encode_producer_head(
             partitioning: partitioning.encode(ctx)?,
             preserve_order,
         }),
+        ProducerHead::CoalescePartitionsExec { fetch } => {
+            pb::execute_task_request::ProducerHead::CoalescePartitions(
+                pb::CoalescePartitionsExecHead {
+                    fetch: fetch.map(|v| v.as_()),
+                },
+            )
+        }
+        ProducerHead::SortPreservingMergeExec {
+            fetch,
+            lex_ordering,
+        } => pb::execute_task_request::ProducerHead::SortPreservingMerge(
+            pb::SortPreservingMergeExecHead {
+                fetch: fetch.map(|v| v.as_()),
+                lex_ordering: lex_ordering.encode(ctx)?,
+            },
+        ),
     })
 }
 

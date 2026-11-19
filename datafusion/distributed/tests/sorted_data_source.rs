@@ -90,14 +90,15 @@ mod tests {
         │ ProjectionExec: expr=[count(Int64(1))@0 as n]
         │   AggregateExec: mode=Final, gby=[], aggr=[count(Int64(1))]
         │     CoalescePartitionsExec
-        │       [Stage 1] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
+        │       [Stage 1] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── tasks=2, partitions=4
-          │ AggregateExec: mode=Partial, gby=[], aggr=[count(Int64(1))]
-          │   RepartitionExec: partitioning=RoundRobinBatch(2), input_partitions=1
-          │     DistributedLeafExec:
-          │       t0: DataSourceExec: file_groups={1 group: [[testdata/sorted_csv/0.csv]]}, file_type=csv, has_header=true
-          │       t1: DataSourceExec: file_groups={1 group: [[]]}, file_type=csv, has_header=true
+          ┌───── Stage 1 ── tasks=2, partitions=2
+          │ CoalescePartitionsExec
+          │   AggregateExec: mode=Partial, gby=[], aggr=[count(Int64(1))]
+          │     RepartitionExec: partitioning=RoundRobinBatch(2), input_partitions=1
+          │       DistributedLeafExec:
+          │         t0: DataSourceExec: file_groups={1 group: [[testdata/sorted_csv/0.csv]]}, file_type=csv, has_header=true
+          │         t1: DataSourceExec: file_groups={1 group: [[]]}, file_type=csv, has_header=true
           └──────────────────────────────────────────────────
         ");
         assert_snapshot!(result, @r"
@@ -124,14 +125,15 @@ mod tests {
         │ ProjectionExec: expr=[count(Int64(1))@0 as n]
         │   AggregateExec: mode=Final, gby=[], aggr=[count(Int64(1))]
         │     CoalescePartitionsExec
-        │       [Stage 1] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
+        │       [Stage 1] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── tasks=2, partitions=4
-          │ AggregateExec: mode=Partial, gby=[], aggr=[count(Int64(1))]
-          │   RepartitionExec: partitioning=RoundRobinBatch(2), input_partitions=1
-          │     DistributedLeafExec:
-          │       t0: DataSourceExec: file_groups={1 group: [[testdata/sorted_csv/0.csv]]}, file_type=csv, has_header=true
-          │       t1: DataSourceExec: file_groups={1 group: [[]]}, file_type=csv, has_header=true
+          ┌───── Stage 1 ── tasks=2, partitions=2
+          │ CoalescePartitionsExec
+          │   AggregateExec: mode=Partial, gby=[], aggr=[count(Int64(1))]
+          │     RepartitionExec: partitioning=RoundRobinBatch(2), input_partitions=1
+          │       DistributedLeafExec:
+          │         t0: DataSourceExec: file_groups={1 group: [[testdata/sorted_csv/0.csv]]}, file_type=csv, has_header=true
+          │         t1: DataSourceExec: file_groups={1 group: [[]]}, file_type=csv, has_header=true
           └──────────────────────────────────────────────────
         ");
         assert_snapshot!(result, @r"
@@ -152,12 +154,13 @@ mod tests {
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [value@0 ASC NULLS LAST]
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
           ┌───── Stage 2 ── tasks=2, partitions=2
-          │ ProjectionExec: expr=[value@0 as value, count(Int64(1))@1 as n]
-          │   AggregateExec: mode=FinalPartitioned, gby=[value@0 as value], aggr=[count(Int64(1))], ordering_mode=Sorted
-          │     [Stage 1] => NetworkShuffleExec: output_partitions=2, input_tasks=2, sort_exprs=[value@0 ASC NULLS LAST]
+          │ SortPreservingMergeExec: [value@0 ASC NULLS LAST]
+          │   ProjectionExec: expr=[value@0 as value, count(Int64(1))@1 as n]
+          │     AggregateExec: mode=FinalPartitioned, gby=[value@0 as value], aggr=[count(Int64(1))], ordering_mode=Sorted
+          │       [Stage 1] => NetworkShuffleExec: output_partitions=2, input_tasks=2, sort_exprs=[value@0 ASC NULLS LAST]
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=2, partitions=4
             │ RepartitionExec: partitioning=Hash([value@0], 4), input_partitions=2, preserve_order=true, sort_exprs=value@0 ASC NULLS LAST
@@ -201,12 +204,13 @@ mod tests {
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [value@0 ASC NULLS LAST]
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
           ┌───── Stage 2 ── tasks=2, partitions=2
-          │ ProjectionExec: expr=[value@0 as value, count(Int64(1))@1 as n]
-          │   AggregateExec: mode=FinalPartitioned, gby=[value@0 as value], aggr=[count(Int64(1))], ordering_mode=Sorted
-          │     [Stage 1] => NetworkShuffleExec: output_partitions=2, input_tasks=2, sort_exprs=[value@0 ASC NULLS LAST]
+          │ SortPreservingMergeExec: [value@0 ASC NULLS LAST]
+          │   ProjectionExec: expr=[value@0 as value, count(Int64(1))@1 as n]
+          │     AggregateExec: mode=FinalPartitioned, gby=[value@0 as value], aggr=[count(Int64(1))], ordering_mode=Sorted
+          │       [Stage 1] => NetworkShuffleExec: output_partitions=2, input_tasks=2, sort_exprs=[value@0 ASC NULLS LAST]
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=2, partitions=4
             │ RepartitionExec: partitioning=Hash([value@0], 4), input_partitions=2, preserve_order=true, sort_exprs=value@0 ASC NULLS LAST
@@ -251,13 +255,14 @@ mod tests {
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [value@0 ASC NULLS LAST]
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
           ┌───── Stage 2 ── tasks=2, partitions=2
-          │ ProjectionExec: expr=[value@0 as value, count(Int64(1))@1 as n]
-          │   AggregateExec: mode=FinalPartitioned, gby=[value@0 as value], aggr=[count(Int64(1))], ordering_mode=Sorted
-          │     RepartitionExec: partitioning=Hash([value@0], 2), input_partitions=2, preserve_order=true, sort_exprs=value@0 ASC NULLS LAST
-          │       [Stage 1] => NetworkShuffleExec: output_partitions=2, input_tasks=2, sort_exprs=[value@0 ASC NULLS LAST]
+          │ SortPreservingMergeExec: [value@0 ASC NULLS LAST]
+          │   ProjectionExec: expr=[value@0 as value, count(Int64(1))@1 as n]
+          │     AggregateExec: mode=FinalPartitioned, gby=[value@0 as value], aggr=[count(Int64(1))], ordering_mode=Sorted
+          │       RepartitionExec: partitioning=Hash([value@0], 2), input_partitions=2, preserve_order=true, sort_exprs=value@0 ASC NULLS LAST
+          │         [Stage 1] => NetworkShuffleExec: output_partitions=2, input_tasks=2, sort_exprs=[value@0 ASC NULLS LAST]
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=2, partitions=2
             │ RepartitionExec: partitioning=Hash([value@0, 5871781006564002453], 2), input_partitions=2, preserve_order=true, sort_exprs=value@0 ASC NULLS LAST
@@ -302,13 +307,14 @@ mod tests {
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [value@0 ASC NULLS LAST]
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
           ┌───── Stage 2 ── tasks=2, partitions=2
-          │ ProjectionExec: expr=[value@0 as value, count(Int64(1))@1 as n]
-          │   AggregateExec: mode=FinalPartitioned, gby=[value@0 as value], aggr=[count(Int64(1))], ordering_mode=Sorted
-          │     RepartitionExec: partitioning=Hash([value@0], 2), input_partitions=2, preserve_order=true, sort_exprs=value@0 ASC NULLS LAST
-          │       [Stage 1] => NetworkShuffleExec: output_partitions=2, input_tasks=2, sort_exprs=[value@0 ASC NULLS LAST]
+          │ SortPreservingMergeExec: [value@0 ASC NULLS LAST]
+          │   ProjectionExec: expr=[value@0 as value, count(Int64(1))@1 as n]
+          │     AggregateExec: mode=FinalPartitioned, gby=[value@0 as value], aggr=[count(Int64(1))], ordering_mode=Sorted
+          │       RepartitionExec: partitioning=Hash([value@0], 2), input_partitions=2, preserve_order=true, sort_exprs=value@0 ASC NULLS LAST
+          │         [Stage 1] => NetworkShuffleExec: output_partitions=2, input_tasks=2, sort_exprs=[value@0 ASC NULLS LAST]
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=2, partitions=2
             │ RepartitionExec: partitioning=Hash([value@0, 5871781006564002453], 2), input_partitions=2, preserve_order=true, sort_exprs=value@0 ASC NULLS LAST
@@ -365,13 +371,14 @@ mod tests {
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [value@0 ASC NULLS LAST]
-        │   [Stage 1] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
+        │   [Stage 1] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── tasks=2, partitions=4
-          │ SortExec: expr=[value@0 ASC NULLS LAST], preserve_partitioning=[true]
-          │   DistributedLeafExec:
-          │     t0: DataSourceExec: file_groups={2 groups: [[testdata/sorted_csv/0.csv:<int>..<int>], [testdata/sorted_csv/1.csv:<int>..<int>, testdata/sorted_csv/2.csv:<int>..<int>]]}, projection=[value], file_type=csv, has_header=true
-          │     t1: DataSourceExec: file_groups={2 groups: [[testdata/sorted_csv/0.csv:<int>..<int>, testdata/sorted_csv/1.csv:<int>..<int>], [testdata/sorted_csv/2.csv:<int>..<int>]]}, projection=[value], file_type=csv, has_header=true
+          ┌───── Stage 1 ── tasks=2, partitions=2
+          │ SortPreservingMergeExec: [value@0 ASC NULLS LAST]
+          │   SortExec: expr=[value@0 ASC NULLS LAST], preserve_partitioning=[true]
+          │     DistributedLeafExec:
+          │       t0: DataSourceExec: file_groups={2 groups: [[testdata/sorted_csv/0.csv:<int>..<int>], [testdata/sorted_csv/1.csv:<int>..<int>, testdata/sorted_csv/2.csv:<int>..<int>]]}, projection=[value], file_type=csv, has_header=true
+          │       t1: DataSourceExec: file_groups={2 groups: [[testdata/sorted_csv/0.csv:<int>..<int>, testdata/sorted_csv/1.csv:<int>..<int>], [testdata/sorted_csv/2.csv:<int>..<int>]]}, projection=[value], file_type=csv, has_header=true
           └──────────────────────────────────────────────────
         ");
         assert_snapshot!(result, @r"
@@ -415,13 +422,14 @@ mod tests {
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [value@0 ASC NULLS LAST]
-        │   [Stage 1] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
+        │   [Stage 1] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── tasks=2, partitions=4
-          │ SortExec: expr=[value@0 ASC NULLS LAST], preserve_partitioning=[true]
-          │   DistributedLeafExec:
-          │     t0: DataSourceExec: file_groups={2 groups: [[testdata/sorted_csv/0.csv, testdata/sorted_csv/4.csv], [testdata/sorted_csv/2.csv]]}, projection=[value], file_type=csv, has_header=true
-          │     t1: DataSourceExec: file_groups={2 groups: [[testdata/sorted_csv/1.csv], [testdata/sorted_csv/3.csv]]}, projection=[value], file_type=csv, has_header=true
+          ┌───── Stage 1 ── tasks=2, partitions=2
+          │ SortPreservingMergeExec: [value@0 ASC NULLS LAST]
+          │   SortExec: expr=[value@0 ASC NULLS LAST], preserve_partitioning=[true]
+          │     DistributedLeafExec:
+          │       t0: DataSourceExec: file_groups={2 groups: [[testdata/sorted_csv/0.csv, testdata/sorted_csv/4.csv], [testdata/sorted_csv/2.csv]]}, projection=[value], file_type=csv, has_header=true
+          │       t1: DataSourceExec: file_groups={2 groups: [[testdata/sorted_csv/1.csv], [testdata/sorted_csv/3.csv]]}, projection=[value], file_type=csv, has_header=true
           └──────────────────────────────────────────────────
         ");
         assert_snapshot!(result, @r"

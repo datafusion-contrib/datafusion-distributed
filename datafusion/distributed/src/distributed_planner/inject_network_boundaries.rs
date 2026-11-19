@@ -425,12 +425,10 @@ async fn _inject_network_boundaries(
         // The parent that triggered this branch is a `CoalescePartitionsExec` or
         // `SortPreservingMergeExec`, both of which fold all partitions into one — so the
         // stage above this boundary must run in exactly one task.
-        let nb = Arc::new(NetworkCoalesceExec::try_from_stage(
-            result.input_stage,
-            result.input_properties,
-            1,
-        )?);
-        Ok(nb_ctx.plan_with_task_count(nb, result.consumer_task_count))
+        let nb =
+            NetworkCoalesceExec::try_from_stage(result.input_stage, result.input_properties, 1)?
+                .with_fetch(parent.fetch());
+        Ok(nb_ctx.plan_with_task_count(Arc::new(nb), result.consumer_task_count))
     } else if parent.is_none() {
         // We've just finished walking the head stage's subplan. Run a final propagation so
         // every node in the head stage (which never crossed a stage boundary on the way up)

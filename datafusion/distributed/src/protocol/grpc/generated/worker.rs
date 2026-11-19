@@ -240,7 +240,7 @@ pub struct ExecuteTaskRequest {
     /// * A RepartitionExecHead implies a RepartitionExec at the head of the task.
     /// * A BroadcastExecHead implies a BroadcastExec at the head of the task.
     /// * A NoneHead does not need any specific head.
-    #[prost(oneof = "execute_task_request::ProducerHead", tags = "6, 7, 8")]
+    #[prost(oneof = "execute_task_request::ProducerHead", tags = "6, 7, 8, 9, 10")]
     pub producer_head: ::core::option::Option<execute_task_request::ProducerHead>,
 }
 /// Nested message and enum types in `ExecuteTaskRequest`.
@@ -262,6 +262,12 @@ pub mod execute_task_request {
         /// The boundary executing the task is a NetworkShuffleExec.
         #[prost(message, tag = "8")]
         Repartition(super::RepartitionExecHead),
+        /// The boundary executing the task is a NetworkCoalesceExec with no ordering requirements.
+        #[prost(message, tag = "9")]
+        CoalescePartitions(super::CoalescePartitionsExecHead),
+        /// The boundary executing the task is a NetworkCoalesceExec with specific requirements.
+        #[prost(message, tag = "10")]
+        SortPreservingMerge(super::SortPreservingMergeExecHead),
     }
 }
 /// Head needed by a NetworkCoalesceExec.
@@ -283,6 +289,20 @@ pub struct RepartitionExecHead {
     /// Whether the producer must preserve its input's output ordering.
     #[prost(bool, tag = "2")]
     pub preserve_order: bool,
+}
+/// Head needed by a NetworkCoalesceExec in case no ordering is specified.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CoalescePartitionsExecHead {
+    #[prost(uint64, optional, tag = "1")]
+    pub fetch: ::core::option::Option<u64>,
+}
+/// Head needed by a NetworkCoalesceExec in case a specific ordering is specified.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SortPreservingMergeExecHead {
+    #[prost(uint64, optional, tag = "1")]
+    pub fetch: ::core::option::Option<u64>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub lex_ordering: ::prost::alloc::vec::Vec<u8>,
 }
 /// A key that uniquely identifies a task in a query.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

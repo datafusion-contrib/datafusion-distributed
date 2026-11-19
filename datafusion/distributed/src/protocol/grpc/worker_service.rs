@@ -28,6 +28,7 @@ use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion_proto::protobuf;
 use futures::stream::BoxStream;
 use futures::{StreamExt, TryStreamExt};
+use num_traits::AsPrimitive;
 use prost::Message;
 use std::sync::Arc;
 use tonic::metadata::MetadataMap;
@@ -281,6 +282,17 @@ pub(super) fn decode_producer_head(proto: pb::execute_task_request::ProducerHead
             partitioning: MaybeEncoded::Encoded(v.partitioning),
             preserve_order: v.preserve_order,
         },
+        pb::execute_task_request::ProducerHead::CoalescePartitions(v) => {
+            ProducerHead::CoalescePartitionsExec {
+                fetch: v.fetch.map(|v| v.as_()),
+            }
+        }
+        pb::execute_task_request::ProducerHead::SortPreservingMerge(v) => {
+            ProducerHead::SortPreservingMergeExec {
+                fetch: v.fetch.map(|v| v.as_()),
+                lex_ordering: MaybeEncoded::Encoded(v.lex_ordering),
+            }
+        }
     }
 }
 

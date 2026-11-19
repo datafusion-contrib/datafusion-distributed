@@ -18,18 +18,19 @@ mod tests {
         .await?;
 
         // Each task in stage 1 produces a distinct filter to push down.
-        assert_snapshot!(display, @"
+        assert_snapshot!(display, @r"
         ┌───── DistributedExec
         │ AggregateExec: mode=Final, gby=[], aggr=[min(weather.MinTemp)]
         │   CoalescePartitionsExec
-        │     [Stage 1] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
+        │     [Stage 1] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── tasks=2, partitions=6
-          │ AggregateExec: mode=Partial, gby=[], aggr=[min(weather.MinTemp)]
-          │   FilterExec: RainToday@1 = Yes, projection=[MinTemp@0]
-          │     DistributedLeafExec:
-          │       t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp, RainToday], file_type=parquet, predicate=RainToday@19 = Yes AND DynamicFilter [ expression_id_0_hash_0 ], dynamic_rg_pruning=eligible
-          │       t1: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp, RainToday], file_type=parquet, predicate=RainToday@19 = Yes AND DynamicFilter [ expression_id_0_hash_1 ], dynamic_rg_pruning=eligible
+          ┌───── Stage 1 ── tasks=2, partitions=2
+          │ CoalescePartitionsExec
+          │   AggregateExec: mode=Partial, gby=[], aggr=[min(weather.MinTemp)]
+          │     FilterExec: RainToday@1 = Yes, projection=[MinTemp@0]
+          │       DistributedLeafExec:
+          │         t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp, RainToday], file_type=parquet, predicate=RainToday@19 = Yes AND DynamicFilter [ expression_id_0_hash_0 ], dynamic_rg_pruning=eligible
+          │         t1: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp, RainToday], file_type=parquet, predicate=RainToday@19 = Yes AND DynamicFilter [ expression_id_0_hash_1 ], dynamic_rg_pruning=eligible
           └──────────────────────────────────────────────────
         ");
         Ok(())
@@ -51,16 +52,17 @@ mod tests {
         .await?;
 
         // The per-task partial aggregate filters in stage 2 are merged into one and passed to both consumers.
-        assert_snapshot!(display, @"
+        assert_snapshot!(display, @r"
         ┌───── DistributedExec
         │ AggregateExec: mode=Final, gby=[], aggr=[min(key)]
         │   CoalescePartitionsExec
-        │     [Stage 2] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
+        │     [Stage 2] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── tasks=2, partitions=3
-          │ AggregateExec: mode=Partial, gby=[], aggr=[min(key)]
-          │   AggregateExec: mode=FinalPartitioned, gby=[key@0 as key], aggr=[]
-          │     [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=2
+          ┌───── Stage 2 ── tasks=2, partitions=2
+          │ CoalescePartitionsExec
+          │   AggregateExec: mode=Partial, gby=[], aggr=[min(key)]
+          │     AggregateExec: mode=FinalPartitioned, gby=[key@0 as key], aggr=[]
+          │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=2
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=2, partitions=6
             │ RepartitionExec: partitioning=Hash([key@0], 6), input_partitions=3

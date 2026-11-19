@@ -39,13 +39,14 @@ mod tests {
             @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [count(*)@1 ASC NULLS LAST]
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
         └──────────────────────────────────────────────────
           ┌───── Stage 2 ── tasks=3, partitions=3
-          │ ProjectionExec: expr=[test_udf(weather.RainToday)@0 as test_udf(weather.RainToday), count(Int64(1))@1 as count(*)]
-          │   SortExec: expr=[count(Int64(1))@1 ASC NULLS LAST], preserve_partitioning=[true]
-          │     AggregateExec: mode=FinalPartitioned, gby=[test_udf(weather.RainToday)@0 as test_udf(weather.RainToday)], aggr=[count(Int64(1))]
-          │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=3
+          │ SortPreservingMergeExec: [count(*)@1 ASC NULLS LAST]
+          │   ProjectionExec: expr=[test_udf(weather.RainToday)@0 as test_udf(weather.RainToday), count(Int64(1))@1 as count(*)]
+          │     SortExec: expr=[count(Int64(1))@1 ASC NULLS LAST], preserve_partitioning=[true]
+          │       AggregateExec: mode=FinalPartitioned, gby=[test_udf(weather.RainToday)@0 as test_udf(weather.RainToday)], aggr=[count(Int64(1))]
+          │         [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=3
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=3, partitions=9
             │ RepartitionExec: partitioning=Hash([test_udf(weather.RainToday)@0], 9), input_partitions=3

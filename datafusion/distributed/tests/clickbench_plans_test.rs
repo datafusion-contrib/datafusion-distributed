@@ -31,16 +31,17 @@ mod tests {
         │ ProjectionExec: expr=[count(Int64(1))@0 as count(*)]
         │   AggregateExec: mode=Final, gby=[], aggr=[count(Int64(1))]
         │     CoalescePartitionsExec
-        │       [Stage 1] => NetworkCoalesceExec: output_partitions=12, input_tasks=4
+        │       [Stage 1] => NetworkCoalesceExec: output_partitions=4, input_tasks=4
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── tasks=4, partitions=12
-          │ AggregateExec: mode=Partial, gby=[], aggr=[count(Int64(1))]
-          │   FilterExec: AdvEngineID@0 != 0, projection=[]
-          │     DistributedLeafExec:
-          │       t0: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[AdvEngineID], file_type=parquet, predicate=AdvEngineID@40 != 0, pruning_predicate=AdvEngineID_null_count@2 != row_count@3 AND (AdvEngineID_min@0 != 0 OR 0 != AdvEngineID_max@1), required_guarantees=[AdvEngineID not in (0)]
-          │       t1: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[AdvEngineID], file_type=parquet, predicate=AdvEngineID@40 != 0, pruning_predicate=AdvEngineID_null_count@2 != row_count@3 AND (AdvEngineID_min@0 != 0 OR 0 != AdvEngineID_max@1), required_guarantees=[AdvEngineID not in (0)]
-          │       t2: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[AdvEngineID], file_type=parquet, predicate=AdvEngineID@40 != 0, pruning_predicate=AdvEngineID_null_count@2 != row_count@3 AND (AdvEngineID_min@0 != 0 OR 0 != AdvEngineID_max@1), required_guarantees=[AdvEngineID not in (0)]
-          │       t3: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[AdvEngineID], file_type=parquet, predicate=AdvEngineID@40 != 0, pruning_predicate=AdvEngineID_null_count@2 != row_count@3 AND (AdvEngineID_min@0 != 0 OR 0 != AdvEngineID_max@1), required_guarantees=[AdvEngineID not in (0)]
+          ┌───── Stage 1 ── tasks=4, partitions=4
+          │ CoalescePartitionsExec
+          │   AggregateExec: mode=Partial, gby=[], aggr=[count(Int64(1))]
+          │     FilterExec: AdvEngineID@0 != 0, projection=[]
+          │       DistributedLeafExec:
+          │         t0: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[AdvEngineID], file_type=parquet, predicate=AdvEngineID@40 != 0, pruning_predicate=AdvEngineID_null_count@2 != row_count@3 AND (AdvEngineID_min@0 != 0 OR 0 != AdvEngineID_max@1), required_guarantees=[AdvEngineID not in (0)]
+          │         t1: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[AdvEngineID], file_type=parquet, predicate=AdvEngineID@40 != 0, pruning_predicate=AdvEngineID_null_count@2 != row_count@3 AND (AdvEngineID_min@0 != 0 OR 0 != AdvEngineID_max@1), required_guarantees=[AdvEngineID not in (0)]
+          │         t2: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[AdvEngineID], file_type=parquet, predicate=AdvEngineID@40 != 0, pruning_predicate=AdvEngineID_null_count@2 != row_count@3 AND (AdvEngineID_min@0 != 0 OR 0 != AdvEngineID_max@1), required_guarantees=[AdvEngineID not in (0)]
+          │         t3: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[AdvEngineID], file_type=parquet, predicate=AdvEngineID@40 != 0, pruning_predicate=AdvEngineID_null_count@2 != row_count@3 AND (AdvEngineID_min@0 != 0 OR 0 != AdvEngineID_max@1), required_guarantees=[AdvEngineID not in (0)]
           └──────────────────────────────────────────────────
         ");
         Ok(())
@@ -54,15 +55,16 @@ mod tests {
         │ ProjectionExec: expr=[sum(hits.AdvEngineID)@0 as sum(hits.AdvEngineID), count(Int64(1))@1 as count(*), avg(hits.ResolutionWidth)@2 as avg(hits.ResolutionWidth)]
         │   AggregateExec: mode=Final, gby=[], aggr=[sum(hits.AdvEngineID), count(Int64(1)), avg(hits.ResolutionWidth)]
         │     CoalescePartitionsExec
-        │       [Stage 1] => NetworkCoalesceExec: output_partitions=12, input_tasks=4
+        │       [Stage 1] => NetworkCoalesceExec: output_partitions=4, input_tasks=4
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── tasks=4, partitions=12
-          │ AggregateExec: mode=Partial, gby=[], aggr=[sum(hits.AdvEngineID), count(Int64(1)), avg(hits.ResolutionWidth)]
-          │   DistributedLeafExec:
-          │     t0: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[ResolutionWidth, AdvEngineID], file_type=parquet
-          │     t1: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[ResolutionWidth, AdvEngineID], file_type=parquet
-          │     t2: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[ResolutionWidth, AdvEngineID], file_type=parquet
-          │     t3: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[ResolutionWidth, AdvEngineID], file_type=parquet
+          ┌───── Stage 1 ── tasks=4, partitions=4
+          │ CoalescePartitionsExec
+          │   AggregateExec: mode=Partial, gby=[], aggr=[sum(hits.AdvEngineID), count(Int64(1)), avg(hits.ResolutionWidth)]
+          │     DistributedLeafExec:
+          │       t0: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[ResolutionWidth, AdvEngineID], file_type=parquet
+          │       t1: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[ResolutionWidth, AdvEngineID], file_type=parquet
+          │       t2: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[ResolutionWidth, AdvEngineID], file_type=parquet
+          │       t3: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[ResolutionWidth, AdvEngineID], file_type=parquet
           └──────────────────────────────────────────────────
         ");
         Ok(())
@@ -75,15 +77,16 @@ mod tests {
         ┌───── DistributedExec
         │ AggregateExec: mode=Final, gby=[], aggr=[avg(hits.UserID)]
         │   CoalescePartitionsExec
-        │     [Stage 1] => NetworkCoalesceExec: output_partitions=12, input_tasks=4
+        │     [Stage 1] => NetworkCoalesceExec: output_partitions=4, input_tasks=4
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── tasks=4, partitions=12
-          │ AggregateExec: mode=Partial, gby=[], aggr=[avg(hits.UserID)]
-          │   DistributedLeafExec:
-          │     t0: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[UserID], file_type=parquet
-          │     t1: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[UserID], file_type=parquet
-          │     t2: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[UserID], file_type=parquet
-          │     t3: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[UserID], file_type=parquet
+          ┌───── Stage 1 ── tasks=4, partitions=4
+          │ CoalescePartitionsExec
+          │   AggregateExec: mode=Partial, gby=[], aggr=[avg(hits.UserID)]
+          │     DistributedLeafExec:
+          │       t0: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[UserID], file_type=parquet
+          │       t1: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[UserID], file_type=parquet
+          │       t2: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[UserID], file_type=parquet
+          │       t3: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[UserID], file_type=parquet
           └──────────────────────────────────────────────────
         ");
         Ok(())
@@ -97,12 +100,13 @@ mod tests {
         │ ProjectionExec: expr=[count(alias1)@0 as count(DISTINCT hits.UserID)]
         │   AggregateExec: mode=Final, gby=[], aggr=[count(alias1)]
         │     CoalescePartitionsExec
-        │       [Stage 2] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
+        │       [Stage 2] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
         └──────────────────────────────────────────────────
           ┌───── Stage 2 ── tasks=3, partitions=3
-          │ AggregateExec: mode=Partial, gby=[], aggr=[count(alias1)]
-          │   AggregateExec: mode=FinalPartitioned, gby=[alias1@0 as alias1], aggr=[]
-          │     [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          │ CoalescePartitionsExec
+          │   AggregateExec: mode=Partial, gby=[], aggr=[count(alias1)]
+          │     AggregateExec: mode=FinalPartitioned, gby=[alias1@0 as alias1], aggr=[]
+          │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=4, partitions=9
             │ RepartitionExec: partitioning=Hash([alias1@0], 9), input_partitions=3
@@ -125,12 +129,13 @@ mod tests {
         │ ProjectionExec: expr=[count(alias1)@0 as count(DISTINCT hits.SearchPhrase)]
         │   AggregateExec: mode=Final, gby=[], aggr=[count(alias1)]
         │     CoalescePartitionsExec
-        │       [Stage 2] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
+        │       [Stage 2] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
         └──────────────────────────────────────────────────
           ┌───── Stage 2 ── tasks=3, partitions=3
-          │ AggregateExec: mode=Partial, gby=[], aggr=[count(alias1)]
-          │   AggregateExec: mode=FinalPartitioned, gby=[alias1@0 as alias1], aggr=[]
-          │     [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          │ CoalescePartitionsExec
+          │   AggregateExec: mode=Partial, gby=[], aggr=[count(alias1)]
+          │     AggregateExec: mode=FinalPartitioned, gby=[alias1@0 as alias1], aggr=[]
+          │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=4, partitions=9
             │ RepartitionExec: partitioning=Hash([alias1@0], 9), input_partitions=3
@@ -159,13 +164,14 @@ mod tests {
         assert_snapshot!(display, @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [count(*)@1 DESC]
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── tasks=2, partitions=3
-          │ ProjectionExec: expr=[AdvEngineID@0 as AdvEngineID, count(Int64(1))@1 as count(*)]
-          │   SortExec: expr=[count(Int64(1))@1 DESC], preserve_partitioning=[true]
-          │     AggregateExec: mode=FinalPartitioned, gby=[AdvEngineID@0 as AdvEngineID], aggr=[count(Int64(1))]
-          │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          ┌───── Stage 2 ── tasks=2, partitions=2
+          │ SortPreservingMergeExec: [count(*)@1 DESC]
+          │   ProjectionExec: expr=[AdvEngineID@0 as AdvEngineID, count(Int64(1))@1 as count(*)]
+          │     SortExec: expr=[count(Int64(1))@1 DESC], preserve_partitioning=[true]
+          │       AggregateExec: mode=FinalPartitioned, gby=[AdvEngineID@0 as AdvEngineID], aggr=[count(Int64(1))]
+          │         [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=4, partitions=6
             │ RepartitionExec: partitioning=Hash([AdvEngineID@0], 6), input_partitions=3
@@ -187,13 +193,14 @@ mod tests {
         assert_snapshot!(display, @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [u@1 DESC], fetch=10
-        │   [Stage 3] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
+        │   [Stage 3] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 3 ── tasks=2, partitions=3
-          │ ProjectionExec: expr=[RegionID@0 as RegionID, count(alias1)@1 as u]
-          │   SortExec: TopK(fetch=10), expr=[count(alias1)@1 DESC], preserve_partitioning=[true]
-          │     AggregateExec: mode=FinalPartitioned, gby=[RegionID@0 as RegionID], aggr=[count(alias1)]
-          │       [Stage 2] => NetworkShuffleExec: output_partitions=3, input_tasks=3
+          ┌───── Stage 3 ── tasks=2, partitions=2
+          │ SortPreservingMergeExec: [u@1 DESC], fetch=10
+          │   ProjectionExec: expr=[RegionID@0 as RegionID, count(alias1)@1 as u]
+          │     SortExec: TopK(fetch=10), expr=[count(alias1)@1 DESC], preserve_partitioning=[true]
+          │       AggregateExec: mode=FinalPartitioned, gby=[RegionID@0 as RegionID], aggr=[count(alias1)]
+          │         [Stage 2] => NetworkShuffleExec: output_partitions=3, input_tasks=3
           └──────────────────────────────────────────────────
             ┌───── Stage 2 ── tasks=3, partitions=6
             │ RepartitionExec: partitioning=Hash([RegionID@0], 6), input_partitions=3
@@ -220,13 +227,14 @@ mod tests {
         assert_snapshot!(display, @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [c@2 DESC], fetch=10
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
         └──────────────────────────────────────────────────
           ┌───── Stage 2 ── tasks=3, partitions=3
-          │ ProjectionExec: expr=[RegionID@0 as RegionID, sum(hits.AdvEngineID)@1 as sum(hits.AdvEngineID), count(Int64(1))@2 as c, avg(hits.ResolutionWidth)@3 as avg(hits.ResolutionWidth), count(DISTINCT hits.UserID)@4 as count(DISTINCT hits.UserID)]
-          │   SortExec: TopK(fetch=10), expr=[count(Int64(1))@2 DESC], preserve_partitioning=[true]
-          │     AggregateExec: mode=FinalPartitioned, gby=[RegionID@0 as RegionID], aggr=[sum(hits.AdvEngineID), count(Int64(1)), avg(hits.ResolutionWidth), count(DISTINCT hits.UserID)]
-          │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          │ SortPreservingMergeExec: [c@2 DESC], fetch=10
+          │   ProjectionExec: expr=[RegionID@0 as RegionID, sum(hits.AdvEngineID)@1 as sum(hits.AdvEngineID), count(Int64(1))@2 as c, avg(hits.ResolutionWidth)@3 as avg(hits.ResolutionWidth), count(DISTINCT hits.UserID)@4 as count(DISTINCT hits.UserID)]
+          │     SortExec: TopK(fetch=10), expr=[count(Int64(1))@2 DESC], preserve_partitioning=[true]
+          │       AggregateExec: mode=FinalPartitioned, gby=[RegionID@0 as RegionID], aggr=[sum(hits.AdvEngineID), count(Int64(1)), avg(hits.ResolutionWidth), count(DISTINCT hits.UserID)]
+          │         [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=4, partitions=9
             │ RepartitionExec: partitioning=Hash([RegionID@0], 9), input_partitions=3
@@ -309,13 +317,14 @@ mod tests {
         assert_snapshot!(display, @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [c@1 DESC], fetch=10
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── tasks=2, partitions=3
-          │ ProjectionExec: expr=[SearchPhrase@0 as SearchPhrase, count(Int64(1))@1 as c]
-          │   SortExec: TopK(fetch=10), expr=[count(Int64(1))@1 DESC], preserve_partitioning=[true]
-          │     AggregateExec: mode=FinalPartitioned, gby=[SearchPhrase@0 as SearchPhrase], aggr=[count(Int64(1))]
-          │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          ┌───── Stage 2 ── tasks=2, partitions=2
+          │ SortPreservingMergeExec: [c@1 DESC], fetch=10
+          │   ProjectionExec: expr=[SearchPhrase@0 as SearchPhrase, count(Int64(1))@1 as c]
+          │     SortExec: TopK(fetch=10), expr=[count(Int64(1))@1 DESC], preserve_partitioning=[true]
+          │       AggregateExec: mode=FinalPartitioned, gby=[SearchPhrase@0 as SearchPhrase], aggr=[count(Int64(1))]
+          │         [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=4, partitions=6
             │ RepartitionExec: partitioning=Hash([SearchPhrase@0], 6), input_partitions=3
@@ -368,13 +377,14 @@ mod tests {
         assert_snapshot!(display, @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [c@2 DESC], fetch=10
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── tasks=2, partitions=3
-          │ ProjectionExec: expr=[SearchEngineID@0 as SearchEngineID, SearchPhrase@1 as SearchPhrase, count(Int64(1))@2 as c]
-          │   SortExec: TopK(fetch=10), expr=[count(Int64(1))@2 DESC], preserve_partitioning=[true]
-          │     AggregateExec: mode=FinalPartitioned, gby=[SearchEngineID@0 as SearchEngineID, SearchPhrase@1 as SearchPhrase], aggr=[count(Int64(1))]
-          │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          ┌───── Stage 2 ── tasks=2, partitions=2
+          │ SortPreservingMergeExec: [c@2 DESC], fetch=10
+          │   ProjectionExec: expr=[SearchEngineID@0 as SearchEngineID, SearchPhrase@1 as SearchPhrase, count(Int64(1))@2 as c]
+          │     SortExec: TopK(fetch=10), expr=[count(Int64(1))@2 DESC], preserve_partitioning=[true]
+          │       AggregateExec: mode=FinalPartitioned, gby=[SearchEngineID@0 as SearchEngineID, SearchPhrase@1 as SearchPhrase], aggr=[count(Int64(1))]
+          │         [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=4, partitions=6
             │ RepartitionExec: partitioning=Hash([SearchEngineID@0, SearchPhrase@1], 6), input_partitions=3
@@ -396,13 +406,14 @@ mod tests {
         assert_snapshot!(display, @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [count(*)@1 DESC], fetch=10
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
         └──────────────────────────────────────────────────
           ┌───── Stage 2 ── tasks=3, partitions=3
-          │ ProjectionExec: expr=[UserID@0 as UserID, count(Int64(1))@1 as count(*)]
-          │   SortExec: TopK(fetch=10), expr=[count(Int64(1))@1 DESC], preserve_partitioning=[true]
-          │     AggregateExec: mode=FinalPartitioned, gby=[UserID@0 as UserID], aggr=[count(Int64(1))]
-          │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          │ SortPreservingMergeExec: [count(*)@1 DESC], fetch=10
+          │   ProjectionExec: expr=[UserID@0 as UserID, count(Int64(1))@1 as count(*)]
+          │     SortExec: TopK(fetch=10), expr=[count(Int64(1))@1 DESC], preserve_partitioning=[true]
+          │       AggregateExec: mode=FinalPartitioned, gby=[UserID@0 as UserID], aggr=[count(Int64(1))]
+          │         [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=4, partitions=9
             │ RepartitionExec: partitioning=Hash([UserID@0], 9), input_partitions=3
@@ -423,13 +434,14 @@ mod tests {
         assert_snapshot!(display, @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [count(*)@2 DESC], fetch=10
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
         └──────────────────────────────────────────────────
           ┌───── Stage 2 ── tasks=3, partitions=3
-          │ ProjectionExec: expr=[UserID@0 as UserID, SearchPhrase@1 as SearchPhrase, count(Int64(1))@2 as count(*)]
-          │   SortExec: TopK(fetch=10), expr=[count(Int64(1))@2 DESC], preserve_partitioning=[true]
-          │     AggregateExec: mode=FinalPartitioned, gby=[UserID@0 as UserID, SearchPhrase@1 as SearchPhrase], aggr=[count(Int64(1))]
-          │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          │ SortPreservingMergeExec: [count(*)@2 DESC], fetch=10
+          │   ProjectionExec: expr=[UserID@0 as UserID, SearchPhrase@1 as SearchPhrase, count(Int64(1))@2 as count(*)]
+          │     SortExec: TopK(fetch=10), expr=[count(Int64(1))@2 DESC], preserve_partitioning=[true]
+          │       AggregateExec: mode=FinalPartitioned, gby=[UserID@0 as UserID, SearchPhrase@1 as SearchPhrase], aggr=[count(Int64(1))]
+          │         [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=4, partitions=9
             │ RepartitionExec: partitioning=Hash([UserID@0, SearchPhrase@1], 9), input_partitions=3
@@ -451,12 +463,13 @@ mod tests {
         ┌───── DistributedExec
         │ ProjectionExec: expr=[UserID@0 as UserID, SearchPhrase@1 as SearchPhrase, count(Int64(1))@2 as count(*)]
         │   CoalescePartitionsExec: fetch=10
-        │     [Stage 2] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
+        │     [Stage 2] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
         └──────────────────────────────────────────────────
           ┌───── Stage 2 ── tasks=3, partitions=3
-          │ LocalLimitExec: fetch=10
-          │   AggregateExec: mode=FinalPartitioned, gby=[UserID@0 as UserID, SearchPhrase@1 as SearchPhrase], aggr=[count(Int64(1))]
-          │     [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          │ CoalescePartitionsExec: fetch=10
+          │   LocalLimitExec: fetch=10
+          │     AggregateExec: mode=FinalPartitioned, gby=[UserID@0 as UserID, SearchPhrase@1 as SearchPhrase], aggr=[count(Int64(1))]
+          │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=4, partitions=9
             │ RepartitionExec: partitioning=Hash([UserID@0, SearchPhrase@1], 9), input_partitions=3
@@ -477,13 +490,14 @@ mod tests {
         assert_snapshot!(display, @r#"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [count(*)@3 DESC], fetch=10
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
         └──────────────────────────────────────────────────
           ┌───── Stage 2 ── tasks=3, partitions=3
-          │ ProjectionExec: expr=[UserID@0 as UserID, date_part(Utf8("MINUTE"),to_timestamp_seconds(hits.EventTime))@1 as m, SearchPhrase@2 as SearchPhrase, count(Int64(1))@3 as count(*)]
-          │   SortExec: TopK(fetch=10), expr=[count(Int64(1))@3 DESC], preserve_partitioning=[true]
-          │     AggregateExec: mode=FinalPartitioned, gby=[UserID@0 as UserID, date_part(Utf8("MINUTE"),to_timestamp_seconds(hits.EventTime))@1 as date_part(Utf8("MINUTE"),to_timestamp_seconds(hits.EventTime)), SearchPhrase@2 as SearchPhrase], aggr=[count(Int64(1))]
-          │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          │ SortPreservingMergeExec: [count(*)@3 DESC], fetch=10
+          │   ProjectionExec: expr=[UserID@0 as UserID, date_part(Utf8("MINUTE"),to_timestamp_seconds(hits.EventTime))@1 as m, SearchPhrase@2 as SearchPhrase, count(Int64(1))@3 as count(*)]
+          │     SortExec: TopK(fetch=10), expr=[count(Int64(1))@3 DESC], preserve_partitioning=[true]
+          │       AggregateExec: mode=FinalPartitioned, gby=[UserID@0 as UserID, date_part(Utf8("MINUTE"),to_timestamp_seconds(hits.EventTime))@1 as date_part(Utf8("MINUTE"),to_timestamp_seconds(hits.EventTime)), SearchPhrase@2 as SearchPhrase], aggr=[count(Int64(1))]
+          │         [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=4, partitions=9
             │ RepartitionExec: partitioning=Hash([UserID@0, date_part(Utf8("MINUTE"),to_timestamp_seconds(hits.EventTime))@1, SearchPhrase@2], 9), input_partitions=3
@@ -504,15 +518,16 @@ mod tests {
         assert_snapshot!(display, @r"
         ┌───── DistributedExec
         │ CoalescePartitionsExec
-        │   [Stage 1] => NetworkCoalesceExec: output_partitions=12, input_tasks=4
+        │   [Stage 1] => NetworkCoalesceExec: output_partitions=4, input_tasks=4
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── tasks=4, partitions=12
-          │ FilterExec: UserID@0 = 435090932899640449
-          │   DistributedLeafExec:
-          │     t0: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[UserID], file_type=parquet, predicate=UserID@9 = 435090932899640449, pruning_predicate=UserID_null_count@2 != row_count@3 AND UserID_min@0 <= 435090932899640449 AND 435090932899640449 <= UserID_max@1, required_guarantees=[UserID in (435090932899640449)]
-          │     t1: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[UserID], file_type=parquet, predicate=UserID@9 = 435090932899640449, pruning_predicate=UserID_null_count@2 != row_count@3 AND UserID_min@0 <= 435090932899640449 AND 435090932899640449 <= UserID_max@1, required_guarantees=[UserID in (435090932899640449)]
-          │     t2: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[UserID], file_type=parquet, predicate=UserID@9 = 435090932899640449, pruning_predicate=UserID_null_count@2 != row_count@3 AND UserID_min@0 <= 435090932899640449 AND 435090932899640449 <= UserID_max@1, required_guarantees=[UserID in (435090932899640449)]
-          │     t3: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[UserID], file_type=parquet, predicate=UserID@9 = 435090932899640449, pruning_predicate=UserID_null_count@2 != row_count@3 AND UserID_min@0 <= 435090932899640449 AND 435090932899640449 <= UserID_max@1, required_guarantees=[UserID in (435090932899640449)]
+          ┌───── Stage 1 ── tasks=4, partitions=4
+          │ CoalescePartitionsExec
+          │   FilterExec: UserID@0 = 435090932899640449
+          │     DistributedLeafExec:
+          │       t0: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[UserID], file_type=parquet, predicate=UserID@9 = 435090932899640449, pruning_predicate=UserID_null_count@2 != row_count@3 AND UserID_min@0 <= 435090932899640449 AND 435090932899640449 <= UserID_max@1, required_guarantees=[UserID in (435090932899640449)]
+          │       t1: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[UserID], file_type=parquet, predicate=UserID@9 = 435090932899640449, pruning_predicate=UserID_null_count@2 != row_count@3 AND UserID_min@0 <= 435090932899640449 AND 435090932899640449 <= UserID_max@1, required_guarantees=[UserID in (435090932899640449)]
+          │       t2: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[UserID], file_type=parquet, predicate=UserID@9 = 435090932899640449, pruning_predicate=UserID_null_count@2 != row_count@3 AND UserID_min@0 <= 435090932899640449 AND 435090932899640449 <= UserID_max@1, required_guarantees=[UserID in (435090932899640449)]
+          │       t3: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[UserID], file_type=parquet, predicate=UserID@9 = 435090932899640449, pruning_predicate=UserID_null_count@2 != row_count@3 AND UserID_min@0 <= 435090932899640449 AND 435090932899640449 <= UserID_max@1, required_guarantees=[UserID in (435090932899640449)]
           └──────────────────────────────────────────────────
         ");
         Ok(())
@@ -526,16 +541,17 @@ mod tests {
         │ ProjectionExec: expr=[count(Int64(1))@0 as count(*)]
         │   AggregateExec: mode=Final, gby=[], aggr=[count(Int64(1))]
         │     CoalescePartitionsExec
-        │       [Stage 1] => NetworkCoalesceExec: output_partitions=12, input_tasks=4
+        │       [Stage 1] => NetworkCoalesceExec: output_partitions=4, input_tasks=4
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── tasks=4, partitions=12
-          │ AggregateExec: mode=Partial, gby=[], aggr=[count(Int64(1))]
-          │   FilterExec: CAST(URL@0 AS Utf8View) LIKE %google%, projection=[]
-          │     DistributedLeafExec:
-          │       t0: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[URL], file_type=parquet, predicate=CAST(URL@13 AS Utf8View) LIKE %google%
-          │       t1: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[URL], file_type=parquet, predicate=CAST(URL@13 AS Utf8View) LIKE %google%
-          │       t2: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[URL], file_type=parquet, predicate=CAST(URL@13 AS Utf8View) LIKE %google%
-          │       t3: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[URL], file_type=parquet, predicate=CAST(URL@13 AS Utf8View) LIKE %google%
+          ┌───── Stage 1 ── tasks=4, partitions=4
+          │ CoalescePartitionsExec
+          │   AggregateExec: mode=Partial, gby=[], aggr=[count(Int64(1))]
+          │     FilterExec: CAST(URL@0 AS Utf8View) LIKE %google%, projection=[]
+          │       DistributedLeafExec:
+          │         t0: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[URL], file_type=parquet, predicate=CAST(URL@13 AS Utf8View) LIKE %google%
+          │         t1: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[URL], file_type=parquet, predicate=CAST(URL@13 AS Utf8View) LIKE %google%
+          │         t2: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[URL], file_type=parquet, predicate=CAST(URL@13 AS Utf8View) LIKE %google%
+          │         t3: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[URL], file_type=parquet, predicate=CAST(URL@13 AS Utf8View) LIKE %google%
           └──────────────────────────────────────────────────
         ");
         Ok(())
@@ -563,16 +579,17 @@ mod tests {
         assert_snapshot!(display, @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [EventTime@4 ASC NULLS LAST], fetch=10
-        │   [Stage 1] => NetworkCoalesceExec: output_partitions=12, input_tasks=4
+        │   [Stage 1] => NetworkCoalesceExec: output_partitions=4, input_tasks=4
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── tasks=4, partitions=12
-          │ SortExec: TopK(fetch=10), expr=[EventTime@4 ASC NULLS LAST], preserve_partitioning=[true]
-          │   FilterExec: CAST(URL@13 AS Utf8View) LIKE %google%
-          │     DistributedLeafExec:
-          │       t0: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[WatchID, JavaEnable, Title, GoodEvent, EventTime, EventDate, CounterID, ClientIP, RegionID, UserID, CounterClass, OS, UserAgent, URL, Referer, IsRefresh, RefererCategoryID, RefererRegionID, URLCategoryID, URLRegionID, ResolutionWidth, ResolutionHeight, ResolutionDepth, FlashMajor, FlashMinor, FlashMinor2, NetMajor, NetMinor, UserAgentMajor, UserAgentMinor, CookieEnable, JavascriptEnable, IsMobile, MobilePhone, MobilePhoneModel, Params, IPNetworkID, TraficSourceID, SearchEngineID, SearchPhrase, AdvEngineID, IsArtifical, WindowClientWidth, WindowClientHeight, ClientTimeZone, ClientEventTime, SilverlightVersion1, SilverlightVersion2, SilverlightVersion3, SilverlightVersion4, PageCharset, CodeVersion, IsLink, IsDownload, IsNotBounce, FUniqID, OriginalURL, HID, IsOldCounter, IsEvent, IsParameter, DontCountHits, WithHash, HitColor, LocalEventTime, Age, Sex, Income, Interests, Robotness, RemoteIP, WindowName, OpenerName, HistoryLength, BrowserLanguage, BrowserCountry, SocialNetwork, SocialAction, HTTPError, SendTiming, DNSTiming, ConnectTiming, ResponseStartTiming, ResponseEndTiming, FetchTiming, SocialSourceNetworkID, SocialSourcePage, ParamPrice, ParamOrderID, ParamCurrency, ParamCurrencyID, OpenstatServiceName, OpenstatCampaignID, OpenstatAdID, OpenstatSourceID, UTMSource, UTMMedium, UTMCampaign, UTMContent, UTMTerm, FromTag, HasGCLID, RefererHash, URLHash, CLID], file_type=parquet, predicate=CAST(URL@13 AS Utf8View) LIKE %google% AND DynamicFilter [ empty ], dynamic_rg_pruning=eligible
-          │       t1: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[WatchID, JavaEnable, Title, GoodEvent, EventTime, EventDate, CounterID, ClientIP, RegionID, UserID, CounterClass, OS, UserAgent, URL, Referer, IsRefresh, RefererCategoryID, RefererRegionID, URLCategoryID, URLRegionID, ResolutionWidth, ResolutionHeight, ResolutionDepth, FlashMajor, FlashMinor, FlashMinor2, NetMajor, NetMinor, UserAgentMajor, UserAgentMinor, CookieEnable, JavascriptEnable, IsMobile, MobilePhone, MobilePhoneModel, Params, IPNetworkID, TraficSourceID, SearchEngineID, SearchPhrase, AdvEngineID, IsArtifical, WindowClientWidth, WindowClientHeight, ClientTimeZone, ClientEventTime, SilverlightVersion1, SilverlightVersion2, SilverlightVersion3, SilverlightVersion4, PageCharset, CodeVersion, IsLink, IsDownload, IsNotBounce, FUniqID, OriginalURL, HID, IsOldCounter, IsEvent, IsParameter, DontCountHits, WithHash, HitColor, LocalEventTime, Age, Sex, Income, Interests, Robotness, RemoteIP, WindowName, OpenerName, HistoryLength, BrowserLanguage, BrowserCountry, SocialNetwork, SocialAction, HTTPError, SendTiming, DNSTiming, ConnectTiming, ResponseStartTiming, ResponseEndTiming, FetchTiming, SocialSourceNetworkID, SocialSourcePage, ParamPrice, ParamOrderID, ParamCurrency, ParamCurrencyID, OpenstatServiceName, OpenstatCampaignID, OpenstatAdID, OpenstatSourceID, UTMSource, UTMMedium, UTMCampaign, UTMContent, UTMTerm, FromTag, HasGCLID, RefererHash, URLHash, CLID], file_type=parquet, predicate=CAST(URL@13 AS Utf8View) LIKE %google% AND DynamicFilter [ empty ], dynamic_rg_pruning=eligible
-          │       t2: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[WatchID, JavaEnable, Title, GoodEvent, EventTime, EventDate, CounterID, ClientIP, RegionID, UserID, CounterClass, OS, UserAgent, URL, Referer, IsRefresh, RefererCategoryID, RefererRegionID, URLCategoryID, URLRegionID, ResolutionWidth, ResolutionHeight, ResolutionDepth, FlashMajor, FlashMinor, FlashMinor2, NetMajor, NetMinor, UserAgentMajor, UserAgentMinor, CookieEnable, JavascriptEnable, IsMobile, MobilePhone, MobilePhoneModel, Params, IPNetworkID, TraficSourceID, SearchEngineID, SearchPhrase, AdvEngineID, IsArtifical, WindowClientWidth, WindowClientHeight, ClientTimeZone, ClientEventTime, SilverlightVersion1, SilverlightVersion2, SilverlightVersion3, SilverlightVersion4, PageCharset, CodeVersion, IsLink, IsDownload, IsNotBounce, FUniqID, OriginalURL, HID, IsOldCounter, IsEvent, IsParameter, DontCountHits, WithHash, HitColor, LocalEventTime, Age, Sex, Income, Interests, Robotness, RemoteIP, WindowName, OpenerName, HistoryLength, BrowserLanguage, BrowserCountry, SocialNetwork, SocialAction, HTTPError, SendTiming, DNSTiming, ConnectTiming, ResponseStartTiming, ResponseEndTiming, FetchTiming, SocialSourceNetworkID, SocialSourcePage, ParamPrice, ParamOrderID, ParamCurrency, ParamCurrencyID, OpenstatServiceName, OpenstatCampaignID, OpenstatAdID, OpenstatSourceID, UTMSource, UTMMedium, UTMCampaign, UTMContent, UTMTerm, FromTag, HasGCLID, RefererHash, URLHash, CLID], file_type=parquet, predicate=CAST(URL@13 AS Utf8View) LIKE %google% AND DynamicFilter [ empty ], dynamic_rg_pruning=eligible
-          │       t3: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[WatchID, JavaEnable, Title, GoodEvent, EventTime, EventDate, CounterID, ClientIP, RegionID, UserID, CounterClass, OS, UserAgent, URL, Referer, IsRefresh, RefererCategoryID, RefererRegionID, URLCategoryID, URLRegionID, ResolutionWidth, ResolutionHeight, ResolutionDepth, FlashMajor, FlashMinor, FlashMinor2, NetMajor, NetMinor, UserAgentMajor, UserAgentMinor, CookieEnable, JavascriptEnable, IsMobile, MobilePhone, MobilePhoneModel, Params, IPNetworkID, TraficSourceID, SearchEngineID, SearchPhrase, AdvEngineID, IsArtifical, WindowClientWidth, WindowClientHeight, ClientTimeZone, ClientEventTime, SilverlightVersion1, SilverlightVersion2, SilverlightVersion3, SilverlightVersion4, PageCharset, CodeVersion, IsLink, IsDownload, IsNotBounce, FUniqID, OriginalURL, HID, IsOldCounter, IsEvent, IsParameter, DontCountHits, WithHash, HitColor, LocalEventTime, Age, Sex, Income, Interests, Robotness, RemoteIP, WindowName, OpenerName, HistoryLength, BrowserLanguage, BrowserCountry, SocialNetwork, SocialAction, HTTPError, SendTiming, DNSTiming, ConnectTiming, ResponseStartTiming, ResponseEndTiming, FetchTiming, SocialSourceNetworkID, SocialSourcePage, ParamPrice, ParamOrderID, ParamCurrency, ParamCurrencyID, OpenstatServiceName, OpenstatCampaignID, OpenstatAdID, OpenstatSourceID, UTMSource, UTMMedium, UTMCampaign, UTMContent, UTMTerm, FromTag, HasGCLID, RefererHash, URLHash, CLID], file_type=parquet, predicate=CAST(URL@13 AS Utf8View) LIKE %google% AND DynamicFilter [ empty ], dynamic_rg_pruning=eligible
+          ┌───── Stage 1 ── tasks=4, partitions=4
+          │ SortPreservingMergeExec: [EventTime@4 ASC NULLS LAST], fetch=10
+          │   SortExec: TopK(fetch=10), expr=[EventTime@4 ASC NULLS LAST], preserve_partitioning=[true]
+          │     FilterExec: CAST(URL@13 AS Utf8View) LIKE %google%
+          │       DistributedLeafExec:
+          │         t0: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[WatchID, JavaEnable, Title, GoodEvent, EventTime, EventDate, CounterID, ClientIP, RegionID, UserID, CounterClass, OS, UserAgent, URL, Referer, IsRefresh, RefererCategoryID, RefererRegionID, URLCategoryID, URLRegionID, ResolutionWidth, ResolutionHeight, ResolutionDepth, FlashMajor, FlashMinor, FlashMinor2, NetMajor, NetMinor, UserAgentMajor, UserAgentMinor, CookieEnable, JavascriptEnable, IsMobile, MobilePhone, MobilePhoneModel, Params, IPNetworkID, TraficSourceID, SearchEngineID, SearchPhrase, AdvEngineID, IsArtifical, WindowClientWidth, WindowClientHeight, ClientTimeZone, ClientEventTime, SilverlightVersion1, SilverlightVersion2, SilverlightVersion3, SilverlightVersion4, PageCharset, CodeVersion, IsLink, IsDownload, IsNotBounce, FUniqID, OriginalURL, HID, IsOldCounter, IsEvent, IsParameter, DontCountHits, WithHash, HitColor, LocalEventTime, Age, Sex, Income, Interests, Robotness, RemoteIP, WindowName, OpenerName, HistoryLength, BrowserLanguage, BrowserCountry, SocialNetwork, SocialAction, HTTPError, SendTiming, DNSTiming, ConnectTiming, ResponseStartTiming, ResponseEndTiming, FetchTiming, SocialSourceNetworkID, SocialSourcePage, ParamPrice, ParamOrderID, ParamCurrency, ParamCurrencyID, OpenstatServiceName, OpenstatCampaignID, OpenstatAdID, OpenstatSourceID, UTMSource, UTMMedium, UTMCampaign, UTMContent, UTMTerm, FromTag, HasGCLID, RefererHash, URLHash, CLID], file_type=parquet, predicate=CAST(URL@13 AS Utf8View) LIKE %google% AND DynamicFilter [ empty ], dynamic_rg_pruning=eligible
+          │         t1: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[WatchID, JavaEnable, Title, GoodEvent, EventTime, EventDate, CounterID, ClientIP, RegionID, UserID, CounterClass, OS, UserAgent, URL, Referer, IsRefresh, RefererCategoryID, RefererRegionID, URLCategoryID, URLRegionID, ResolutionWidth, ResolutionHeight, ResolutionDepth, FlashMajor, FlashMinor, FlashMinor2, NetMajor, NetMinor, UserAgentMajor, UserAgentMinor, CookieEnable, JavascriptEnable, IsMobile, MobilePhone, MobilePhoneModel, Params, IPNetworkID, TraficSourceID, SearchEngineID, SearchPhrase, AdvEngineID, IsArtifical, WindowClientWidth, WindowClientHeight, ClientTimeZone, ClientEventTime, SilverlightVersion1, SilverlightVersion2, SilverlightVersion3, SilverlightVersion4, PageCharset, CodeVersion, IsLink, IsDownload, IsNotBounce, FUniqID, OriginalURL, HID, IsOldCounter, IsEvent, IsParameter, DontCountHits, WithHash, HitColor, LocalEventTime, Age, Sex, Income, Interests, Robotness, RemoteIP, WindowName, OpenerName, HistoryLength, BrowserLanguage, BrowserCountry, SocialNetwork, SocialAction, HTTPError, SendTiming, DNSTiming, ConnectTiming, ResponseStartTiming, ResponseEndTiming, FetchTiming, SocialSourceNetworkID, SocialSourcePage, ParamPrice, ParamOrderID, ParamCurrency, ParamCurrencyID, OpenstatServiceName, OpenstatCampaignID, OpenstatAdID, OpenstatSourceID, UTMSource, UTMMedium, UTMCampaign, UTMContent, UTMTerm, FromTag, HasGCLID, RefererHash, URLHash, CLID], file_type=parquet, predicate=CAST(URL@13 AS Utf8View) LIKE %google% AND DynamicFilter [ empty ], dynamic_rg_pruning=eligible
+          │         t2: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[WatchID, JavaEnable, Title, GoodEvent, EventTime, EventDate, CounterID, ClientIP, RegionID, UserID, CounterClass, OS, UserAgent, URL, Referer, IsRefresh, RefererCategoryID, RefererRegionID, URLCategoryID, URLRegionID, ResolutionWidth, ResolutionHeight, ResolutionDepth, FlashMajor, FlashMinor, FlashMinor2, NetMajor, NetMinor, UserAgentMajor, UserAgentMinor, CookieEnable, JavascriptEnable, IsMobile, MobilePhone, MobilePhoneModel, Params, IPNetworkID, TraficSourceID, SearchEngineID, SearchPhrase, AdvEngineID, IsArtifical, WindowClientWidth, WindowClientHeight, ClientTimeZone, ClientEventTime, SilverlightVersion1, SilverlightVersion2, SilverlightVersion3, SilverlightVersion4, PageCharset, CodeVersion, IsLink, IsDownload, IsNotBounce, FUniqID, OriginalURL, HID, IsOldCounter, IsEvent, IsParameter, DontCountHits, WithHash, HitColor, LocalEventTime, Age, Sex, Income, Interests, Robotness, RemoteIP, WindowName, OpenerName, HistoryLength, BrowserLanguage, BrowserCountry, SocialNetwork, SocialAction, HTTPError, SendTiming, DNSTiming, ConnectTiming, ResponseStartTiming, ResponseEndTiming, FetchTiming, SocialSourceNetworkID, SocialSourcePage, ParamPrice, ParamOrderID, ParamCurrency, ParamCurrencyID, OpenstatServiceName, OpenstatCampaignID, OpenstatAdID, OpenstatSourceID, UTMSource, UTMMedium, UTMCampaign, UTMContent, UTMTerm, FromTag, HasGCLID, RefererHash, URLHash, CLID], file_type=parquet, predicate=CAST(URL@13 AS Utf8View) LIKE %google% AND DynamicFilter [ empty ], dynamic_rg_pruning=eligible
+          │         t3: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[WatchID, JavaEnable, Title, GoodEvent, EventTime, EventDate, CounterID, ClientIP, RegionID, UserID, CounterClass, OS, UserAgent, URL, Referer, IsRefresh, RefererCategoryID, RefererRegionID, URLCategoryID, URLRegionID, ResolutionWidth, ResolutionHeight, ResolutionDepth, FlashMajor, FlashMinor, FlashMinor2, NetMajor, NetMinor, UserAgentMajor, UserAgentMinor, CookieEnable, JavascriptEnable, IsMobile, MobilePhone, MobilePhoneModel, Params, IPNetworkID, TraficSourceID, SearchEngineID, SearchPhrase, AdvEngineID, IsArtifical, WindowClientWidth, WindowClientHeight, ClientTimeZone, ClientEventTime, SilverlightVersion1, SilverlightVersion2, SilverlightVersion3, SilverlightVersion4, PageCharset, CodeVersion, IsLink, IsDownload, IsNotBounce, FUniqID, OriginalURL, HID, IsOldCounter, IsEvent, IsParameter, DontCountHits, WithHash, HitColor, LocalEventTime, Age, Sex, Income, Interests, Robotness, RemoteIP, WindowName, OpenerName, HistoryLength, BrowserLanguage, BrowserCountry, SocialNetwork, SocialAction, HTTPError, SendTiming, DNSTiming, ConnectTiming, ResponseStartTiming, ResponseEndTiming, FetchTiming, SocialSourceNetworkID, SocialSourcePage, ParamPrice, ParamOrderID, ParamCurrency, ParamCurrencyID, OpenstatServiceName, OpenstatCampaignID, OpenstatAdID, OpenstatSourceID, UTMSource, UTMMedium, UTMCampaign, UTMContent, UTMTerm, FromTag, HasGCLID, RefererHash, URLHash, CLID], file_type=parquet, predicate=CAST(URL@13 AS Utf8View) LIKE %google% AND DynamicFilter [ empty ], dynamic_rg_pruning=eligible
           └──────────────────────────────────────────────────
         ");
         Ok(())
@@ -607,16 +624,17 @@ mod tests {
         assert_snapshot!(display, @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [SearchPhrase@0 ASC NULLS LAST], fetch=10
-        │   [Stage 1] => NetworkCoalesceExec: output_partitions=12, input_tasks=4
+        │   [Stage 1] => NetworkCoalesceExec: output_partitions=4, input_tasks=4
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── tasks=4, partitions=12
-          │ SortExec: TopK(fetch=10), expr=[SearchPhrase@0 ASC NULLS LAST], preserve_partitioning=[true]
-          │   FilterExec: SearchPhrase@0 !=
-          │     DistributedLeafExec:
-          │       t0: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[SearchPhrase], file_type=parquet, predicate=SearchPhrase@39 !=  AND DynamicFilter [ empty ], dynamic_rg_pruning=eligible, pruning_predicate=SearchPhrase_null_count@2 != row_count@3 AND (SearchPhrase_min@0 !=  OR  != SearchPhrase_max@1), required_guarantees=[SearchPhrase not in ()]
-          │       t1: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[SearchPhrase], file_type=parquet, predicate=SearchPhrase@39 !=  AND DynamicFilter [ empty ], dynamic_rg_pruning=eligible, pruning_predicate=SearchPhrase_null_count@2 != row_count@3 AND (SearchPhrase_min@0 !=  OR  != SearchPhrase_max@1), required_guarantees=[SearchPhrase not in ()]
-          │       t2: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[SearchPhrase], file_type=parquet, predicate=SearchPhrase@39 !=  AND DynamicFilter [ empty ], dynamic_rg_pruning=eligible, pruning_predicate=SearchPhrase_null_count@2 != row_count@3 AND (SearchPhrase_min@0 !=  OR  != SearchPhrase_max@1), required_guarantees=[SearchPhrase not in ()]
-          │       t3: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[SearchPhrase], file_type=parquet, predicate=SearchPhrase@39 !=  AND DynamicFilter [ empty ], dynamic_rg_pruning=eligible, pruning_predicate=SearchPhrase_null_count@2 != row_count@3 AND (SearchPhrase_min@0 !=  OR  != SearchPhrase_max@1), required_guarantees=[SearchPhrase not in ()]
+          ┌───── Stage 1 ── tasks=4, partitions=4
+          │ SortPreservingMergeExec: [SearchPhrase@0 ASC NULLS LAST], fetch=10
+          │   SortExec: TopK(fetch=10), expr=[SearchPhrase@0 ASC NULLS LAST], preserve_partitioning=[true]
+          │     FilterExec: SearchPhrase@0 !=
+          │       DistributedLeafExec:
+          │         t0: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[SearchPhrase], file_type=parquet, predicate=SearchPhrase@39 !=  AND DynamicFilter [ empty ], dynamic_rg_pruning=eligible, pruning_predicate=SearchPhrase_null_count@2 != row_count@3 AND (SearchPhrase_min@0 !=  OR  != SearchPhrase_max@1), required_guarantees=[SearchPhrase not in ()]
+          │         t1: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[SearchPhrase], file_type=parquet, predicate=SearchPhrase@39 !=  AND DynamicFilter [ empty ], dynamic_rg_pruning=eligible, pruning_predicate=SearchPhrase_null_count@2 != row_count@3 AND (SearchPhrase_min@0 !=  OR  != SearchPhrase_max@1), required_guarantees=[SearchPhrase not in ()]
+          │         t2: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[SearchPhrase], file_type=parquet, predicate=SearchPhrase@39 !=  AND DynamicFilter [ empty ], dynamic_rg_pruning=eligible, pruning_predicate=SearchPhrase_null_count@2 != row_count@3 AND (SearchPhrase_min@0 !=  OR  != SearchPhrase_max@1), required_guarantees=[SearchPhrase not in ()]
+          │         t3: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[SearchPhrase], file_type=parquet, predicate=SearchPhrase@39 !=  AND DynamicFilter [ empty ], dynamic_rg_pruning=eligible, pruning_predicate=SearchPhrase_null_count@2 != row_count@3 AND (SearchPhrase_min@0 !=  OR  != SearchPhrase_max@1), required_guarantees=[SearchPhrase not in ()]
           └──────────────────────────────────────────────────
         ");
         Ok(())
@@ -629,17 +647,18 @@ mod tests {
         ┌───── DistributedExec
         │ ProjectionExec: expr=[SearchPhrase@0 as SearchPhrase]
         │   SortPreservingMergeExec: [EventTime@1 ASC NULLS LAST, SearchPhrase@0 ASC NULLS LAST], fetch=10
-        │     [Stage 1] => NetworkCoalesceExec: output_partitions=12, input_tasks=4
+        │     [Stage 1] => NetworkCoalesceExec: output_partitions=4, input_tasks=4
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── tasks=4, partitions=12
-          │ ProjectionExec: expr=[SearchPhrase@1 as SearchPhrase, EventTime@0 as EventTime]
-          │   SortExec: TopK(fetch=10), expr=[EventTime@0 ASC NULLS LAST, SearchPhrase@1 ASC NULLS LAST], preserve_partitioning=[true]
-          │     FilterExec: SearchPhrase@1 !=
-          │       DistributedLeafExec:
-          │         t0: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[EventTime, SearchPhrase], file_type=parquet, predicate=SearchPhrase@39 !=  AND DynamicFilter [ empty ], dynamic_rg_pruning=eligible, pruning_predicate=SearchPhrase_null_count@2 != row_count@3 AND (SearchPhrase_min@0 !=  OR  != SearchPhrase_max@1), required_guarantees=[SearchPhrase not in ()]
-          │         t1: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[EventTime, SearchPhrase], file_type=parquet, predicate=SearchPhrase@39 !=  AND DynamicFilter [ empty ], dynamic_rg_pruning=eligible, pruning_predicate=SearchPhrase_null_count@2 != row_count@3 AND (SearchPhrase_min@0 !=  OR  != SearchPhrase_max@1), required_guarantees=[SearchPhrase not in ()]
-          │         t2: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[EventTime, SearchPhrase], file_type=parquet, predicate=SearchPhrase@39 !=  AND DynamicFilter [ empty ], dynamic_rg_pruning=eligible, pruning_predicate=SearchPhrase_null_count@2 != row_count@3 AND (SearchPhrase_min@0 !=  OR  != SearchPhrase_max@1), required_guarantees=[SearchPhrase not in ()]
-          │         t3: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[EventTime, SearchPhrase], file_type=parquet, predicate=SearchPhrase@39 !=  AND DynamicFilter [ empty ], dynamic_rg_pruning=eligible, pruning_predicate=SearchPhrase_null_count@2 != row_count@3 AND (SearchPhrase_min@0 !=  OR  != SearchPhrase_max@1), required_guarantees=[SearchPhrase not in ()]
+          ┌───── Stage 1 ── tasks=4, partitions=4
+          │ SortPreservingMergeExec: [EventTime@1 ASC NULLS LAST, SearchPhrase@0 ASC NULLS LAST], fetch=10
+          │   ProjectionExec: expr=[SearchPhrase@1 as SearchPhrase, EventTime@0 as EventTime]
+          │     SortExec: TopK(fetch=10), expr=[EventTime@0 ASC NULLS LAST, SearchPhrase@1 ASC NULLS LAST], preserve_partitioning=[true]
+          │       FilterExec: SearchPhrase@1 !=
+          │         DistributedLeafExec:
+          │           t0: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[EventTime, SearchPhrase], file_type=parquet, predicate=SearchPhrase@39 !=  AND DynamicFilter [ empty ], dynamic_rg_pruning=eligible, pruning_predicate=SearchPhrase_null_count@2 != row_count@3 AND (SearchPhrase_min@0 !=  OR  != SearchPhrase_max@1), required_guarantees=[SearchPhrase not in ()]
+          │           t1: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[EventTime, SearchPhrase], file_type=parquet, predicate=SearchPhrase@39 !=  AND DynamicFilter [ empty ], dynamic_rg_pruning=eligible, pruning_predicate=SearchPhrase_null_count@2 != row_count@3 AND (SearchPhrase_min@0 !=  OR  != SearchPhrase_max@1), required_guarantees=[SearchPhrase not in ()]
+          │           t2: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[EventTime, SearchPhrase], file_type=parquet, predicate=SearchPhrase@39 !=  AND DynamicFilter [ empty ], dynamic_rg_pruning=eligible, pruning_predicate=SearchPhrase_null_count@2 != row_count@3 AND (SearchPhrase_min@0 !=  OR  != SearchPhrase_max@1), required_guarantees=[SearchPhrase not in ()]
+          │           t3: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[EventTime, SearchPhrase], file_type=parquet, predicate=SearchPhrase@39 !=  AND DynamicFilter [ empty ], dynamic_rg_pruning=eligible, pruning_predicate=SearchPhrase_null_count@2 != row_count@3 AND (SearchPhrase_min@0 !=  OR  != SearchPhrase_max@1), required_guarantees=[SearchPhrase not in ()]
           └──────────────────────────────────────────────────
         ");
         Ok(())
@@ -651,14 +670,15 @@ mod tests {
         assert_snapshot!(display, @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [l@1 DESC], fetch=25
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── tasks=2, partitions=3
-          │ ProjectionExec: expr=[CounterID@0 as CounterID, avg(length(hits.URL))@1 as l, count(Int64(1))@2 as c]
-          │   SortExec: TopK(fetch=25), expr=[avg(length(hits.URL))@1 DESC], preserve_partitioning=[true]
-          │     FilterExec: count(Int64(1))@2 > 100000
-          │       AggregateExec: mode=FinalPartitioned, gby=[CounterID@0 as CounterID], aggr=[avg(length(hits.URL)), count(Int64(1))]
-          │         [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          ┌───── Stage 2 ── tasks=2, partitions=2
+          │ SortPreservingMergeExec: [l@1 DESC], fetch=25
+          │   ProjectionExec: expr=[CounterID@0 as CounterID, avg(length(hits.URL))@1 as l, count(Int64(1))@2 as c]
+          │     SortExec: TopK(fetch=25), expr=[avg(length(hits.URL))@1 DESC], preserve_partitioning=[true]
+          │       FilterExec: count(Int64(1))@2 > 100000
+          │         AggregateExec: mode=FinalPartitioned, gby=[CounterID@0 as CounterID], aggr=[avg(length(hits.URL)), count(Int64(1))]
+          │           [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=4, partitions=6
             │ RepartitionExec: partitioning=Hash([CounterID@0], 6), input_partitions=3
@@ -680,14 +700,15 @@ mod tests {
         assert_snapshot!(display, @r#"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [l@1 DESC], fetch=25
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── tasks=2, partitions=3
-          │ ProjectionExec: expr=[regexp_replace(hits.Referer,Utf8("^https?://(?:www\.)?([^/]+)/.*$"),Utf8("\1"))@0 as k, avg(length(hits.Referer))@1 as l, count(Int64(1))@2 as c, min(hits.Referer)@3 as min(hits.Referer)]
-          │   SortExec: TopK(fetch=25), expr=[avg(length(hits.Referer))@1 DESC], preserve_partitioning=[true]
-          │     FilterExec: count(Int64(1))@2 > 100000
-          │       AggregateExec: mode=FinalPartitioned, gby=[regexp_replace(hits.Referer,Utf8("^https?://(?:www\.)?([^/]+)/.*$"),Utf8("\1"))@0 as regexp_replace(hits.Referer,Utf8("^https?://(?:www\.)?([^/]+)/.*$"),Utf8("\1"))], aggr=[avg(length(hits.Referer)), count(Int64(1)), min(hits.Referer)]
-          │         [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          ┌───── Stage 2 ── tasks=2, partitions=2
+          │ SortPreservingMergeExec: [l@1 DESC], fetch=25
+          │   ProjectionExec: expr=[regexp_replace(hits.Referer,Utf8("^https?://(?:www\.)?([^/]+)/.*$"),Utf8("\1"))@0 as k, avg(length(hits.Referer))@1 as l, count(Int64(1))@2 as c, min(hits.Referer)@3 as min(hits.Referer)]
+          │     SortExec: TopK(fetch=25), expr=[avg(length(hits.Referer))@1 DESC], preserve_partitioning=[true]
+          │       FilterExec: count(Int64(1))@2 > 100000
+          │         AggregateExec: mode=FinalPartitioned, gby=[regexp_replace(hits.Referer,Utf8("^https?://(?:www\.)?([^/]+)/.*$"),Utf8("\1"))@0 as regexp_replace(hits.Referer,Utf8("^https?://(?:www\.)?([^/]+)/.*$"),Utf8("\1"))], aggr=[avg(length(hits.Referer)), count(Int64(1)), min(hits.Referer)]
+          │           [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=4, partitions=6
             │ RepartitionExec: partitioning=Hash([regexp_replace(hits.Referer,Utf8("^https?://(?:www\.)?([^/]+)/.*$"),Utf8("\1"))@0], 6), input_partitions=3
@@ -712,15 +733,16 @@ mod tests {
         │ ProjectionExec: expr=[sum(hits.ResolutionWidth)@0 as sum(hits.ResolutionWidth), sum(hits.ResolutionWidth)@0 + count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(1)), sum(hits.ResolutionWidth)@0 + 2 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(2)), sum(hits.ResolutionWidth)@0 + 3 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(3)), sum(hits.ResolutionWidth)@0 + 4 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(4)), sum(hits.ResolutionWidth)@0 + 5 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(5)), sum(hits.ResolutionWidth)@0 + 6 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(6)), sum(hits.ResolutionWidth)@0 + 7 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(7)), sum(hits.ResolutionWidth)@0 + 8 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(8)), sum(hits.ResolutionWidth)@0 + 9 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(9)), sum(hits.ResolutionWidth)@0 + 10 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(10)), sum(hits.ResolutionWidth)@0 + 11 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(11)), sum(hits.ResolutionWidth)@0 + 12 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(12)), sum(hits.ResolutionWidth)@0 + 13 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(13)), sum(hits.ResolutionWidth)@0 + 14 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(14)), sum(hits.ResolutionWidth)@0 + 15 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(15)), sum(hits.ResolutionWidth)@0 + 16 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(16)), sum(hits.ResolutionWidth)@0 + 17 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(17)), sum(hits.ResolutionWidth)@0 + 18 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(18)), sum(hits.ResolutionWidth)@0 + 19 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(19)), sum(hits.ResolutionWidth)@0 + 20 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(20)), sum(hits.ResolutionWidth)@0 + 21 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(21)), sum(hits.ResolutionWidth)@0 + 22 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(22)), sum(hits.ResolutionWidth)@0 + 23 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(23)), sum(hits.ResolutionWidth)@0 + 24 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(24)), sum(hits.ResolutionWidth)@0 + 25 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(25)), sum(hits.ResolutionWidth)@0 + 26 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(26)), sum(hits.ResolutionWidth)@0 + 27 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(27)), sum(hits.ResolutionWidth)@0 + 28 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(28)), sum(hits.ResolutionWidth)@0 + 29 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(29)), sum(hits.ResolutionWidth)@0 + 30 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(30)), sum(hits.ResolutionWidth)@0 + 31 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(31)), sum(hits.ResolutionWidth)@0 + 32 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(32)), sum(hits.ResolutionWidth)@0 + 33 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(33)), sum(hits.ResolutionWidth)@0 + 34 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(34)), sum(hits.ResolutionWidth)@0 + 35 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(35)), sum(hits.ResolutionWidth)@0 + 36 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(36)), sum(hits.ResolutionWidth)@0 + 37 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(37)), sum(hits.ResolutionWidth)@0 + 38 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(38)), sum(hits.ResolutionWidth)@0 + 39 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(39)), sum(hits.ResolutionWidth)@0 + 40 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(40)), sum(hits.ResolutionWidth)@0 + 41 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(41)), sum(hits.ResolutionWidth)@0 + 42 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(42)), sum(hits.ResolutionWidth)@0 + 43 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(43)), sum(hits.ResolutionWidth)@0 + 44 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(44)), sum(hits.ResolutionWidth)@0 + 45 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(45)), sum(hits.ResolutionWidth)@0 + 46 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(46)), sum(hits.ResolutionWidth)@0 + 47 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(47)), sum(hits.ResolutionWidth)@0 + 48 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(48)), sum(hits.ResolutionWidth)@0 + 49 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(49)), sum(hits.ResolutionWidth)@0 + 50 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(50)), sum(hits.ResolutionWidth)@0 + 51 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(51)), sum(hits.ResolutionWidth)@0 + 52 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(52)), sum(hits.ResolutionWidth)@0 + 53 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(53)), sum(hits.ResolutionWidth)@0 + 54 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(54)), sum(hits.ResolutionWidth)@0 + 55 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(55)), sum(hits.ResolutionWidth)@0 + 56 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(56)), sum(hits.ResolutionWidth)@0 + 57 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(57)), sum(hits.ResolutionWidth)@0 + 58 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(58)), sum(hits.ResolutionWidth)@0 + 59 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(59)), sum(hits.ResolutionWidth)@0 + 60 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(60)), sum(hits.ResolutionWidth)@0 + 61 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(61)), sum(hits.ResolutionWidth)@0 + 62 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(62)), sum(hits.ResolutionWidth)@0 + 63 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(63)), sum(hits.ResolutionWidth)@0 + 64 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(64)), sum(hits.ResolutionWidth)@0 + 65 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(65)), sum(hits.ResolutionWidth)@0 + 66 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(66)), sum(hits.ResolutionWidth)@0 + 67 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(67)), sum(hits.ResolutionWidth)@0 + 68 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(68)), sum(hits.ResolutionWidth)@0 + 69 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(69)), sum(hits.ResolutionWidth)@0 + 70 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(70)), sum(hits.ResolutionWidth)@0 + 71 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(71)), sum(hits.ResolutionWidth)@0 + 72 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(72)), sum(hits.ResolutionWidth)@0 + 73 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(73)), sum(hits.ResolutionWidth)@0 + 74 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(74)), sum(hits.ResolutionWidth)@0 + 75 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(75)), sum(hits.ResolutionWidth)@0 + 76 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(76)), sum(hits.ResolutionWidth)@0 + 77 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(77)), sum(hits.ResolutionWidth)@0 + 78 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(78)), sum(hits.ResolutionWidth)@0 + 79 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(79)), sum(hits.ResolutionWidth)@0 + 80 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(80)), sum(hits.ResolutionWidth)@0 + 81 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(81)), sum(hits.ResolutionWidth)@0 + 82 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(82)), sum(hits.ResolutionWidth)@0 + 83 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(83)), sum(hits.ResolutionWidth)@0 + 84 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(84)), sum(hits.ResolutionWidth)@0 + 85 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(85)), sum(hits.ResolutionWidth)@0 + 86 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(86)), sum(hits.ResolutionWidth)@0 + 87 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(87)), sum(hits.ResolutionWidth)@0 + 88 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(88)), sum(hits.ResolutionWidth)@0 + 89 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(89))]
         │   AggregateExec: mode=Final, gby=[], aggr=[sum(hits.ResolutionWidth), count(hits.ResolutionWidth)]
         │     CoalescePartitionsExec
-        │       [Stage 1] => NetworkCoalesceExec: output_partitions=12, input_tasks=4
+        │       [Stage 1] => NetworkCoalesceExec: output_partitions=4, input_tasks=4
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── tasks=4, partitions=12
-          │ AggregateExec: mode=Partial, gby=[], aggr=[sum(hits.ResolutionWidth), count(hits.ResolutionWidth)]
-          │   DistributedLeafExec:
-          │     t0: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[CAST(ResolutionWidth@20 AS Int64) as __common_expr_2], file_type=parquet
-          │     t1: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[CAST(ResolutionWidth@20 AS Int64) as __common_expr_2], file_type=parquet
-          │     t2: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[CAST(ResolutionWidth@20 AS Int64) as __common_expr_2], file_type=parquet
-          │     t3: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[CAST(ResolutionWidth@20 AS Int64) as __common_expr_2], file_type=parquet
+          ┌───── Stage 1 ── tasks=4, partitions=4
+          │ CoalescePartitionsExec
+          │   AggregateExec: mode=Partial, gby=[], aggr=[sum(hits.ResolutionWidth), count(hits.ResolutionWidth)]
+          │     DistributedLeafExec:
+          │       t0: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[CAST(ResolutionWidth@20 AS Int64) as __common_expr_2], file_type=parquet
+          │       t1: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[CAST(ResolutionWidth@20 AS Int64) as __common_expr_2], file_type=parquet
+          │       t2: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[CAST(ResolutionWidth@20 AS Int64) as __common_expr_2], file_type=parquet
+          │       t3: DataSourceExec: file_groups={3 groups: [[/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/0.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/1.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>, /testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>], [/testdata/clickbench_parquet/partition_start=0/partition_end=3/hits/2.parquet:<int>..<int>]]}, projection=[CAST(ResolutionWidth@20 AS Int64) as __common_expr_2], file_type=parquet
           └──────────────────────────────────────────────────
         ");
         Ok(())
@@ -732,13 +754,14 @@ mod tests {
         assert_snapshot!(display, @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [c@2 DESC], fetch=10
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── tasks=2, partitions=3
-          │ ProjectionExec: expr=[SearchEngineID@0 as SearchEngineID, ClientIP@1 as ClientIP, count(Int64(1))@2 as c, sum(hits.IsRefresh)@3 as sum(hits.IsRefresh), avg(hits.ResolutionWidth)@4 as avg(hits.ResolutionWidth)]
-          │   SortExec: TopK(fetch=10), expr=[count(Int64(1))@2 DESC], preserve_partitioning=[true]
-          │     AggregateExec: mode=FinalPartitioned, gby=[SearchEngineID@0 as SearchEngineID, ClientIP@1 as ClientIP], aggr=[count(Int64(1)), sum(hits.IsRefresh), avg(hits.ResolutionWidth)]
-          │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          ┌───── Stage 2 ── tasks=2, partitions=2
+          │ SortPreservingMergeExec: [c@2 DESC], fetch=10
+          │   ProjectionExec: expr=[SearchEngineID@0 as SearchEngineID, ClientIP@1 as ClientIP, count(Int64(1))@2 as c, sum(hits.IsRefresh)@3 as sum(hits.IsRefresh), avg(hits.ResolutionWidth)@4 as avg(hits.ResolutionWidth)]
+          │     SortExec: TopK(fetch=10), expr=[count(Int64(1))@2 DESC], preserve_partitioning=[true]
+          │       AggregateExec: mode=FinalPartitioned, gby=[SearchEngineID@0 as SearchEngineID, ClientIP@1 as ClientIP], aggr=[count(Int64(1)), sum(hits.IsRefresh), avg(hits.ResolutionWidth)]
+          │         [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=4, partitions=6
             │ RepartitionExec: partitioning=Hash([SearchEngineID@0, ClientIP@1], 6), input_partitions=3
@@ -760,13 +783,14 @@ mod tests {
         assert_snapshot!(display, @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [c@2 DESC], fetch=10
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── tasks=2, partitions=3
-          │ ProjectionExec: expr=[WatchID@0 as WatchID, ClientIP@1 as ClientIP, count(Int64(1))@2 as c, sum(hits.IsRefresh)@3 as sum(hits.IsRefresh), avg(hits.ResolutionWidth)@4 as avg(hits.ResolutionWidth)]
-          │   SortExec: TopK(fetch=10), expr=[count(Int64(1))@2 DESC], preserve_partitioning=[true]
-          │     AggregateExec: mode=FinalPartitioned, gby=[WatchID@0 as WatchID, ClientIP@1 as ClientIP], aggr=[count(Int64(1)), sum(hits.IsRefresh), avg(hits.ResolutionWidth)]
-          │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          ┌───── Stage 2 ── tasks=2, partitions=2
+          │ SortPreservingMergeExec: [c@2 DESC], fetch=10
+          │   ProjectionExec: expr=[WatchID@0 as WatchID, ClientIP@1 as ClientIP, count(Int64(1))@2 as c, sum(hits.IsRefresh)@3 as sum(hits.IsRefresh), avg(hits.ResolutionWidth)@4 as avg(hits.ResolutionWidth)]
+          │     SortExec: TopK(fetch=10), expr=[count(Int64(1))@2 DESC], preserve_partitioning=[true]
+          │       AggregateExec: mode=FinalPartitioned, gby=[WatchID@0 as WatchID, ClientIP@1 as ClientIP], aggr=[count(Int64(1)), sum(hits.IsRefresh), avg(hits.ResolutionWidth)]
+          │         [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=4, partitions=6
             │ RepartitionExec: partitioning=Hash([WatchID@0, ClientIP@1], 6), input_partitions=3
@@ -788,13 +812,14 @@ mod tests {
         assert_snapshot!(display, @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [c@2 DESC], fetch=10
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
         └──────────────────────────────────────────────────
           ┌───── Stage 2 ── tasks=3, partitions=3
-          │ ProjectionExec: expr=[WatchID@0 as WatchID, ClientIP@1 as ClientIP, count(Int64(1))@2 as c, sum(hits.IsRefresh)@3 as sum(hits.IsRefresh), avg(hits.ResolutionWidth)@4 as avg(hits.ResolutionWidth)]
-          │   SortExec: TopK(fetch=10), expr=[count(Int64(1))@2 DESC], preserve_partitioning=[true]
-          │     AggregateExec: mode=FinalPartitioned, gby=[WatchID@0 as WatchID, ClientIP@1 as ClientIP], aggr=[count(Int64(1)), sum(hits.IsRefresh), avg(hits.ResolutionWidth)]
-          │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          │ SortPreservingMergeExec: [c@2 DESC], fetch=10
+          │   ProjectionExec: expr=[WatchID@0 as WatchID, ClientIP@1 as ClientIP, count(Int64(1))@2 as c, sum(hits.IsRefresh)@3 as sum(hits.IsRefresh), avg(hits.ResolutionWidth)@4 as avg(hits.ResolutionWidth)]
+          │     SortExec: TopK(fetch=10), expr=[count(Int64(1))@2 DESC], preserve_partitioning=[true]
+          │       AggregateExec: mode=FinalPartitioned, gby=[WatchID@0 as WatchID, ClientIP@1 as ClientIP], aggr=[count(Int64(1)), sum(hits.IsRefresh), avg(hits.ResolutionWidth)]
+          │         [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=4, partitions=9
             │ RepartitionExec: partitioning=Hash([WatchID@0, ClientIP@1], 9), input_partitions=3
@@ -815,13 +840,14 @@ mod tests {
         assert_snapshot!(display, @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [c@1 DESC], fetch=10
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
         └──────────────────────────────────────────────────
           ┌───── Stage 2 ── tasks=3, partitions=3
-          │ ProjectionExec: expr=[URL@0 as URL, count(Int64(1))@1 as c]
-          │   SortExec: TopK(fetch=10), expr=[count(Int64(1))@1 DESC], preserve_partitioning=[true]
-          │     AggregateExec: mode=FinalPartitioned, gby=[URL@0 as URL], aggr=[count(Int64(1))]
-          │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          │ SortPreservingMergeExec: [c@1 DESC], fetch=10
+          │   ProjectionExec: expr=[URL@0 as URL, count(Int64(1))@1 as c]
+          │     SortExec: TopK(fetch=10), expr=[count(Int64(1))@1 DESC], preserve_partitioning=[true]
+          │       AggregateExec: mode=FinalPartitioned, gby=[URL@0 as URL], aggr=[count(Int64(1))]
+          │         [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=4, partitions=9
             │ RepartitionExec: partitioning=Hash([URL@0], 9), input_partitions=3
@@ -842,13 +868,14 @@ mod tests {
         assert_snapshot!(display, @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [c@2 DESC], fetch=10
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
         └──────────────────────────────────────────────────
           ┌───── Stage 2 ── tasks=3, partitions=3
-          │ SortExec: TopK(fetch=10), expr=[c@2 DESC], preserve_partitioning=[true]
-          │   ProjectionExec: expr=[1 as Int64(1), URL@0 as URL, count(Int64(1))@1 as c]
-          │     AggregateExec: mode=FinalPartitioned, gby=[URL@0 as URL], aggr=[count(Int64(1))]
-          │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          │ SortPreservingMergeExec: [c@2 DESC], fetch=10
+          │   SortExec: TopK(fetch=10), expr=[c@2 DESC], preserve_partitioning=[true]
+          │     ProjectionExec: expr=[1 as Int64(1), URL@0 as URL, count(Int64(1))@1 as c]
+          │       AggregateExec: mode=FinalPartitioned, gby=[URL@0 as URL], aggr=[count(Int64(1))]
+          │         [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=4, partitions=9
             │ RepartitionExec: partitioning=Hash([URL@0], 9), input_partitions=3
@@ -869,14 +896,15 @@ mod tests {
         assert_snapshot!(display, @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [c@4 DESC], fetch=10
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
         └──────────────────────────────────────────────────
           ┌───── Stage 2 ── tasks=3, partitions=3
-          │ SortExec: TopK(fetch=10), expr=[c@4 DESC], preserve_partitioning=[true]
-          │   ProjectionExec: expr=[ClientIP@1 as ClientIP, __common_expr_1@0 - 1 as hits.ClientIP - Int64(1), __common_expr_1@0 - 2 as hits.ClientIP - Int64(2), __common_expr_1@0 - 3 as hits.ClientIP - Int64(3), count(Int64(1))@2 as c]
-          │     ProjectionExec: expr=[CAST(ClientIP@0 AS Int64) as __common_expr_1, ClientIP@0 as ClientIP, count(Int64(1))@1 as count(Int64(1))]
-          │       AggregateExec: mode=FinalPartitioned, gby=[ClientIP@0 as ClientIP], aggr=[count(Int64(1))]
-          │         [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          │ SortPreservingMergeExec: [c@4 DESC], fetch=10
+          │   SortExec: TopK(fetch=10), expr=[c@4 DESC], preserve_partitioning=[true]
+          │     ProjectionExec: expr=[ClientIP@1 as ClientIP, __common_expr_1@0 - 1 as hits.ClientIP - Int64(1), __common_expr_1@0 - 2 as hits.ClientIP - Int64(2), __common_expr_1@0 - 3 as hits.ClientIP - Int64(3), count(Int64(1))@2 as c]
+          │       ProjectionExec: expr=[CAST(ClientIP@0 AS Int64) as __common_expr_1, ClientIP@0 as ClientIP, count(Int64(1))@1 as count(Int64(1))]
+          │         AggregateExec: mode=FinalPartitioned, gby=[ClientIP@0 as ClientIP], aggr=[count(Int64(1))]
+          │           [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=4, partitions=9
             │ RepartitionExec: partitioning=Hash([ClientIP@0], 9), input_partitions=3
@@ -897,13 +925,14 @@ mod tests {
         assert_snapshot!(display, @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [pageviews@1 DESC], fetch=10
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── tasks=2, partitions=3
-          │ ProjectionExec: expr=[URL@0 as URL, count(Int64(1))@1 as pageviews]
-          │   SortExec: TopK(fetch=10), expr=[count(Int64(1))@1 DESC], preserve_partitioning=[true]
-          │     AggregateExec: mode=FinalPartitioned, gby=[URL@0 as URL], aggr=[count(Int64(1))]
-          │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          ┌───── Stage 2 ── tasks=2, partitions=2
+          │ SortPreservingMergeExec: [pageviews@1 DESC], fetch=10
+          │   ProjectionExec: expr=[URL@0 as URL, count(Int64(1))@1 as pageviews]
+          │     SortExec: TopK(fetch=10), expr=[count(Int64(1))@1 DESC], preserve_partitioning=[true]
+          │       AggregateExec: mode=FinalPartitioned, gby=[URL@0 as URL], aggr=[count(Int64(1))]
+          │         [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=4, partitions=6
             │ RepartitionExec: partitioning=Hash([URL@0], 6), input_partitions=3
@@ -925,13 +954,14 @@ mod tests {
         assert_snapshot!(display, @r"
         ┌───── DistributedExec
         │ SortPreservingMergeExec: [pageviews@1 DESC], fetch=10
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── tasks=2, partitions=3
-          │ ProjectionExec: expr=[Title@0 as Title, count(Int64(1))@1 as pageviews]
-          │   SortExec: TopK(fetch=10), expr=[count(Int64(1))@1 DESC], preserve_partitioning=[true]
-          │     AggregateExec: mode=FinalPartitioned, gby=[Title@0 as Title], aggr=[count(Int64(1))]
-          │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          ┌───── Stage 2 ── tasks=2, partitions=2
+          │ SortPreservingMergeExec: [pageviews@1 DESC], fetch=10
+          │   ProjectionExec: expr=[Title@0 as Title, count(Int64(1))@1 as pageviews]
+          │     SortExec: TopK(fetch=10), expr=[count(Int64(1))@1 DESC], preserve_partitioning=[true]
+          │       AggregateExec: mode=FinalPartitioned, gby=[Title@0 as Title], aggr=[count(Int64(1))]
+          │         [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=4, partitions=6
             │ RepartitionExec: partitioning=Hash([Title@0], 6), input_partitions=3
@@ -954,13 +984,14 @@ mod tests {
         ┌───── DistributedExec
         │ GlobalLimitExec: skip=1000, fetch=10
         │   SortPreservingMergeExec: [pageviews@1 DESC], fetch=1010
-        │     [Stage 2] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
+        │     [Stage 2] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── tasks=2, partitions=3
-          │ ProjectionExec: expr=[URL@0 as URL, count(Int64(1))@1 as pageviews]
-          │   SortExec: TopK(fetch=1010), expr=[count(Int64(1))@1 DESC], preserve_partitioning=[true]
-          │     AggregateExec: mode=FinalPartitioned, gby=[URL@0 as URL], aggr=[count(Int64(1))]
-          │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          ┌───── Stage 2 ── tasks=2, partitions=2
+          │ SortPreservingMergeExec: [pageviews@1 DESC], fetch=1010
+          │   ProjectionExec: expr=[URL@0 as URL, count(Int64(1))@1 as pageviews]
+          │     SortExec: TopK(fetch=1010), expr=[count(Int64(1))@1 DESC], preserve_partitioning=[true]
+          │       AggregateExec: mode=FinalPartitioned, gby=[URL@0 as URL], aggr=[count(Int64(1))]
+          │         [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=4, partitions=6
             │ RepartitionExec: partitioning=Hash([URL@0], 6), input_partitions=3
@@ -983,13 +1014,14 @@ mod tests {
         ┌───── DistributedExec
         │ GlobalLimitExec: skip=1000, fetch=10
         │   SortPreservingMergeExec: [pageviews@5 DESC], fetch=1010
-        │     [Stage 2] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
+        │     [Stage 2] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── tasks=2, partitions=3
-          │ ProjectionExec: expr=[TraficSourceID@0 as TraficSourceID, SearchEngineID@1 as SearchEngineID, AdvEngineID@2 as AdvEngineID, CASE WHEN hits.SearchEngineID = Int64(0) AND hits.AdvEngineID = Int64(0) THEN hits.Referer ELSE Utf8("") END@3 as src, URL@4 as dst, count(Int64(1))@5 as pageviews]
-          │   SortExec: TopK(fetch=1010), expr=[count(Int64(1))@5 DESC], preserve_partitioning=[true]
-          │     AggregateExec: mode=FinalPartitioned, gby=[TraficSourceID@0 as TraficSourceID, SearchEngineID@1 as SearchEngineID, AdvEngineID@2 as AdvEngineID, CASE WHEN hits.SearchEngineID = Int64(0) AND hits.AdvEngineID = Int64(0) THEN hits.Referer ELSE Utf8("") END@3 as CASE WHEN hits.SearchEngineID = Int64(0) AND hits.AdvEngineID = Int64(0) THEN hits.Referer ELSE Utf8("") END, URL@4 as URL], aggr=[count(Int64(1))]
-          │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          ┌───── Stage 2 ── tasks=2, partitions=2
+          │ SortPreservingMergeExec: [pageviews@5 DESC], fetch=1010
+          │   ProjectionExec: expr=[TraficSourceID@0 as TraficSourceID, SearchEngineID@1 as SearchEngineID, AdvEngineID@2 as AdvEngineID, CASE WHEN hits.SearchEngineID = Int64(0) AND hits.AdvEngineID = Int64(0) THEN hits.Referer ELSE Utf8("") END@3 as src, URL@4 as dst, count(Int64(1))@5 as pageviews]
+          │     SortExec: TopK(fetch=1010), expr=[count(Int64(1))@5 DESC], preserve_partitioning=[true]
+          │       AggregateExec: mode=FinalPartitioned, gby=[TraficSourceID@0 as TraficSourceID, SearchEngineID@1 as SearchEngineID, AdvEngineID@2 as AdvEngineID, CASE WHEN hits.SearchEngineID = Int64(0) AND hits.AdvEngineID = Int64(0) THEN hits.Referer ELSE Utf8("") END@3 as CASE WHEN hits.SearchEngineID = Int64(0) AND hits.AdvEngineID = Int64(0) THEN hits.Referer ELSE Utf8("") END, URL@4 as URL], aggr=[count(Int64(1))]
+          │         [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=4, partitions=6
             │ RepartitionExec: partitioning=Hash([TraficSourceID@0, SearchEngineID@1, AdvEngineID@2, CASE WHEN hits.SearchEngineID = Int64(0) AND hits.AdvEngineID = Int64(0) THEN hits.Referer ELSE Utf8("") END@3, URL@4], 6), input_partitions=3
@@ -1012,13 +1044,14 @@ mod tests {
         ┌───── DistributedExec
         │ GlobalLimitExec: skip=100, fetch=10
         │   SortPreservingMergeExec: [pageviews@2 DESC], fetch=110
-        │     [Stage 2] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
+        │     [Stage 2] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── tasks=2, partitions=3
-          │ ProjectionExec: expr=[URLHash@0 as URLHash, EventDate@1 as EventDate, count(Int64(1))@2 as pageviews]
-          │   SortExec: TopK(fetch=110), expr=[count(Int64(1))@2 DESC], preserve_partitioning=[true]
-          │     AggregateExec: mode=FinalPartitioned, gby=[URLHash@0 as URLHash, EventDate@1 as EventDate], aggr=[count(Int64(1))]
-          │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          ┌───── Stage 2 ── tasks=2, partitions=2
+          │ SortPreservingMergeExec: [pageviews@2 DESC], fetch=110
+          │   ProjectionExec: expr=[URLHash@0 as URLHash, EventDate@1 as EventDate, count(Int64(1))@2 as pageviews]
+          │     SortExec: TopK(fetch=110), expr=[count(Int64(1))@2 DESC], preserve_partitioning=[true]
+          │       AggregateExec: mode=FinalPartitioned, gby=[URLHash@0 as URLHash, EventDate@1 as EventDate], aggr=[count(Int64(1))]
+          │         [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=4, partitions=6
             │ RepartitionExec: partitioning=Hash([URLHash@0, EventDate@1], 6), input_partitions=3
@@ -1041,13 +1074,14 @@ mod tests {
         ┌───── DistributedExec
         │ GlobalLimitExec: skip=10000, fetch=10
         │   SortPreservingMergeExec: [pageviews@2 DESC], fetch=10010
-        │     [Stage 2] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
+        │     [Stage 2] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── tasks=2, partitions=3
-          │ ProjectionExec: expr=[WindowClientWidth@0 as WindowClientWidth, WindowClientHeight@1 as WindowClientHeight, count(Int64(1))@2 as pageviews]
-          │   SortExec: TopK(fetch=10010), expr=[count(Int64(1))@2 DESC], preserve_partitioning=[true]
-          │     AggregateExec: mode=FinalPartitioned, gby=[WindowClientWidth@0 as WindowClientWidth, WindowClientHeight@1 as WindowClientHeight], aggr=[count(Int64(1))]
-          │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          ┌───── Stage 2 ── tasks=2, partitions=2
+          │ SortPreservingMergeExec: [pageviews@2 DESC], fetch=10010
+          │   ProjectionExec: expr=[WindowClientWidth@0 as WindowClientWidth, WindowClientHeight@1 as WindowClientHeight, count(Int64(1))@2 as pageviews]
+          │     SortExec: TopK(fetch=10010), expr=[count(Int64(1))@2 DESC], preserve_partitioning=[true]
+          │       AggregateExec: mode=FinalPartitioned, gby=[WindowClientWidth@0 as WindowClientWidth, WindowClientHeight@1 as WindowClientHeight], aggr=[count(Int64(1))]
+          │         [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=4, partitions=6
             │ RepartitionExec: partitioning=Hash([WindowClientWidth@0, WindowClientHeight@1], 6), input_partitions=3
@@ -1070,13 +1104,14 @@ mod tests {
         ┌───── DistributedExec
         │ GlobalLimitExec: skip=1000, fetch=10
         │   SortPreservingMergeExec: [date_trunc(minute, m@0) ASC NULLS LAST], fetch=1010
-        │     [Stage 2] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
+        │     [Stage 2] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── tasks=2, partitions=3
-          │ SortExec: TopK(fetch=1010), expr=[date_trunc(minute, m@0) ASC NULLS LAST], preserve_partitioning=[true]
-          │   ProjectionExec: expr=[date_trunc(Utf8("minute"),to_timestamp_seconds(hits.EventTime))@0 as m, count(Int64(1))@1 as pageviews]
-          │     AggregateExec: mode=FinalPartitioned, gby=[date_trunc(Utf8("minute"),to_timestamp_seconds(hits.EventTime))@0 as date_trunc(Utf8("minute"),to_timestamp_seconds(hits.EventTime))], aggr=[count(Int64(1))]
-          │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          ┌───── Stage 2 ── tasks=2, partitions=2
+          │ SortPreservingMergeExec: [date_trunc(minute, m@0) ASC NULLS LAST], fetch=1010
+          │   SortExec: TopK(fetch=1010), expr=[date_trunc(minute, m@0) ASC NULLS LAST], preserve_partitioning=[true]
+          │     ProjectionExec: expr=[date_trunc(Utf8("minute"),to_timestamp_seconds(hits.EventTime))@0 as m, count(Int64(1))@1 as pageviews]
+          │       AggregateExec: mode=FinalPartitioned, gby=[date_trunc(Utf8("minute"),to_timestamp_seconds(hits.EventTime))@0 as date_trunc(Utf8("minute"),to_timestamp_seconds(hits.EventTime))], aggr=[count(Int64(1))]
+          │         [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=4, partitions=6
             │ RepartitionExec: partitioning=Hash([date_trunc(Utf8("minute"),to_timestamp_seconds(hits.EventTime))@0], 6), input_partitions=3

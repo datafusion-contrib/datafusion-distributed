@@ -1,22 +1,19 @@
-use crate::DistributedTaskContext;
 use crate::common::require_one_child;
 use crate::distributed_planner::{NetworkBoundary, ProducerHead};
 use crate::execution_plans::common::scale_partitioning_props;
 use crate::stage::{LocalStage, Stage};
 use crate::worker::WorkerConnectionPool;
+use crate::{DistributedTaskContext, MaybeEncoded};
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{exec_err, not_impl_err, plan_err};
 use datafusion::error::Result;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr_common::metrics::MetricsSet;
-use datafusion::physical_plan::limit::LocalLimitExec;
-use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
-    ChildrenPropertiesMode, DisplayAs, DisplayFormatType, EmptyRecordBatchStream, ExecutionPlan,
-    PlanProperties, ReplaceChildrenOptions, Statistics, StatisticsArgs, apply_expression_roots,
-    internal_err,
+    DisplayAs, DisplayFormatType, EmptyRecordBatchStream, ExecutionPlan, PlanProperties,
+    Statistics, StatisticsArgs, apply_expression_roots, internal_err,
 };
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
@@ -81,6 +78,7 @@ pub struct NetworkCoalesceExec {
     pub(crate) properties: Arc<PlanProperties>,
     pub(crate) input_stage: Stage,
     pub(crate) worker_connections: WorkerConnectionPool,
+    pub(crate) fetch: Option<usize>,
 }
 
 impl NetworkCoalesceExec {
@@ -93,12 +91,13 @@ impl NetworkCoalesceExec {
         // per output task based on the maximum group size, returning empty streams for tasks with
         // smaller groups.
         let max_input_task_count = input_stage.task_count().div_ceil(consumer_tasks).max(1);
-        let props = scale_partitioning_props(&input_properties, |p| p * max_input_task_count)?;
+        let props = scale_partitioning_props(&input_properties, |_| max_input_task_count)?;
 
         Ok(Self {
             properties: props,
             worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
             input_stage,
+            fetch: None,
         })
     }
 
@@ -142,54 +141,10 @@ impl NetworkCoalesceExec {
         )
     }
 
-    pub(crate) fn with_fetch_on_input_stage(&self, fetch: usize) -> Result<Arc<dyn ExecutionPlan>> {
-        let Stage::Local(local) = &self.input_stage else {
-            return Ok(Arc::new(self.clone()));
-        };
-
-        let input_with_fetch = apply_fetch_through_projection(Arc::clone(&local.plan), fetch)?;
-
-        let mut self_clone = self.clone();
-        self_clone.input_stage = Stage::Local(LocalStage {
-            query_id: local.query_id,
-            num: local.num,
-            plan: input_with_fetch,
-            tasks: local.tasks,
-            metrics_set: Default::default(),
-        });
-        Ok(Arc::new(self_clone))
+    pub fn with_fetch(mut self, fetch: Option<usize>) -> Self {
+        self.fetch = fetch;
+        self
     }
-}
-
-/// Applies `fetch` to `plan`, looking through a [ProjectionExec] that preserves row count.
-///
-/// If the projection child already carries a sufficient fetch, the plan is left unchanged instead
-/// of wrapping a redundant [LocalLimitExec].
-fn apply_fetch_through_projection(
-    plan: Arc<dyn ExecutionPlan>,
-    fetch: usize,
-) -> Result<Arc<dyn ExecutionPlan>> {
-    if let Some(projection) = plan.downcast_ref::<ProjectionExec>() {
-        let input = Arc::clone(projection.input());
-        if input.fetch().is_some_and(|existing| existing <= fetch) {
-            return Ok(plan);
-        }
-        let new_input = input
-            .with_fetch(Some(fetch))
-            .unwrap_or_else(|| Arc::new(LocalLimitExec::new(input, fetch)));
-        return plan.replace_children(
-            vec![new_input],
-            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
-        );
-    }
-
-    if plan.fetch().is_some_and(|existing| existing <= fetch) {
-        return Ok(plan);
-    }
-
-    Ok(plan
-        .with_fetch(Some(fetch))
-        .unwrap_or_else(|| Arc::new(LocalLimitExec::new(plan, fetch))))
 }
 
 impl NetworkBoundary for NetworkCoalesceExec {
@@ -208,7 +163,13 @@ impl NetworkBoundary for NetworkCoalesceExec {
     }
 
     fn producer_head(&self, _consumer_task_count: usize) -> Result<ProducerHead> {
-        Ok(ProducerHead::None)
+        match self.properties.output_ordering() {
+            Some(lex_ordering) => Ok(ProducerHead::SortPreservingMergeExec {
+                fetch: self.fetch,
+                lex_ordering: MaybeEncoded::Decoded(lex_ordering.clone()),
+            }),
+            None => Ok(ProducerHead::CoalescePartitionsExec { fetch: self.fetch }),
+        }
     }
 }
 
@@ -251,18 +212,20 @@ impl ExecutionPlan for NetworkCoalesceExec {
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        let mut self_clone = self.as_ref().clone();
-        match &mut self_clone.input_stage {
+        match &self.input_stage {
             Stage::Local(local) => {
+                let mut local = local.clone();
                 local.plan = require_one_child(children)?;
+                self.with_input_stage(Stage::Local(local))
+                    .map(|node| node as Arc<dyn ExecutionPlan>)
             }
             Stage::Remote(_) => {
                 if !children.is_empty() {
                     not_impl_err!("NetworkBoundary cannot accept children")?
                 }
+                Ok(self)
             }
         }
-        Ok(Arc::new(self_clone))
     }
 
     fn execute(
