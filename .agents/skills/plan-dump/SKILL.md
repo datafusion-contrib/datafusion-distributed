@@ -101,6 +101,33 @@ user can check it and keep exploring the plan themselves:
 - **`RepartitionExec` over-reports `output_bytes`,** as its batches can be slices of bigger
   ones.
 
+## Cheatsheet
+
+| To find | Run |
+|---|---|
+| The plan's shape | `dfd plan <dump> -m stage_output_rows --exact` |
+| The nodes of one stage, with no metrics | `dfd plan <dump> --stage N -m none --exact` |
+| The joins of a stage | `dfd plan <dump> --stage N -m none --exact \| grep Join` |
+| Total CPU of the query, or of one stage | `dfd plan <dump> -t -m elapsed_compute --exact`, adding `--stage N` |
+| The stage where the CPU went | `dfd plan <dump> -m stage_elapsed_compute --exact` |
+| The operator where the CPU went | `dfd plan <dump> --stage N -m elapsed_compute --exact` |
+| What crossed the network | `dfd plan <dump> -m stage_output_bytes -m stage_output_rows --exact` |
+| How wrong the sampled estimates were | `dfd plan <dump> -m estimated_output_bytes -m stage_output_bytes -m stage_output_bytes_q_error --exact` |
+| When each stage was sent and finished | `dfd plan <dump> -m plan_added_at -m plan_finished_at --exact` |
+| Join sizes and memory | `dfd plan <dump> --stage N -m build_input_rows -m input_rows -m build_mem_used --exact` |
+| Batch counts and sizes | `dfd plan <dump> --stage N -m output_rows -m output_batches --exact` |
+| Skew between tasks | `dfd plan <dump> --stage N -v -m output_rows --exact` |
+| A boundary's shape across many dumps | `for f in *.dump.txt; do dfd plan $f --stage 0 -m none --exact; done \| grep -o 'NetworkCoalesceExec: [^ ]* [^ ]*' \| sort \| uniq -c` |
+
+- **Node metrics show only with `--stage N`.** On the stage tree, `-m output_rows` prints
+  nothing; only `stage_*` and planning metrics appear there.
+- **The head line isn't network.** The metrics on the `DistributedExec` line describe the
+  coordinator's head node. Its `stage_output_bytes` can be far off, since `SortPreservingMergeExec`
+  over-reports `output_bytes` like `RepartitionExec` does. Leave that line out when adding up
+  network bytes.
+- **Missing head metrics aren't zero.** A head node that passes a single partition straight
+  through may record nothing.
+
 ## Comparing two plans of the same query
 
 - **Stage ids don't necessarily match across runs.** They are renumbered whenever the plan's
