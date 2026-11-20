@@ -34,9 +34,18 @@ and always tell the user the full path:
   the only way to tell dumps apart later.
 - **Keep them out of repositories.** Plans carry query literals and file paths.
 
-Point the user at the files, and give them the `dfd plan` commands behind each finding, like
-`dfd plan <temp dir>/2026-11-20-q10-regression/q10-replanning-on.dump.txt --stage 6`, so they
-can check it and keep exploring the plan themselves.
+Point the user at the files, and give them the `dfd plan` commands behind each finding, so they
+can check it and keep exploring the plan themselves. Make them copy-pastable: put them in a
+fenced `bash` code block, one block per finding, that starts with a `cd` to the dumps directory
+(written out as an absolute path, never `<temp dir>`) and then uses bare file names:
+
+```bash
+cd /abs/path/to/2026-11-20-q10-regression
+dfd plan q10-replanning-on.dump.txt --stage 6
+```
+
+If `dfd` is not installed, the `cargo run -p datafusion-distributed-cli -- plan` form must run
+from the repository, so pass the dump by absolute path there instead of using `cd`.
 
 ## Reading a dump
 
