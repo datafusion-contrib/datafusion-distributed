@@ -12,8 +12,8 @@ use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet};
 use datafusion::physical_plan::union::UnionExec;
 use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, EmptyRecordBatchStream, ExecutionPlan, ExecutionPlanProperties,
-    Partitioning, PlanProperties,
+    ChildrenPropertiesMode, DisplayAs, DisplayFormatType, EmptyRecordBatchStream, ExecutionPlan,
+    ExecutionPlanProperties, Partitioning, PlanProperties, ReplaceChildrenOptions,
 };
 use futures::{Stream, StreamExt};
 use itertools::Itertools;
@@ -91,7 +91,7 @@ pub struct ChildrenIsolatorUnionExec {
     pub(crate) metrics: ExecutionPlanMetricsSet,
     pub(crate) children: Vec<Arc<dyn ExecutionPlan>>,
     /// The per-child annotations used to build the `task_idx_map`. Stored so
-    /// `with_new_children` can preserve task allocation across plan rewrites.
+    /// `replace_children` can preserve task allocation across plan rewrites.
     pub(crate) child_annotations: Vec<TaskCountAnnotation>,
     pub(crate) task_idx_map: Vec<
         /* outer distributed task idx */
@@ -253,9 +253,10 @@ impl ExecutionPlan for ChildrenIsolatorUnionExec {
         &self.properties
     }
 
-    fn with_new_children(
+    fn replace_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
+        options: ReplaceChildrenOptions,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
         if children.len() != self.children.len() {
             return plan_err!(
@@ -264,11 +265,28 @@ impl ExecutionPlan for ChildrenIsolatorUnionExec {
                 self.children.len()
             );
         }
-        Ok(Arc::new(Self::from_children_and_annotations(
+        match options.children_properties {
+            ChildrenPropertiesMode::Keep => Ok(Arc::new(Self {
+                children,
+                metrics: ExecutionPlanMetricsSet::default(),
+                ..Self::clone(&*self)
+            })),
+            ChildrenPropertiesMode::Recompute => Ok(Arc::new(Self::from_children_and_annotations(
+                children,
+                self.child_annotations.clone(),
+                self.task_idx_map.len(),
+            )?)),
+        }
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+        self.replace_children(
             children,
-            self.child_annotations.clone(),
-            self.task_idx_map.len(),
-        )?))
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+        )
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
@@ -712,7 +730,34 @@ fn split_children(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use std::num::NonZeroUsize;
+
+    #[test]
+    fn replace_children_reuses_properties_only_with_keep() -> Result<(), DataFusionError> {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let child = || Arc::new(EmptyExec::new(Arc::clone(&schema))) as Arc<dyn ExecutionPlan>;
+        let plan = Arc::new(ChildrenIsolatorUnionExec::from_children_and_annotations(
+            [child(), child()],
+            [soft(1.0), soft(1.0)],
+            2,
+        )?);
+        let new_children = vec![child(), child()];
+
+        let kept = Arc::clone(&plan).replace_children(
+            new_children.clone(),
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Keep),
+        )?;
+        assert!(Arc::ptr_eq(kept.properties(), plan.properties()));
+        assert!(Arc::ptr_eq(kept.children()[1], &new_children[1]));
+
+        let recomputed = Arc::clone(&plan).replace_children(
+            new_children,
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+        )?;
+        assert!(!Arc::ptr_eq(recomputed.properties(), plan.properties()));
+        Ok(())
+    }
 
     #[test]
     fn children_split_all_1_task() -> Result<(), Box<dyn std::error::Error>> {

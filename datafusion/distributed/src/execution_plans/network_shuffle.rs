@@ -16,8 +16,8 @@ use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::streaming_merge::StreamingMergeBuilder;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, EmptyRecordBatchStream, ExecutionPlan, PlanProperties,
-    Statistics, StatisticsArgs, apply_expression_roots,
+    ChildrenPropertiesMode, DisplayAs, DisplayFormatType, EmptyRecordBatchStream, ExecutionPlan,
+    PlanProperties, ReplaceChildrenOptions, Statistics, StatisticsArgs, apply_expression_roots,
 };
 use std::fmt::Formatter;
 use std::sync::Arc;
@@ -296,9 +296,10 @@ impl ExecutionPlan for NetworkShuffleExec {
         apply_expression_roots(self.input_stage.dynamic_filter_anchors().iter(), f)
     }
 
-    fn with_new_children(
+    fn replace_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
+        _options: ReplaceChildrenOptions,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
         let mut self_clone = self.as_ref().clone();
         match &mut self_clone.input_stage {
@@ -312,6 +313,16 @@ impl ExecutionPlan for NetworkShuffleExec {
             }
         }
         Ok(Arc::new(self_clone))
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
+        self.replace_children(
+            children,
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+        )
     }
 
     fn execute(
