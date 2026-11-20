@@ -847,7 +847,8 @@ fn new_network_broadcast_exec(
 #[cfg(test)]
 mod tests {
     use super::super::physical_plan::{
-        new_proto_converter as default_proto_converter, roundtrip_pb,
+        decode_execution_plan, encode_execution_plan,
+        new_proto_converter as default_proto_converter,
     };
     use super::*;
 
@@ -971,7 +972,7 @@ mod tests {
 
         let plan: Arc<dyn ExecutionPlan> = Arc::new(FilterExec::try_new(dynamic_filter, network)?);
 
-        let decoded = roundtrip_pb(plan, &ctx)?;
+        let decoded = decode_execution_plan(&encode_execution_plan(plan, &ctx)?, &ctx)?;
         let filter = decoded.downcast_ref::<FilterExec>().unwrap();
         let predicate = filter
             .predicate()
