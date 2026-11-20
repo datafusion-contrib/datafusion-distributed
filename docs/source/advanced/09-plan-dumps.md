@@ -100,11 +100,11 @@ fetch the dumps of the queries you point it at. For example:
 When comparing dumps, tell the agent what differs between them, like a setting, a version or the
 data, as a dump does not record the settings it ran with.
 
-The agent saves every dump it looks at under `~/dfd-plans/<investigation>/`, as one file per dump
-with a descriptive name, like `q3-replanning-on.dump.txt`, and a `NOTES.md` saying where each one
-came from. Along with its findings, it gives you the `dfd plan` commands behind them, so you can
+The agent saves every dump it looks at in a temporary directory, under `<investigation>/`, as one file per
+dump with a descriptive name, like `q3-replanning-on.dump.txt`, and a `NOTES.md` saying where each
+one came from. Along with its findings, it gives you the `dfd plan` commands behind them, so you can
 open the same plans yourself and keep exploring them:
 
 ```bash
-dfd plan ~/dfd-plans/2026-11-20-q3-regression/q3-replanning-on.dump.txt --stage 4
+dfd plan <temp dir>/2026-11-20-q3-regression/q3-replanning-on.dump.txt --stage 4
 ```
