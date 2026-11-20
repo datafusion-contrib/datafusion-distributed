@@ -9,8 +9,7 @@ A plan dump is one base64 line holding an executed plan with its stages and per-
 produced by `generate_plan_dump` after `rewrite_distributed_plan_with_metrics`. `dfd plan`
 takes a dump as an argument, a file path, or stdin.
 
-`dfd` is the CLI of DataFusion Distributed. Install it with `cargo install datafusion-distributed-cli`,
-or, inside its repository, run it with `cargo run -p datafusion-distributed-cli -- plan`.
+`dfd` is the CLI of DataFusion Distributed, and it is installed on the system.
 
 ## Storing dumps
 
@@ -23,8 +22,7 @@ and always tell the user the full path:
   `<investigation>` is a dated, descriptive directory like `2026-11-20-q10-regression`.
 - **The file holds only the base64 line.** Strip log prefixes, JSON quoting and escapes. When
   output has a dump per line, like a benchmark run with several iterations, split it into one
-  file per dump right after the run. `dfbench --debug -i N` prints N dumps per query on stdout, in
-  query order, which `split -l 1` or `awk` can name as `q<query>-<variant>-iter<N>.dump.txt`.
+  file per dump right after the run, named like `q<query>-<variant>-iter<N>.dump.txt`.
 - **Name files after what produced them**: the query, what differs from the other dumps, and an
   attempt number when the same thing ran more than once, like `q10.dump.txt`,
   `q10-replanning-off.dump.txt` or `q10-replanning-on-attempt-2.dump.txt`.
@@ -68,9 +66,6 @@ user can check it and keep exploring the plan themselves:
      └─ [Stage 11] => NetworkCoalesceExec: output_partitions=1, input_tasks=1
           output_rows=100
   ```
-
-If `dfd` is not installed, the `cargo run -p datafusion-distributed-cli -- plan` form must run
-from the repository, so pass the dump by absolute path there instead of using `cd`.
 
 ## Reading a dump
 
