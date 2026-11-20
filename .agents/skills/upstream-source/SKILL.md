@@ -1,6 +1,9 @@
 ---
 name: upstream-source
 description: Build this workspace against local checkouts of apache/datafusion and apache/arrow-rs (arrow-*, parquet) at exactly the revision published on crates.io. Use when profiling, debugging or a regression points into an upstream crate, or when preparing a fix to send upstream.
+metadata:
+  # Only for contributors to this repository, so `npx skills add` does not offer it.
+  internal: true
 ---
 
 # Linking upstream DataFusion and arrow-rs source

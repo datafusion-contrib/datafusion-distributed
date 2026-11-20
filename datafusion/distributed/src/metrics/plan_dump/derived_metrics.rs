@@ -1,10 +1,12 @@
 //! Metrics that no node reports, but that are derived from the ones in a plan dump when it is
-//! displayed, like the CPU time of a whole stage.
+//! displayed, like the CPU time of a whole stage. Their names start with `stage_`, so that they
+//! are not mistaken for the metrics of the nodes they are derived from.
 
+use crate::BytesCounterMetric;
 use crate::coordinator::ESTIMATED_OUTPUT_BYTES_METRIC;
 use crate::metrics::plan_dump::plan_dump_display::{DecodedPlan, DecodedStage};
 use datafusion::physical_expr_common::metrics::{CustomMetricValue, MetricValue};
-use datafusion::physical_plan::metrics::{Metric, MetricsSet};
+use datafusion::physical_plan::metrics::{Count, Metric, MetricsSet};
 use std::any::Any;
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
@@ -16,12 +18,15 @@ use std::sync::atomic::Ordering::Relaxed;
 /// and there are none when the metrics they are derived from are missing.
 type StageDerivedMetric = fn(&DecodedStage, Option<&MetricsSet>) -> Vec<Arc<Metric>>;
 
+/// The prefix of the names of the metrics derived for stages.
+pub(super) const STAGE_METRIC_PREFIX: &str = "stage_";
+
 /// The metrics derived for every stage.
 const STAGE_DERIVED_METRICS: &[StageDerivedMetric] = &[
     stage_elapsed_compute,
     stage_output_rows,
     stage_output_bytes,
-    output_bytes_q_error,
+    stage_output_bytes_q_error,
 ];
 
 /// The metrics derived for `stage`, read by a network boundary with `boundary_metrics`.
@@ -34,30 +39,50 @@ pub(super) fn stage_derived_metrics(
         .collect()
 }
 
-/// `elapsed_compute`: the CPU time of a stage, which is that of all the nodes it runs. The nodes'
-/// metrics keep their task, so they are added up per task when displayed.
+/// `stage_elapsed_compute`: the CPU time of a stage, which is that of all the nodes it runs. The
+/// nodes' metrics keep their task, so they are added up per task when displayed.
 fn stage_elapsed_compute(stage: &DecodedStage, _: Option<&MetricsSet>) -> Vec<Arc<Metric>> {
     (stage.plan.iter().flat_map(stage_plans))
         .flat_map(|plan| plan.metrics.iter())
-        .filter(|metric| matches!(metric.value(), MetricValue::ElapsedCompute(_)))
-        .cloned()
+        .filter_map(|metric| match metric.value() {
+            MetricValue::ElapsedCompute(time) => Some(Arc::new(Metric::new_with_labels(
+                MetricValue::Time {
+                    name: "stage_elapsed_compute".into(),
+                    time: time.clone(),
+                },
+                metric.partition(),
+                metric.labels().to_vec(),
+            ))),
+            _ => None,
+        })
         .collect()
 }
 
-/// `output_rows`: the rows a stage returned. See [stage_output].
+/// `stage_output_rows`: the rows a stage returned. See [stage_output].
 fn stage_output_rows(
     stage: &DecodedStage,
     boundary_metrics: Option<&MetricsSet>,
 ) -> Vec<Arc<Metric>> {
-    stage_output(stage, boundary_metrics, "output_rows")
+    (stage_output(stage, boundary_metrics, "output_rows").into_iter())
+        .map(|metric| {
+            let count = Count::new();
+            count.add(metric.value().as_usize());
+            let name = "stage_output_rows".into();
+            Arc::new(Metric::new(MetricValue::Count { name, count }, None))
+        })
+        .collect()
 }
 
-/// `output_bytes`: the bytes a stage returned. See [stage_output].
+/// `stage_output_bytes`: the bytes a stage returned. See [stage_output].
 fn stage_output_bytes(
     stage: &DecodedStage,
     boundary_metrics: Option<&MetricsSet>,
 ) -> Vec<Arc<Metric>> {
-    stage_output(stage, boundary_metrics, "output_bytes")
+    (stage_output(stage, boundary_metrics, "output_bytes").into_iter())
+        .map(|metric| {
+            BytesCounterMetric::new_metric("stage_output_bytes", metric.value().as_usize())
+        })
+        .collect()
 }
 
 /// The `name` metrics of what a stage returned, added up across tasks. For a stage read by
@@ -81,12 +106,12 @@ fn stage_output(
         .collect()
 }
 
-/// `output_bytes_q_error`: how far the bytes a stage was estimated to return are from the bytes it
+/// `stage_output_bytes_q_error`: how far the bytes a stage was estimated to return are from the bytes it
 /// returned, as the ratio of the larger to the smaller, so over and underestimates by the same
 /// factor are equally bad. Only stages whose output is estimated, which happens with dynamic task
 /// counts, have it.
 /// The bytes a stage returned are the ones of [stage_output_bytes].
-fn output_bytes_q_error(
+fn stage_output_bytes_q_error(
     stage: &DecodedStage,
     boundary_metrics: Option<&MetricsSet>,
 ) -> Vec<Arc<Metric>> {
@@ -97,12 +122,20 @@ fn output_bytes_q_error(
     if output_bytes.is_empty() {
         return vec![];
     }
-    let actual: usize = (output_bytes.iter())
+    let mut actual: usize = (output_bytes.iter())
         .map(|metric| metric.value().as_usize())
         .sum();
+    // Every task reading a broadcast stage receives its own copy of the output, while the
+    // estimate is of a single copy.
+    if stage.boundary_kind.as_deref() == Some("Broadcast") {
+        actual /= output_bytes.len();
+    }
     let (estimated, actual) = (estimated.max(1) as f64, actual.max(1) as f64);
     let q_error = (estimated / actual).max(actual / estimated);
-    vec![QErrorMetric::new_metric("output_bytes_q_error", q_error)]
+    vec![QErrorMetric::new_metric(
+        "stage_output_bytes_q_error",
+        q_error,
+    )]
 }
 
 /// The nodes a stage runs, which do not include the ones of the stages it reads from.

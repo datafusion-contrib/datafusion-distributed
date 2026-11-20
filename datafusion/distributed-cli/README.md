@@ -79,9 +79,21 @@ Options:
 - `--totals` adds up the metrics of every node into totals for the whole query, like its CPU time
   with `--totals --metric elapsed_compute --exact`. With `--stage`, only that stage is added up.
 
-Stages also show the `elapsed_compute` of all their nodes and, when their task count was chosen
-from an estimate of their output, `output_bytes_q_error`: the ratio between the estimated and the
-actual bytes, the larger over the smaller.
+Besides their own metrics, stages show metrics derived from the ones of their nodes, whose names
+start with `stage_`: `stage_elapsed_compute`, the CPU time of all their nodes, `stage_output_rows`
+and `stage_output_bytes`, what they returned, and, when their output was estimated for choosing
+task counts dynamically, `stage_output_bytes_q_error`: the ratio between the estimated and the
+actual bytes they returned, the larger over the smaller.
 
 The output is colored in a terminal, unless `NO_COLOR` is set. `FORCE_COLOR=1` keeps the colors
 through a pipe, like into `less -R`.
+
+### Inspecting plan dumps with coding agents
+
+The `plan-dump` agent skill teaches coding agents like Claude Code, Codex or Cursor to inspect plan
+dumps with `dfd plan`: finding where a query spends its time, or comparing two plans of the same
+query. Add it to your own project with:
+
+```bash
+npx skills add datafusion-contrib/datafusion-distributed --skill plan-dump
+```
