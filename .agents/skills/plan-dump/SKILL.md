@@ -34,15 +34,40 @@ and always tell the user the full path:
   the only way to tell dumps apart later.
 - **Keep them out of repositories.** Plans carry query literals and file paths.
 
-Point the user at the files, and give them the `dfd plan` commands behind each finding, so they
-can check it and keep exploring the plan themselves. Make them copy-pastable: put them in a
-fenced `bash` code block, one block per finding, that starts with a `cd` to the dumps directory
-(written out as an absolute path, never `<temp dir>`) and then uses bare file names:
+## Showing findings to the user
 
-```bash
-cd /abs/path/to/2026-11-20-q10-regression
-dfd plan q10-replanning-on.dump.txt --stage 6
-```
+Back each finding with the `dfd plan` command behind it and a slice of its real output, so the
+user can check it and keep exploring the plan themselves:
+
+- **One command per fenced `bash` block**, so each can be copied and run on its own. Start with a
+  `cd` to the dumps directory, written as an absolute path (never `<temp dir>`), then use bare
+  file names:
+
+  ```bash
+  cd /abs/path/to/2026-11-20-q10-regression
+  ```
+
+  ```bash
+  dfd plan q10-replanning-on.dump.txt --stage 6 -m output_rows --exact
+  ```
+
+- **Paste the output, not a description of it.** Show the few tree lines that carry the finding,
+  trimmed with `[...]` (long expressions) and `...` (skipped lines), in a fenced `rust` block,
+  which renders the tree with some coloring. When comparing two plans, stack the trees
+  vertically, each under its own label line, never side by side, so they survive being pasted
+  into chat tools:
+
+  ```rust
+  // main
+  └─ SortPreservingMergeExec: [...], fetch=100
+     └─ [Stage 11] => NetworkCoalesceExec: output_partitions=16, input_tasks=1
+          output_rows=900
+
+  // branch
+  └─ SortPreservingMergeExec: [...], fetch=100
+     └─ [Stage 11] => NetworkCoalesceExec: output_partitions=1, input_tasks=1
+          output_rows=100
+  ```
 
 If `dfd` is not installed, the `cargo run -p datafusion-distributed-cli -- plan` form must run
 from the repository, so pass the dump by absolute path there instead of using `cd`.
