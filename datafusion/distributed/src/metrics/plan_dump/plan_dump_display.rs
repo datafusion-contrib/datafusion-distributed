@@ -1,6 +1,6 @@
 use crate::metrics::generated::metrics::{self as pb, PlanDump, StageDump};
 use crate::metrics::metrics_proto::metric_proto_to_df;
-use crate::metrics::plan_dump::derived_metrics::stage_derived_metrics;
+use crate::metrics::plan_dump::derived_metrics::{STAGE_METRIC_PREFIX, stage_derived_metrics};
 use crate::metrics::plan_dump::plan_dump_generation::{
     HEAD_STAGE_ID, LEAF_DISPLAY, ZSTD_DICTIONARY, metric_task, metric_values,
 };
@@ -500,10 +500,11 @@ fn metric_lines(
             false => without_task_label(metric),
         });
     }
-    format_each_metric_by_task(&displayed)
-        .iter()
-        .map(|metric| paint.metric(metric))
-        .collect()
+    let mut lines = format_each_metric_by_task(&displayed);
+    // The metrics derived for a stage lead its lines, like output_rows and elapsed_compute lead
+    // the lines of a node. The sort is stable, so they keep their order.
+    lines.sort_by_key(|line| !line.starts_with(STAGE_METRIC_PREFIX));
+    lines.iter().map(|metric| paint.metric(metric)).collect()
 }
 
 fn without_task_label(metric: &Metric) -> Arc<Metric> {
@@ -737,9 +738,9 @@ mod tests {
         with_settings!({ filters => filters }, {
             assert_snapshot!(display, @r"
             DistributedExec
-            │ output_rows=103
-            │ elapsed_compute=<time>
-            │ output_bytes=<bytes>
+            │ stage_output_rows=103
+            │ stage_elapsed_compute=<time>
+            │ stage_output_bytes=<bytes>
             │ dynamic_filter_updates_received=0
             │ local_coordinator_channels=0
             │ remote_coordinator_channels=3
@@ -747,9 +748,9 @@ mod tests {
             │ plan_send_latency_max=<time>
             │ plan_bytes_sent=<bytes>
             └─ Stage 1 (Coalesce) tasks=3 partitions=12
-                 output_rows=103
-                 elapsed_compute={0:<time>, 1:<time>, 2:<time>}
-                 output_bytes=<bytes>
+                 stage_output_rows=103
+                 stage_elapsed_compute={0:<time>, 1:<time>, 2:<time>}
+                 stage_output_bytes=<bytes>
                  plan_added_at={0:<time>, 1:<time>, 2:<time>}
                  plan_executed_at={0:<time>, 1:<time>, 2:<time>}
                  plan_finished_at={0:<time>, 1:<time>, 2:<time>}
@@ -774,9 +775,9 @@ mod tests {
         with_settings!({ filters => filters }, {
             assert_snapshot!(display, @r"
             DistributedExec
-            │ output_rows=103
-            │ elapsed_compute=<time>
-            │ output_bytes=<bytes>
+            │ stage_output_rows=103
+            │ stage_elapsed_compute=<time>
+            │ stage_output_bytes=<bytes>
             │ dynamic_filter_updates_received=0
             │ local_coordinator_channels=0
             │ remote_coordinator_channels=3
@@ -784,9 +785,9 @@ mod tests {
             │ plan_send_latency_max=<time>
             │ plan_bytes_sent=<bytes>
             └─ Stage 1 (Coalesce) tasks=3 partitions=12
-                 output_rows=103
-                 elapsed_compute=<time>
-                 output_bytes=<bytes>
+                 stage_output_rows=103
+                 stage_elapsed_compute=<time>
+                 stage_output_bytes=<bytes>
                  plan_added_at=<time>
                  plan_executed_at=<time>
                  plan_finished_at=<time>
@@ -805,8 +806,8 @@ mod tests {
 
         let dump = generate_plan_dump(&plan)?;
 
-        // The q-error is derived from the output_bytes of the stage reading stage 1, which the
-        // filters leave out, as metrics are filtered once derived.
+        // The q-error is derived from the output_bytes of the network boundary reading stage 1,
+        // which the filters leave out, as metrics are filtered once derived.
         let opts = DisplayPlanDumpOptions::default()
             .with_metric_filter("estimated_output_bytes")
             .with_metric_filter("q_error");
@@ -817,10 +818,48 @@ mod tests {
             DistributedExec
             └─ Stage 2 (Coalesce) tasks=1 partitions=4
                └─ Stage 1 (Shuffle) tasks=3 partitions=4
+                    stage_output_bytes_q_error=<estimate>
                     estimated_output_bytes=<estimate>
-                    output_bytes_q_error=<estimate>
             ");
         });
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn broadcast_stages_compare_their_estimate_with_one_copy() -> Result<()> {
+        let query = r#"
+        SELECT a."MinTemp", b."MaxTemp"
+        FROM weather a
+        JOIN (SELECT * FROM weather WHERE "MinTemp" > 15) b ON a."RainToday" = b."RainToday"
+        "#;
+        // With one file scan partition per byte, the broadcast stage has enough partitions for
+        // sampling some of them to estimate its whole output, and 8 workers make 8 tasks read it.
+        let plan = TestPlanBuilder::default()
+            .num_workers(8)
+            .distributed_file_scan_config_bytes_per_partition(1)
+            .broadcast_joins(true)
+            .distributed_dynamic_task_count(true)
+            .executed_physical_plan(query)
+            .await;
+
+        let dump = generate_plan_dump(&plan)?;
+
+        // Each task reading the broadcast stage gets a whole copy of its output, so its
+        // stage_output_bytes add up every copy, but the q-error compares the estimate with one.
+        let opts = DisplayPlanDumpOptions::default()
+            .with_metric_filter("output_bytes")
+            .with_metric_filter("q_error");
+        let display = display_plan_dump(dump, opts)?;
+        assert_snapshot!(display, @r"
+        DistributedExec
+        │ stage_output_bytes=155.1 KB
+        └─ Stage 2 (Coalesce) tasks=8 partitions=24
+           │ stage_output_bytes=155.1 KB
+           └─ Stage 1 (Broadcast) tasks=8 partitions=256
+                stage_output_bytes=8.2 KB
+                stage_output_bytes_q_error=1.00
+                estimated_output_bytes=1056.0 B
+        ");
         Ok(())
     }
 
@@ -843,7 +882,7 @@ mod tests {
         with_settings!({ filters => filters }, {
             assert_snapshot!(display, @r"
             Stage 1 (Coalesce) tasks=3 partitions=12
-            │ elapsed_compute={0:<time>, 1:<time>, 2:<time>}
+            │ stage_elapsed_compute={0:<time>, 1:<time>, 2:<time>}
             └─ FilterExec: Rainfall@1 > 0, projection=[MinTemp@0, RainToday@2]
                │ elapsed_compute={0:<time>, 1:<time>, 2:<time>}
                └─ RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
@@ -880,7 +919,6 @@ mod tests {
         let display = display_plan_dump(dump, opts)?;
         assert_snapshot!(display, @r"
         Stage 1 (Coalesce) tasks=3 partitions=12
-        │ output_rows=103
         └─ FilterExec: Rainfall@1 > 0, projection=[MinTemp@0, RainToday@2]
            │ output_rows={0:71, 1:0, 2:32}
            └─ RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
@@ -994,6 +1032,5 @@ mod tests {
     const BYTES: &str = r"\d+(\.\d+)? (B|KB|MB|GB|TB)\b";
 
     /// Metrics computed from the estimated output of a stage.
-    const ESTIMATES: &str =
-        r"(estimated_output_bytes|output_bytes_q_error|cpu_cost|memory_cost|network_cost)=[^\n]+";
+    const ESTIMATES: &str = r"(estimated_output_bytes|stage_output_bytes_q_error|cpu_cost|memory_cost|network_cost)=[^\n]+";
 }

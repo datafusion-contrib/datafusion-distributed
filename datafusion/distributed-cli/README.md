@@ -74,12 +74,14 @@ Like `cargo test -- --exact` does with test names, `--exact` matches whole metri
 `output_bytes` does not display `estimated_output_bytes` too:
 
 ```bash
-dfd plan <plan dump> --metric output_bytes --exact
+dfd plan <plan dump> --stage 2 --metric output_bytes --exact
 ```
 
-Besides their own metrics, stages show the `elapsed_compute` of all their nodes, and, when their
-output was estimated for choosing task counts dynamically, `output_bytes_q_error`: the ratio between
-the estimated and the actual bytes they returned, the larger over the smaller.
+Besides their own metrics, stages show metrics derived from the ones of their nodes, whose names
+start with `stage_`: `stage_elapsed_compute`, the CPU time of all their nodes, `stage_output_rows`
+and `stage_output_bytes`, what they returned, and, when their output was estimated for choosing
+task counts dynamically, `stage_output_bytes_q_error`: the ratio between the estimated and the
+actual bytes they returned, the larger over the smaller.
 
 The argument can also be the path of a file containing the plan dump:
 
@@ -95,3 +97,13 @@ pbpaste | dfd plan --stage 2
 
 The output is colored when printed to a terminal, unless `NO_COLOR` is set. `FORCE_COLOR=1` keeps
 the colors through a pipe, e.g. into `less -R`.
+
+### Inspecting plan dumps with coding agents
+
+The `plan-dump` agent skill teaches coding agents like Claude Code, Codex or Cursor to inspect plan
+dumps with `dfd plan`: finding where a query spends its time, or comparing two plans of the same
+query. Add it to your own project with:
+
+```bash
+npx skills add datafusion-contrib/datafusion-distributed --skill plan-dump
+```
