@@ -15,23 +15,27 @@ or, inside its repository, run it with `cargo run -p datafusion-distributed-cli 
 ## Storing dumps
 
 Dumps come from benchmark output, log files, or a remote observability stack. Save each one
-locally before inspecting it, so that both you and the user can go back to it:
+locally before inspecting it, so that both you and the user can go back to it. They are temporary:
+store them wherever your instructions put temporary files, like the session's scratchpad directory,
+and always tell the user the full path:
 
-- **One dump per file**, as `~/dfd-plans/<investigation>/<name>.dump.txt`, where
+- **One dump per file**, as `<temp dir>/<investigation>/<name>.dump.txt`, where
   `<investigation>` is a dated, descriptive directory like `2026-11-20-q10-regression`.
 - **The file holds only the base64 line.** Strip log prefixes, JSON quoting and escapes. When
   output has a dump per line, like a benchmark run with several iterations, split it into one
-  file per dump.
+  file per dump right after the run. `dfbench --debug -i N` prints N dumps per query on stdout, in
+  query order, which `split -l 1` or `awk` can name as `q<query>-<variant>-iter<N>.dump.txt`.
 - **Name files after what produced them**: the query, what differs from the other dumps, and an
   attempt number when the same thing ran more than once, like `q10.dump.txt`,
   `q10-replanning-off.dump.txt` or `q10-replanning-on-attempt-2.dump.txt`.
-- **Record where each dump came from** in a `NOTES.md` next to them: the command that produced it,
-  or the log query, host and timestamp it was found with, plus the settings that differ. A dump
-  does not record its settings, so this is the only way to tell dumps apart later.
+- **Record where each dump came from** in a `NOTES.md` next to them, written when you save them
+  rather than at the end: the command that produced it, or the log query, host and timestamp it
+  was found with, plus the settings that differ. A dump does not record its settings, so this is
+  the only way to tell dumps apart later.
 - **Keep them out of repositories.** Plans carry query literals and file paths.
 
 Point the user at the files, and give them the `dfd plan` commands behind each finding, like
-`dfd plan ~/dfd-plans/2026-11-20-q10-regression/q10-replanning-on.dump.txt --stage 6`, so they
+`dfd plan <temp dir>/2026-11-20-q10-regression/q10-replanning-on.dump.txt --stage 6`, so they
 can check it and keep exploring the plan themselves.
 
 ## Reading a dump
