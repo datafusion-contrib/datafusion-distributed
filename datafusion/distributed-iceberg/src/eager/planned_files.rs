@@ -88,10 +88,10 @@ fn retained_size(task: &FileScanTask) -> usize {
         + task.key_metadata().map_or(0, <[u8]>::len);
     for delete in task.deletes() {
         bytes = bytes
-            .saturating_add(delete.file_path().len())
-            .saturating_add(delete.referenced_data_file().map_or(0, str::len))
-            .saturating_add(delete.equality_ids().map_or(0, size_of_val))
-            .saturating_add(delete.key_metadata().map_or(0, <[u8]>::len));
+            .saturating_add(delete.file_path.len())
+            .saturating_add(delete.referenced_data_file.as_deref().map_or(0, str::len))
+            .saturating_add(delete.equality_ids.as_deref().map_or(0, size_of_val))
+            .saturating_add(delete.key_metadata.as_deref().map_or(0, <[u8]>::len));
     }
     bytes
 }

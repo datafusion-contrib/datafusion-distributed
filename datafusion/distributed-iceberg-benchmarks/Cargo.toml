@@ -13,7 +13,7 @@ datafusion-distributed-benchmarks = { path = "../distributed-benchmarks" }
 datafusion-distributed-iceberg = { path = "../distributed-iceberg" }
 env_logger = "0.11.8"
 futures = "0.3.31"
-parquet = "59"
+parquet = "60"
 serde_json = "1"
 structopt = "0.3.26"
 tokio = { version = "1.48", features = ["full"] }

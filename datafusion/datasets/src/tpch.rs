@@ -91,6 +91,7 @@ pub async fn generate_data(spec: &TpchSpec) -> Result<(), Box<dyn std::error::Er
             let mut writer = TableWriter::new(output, &spec.layout, $name, table_columns($name));
             let mut rows = 0;
             for batch in $arrow::new($generator::new(sf, 1, 1)).with_batch_size(1000) {
+                let batch = batch?;
                 rows += batch.num_rows() as u64;
                 progress.set_message(format!("{}: {} rows", $name, HumanCount(rows)));
                 writer.write(batch).await?;
