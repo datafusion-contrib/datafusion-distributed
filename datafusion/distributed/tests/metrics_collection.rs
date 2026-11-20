@@ -7,7 +7,7 @@ mod tests {
     use datafusion::execution::SessionState;
     use datafusion::physical_plan::display::DisplayableExecutionPlan;
     use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
-    use datafusion::physical_plan::{ExecutionPlan, execute_stream};
+    use datafusion::physical_plan::{ExecutionPlan, collect, execute_stream};
     use datafusion::prelude::SessionContext;
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::metrics::{assert_metrics_equal, node_metrics};
@@ -31,6 +31,28 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     const COLLECTION_TIMEOUT: Duration = Duration::from_secs(10);
+
+    #[tokio::test]
+    async fn coordinator_only_execution_reports_one_worker() -> Result<()> {
+        let (ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+        let local_plan = ctx.sql("SELECT 1").await?.create_physical_plan().await?;
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(DistributedExec::new(local_plan));
+        collect(Arc::clone(&plan), ctx.task_ctx()).await?;
+
+        let metrics = plan.metrics().expect("DistributedExec has metrics");
+        let metric_value = |name| {
+            metrics
+                .sum(|metric| metric.value().name() == name)
+                .map(|metric| metric.as_usize())
+                .unwrap_or_default()
+        };
+
+        assert_eq!(metric_value("local_coordinator_channels"), 0);
+        assert_eq!(metric_value("remote_coordinator_channels"), 0);
+        assert_eq!(metric_value("num_workers"), 1);
+
+        Ok(())
+    }
 
     #[test_case(DistributedMetricsFormat::Aggregated ; "aggregated_metrics")]
     #[test_case(DistributedMetricsFormat::PerTask ; "per_task_metrics")]
