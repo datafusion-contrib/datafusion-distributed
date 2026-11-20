@@ -1,4 +1,4 @@
-use datafusion::common::{DataFusionError, HashSet, internal_datafusion_err};
+use datafusion::common::{DataFusionError, HashMap, HashSet, internal_datafusion_err};
 use datafusion::config::ConfigExtension;
 use datafusion::prelude::SessionConfig;
 use http::{HeaderMap, HeaderName};
@@ -13,12 +13,7 @@ pub(crate) fn set_distributed_option_extension<T: ConfigExtension + Default>(
     t: T,
 ) {
     cfg.options_mut().extensions.insert(t);
-    let mut propagation_ctx = match cfg.get_extension::<ConfigExtensionPropagationContext>() {
-        None => ConfigExtensionPropagationContext::default(),
-        Some(prev) => prev.as_ref().clone(),
-    };
-    propagation_ctx.prefixes.push(T::PREFIX);
-    cfg.set_extension(Arc::new(propagation_ctx));
+    register_for_propagation::<T>(cfg);
 }
 
 pub(crate) fn set_distributed_option_extension_from_headers<'a, T: ConfigExtension + Default>(
@@ -39,12 +34,7 @@ pub(crate) fn set_distributed_option_extension_from_headers<'a, T: ConfigExtensi
         }
     }
 
-    let mut propagation_ctx = match cfg.get_extension::<ConfigExtensionPropagationContext>() {
-        None => ConfigExtensionPropagationContext::default(),
-        Some(prev) => prev.as_ref().clone(),
-    };
-    propagation_ctx.prefixes.push(T::PREFIX);
-    cfg.set_extension(Arc::new(propagation_ctx));
+    register_for_propagation::<T>(cfg);
 
     // If the config extension existed before, we want to modify instead of adding a new one from
     // scratch. If not, we'll start from scratch with a new one.
@@ -87,9 +77,30 @@ pub(crate) fn set_distributed_option_extension_from_headers<'a, T: ConfigExtensi
     })
 }
 
+/// Config extensions that should be propagated over the wire, keyed by their prefix. Each one
+/// carries the values of its [Default] implementation, so that entries that were not changed from
+/// their default do not need to be sent: the receiving end starts from [Default] as well.
 #[derive(Clone, Debug, Default)]
 struct ConfigExtensionPropagationContext {
-    prefixes: Vec<&'static str>,
+    defaults_by_prefix: HashMap<&'static str, HashMap<String, Option<String>>>,
+}
+
+fn register_for_propagation<T: ConfigExtension + Default>(cfg: &mut SessionConfig) {
+    let mut propagation_ctx = match cfg.get_extension::<ConfigExtensionPropagationContext>() {
+        None => ConfigExtensionPropagationContext::default(),
+        Some(prev) => prev.as_ref().clone(),
+    };
+    propagation_ctx
+        .defaults_by_prefix
+        .entry(T::PREFIX)
+        .or_insert_with(|| {
+            T::default()
+                .entries()
+                .into_iter()
+                .map(|entry| (entry.key, entry.value))
+                .collect()
+        });
+    cfg.set_extension(Arc::new(propagation_ctx));
 }
 
 pub(crate) fn get_config_extension_propagation_headers(
@@ -102,17 +113,20 @@ pub(crate) fn get_config_extension_propagation_headers(
         .get_extension::<ConfigExtensionPropagationContext>()
         .unwrap_or_default();
 
-    if prefixes_to_send.prefixes.is_empty() {
+    if prefixes_to_send.defaults_by_prefix.is_empty() {
         return Ok(HeaderMap::new());
     }
 
     let mut headers = HeaderMap::new();
 
     for (prefix, extension) in cfg.options().extensions.iter() {
-        if !prefixes_to_send.prefixes.contains(&prefix) {
+        let Some(defaults) = prefixes_to_send.defaults_by_prefix.get(prefix) else {
             continue;
-        }
+        };
         for entry in extension.entries() {
+            if defaults.get(&entry.key) == Some(&entry.value) {
+                continue;
+            }
             let Some(value) = entry.value else {
                 continue;
             };
@@ -169,7 +183,7 @@ mod tests {
     }
 
     #[test]
-    fn test_add_extension_with_empty_values() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_default_values_are_not_sent() -> Result<(), Box<dyn std::error::Error>> {
         let mut config = SessionConfig::new();
         let opt = CustomExtension::default();
 
@@ -179,14 +193,7 @@ mod tests {
         assert!(flight_metadata.is_some());
 
         let headers = get_config_extension_propagation_headers(&config)?;
-        assert!(headers.contains_key("x-datafusion-distributed-config-custom.foo"));
-        assert!(headers.contains_key("x-datafusion-distributed-config-custom.bar"));
-        assert!(headers.contains_key("x-datafusion-distributed-config-custom.baz"));
-
-        let get = |key: &str| headers.get(key).unwrap().to_str().unwrap();
-        assert_eq!(get("x-datafusion-distributed-config-custom.foo"), "");
-        assert_eq!(get("x-datafusion-distributed-config-custom.bar"), "0");
-        assert_eq!(get("x-datafusion-distributed-config-custom.baz"), "false");
+        assert!(headers.is_empty());
 
         Ok(())
     }
@@ -209,10 +216,10 @@ mod tests {
 
         let headers = get_config_extension_propagation_headers(&config)?;
 
+        assert!(!headers.contains_key("x-datafusion-distributed-config-custom.foo"));
+        assert!(!headers.contains_key("x-datafusion-distributed-config-custom.baz"));
         let get = |key: &str| headers.get(key).unwrap().to_str().unwrap();
-        assert_eq!(get("x-datafusion-distributed-config-custom.foo"), "");
         assert_eq!(get("x-datafusion-distributed-config-custom.bar"), "42");
-        assert_eq!(get("x-datafusion-distributed-config-custom.baz"), "false");
 
         Ok(())
     }
@@ -375,7 +382,9 @@ mod tests {
     #[test]
     fn test_invalid_header_name() {
         let mut config = SessionConfig::new();
-        let extension = InvalidExtension::default();
+        let extension = InvalidExtension {
+            key_with_spaces: "non-default".to_string(),
+        };
 
         set_distributed_option_extension(&mut config, extension);
         let result = get_config_extension_propagation_headers(&config);
@@ -385,7 +394,9 @@ mod tests {
     #[test]
     fn test_invalid_header_value() {
         let mut config = SessionConfig::new();
-        let extension = InvalidValueExtension::default();
+        let extension = InvalidValueExtension {
+            key: "\u{0000}non-default\u{0001}".to_string(),
+        };
 
         set_distributed_option_extension(&mut config, extension);
         let result = get_config_extension_propagation_headers(&config);
@@ -417,7 +428,7 @@ mod tests {
 
     extensions_options! {
         pub struct InvalidExtension {
-            pub key_with_spaces: String, default = "value".to_string()
+            pub key_with_spaces: String, default = "".to_string()
         }
     }
 
@@ -427,7 +438,7 @@ mod tests {
 
     extensions_options! {
         pub struct InvalidValueExtension {
-            pub key: String, default = "\u{0000}invalid\u{0001}".to_string()
+            pub key: String, default = "".to_string()
         }
     }
 
