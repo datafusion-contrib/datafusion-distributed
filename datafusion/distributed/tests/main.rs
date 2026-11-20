@@ -25,6 +25,7 @@ mod stateful_data_cleanup;
 mod stateful_execution_plan;
 mod task_estimator_test;
 mod task_finished_handler;
+mod task_startup;
 mod tpcds_correctness_test;
 mod tpcds_plans_test;
 mod tpch_correctness_test;

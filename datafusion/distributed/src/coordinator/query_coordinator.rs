@@ -21,8 +21,9 @@ use crate::work_unit_feed::{build_work_unit_batch_msg, set_work_unit_send_time};
 use crate::{
     CoordinatorToWorkerMsg, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedGetterExt,
     DistributedTaskContext, DistributedWorkUnitFeedContext, LoadInfo, LocalWorkerContext,
-    MaybeEncoded, SetPlanRequest, TaskCompletedDynamicFilters, TaskKey, TaskMetrics,
-    WorkUnitFeedDeclaration, WorkerToCoordinatorMsg, get_distributed_channel_resolver,
+    MaybeEncoded, NetworkBoundaryExt, SetPlanRequest, Stage, TaskCompletedDynamicFilters, TaskKey,
+    TaskMetrics, WorkUnitFeedDeclaration, WorkerLocation, WorkerToCoordinatorMsg,
+    get_distributed_channel_resolver,
 };
 use datafusion::common::Result;
 use datafusion::common::instant::Instant;
@@ -36,11 +37,12 @@ use datafusion::physical_plan::stream::RecordBatchReceiverStreamBuilder;
 use datafusion::physical_plan::{ChildrenPropertiesMode, ExecutionPlan, ReplaceChildrenOptions};
 use datafusion::prelude::SessionConfig;
 use futures::future::try_join_all;
-use futures::stream::BoxStream;
-use futures::{StreamExt, TryStreamExt};
+use futures::stream::{BoxStream, empty};
+use futures::{FutureExt, StreamExt, TryStreamExt};
 use std::sync::{Arc, Mutex};
 use tokio::select;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::sync::oneshot;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use url::Url;
 use uuid::Uuid;
@@ -110,6 +112,75 @@ impl QueryCoordinator {
     pub(super) fn session_config(&self) -> &SessionConfig {
         self.task_ctx.session_config()
     }
+
+    /// Starts every task independently, using the same lifecycle for all stages.
+    ///
+    /// Each reader drives its task's setup before collecting worker messages. Cancellation
+    /// stops pending setup, while connected streams drain their final reports as usual.
+    /// Locations retain only receivers, so cached plans cannot keep setup running.
+    /// Successful tasks can be consumed immediately, while stage sealing waits for all tasks.
+    /// Worker plans still wait for the input addresses they must serialize before routing.
+    pub(super) fn start_stage(
+        self: &Arc<Self>,
+        stage: &LocalStage,
+    ) -> (Vec<WorkerLocation>, Vec<UnboundedReceiver<LoadInfo>>) {
+        let mut workers = Vec::with_capacity(stage.tasks);
+        let mut load_info = Vec::with_capacity(stage.tasks);
+        let mut stage_coordinator = self.stage_coordinator(stage);
+        for task in 0..stage.tasks {
+            let (location_tx, location_rx) = oneshot::channel();
+            workers.push(WorkerLocation::pending(location_rx));
+            let coordinator = Arc::clone(self);
+            let stage = stage.clone();
+            let finished = self.spawner.query_finished();
+            let stream = async move {
+                let mut stage_coordinator = coordinator.stage_coordinator(&stage);
+                let result = select! {
+                    biased;
+                    _ = finished.cancelled() => return empty().boxed(),
+                    result = stage_coordinator.init_bidirectional_stream(task) => result,
+                };
+                match result {
+                    Ok((url, tx, stream)) => {
+                        let location = stage_coordinator
+                            .coordinator_to_worker_task(task, tx.clone())
+                            .map(|()| {
+                                let _ = tx.send(CoordinatorToWorkerMsg::KickOffSampling);
+                                url
+                            });
+                        let _ = location_tx.send(location.map_err(Arc::new));
+                        stream
+                    }
+                    Err(error) => {
+                        // The stage supervisor propagates the location error. End the reader
+                        // normally so it completes any missing final reports.
+                        let _ = location_tx.send(Err(Arc::new(error)));
+                        empty().boxed()
+                    }
+                }
+            }
+            .flatten_stream()
+            .boxed();
+            load_info.push(stage_coordinator.worker_to_coordinator_task(task, stream));
+        }
+
+        let coordinator = Arc::clone(self);
+        let stage = stage.clone();
+        let locations = workers.clone();
+        let finished = self.spawner.query_finished();
+        self.spawner.spawn(async move {
+            select! {
+                biased;
+                _ = finished.cancelled() => {}
+                result = try_join_all(locations.iter().map(WorkerLocation::resolve)) => {
+                    result?;
+                    coordinator.stage_coordinator(&stage).seal_dynamic_filter_stage()?;
+                }
+            }
+            Ok(())
+        });
+        (workers, load_info)
+    }
 }
 
 /// Manages all the coordinator->worker and worker->coordinator comms that happen during the
@@ -155,7 +226,7 @@ impl<'a> StageCoordinator<'a> {
             plan,
             work_unit_feed_declarations,
             dynamic_filter_remote_producer_ids,
-        } = self.task_specialized_plan(task_i)?;
+        } = self.task_specialized_plan(task_i).await?;
 
         let task_key = TaskKey {
             query_id: self.query_id,
@@ -417,7 +488,7 @@ impl<'a> StageCoordinator<'a> {
     /// trimming down any unnecessary information that the specific `task_i` task is not going to
     /// need, like unexecuted branches in [ChildrenIsolatorUnionExec], or unexecuted variants of
     /// [DistributedLeafExec].
-    fn task_specialized_plan(&self, task_i: usize) -> Result<TaskSpecializedPlan> {
+    async fn task_specialized_plan(&self, task_i: usize) -> Result<TaskSpecializedPlan> {
         let session_config = self.task_ctx.session_config();
         let wuf_registry = session_config
             .get_extension::<WorkUnitFeedRegistry>()
@@ -432,7 +503,13 @@ impl<'a> StageCoordinator<'a> {
         };
 
         let plan = Arc::clone(self.plan);
+        let mut input_locations = vec![];
         let transformed = plan.transform_down_with_dt_ctx(d_ctx, |plan, d_ctx| {
+            if let Some(boundary) = plan.as_network_boundary()
+                && let Stage::Remote(stage) = boundary.input_stage()
+            {
+                input_locations.extend(stage.workers.iter().cloned());
+            }
             if let Some(wuf) = wuf_registry.get_work_unit_feed(&plan) {
                 work_unit_feed_declarations.push(WorkUnitFeedDeclaration {
                     id: wuf.id(),
@@ -473,6 +550,9 @@ impl<'a> StageCoordinator<'a> {
             // we are explicitly not retransforming the entire plan. if other operators cause shared state errors they will error out.
             Ok(Transformed::no(plan))
         })?;
+        // Worker plans carry concrete input addresses. Resolve them during the existing
+        // specialization pass, after unused task branches have been removed.
+        try_join_all(input_locations.iter().map(WorkerLocation::resolve)).await?;
         let plan = if dynamic_filtering_enabled {
             maybe_roundtrip_plan_to_sever_in_memory_dynamic_filter_relationships(
                 Arc::clone(&transformed.data),

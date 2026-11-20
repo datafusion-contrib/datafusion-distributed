@@ -21,8 +21,12 @@ use std::sync::Arc;
 ///    become nodes without children and traversing them will not go further down in.
 /// 4. Spawn a background task per worker that waits for the worker to finish and collects
 ///    its metrics into [DistributedExec::task_metrics] via the coordinator channel.
+///
+/// Setup is scheduled independently for each task. The returned remote stages contain pending
+/// locations; a consumer waits only for the task it reads. A plan sent to another worker must
+/// first resolve the input addresses it includes.
 pub(super) async fn prepare_static_plan(
-    query_coordinator: &QueryCoordinator,
+    query_coordinator: &Arc<QueryCoordinator>,
     base_plan: &Arc<dyn ExecutionPlan>,
 ) -> Result<PreparedPlan> {
     let prepared = Arc::clone(base_plan).transform_up_async(async |plan| {
@@ -41,20 +45,7 @@ pub(super) async fn prepare_static_plan(
                 vec![]
             };
 
-        let mut stage_coordinator = query_coordinator.stage_coordinator(stage);
-        let mut futures = Vec::with_capacity(stage.tasks);
-        for task_i in 0..stage.tasks {
-            futures.push(stage_coordinator.init_bidirectional_stream(task_i));
-        }
-        let results = futures::future::try_join_all(futures).await?;
-
-        let mut workers = Vec::with_capacity(stage.tasks);
-        for (task_i, (url, worker_tx, worker_stream)) in results.into_iter().enumerate() {
-            workers.push(url);
-            stage_coordinator.worker_to_coordinator_task(task_i, worker_stream);
-            stage_coordinator.coordinator_to_worker_task(task_i, worker_tx)?;
-        }
-        stage_coordinator.seal_dynamic_filter_stage()?;
+        let (workers, _) = query_coordinator.start_stage(stage);
         Ok(Transformed::yes(plan.with_input_stage(Stage::Remote(
             RemoteStage {
                 query_id: stage.query_id,
