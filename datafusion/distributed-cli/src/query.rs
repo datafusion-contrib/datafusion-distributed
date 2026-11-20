@@ -35,7 +35,7 @@ use datafusion_cli::{
 use datafusion_distributed::test_utils::in_memory_channel_resolver::{
     InMemoryChannelResolver, InMemoryWorkerResolver,
 };
-use datafusion_distributed::{DistributedExt, SessionStateBuilderExt};
+use datafusion_distributed::{DistributedExt, SessionStateBuilderExt, WorkerQueryContext};
 use std::env;
 use std::path::Path;
 use std::sync::Arc;
@@ -127,13 +127,22 @@ pub(super) async fn run(args: Args) -> Result<()> {
 
     let runtime_env = rt_builder.build_arc()?;
 
+    // The workers share the runtime env with the coordinator, so that they can read from the
+    // object stores registered on the fly for the URLs queried, like `https://`.
+    let worker_runtime_env = Arc::clone(&runtime_env);
+    let channel_resolver =
+        InMemoryChannelResolver::from_session_builder(move |ctx: WorkerQueryContext| {
+            let runtime_env = Arc::clone(&worker_runtime_env);
+            async move { Ok(ctx.builder.with_runtime_env(runtime_env).build()) }
+        });
+
     let state = SessionStateBuilder::new()
         .with_default_features()
         .with_config(session_config)
         .with_runtime_env(runtime_env)
         .with_distributed_planner()
         .with_distributed_worker_resolver(InMemoryWorkerResolver::new(16))
-        .with_distributed_channel_resolver(InMemoryChannelResolver::default())
+        .with_distributed_channel_resolver(channel_resolver)
         .build();
 
     // enable dynamic file query
