@@ -23,8 +23,8 @@ overridden by repeated `-c key=value` flags, e.g. `-c distributed.dynamic_task_c
 ## Plan dumps
 
 `--debug` prints a plan dump per iteration to stdout (everything else goes to stderr), which
-`dfd plan` (`-p datafusion-distributed-cli`) inspects; see the `plan-dump` skill. `dfbench` reads
-`DATAFUSION_*` env vars, e.g. `DATAFUSION_OPTIMIZER_JOIN_REORDERING=false`.
+`dfd plan` (`-p datafusion-distributed-cli`) inspects; see the `plan-dump` skill for where to store
+them. `dfbench` reads `DATAFUSION_*` env vars, e.g. `DATAFUSION_OPTIMIZER_JOIN_REORDERING=false`.
 
 ## Iceberg
 
