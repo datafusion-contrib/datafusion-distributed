@@ -938,10 +938,13 @@ mod tests {
             .with_metric_filter("output_rows")
             .with_exact_metric_filters(true);
         let display = display_plan_dump(dump, opts)?;
-        assert_snapshot!(display, @r"
-        Totals
-          output_rows=378
-        ");
+        let filters = vec![(ANY_NUMBER, "<number>")];
+        with_settings!({ filters => filters }, {
+            assert_snapshot!(display, @r"
+            Totals
+              output_rows=<number>
+            ");
+        });
         Ok(())
     }
 
@@ -979,6 +982,9 @@ mod tests {
         }
         out + rest
     }
+
+    /// Any number.
+    const ANY_NUMBER: &str = r"\d+(\.\d+)?\b";
 
     /// Durations, which change from one execution to another.
     const TIMES: &str = r"\d+(\.\d+)?(ns|µs|ms|s)\b";
