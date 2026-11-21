@@ -1,14 +1,16 @@
 use crate::common::require_one_child;
 use crate::distributed_planner::{NetworkBoundary, ProducerHead};
+use crate::execution_plans::ShuffleMode;
 use crate::stage::{LocalStage, Stage};
 use crate::worker::WorkerConnectionPool;
-use crate::{BroadcastExec, DistributedTaskContext};
+use crate::{BroadcastExec, DistributedTaskContext, NetworkShuffleExec};
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{Result, not_impl_err, plan_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr_common::metrics::MetricsSet;
+use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties, Statistics,
@@ -136,6 +138,50 @@ impl NetworkBroadcastExec {
             properties,
             worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
             input_stage,
+        }
+    }
+
+    /// Returns a new [NetworkShuffleExec] with the same partitioning schema but with a round-robin
+    /// repartition. This can happen when this [NetworkBroadcastExec] is swapped from the build side
+    /// of a collect left join to the probe side keeping the collect left join algorithm, at which
+    /// point it should convert into a round-robin repartition.
+    pub(crate) fn to_round_robin_shuffle(&self) -> NetworkShuffleExec {
+        let partitioning =
+            Partitioning::RoundRobinBatch(self.properties.partitioning.partition_count());
+        let properties = Arc::new(PlanProperties::new(
+            self.properties.equivalence_properties().clone(),
+            partitioning.clone(),
+            EmissionType::Incremental,
+            Boundedness::Bounded,
+        ));
+        NetworkShuffleExec {
+            properties,
+            producer_partitioning: partitioning,
+            worker_connections: self.worker_connections.clone(),
+            input_stage: self.input_stage.clone(),
+            mode: ShuffleMode::Direct,
+        }
+    }
+
+    /// Returns a new [NetworkShuffleExec] with a new hash partitioning schema based on the provided
+    /// expressions. This can happen when this [NetworkBroadcastExec] is swapped from the build side
+    /// of a collect left join to the probe side of a partitioned join, at which point it should
+    /// convert into a hash repartition.
+    pub(crate) fn to_hash_shuffle(&self, exprs: Vec<Arc<dyn PhysicalExpr>>) -> NetworkShuffleExec {
+        let partitioning =
+            Partitioning::Hash(exprs, self.properties.partitioning.partition_count());
+        let properties = Arc::new(PlanProperties::new(
+            self.properties.equivalence_properties().clone(),
+            partitioning.clone(),
+            EmissionType::Incremental,
+            Boundedness::Bounded,
+        ));
+        NetworkShuffleExec {
+            properties,
+            producer_partitioning: partitioning,
+            worker_connections: self.worker_connections.clone(),
+            input_stage: self.input_stage.clone(),
+            mode: ShuffleMode::Direct,
         }
     }
 
