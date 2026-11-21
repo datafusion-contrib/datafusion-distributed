@@ -9,8 +9,7 @@ A plan dump is one base64 line holding an executed plan with its stages and per-
 produced by `generate_plan_dump` after `rewrite_distributed_plan_with_metrics`. `dfd plan`
 takes a dump as an argument, a file path, or stdin.
 
-`dfd` is the CLI of DataFusion Distributed. Install it with `cargo install datafusion-distributed-cli`,
-or, inside its repository, run it with `cargo run -p datafusion-distributed-cli -- plan`.
+`dfd` is the CLI of DataFusion Distributed, and it is installed on the system.
 
 ## Storing dumps
 
@@ -23,8 +22,7 @@ and always tell the user the full path:
   `<investigation>` is a dated, descriptive directory like `2026-11-20-q10-regression`.
 - **The file holds only the base64 line.** Strip log prefixes, JSON quoting and escapes. When
   output has a dump per line, like a benchmark run with several iterations, split it into one
-  file per dump right after the run. `dfbench --debug -i N` prints N dumps per query on stdout, in
-  query order, which `split -l 1` or `awk` can name as `q<query>-<variant>-iter<N>.dump.txt`.
+  file per dump right after the run, named like `q<query>-<variant>-iter<N>.dump.txt`.
 - **Name files after what produced them**: the query, what differs from the other dumps, and an
   attempt number when the same thing ran more than once, like `q10.dump.txt`,
   `q10-replanning-off.dump.txt` or `q10-replanning-on-attempt-2.dump.txt`.
@@ -34,9 +32,40 @@ and always tell the user the full path:
   the only way to tell dumps apart later.
 - **Keep them out of repositories.** Plans carry query literals and file paths.
 
-Point the user at the files, and give them the `dfd plan` commands behind each finding, like
-`dfd plan <temp dir>/2026-11-20-q10-regression/q10-replanning-on.dump.txt --stage 6`, so they
-can check it and keep exploring the plan themselves.
+## Showing findings to the user
+
+Back each finding with the `dfd plan` command behind it and a slice of its real output, so the
+user can check it and keep exploring the plan themselves:
+
+- **One command per fenced `bash` block**, so each can be copied and run on its own. Start with a
+  `cd` to the dumps directory, written as an absolute path (never `<temp dir>`), then use bare
+  file names:
+
+  ```bash
+  cd /abs/path/to/2026-11-20-q10-regression
+  ```
+
+  ```bash
+  dfd plan q10-replanning-on.dump.txt --stage 6 -m output_rows --exact
+  ```
+
+- **Paste the output, not a description of it.** Show the few tree lines that carry the finding,
+  trimmed with `[...]` (long expressions) and `...` (skipped lines), in a fenced `rust` block,
+  which renders the tree with some coloring. When comparing two plans, stack the trees
+  vertically, each under its own label line, never side by side, so they survive being pasted
+  into chat tools:
+
+  ```rust
+  // main
+  └─ SortPreservingMergeExec: [...], fetch=100
+     └─ [Stage 11] => NetworkCoalesceExec: output_partitions=16, input_tasks=1
+          output_rows=900
+
+  // branch
+  └─ SortPreservingMergeExec: [...], fetch=100
+     └─ [Stage 11] => NetworkCoalesceExec: output_partitions=1, input_tasks=1
+          output_rows=100
+  ```
 
 ## Reading a dump
 
@@ -71,6 +100,33 @@ can check it and keep exploring the plan themselves.
   `build_input_rows`, `input_rows`, `probe_hit_rate`, and `selectivity` on filters.
 - **`RepartitionExec` over-reports `output_bytes`,** as its batches can be slices of bigger
   ones.
+
+## Cheatsheet
+
+| To find | Run |
+|---|---|
+| The plan's shape | `dfd plan <dump> -m stage_output_rows --exact` |
+| The nodes of one stage, with no metrics | `dfd plan <dump> --stage N -m none --exact` |
+| The joins of a stage | `dfd plan <dump> --stage N -m none --exact \| grep Join` |
+| Total CPU of the query, or of one stage | `dfd plan <dump> -t -m elapsed_compute --exact`, adding `--stage N` |
+| The stage where the CPU went | `dfd plan <dump> -m stage_elapsed_compute --exact` |
+| The operator where the CPU went | `dfd plan <dump> --stage N -m elapsed_compute --exact` |
+| What crossed the network | `dfd plan <dump> -m stage_output_bytes -m stage_output_rows --exact` |
+| How wrong the sampled estimates were | `dfd plan <dump> -m estimated_output_bytes -m stage_output_bytes -m stage_output_bytes_q_error --exact` |
+| When each stage was sent and finished | `dfd plan <dump> -m plan_added_at -m plan_finished_at --exact` |
+| Join sizes and memory | `dfd plan <dump> --stage N -m build_input_rows -m input_rows -m build_mem_used --exact` |
+| Batch counts and sizes | `dfd plan <dump> --stage N -m output_rows -m output_batches --exact` |
+| Skew between tasks | `dfd plan <dump> --stage N -v -m output_rows --exact` |
+| A boundary's shape across many dumps | `for f in *.dump.txt; do dfd plan $f --stage 0 -m none --exact; done \| grep -o 'NetworkCoalesceExec: [^ ]* [^ ]*' \| sort \| uniq -c` |
+
+- **Node metrics show only with `--stage N`.** On the stage tree, `-m output_rows` prints
+  nothing; only `stage_*` and planning metrics appear there.
+- **The head line isn't network.** The metrics on the `DistributedExec` line describe the
+  coordinator's head node. Its `stage_output_bytes` can be far off, since `SortPreservingMergeExec`
+  over-reports `output_bytes` like `RepartitionExec` does. Leave that line out when adding up
+  network bytes.
+- **Missing head metrics aren't zero.** A head node that passes a single partition straight
+  through may record nothing.
 
 ## Comparing two plans of the same query
 
