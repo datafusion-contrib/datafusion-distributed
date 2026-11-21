@@ -16,6 +16,7 @@ use prost::encoding::{DecodeContext, WireType};
 use prost::{DecodeError, Message};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_stream::wrappers::UnboundedReceiverStream;
+use tracing::{Instrument, field, info_span};
 
 use crate::common::{df_err, file_partition};
 
@@ -253,7 +254,13 @@ impl WorkUnitFeedProvider for IcebergWorkUnitFeed {
             // A reference to this spawned task needs to be held, otherwise it will automatically
             // be canceled. The lifetime of this `task` variable needs to leave as long as any of
             // the return streams of the `feed()` method.
-            let task = SpawnedTask::spawn(async move {
+            let span = info_span!(
+                "iceberg.plan_files",
+                eager = false,
+                file_tasks = field::Empty
+            );
+            let discovery_span = span.clone();
+            let discover = async move {
                 let mut stream = match table_scan.plan_files().await {
                     Ok(stream) => stream,
                     Err(err) => {
@@ -266,15 +273,19 @@ impl WorkUnitFeedProvider for IcebergWorkUnitFeed {
                 // a pruned scan with few files does not fill only the first worker's range.
                 // This routing assumes UnknownPartitioning, not hash or range partitioning.
                 let mut i = 0;
+                let mut file_tasks = 0usize;
                 while let Some(scan_task_or_err) = stream.next().await {
                     let partition = file_partition(i, task_count, partitions_per_task);
+                    file_tasks += usize::from(scan_task_or_err.is_ok());
                     let work_unit = scan_task_or_err
                         .map(FileScanTaskWorkUnit::new)
                         .map_err(df_err);
                     let _ = txs[partition].send(work_unit);
                     i += 1;
                 }
-            });
+                discovery_span.record("file_tasks", file_tasks);
+            };
+            let task = SpawnedTask::spawn(discover.instrument(span));
 
             Ok(SyncManager {
                 task: Arc::new(task),
