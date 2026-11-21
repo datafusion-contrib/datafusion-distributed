@@ -1,4 +1,5 @@
 use crate::metrics::df_metrics_set_to_proto;
+use crate::metrics::generated::metrics::metric::Value;
 use crate::metrics::generated::metrics::{self as pb, PlanDump, StageDump};
 use crate::stage::stage_partition_count;
 use crate::{
@@ -8,11 +9,12 @@ use crate::{
 };
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use datafusion::common::{Result, internal_datafusion_err, internal_err};
+use datafusion::common::{Result, config_err, internal_datafusion_err, internal_err};
 use datafusion::physical_expr_common::metrics::MetricValue;
 use datafusion::physical_plan::metrics::{Metric, MetricsSet};
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties, displayable};
 use prost::Message;
+use sketches_ddsketch::Config;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::ptr;
@@ -50,6 +52,105 @@ pub(super) const HEAD_STAGE_ID: usize = 0;
 /// metrics of the node belong to its `t<i>: …` children.
 pub(super) const LEAF_DISPLAY: &str = "DistributedLeafExec:";
 
+/// Options for generating a plan dump, which trade how precise and complete its metrics are for
+/// how small it is. Most of a compressed dump is metric values, as plan displays and metric names
+/// repeat and compress well, while values do not.
+#[derive(Debug, Clone)]
+pub struct GeneratePlanDumpOptions {
+    /// Relative accuracy kept of metrics measured in bytes, or 0 for exact.
+    bytes_accuracy: f64,
+    /// Relative accuracy kept of metrics measured in time, or 0 for exact.
+    time_accuracy: f64,
+    /// Relative accuracy kept of the rest of the metrics, which count things like rows, or 0 for
+    /// exact.
+    count_accuracy: f64,
+    /// The names of the metrics that are left out of dumps.
+    excluded_metrics: Vec<Cow<'static, str>>,
+}
+
+impl Default for GeneratePlanDumpOptions {
+    fn default() -> Self {
+        Self {
+            bytes_accuracy: 0.005,
+            time_accuracy: 0.05,
+            // Exact, as row counts tell whether a plan returns the right results.
+            count_accuracy: 0.0,
+            // Network latencies are reported as several statistics of which the percentiles and
+            // the maximum are enough for spotting slow networks.
+            excluded_metrics: [
+                "network_latency_min",
+                "network_latency_first",
+                "network_latency_sum",
+                "network_latency_count",
+            ]
+            .map(Cow::from)
+            .to_vec(),
+        }
+    }
+}
+
+impl GeneratePlanDumpOptions {
+    /// Dumps metrics measured in bytes, like `output_bytes`, within `accuracy` of their value:
+    /// with 0.01, 1000 bytes are read back as anything from 990 to 1010. 0 keeps them exact.
+    /// Defaults to 0.005.
+    pub fn with_bytes_relative_accuracy(mut self, accuracy: f64) -> Self {
+        self.bytes_accuracy = accuracy;
+        self
+    }
+
+    /// Dumps metrics measured in time, like `elapsed_compute`, within `accuracy` of their value:
+    /// with 0.05, 100ms are read back as anything from 95ms to 105ms. 0 keeps them exact.
+    /// Defaults to 0.05.
+    pub fn with_time_relative_accuracy(mut self, accuracy: f64) -> Self {
+        self.time_accuracy = accuracy;
+        self
+    }
+
+    /// Dumps the metrics that are neither bytes nor time, which count things like `output_rows`,
+    /// within `accuracy` of their value. Defaults to 0, which keeps them exact.
+    pub fn with_count_relative_accuracy(mut self, accuracy: f64) -> Self {
+        self.count_accuracy = accuracy;
+        self
+    }
+
+    /// Leaves the metrics with these names out of dumps, replacing the ones left out by default,
+    /// which are the network latency statistics other than `network_latency_p50`,
+    /// `network_latency_p95` and `network_latency_max`.
+    pub fn with_excluded_metrics(
+        mut self,
+        names: impl IntoIterator<Item = impl Into<Cow<'static, str>>>,
+    ) -> Self {
+        self.excluded_metrics = names.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// The relative accuracy kept of the values of `metric`, depending on what it measures.
+    fn relative_accuracy(&self, metric: &pb::Metric) -> f64 {
+        match metric.value {
+            Some(
+                Value::SpilledBytes(_)
+                | Value::OutputBytes(_)
+                | Value::CurrentMemoryUsage(_)
+                | Value::PeakMemoryUsage(_)
+                | Value::CustomBytesCount(_),
+            ) => self.bytes_accuracy,
+            Some(
+                Value::ElapsedCompute(_)
+                | Value::Time(_)
+                | Value::CustomMinLatency(_)
+                | Value::CustomMaxLatency(_)
+                | Value::CustomAvgLatency(_)
+                | Value::CustomP50Latency(_)
+                | Value::CustomP75Latency(_)
+                | Value::CustomP95Latency(_)
+                | Value::CustomP99Latency(_)
+                | Value::CustomFirstLatency(_),
+            ) => self.time_accuracy,
+            _ => self.count_accuracy,
+        }
+    }
+}
+
 /// Distributed plans can be huge, the more tasks there are, the bigger the plans get, and
 /// logging it can get prohibitive or impossible. This function produces a protobuf + zstd + base64
 /// compressed representation of the plan with the metrics suitable to be used in logs that can
@@ -57,7 +158,15 @@ pub(super) const LEAF_DISPLAY: &str = "DistributedLeafExec:";
 ///
 /// When embedding DFD into an existing service, it's recommended to log this plan dump in the
 /// service's observability as tag in a log so that LLMs and humans can troubleshoot it afterward.
-pub fn generate_plan_dump(plan: &Arc<dyn ExecutionPlan>) -> Result<String> {
+pub fn generate_plan_dump(
+    plan: &Arc<dyn ExecutionPlan>,
+    opts: GeneratePlanDumpOptions,
+) -> Result<String> {
+    for accuracy in [opts.bytes_accuracy, opts.time_accuracy, opts.count_accuracy] {
+        if !(0.0..1.0).contains(&accuracy) {
+            return config_err!("Plan dump relative accuracy must be in [0, 1), got {accuracy}");
+        }
+    }
     let (plan, metrics) = match plan.downcast_ref::<DistributedExec>() {
         Some(distributed) => (
             distributed.plan_for_viz_or_base_plan(),
@@ -68,10 +177,10 @@ pub fn generate_plan_dump(plan: &Arc<dyn ExecutionPlan>) -> Result<String> {
     // The head runs as a single task in the coordinator, and it does not have a stage number.
     let head = StageDump {
         stage_id: HEAD_STAGE_ID as u64,
-        metrics: dump_metrics(metrics.as_ref())?,
+        metrics: dump_metrics(metrics.as_ref(), &opts)?,
         tasks: 1,
         partitions: plan.output_partitioning().partition_count() as u64,
-        plan_dump: Some(Box::new(plan_dump(&plan)?)),
+        plan_dump: Some(Box::new(plan_dump(&plan, &opts)?)),
     };
     encode_plan_dump(&head)
 }
@@ -83,35 +192,37 @@ fn encode_plan_dump(head: &StageDump) -> Result<String> {
     Ok(STANDARD.encode(compressed))
 }
 
-fn stage_dump(stage: &Stage) -> Result<StageDump> {
+fn stage_dump(stage: &Stage, opts: &GeneratePlanDumpOptions) -> Result<StageDump> {
     let plan = stage.local_plan();
     Ok(StageDump {
         stage_id: stage.num() as u64,
-        metrics: dump_metrics(Some(&stage.metrics()))?,
+        metrics: dump_metrics(Some(&stage.metrics()), opts)?,
         tasks: stage.task_count() as u64,
         partitions: plan.map_or(0, |plan| stage_partition_count(stage.task_count(), plan)) as u64,
-        plan_dump: plan.map(plan_dump).transpose()?.map(Box::new),
+        plan_dump: (plan.map(|plan| plan_dump(plan, opts)).transpose()?).map(Box::new),
     })
 }
 
-fn plan_dump(plan: &Arc<dyn ExecutionPlan>) -> Result<PlanDump> {
+fn plan_dump(plan: &Arc<dyn ExecutionPlan>, opts: &GeneratePlanDumpOptions) -> Result<PlanDump> {
     let metrics = plan.metrics();
     if let Some(leaf) = plan.downcast_ref::<DistributedLeafExec>() {
-        return leaf_dump(leaf, metrics);
+        return leaf_dump(leaf, metrics, opts);
     }
     let mut dump = PlanDump {
         display: one_line(plan),
-        metrics: dump_metrics(metrics.as_ref())?,
+        metrics: dump_metrics(metrics.as_ref(), opts)?,
         children: vec![],
         input_stage: None,
     };
     match plan.as_network_boundary() {
-        Some(boundary) => dump.input_stage = Some(Box::new(stage_dump(boundary.input_stage())?)),
+        Some(boundary) => {
+            dump.input_stage = Some(Box::new(stage_dump(boundary.input_stage(), opts)?))
+        }
         None => {
             dump.children = plan
                 .children()
                 .into_iter()
-                .map(plan_dump)
+                .map(|child| plan_dump(child, opts))
                 .collect::<Result<_>>()?
         }
     }
@@ -122,7 +233,11 @@ fn plan_dump(plan: &Arc<dyn ExecutionPlan>) -> Result<PlanDump> {
 /// becomes a `t<i>: …` child. The metrics of all the variants are dumped once on the leaf, where
 /// each metric is a single column with the values of every task, and the display of dumps hands
 /// each variant the metrics of its task.
-fn leaf_dump(leaf: &DistributedLeafExec, metrics: Option<MetricsSet>) -> Result<PlanDump> {
+fn leaf_dump(
+    leaf: &DistributedLeafExec,
+    metrics: Option<MetricsSet>,
+    opts: &GeneratePlanDumpOptions,
+) -> Result<PlanDump> {
     let children = leaf
         .variants
         .iter()
@@ -134,7 +249,7 @@ fn leaf_dump(leaf: &DistributedLeafExec, metrics: Option<MetricsSet>) -> Result<
         .collect();
     Ok(PlanDump {
         display: LEAF_DISPLAY.to_string(),
-        metrics: dump_metrics(metrics.as_ref())?,
+        metrics: dump_metrics(metrics.as_ref(), opts)?,
         children,
         input_stage: None,
     })
@@ -144,13 +259,22 @@ fn leaf_dump(leaf: &DistributedLeafExec, metrics: Option<MetricsSet>) -> Result<
 /// metric of a node is dumped once as a [pb::MetricColumn] holding its values for every task,
 /// instead of as one [pb::Metric] per task repeating its kind, name and task label, which makes
 /// dumps about a third smaller.
-fn dump_metrics(metrics: Option<&MetricsSet>) -> Result<Vec<pb::MetricColumn>> {
+fn dump_metrics(
+    metrics: Option<&MetricsSet>,
+    opts: &GeneratePlanDumpOptions,
+) -> Result<Vec<pb::MetricColumn>> {
     let Some(metrics) = metrics else {
         return Ok(vec![]);
     };
     let mut columns = vec![];
-    for (_, tasks) in by_name_and_task(metrics)? {
-        columns.extend(metric_column(&tasks)?);
+    for (name, tasks) in by_name_and_task(metrics)? {
+        if !opts
+            .excluded_metrics
+            .iter()
+            .any(|excluded| excluded == name)
+        {
+            columns.extend(metric_column(&tasks, opts)?);
+        }
     }
     Ok(columns)
 }
@@ -205,7 +329,10 @@ fn aggregate(aggregated: &mut Cow<MetricValue>, value: &MetricValue) {
 /// The column of a metric's values for each task. All of them share the kind and name of the
 /// first one, which is dumped as the column's metric, and the rest only contribute their numbers.
 /// Metrics that a dump leaves out, like timestamps, have no column.
-fn metric_column(tasks: &TaskValues) -> Result<Option<pb::MetricColumn>> {
+fn metric_column(
+    tasks: &TaskValues,
+    opts: &GeneratePlanDumpOptions,
+) -> Result<Option<pb::MetricColumn>> {
     let Some(first) = tasks.values().next() else {
         return Ok(None);
     };
@@ -227,11 +354,32 @@ fn metric_column(tasks: &TaskValues) -> Result<Option<pb::MetricColumn>> {
         .map(std::mem::take)
         .collect();
     debug_assert_eq!(first_values, values[..first_values.len()]);
+    let tasks = (tasks.keys())
+        .map(|&task| {
+            u32::try_from(task)
+                .map_err(|_| internal_datafusion_err!("Task id {task} overflows u32"))
+        })
+        .collect::<Result<_>>()?;
+    let relative_accuracy = opts.relative_accuracy(&metric);
     Ok(Some(pb::MetricColumn {
         metric: Some(metric),
-        tasks: tasks.keys().copied().collect(),
-        values,
+        tasks,
+        values: (values.into_iter())
+            .map(|value| compress_value(value, relative_accuracy))
+            .collect(),
+        relative_accuracy,
     }))
+}
+
+/// Compresses a metric value into the index of the logarithmic bucket it falls in, which fits all
+/// of the u64s in a few thousand buckets even with 0.5% accuracy. Values sharing a bucket become
+/// the same number, which compresses well. 0, below the first bucket, is kept as 0.
+fn compress_value(value: u64, relative_accuracy: f64) -> u64 {
+    // The number of bins and the minimum value only matter to sketches, not to the mapping.
+    match (relative_accuracy > 0.0).then(|| Config::new(relative_accuracy, 0, 1.0)) {
+        Some(mapping) if value > 0 => mapping.key(value as f64) as u64 + 1,
+        _ => value,
+    }
 }
 
 /// Pushes the numbers of a metric that are dumped in its column, in the order of [metric_values].
@@ -269,7 +417,6 @@ pub(super) fn metric_task(metric: &Metric) -> Result<u64> {
 /// The numbers of a metric, which are dumped as part of a [pb::MetricColumn], while the rest of
 /// the metric, its kind and name, is dumped once per column.
 pub(super) fn metric_values(metric: &mut pb::Metric) -> Result<Vec<&mut u64>> {
-    use pb::metric::Value;
     Ok(match &mut metric.value {
         Some(Value::OutputRows(v)) => vec![&mut v.value],
         Some(Value::ElapsedCompute(v)) => vec![&mut v.value],

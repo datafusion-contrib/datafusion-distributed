@@ -8,7 +8,7 @@ use datafusion_datasets::{register_tables, tpch};
 use datafusion_distributed::test_utils::localhost::start_localhost_context;
 use datafusion_distributed::{
     DefaultSessionBuilder, DistributedExec, DistributedExt, DistributedMetricsFormat,
-    generate_plan_dump, rewrite_distributed_plan_with_metrics,
+    GeneratePlanDumpOptions, generate_plan_dump, rewrite_distributed_plan_with_metrics,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -72,7 +72,9 @@ fn plan_dump(c: &mut Criterion) {
             .unwrap();
 
         group.bench_function(BenchmarkId::new("generate", i), |b| {
-            b.iter(|| generate_plan_dump(&plan_with_metrics).unwrap())
+            b.iter(|| {
+                generate_plan_dump(&plan_with_metrics, GeneratePlanDumpOptions::default()).unwrap()
+            })
         });
     }
 

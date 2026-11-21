@@ -26,7 +26,7 @@ let batches = execute_stream(plan.clone(), ctx.task_ctx())?
     .await?;
 
 let plan = rewrite_distributed_plan_with_metrics(plan, DistributedMetricsFormat::PerTask).await?;
-tracing::info!(plan_dump = %generate_plan_dump(&plan)?, "query finished");
+tracing::info!(plan_dump = %generate_plan_dump(&plan, GeneratePlanDumpOptions::default())?, "query finished");
 ```
 
 Log the dump as a field next to the rest of the query's telemetry, like its id and latency, so you
@@ -39,7 +39,7 @@ plan while holding more: every metric of every task. Generating it also takes le
 rendering the plan with the same per-task metrics:
 
 - about 2x faster to generate
-- up to 20x less size
+- up to 30x less size
 
 ## Inspecting a dump
 

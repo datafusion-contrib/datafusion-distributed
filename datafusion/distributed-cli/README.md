@@ -56,7 +56,7 @@ line of text, small enough to be logged with every query:
 ```rust
 let plan = df.create_physical_plan().await?;
 let batches = collect(plan.clone(), ctx.task_ctx()).await?;
-log::info!("plan dump: {}", generate_plan_dump(&plan)?);
+log::info!("plan dump: {}", generate_plan_dump(&plan, GeneratePlanDumpOptions::default())?);
 ```
 
 `dfd plan` displays it as the tree of stages. It takes the dump, a file containing it, or stdin:

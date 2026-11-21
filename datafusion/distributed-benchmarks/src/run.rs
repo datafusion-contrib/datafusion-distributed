@@ -35,8 +35,8 @@ use datafusion_distributed::test_utils::work_unit_file_scan::{
     work_unit_file_scan_desired_task_count, work_unit_file_scan_scale_up_leaf_node,
 };
 use datafusion_distributed::{
-    DistributedConfig, DistributedExt, DistributedMetricsFormat, NetworkBoundaryExt,
-    SessionStateBuilderExt, display_plan_ascii, generate_plan_dump,
+    DistributedConfig, DistributedExt, DistributedMetricsFormat, GeneratePlanDumpOptions,
+    NetworkBoundaryExt, SessionStateBuilderExt, display_plan_ascii, generate_plan_dump,
     rewrite_distributed_plan_with_metrics,
 };
 use serde_yaml_ng::{Mapping, Value};
@@ -317,7 +317,13 @@ impl RunOpt {
                                 "=== Physical plan with metrics ===\n{}\n",
                                 display_plan_ascii(physical_plan.as_ref(), true)
                             );
-                            println!("{}", generate_plan_dump(&physical_plan)?);
+                            println!(
+                                "{}",
+                                generate_plan_dump(
+                                    &physical_plan,
+                                    GeneratePlanDumpOptions::default()
+                                )?
+                            );
                         }
 
                         bench_query.iterations.push(QueryIter {
