@@ -93,6 +93,11 @@ extensions_options! {
         /// If `dynamic_task_count` is enabled, this value is the amount of bytes each
         /// partition is expected to handle. Lower values will result in greater parallelism.
         pub dynamic_bytes_per_partition: usize, default = 16 * 1024 * 1024
+        /// If `dynamic_task_count` is enabled, this is the fraction of a stage's partitions that
+        /// need to report sampled bytes before the stage's runtime statistics are estimated. Higher
+        /// values delay execution longer while sampling, but produce more precise estimations. With
+        /// `1.0`, every partition is sampled before estimating.
+        pub dynamic_bytes_ready_sample_percentage: f64, default = 0.2
     }
 }
 
