@@ -382,29 +382,42 @@ impl LoadInfoDropHandler {
 
     fn set_rows_pulled_from_leaf(&mut self) {
         let mut rows_pulled_from_leaf = 0;
-        let _ = self.plan.apply_driver_path(|plan| {
+        let _ = self.plan.apply_driver_path(|plan, ctx| {
             if plan.children().is_empty()
+                && let Some(metrics) = plan.metrics()
+                && !ctx.was_repartitioned
+                && let Some(output_rows) = partition_output_rows(&metrics, self.load_info.partition)
+            {
+                // If the partitioning scheme did not change all through the driver path, and we
+                // have the output rows pulled for this specific partition index, we can afford to
+                // attribute these output rows at the sampler level to this partition.
+                rows_pulled_from_leaf += output_rows;
+            } else if plan.children().is_empty()
                 && let Some(metrics) = plan.metrics()
                 && let Some(output_rows) = metrics.output_rows()
             {
                 let partition_count = self.plan.output_partitioning().partition_count();
-                // Here, we need to divide by `partition_count` because the `output_rows` returned
-                // by the leaf node metrics is not per-partition, is global to the whole node.
+                // If the partitioning scheme changed somewhere along the driver path, or we don't
+                // have per-partition metrics in the leaf, the best we can do is to just average
+                // the total pulled output rows from the whole leaf to this partition.
                 //
-                // In a perfect scenario, we might be able to map the current SamplerExec partition
-                // in scope to the specific partition of the leaf node, but several things can
-                // happen in between these two nodes that mangle the partitions. For example, the
-                // presence of a RepartitionExec or an InterleaveExec will mess with partition
-                // mapping from SamplerExec to leaf node.
-                //
-                // Just dividing by `partition_count` gives a good approximation, but it's still
-                // not perfect as it will not account for data skews.
+                // In case of data skew, this might over-count or under-count the total amount of
+                // pulled leaf rows attributable to the current sampler partition.
                 rows_pulled_from_leaf += output_rows / partition_count;
             }
             Ok(TreeNodeRecursion::Continue)
         });
         self.load_info.rows_pulled_from_leaf = rows_pulled_from_leaf;
     }
+}
+
+fn partition_output_rows(metrics_set: &MetricsSet, partition: usize) -> Option<usize> {
+    metrics_set
+        .sum(|metric| {
+            matches!(metric.value(), MetricValue::OutputRows(_))
+                && metric.partition() == Some(partition)
+        })
+        .map(|v| v.as_usize())
 }
 
 impl Drop for LoadInfoDropHandler {
