@@ -25,16 +25,17 @@ use zstd::dict::EncoderDictionary;
 const ZSTD_LEVEL: i32 = 6;
 
 /// zstd dictionary that plan dumps are compressed with. Metric names, operator names and plan
-/// fragments repeat across all dumps, and a dictionary of them makes dumps 15% to 40% smaller,
+/// fragments repeat across all dumps, and a dictionary of them makes dumps 25% to 50% smaller,
 /// measured on benchmark dumps it was not trained on.
 ///
 /// It is trained on the dumps of the TPC-H SF10, TPC-DS SF10 and ClickBench (partitions 0 to 3)
 /// local benchmarks, run with `--workers 8 --debug`, which print one dump per query on stdout.
-/// Each dump is decoded into the protobuf it contains, as a file of a samples directory:
+/// Each dump is decoded, with the dictionary it was compressed with, into the protobuf it
+/// contains, as a file of a samples directory:
 ///
 /// ```shell
-/// base64 -d <<< "$dump" | zstd -d > samples/<dataset>/<query>.pb
-/// zstd --train -r samples --maxdict=65536 --dictID=32768 -o plan_dump.zdict
+/// base64 -d <<< "$dump" | zstd -d -D plan_dump.zdict > samples/<dataset>/<query>.pb
+/// zstd --train -r samples --maxdict=131072 --dictID=32769 -o plan_dump.zdict
 /// ```
 ///
 /// Dumps record the id of the dictionary they are compressed with, so a dictionary trained again
