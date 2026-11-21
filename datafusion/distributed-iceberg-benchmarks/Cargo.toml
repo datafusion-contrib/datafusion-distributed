@@ -19,6 +19,21 @@ structopt = "0.3.26"
 tokio = { version = "1.48", features = ["full"] }
 url = "2.5.7"
 
+[dev-dependencies]
+criterion = "0.5"
+datafusion-distributed = { path = "../distributed", features = ["integration"] }
+datafusion-distributed-iceberg-test-tools = { path = "../distributed-iceberg-test-tools" }
+datafusion-proto = { workspace = true }
+prost = "0.14.1"
+
 [[bin]]
 name = "dfbench-iceberg"
 path = "src/main.rs"
+
+[[bench]]
+name = "eager_scan_codec"
+harness = false
+
+[[bench]]
+name = "eager_scan_query"
+harness = false
