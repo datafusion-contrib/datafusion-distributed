@@ -39,7 +39,7 @@ plan while holding more: every metric of every task. Generating it also takes le
 rendering the plan with the same per-task metrics:
 
 - about 2x faster to generate
-- up to 20x less size
+- up to 30x less size
 
 ## Inspecting a dump
 
