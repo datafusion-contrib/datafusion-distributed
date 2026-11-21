@@ -37,7 +37,8 @@ can find the dump of a slow query afterward.
 A dump is a protobuf message compressed with zstd, so it takes far less space than the rendered
 plan while holding more: every metric of every task. Generating it also takes less time than
 rendering the plan with the same per-task metrics:
-- up to 3x times faster to generate
+
+- about 2x faster to generate
 - up to 20x less size
 
 ## Inspecting a dump
