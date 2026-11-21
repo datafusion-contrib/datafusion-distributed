@@ -13,6 +13,7 @@ use datafusion::common::{
 };
 use datafusion::physical_plan::metrics::{Metric, MetricsSet};
 use prost::Message;
+use sketches_ddsketch::Config;
 use std::fmt::Write;
 use std::io::Read;
 use std::sync::{Arc, LazyLock};
@@ -278,13 +279,16 @@ fn undump_metrics(columns: &[pb::MetricColumn]) -> Result<MetricsSet> {
             continue;
         };
         let width = metric_values(&mut template.clone())?.len();
+        if !(0.0..1.0).contains(&column.relative_accuracy) {
+            return exec_err!("Plan dump has a metric column with an invalid relative accuracy");
+        }
         if column.values.len() != column.tasks.len() * width {
             return exec_err!("Plan dump has a metric column with a wrong number of values");
         }
         for (task, values) in column.tasks.iter().zip(column.values.chunks_exact(width)) {
             let mut metric = template.clone();
             for (slot, value) in metric_values(&mut metric)?.into_iter().zip(values) {
-                *slot = *value;
+                *slot = decompress_value(*value, column.relative_accuracy);
             }
             metric.labels.push(pb::Label {
                 name: DISTRIBUTED_DATAFUSION_TASK_ID_LABEL.to_string(),
@@ -294,6 +298,20 @@ fn undump_metrics(columns: &[pb::MetricColumn]) -> Result<MetricsSet> {
         }
     }
     Ok(metrics)
+}
+
+/// Reverses [crate::metrics::plan_dump::plan_dump_generation::compress_value], reading a value
+/// back as the one in the middle of its bucket.
+pub fn decompress_value(compressed: u64, relative_accuracy: f64) -> u64 {
+    // The number of bins and the minimum value only matter to sketches, not to the mapping.
+    match (relative_accuracy > 0.0).then(|| Config::new(relative_accuracy, 0, 1.0)) {
+        Some(mapping) if compressed > 0 => {
+            let key = i32::try_from(compressed - 1).unwrap_or(i32::MAX);
+            // Float to integer casts saturate, so huge keys are read back as u64::MAX.
+            mapping.value(key).round() as u64
+        }
+        _ => compressed,
+    }
 }
 
 /// A node of a rendered plan dump: a label followed by one line per metric, and its children.
@@ -644,8 +662,8 @@ impl Paint {
 mod tests {
     use super::*;
     use crate::assert_snapshot;
-    use crate::generate_plan_dump;
     use crate::test_utils::plans::TestPlanBuilder;
+    use crate::{GeneratePlanDumpOptions, generate_plan_dump};
     use insta::with_settings;
 
     #[tokio::test]
@@ -656,7 +674,7 @@ mod tests {
             .physical_plan(query)
             .await;
 
-        let dump = generate_plan_dump(&plan)?;
+        let dump = generate_plan_dump(&plan, GeneratePlanDumpOptions::default())?;
 
         let display = display_plan_dump(dump, DisplayPlanDumpOptions::default())?;
         assert_snapshot!(display, @r"
@@ -674,7 +692,7 @@ mod tests {
         let query = r#"SELECT "RainToday", count(*) FROM weather GROUP BY "RainToday""#;
         let plan = TestPlanBuilder::default().physical_plan(query).await;
 
-        let dump = generate_plan_dump(&plan)?;
+        let dump = generate_plan_dump(&plan, GeneratePlanDumpOptions::default())?;
 
         let display = display_plan_dump(dump, DisplayPlanDumpOptions::default())?;
         assert_snapshot!(display, @r"
@@ -690,7 +708,7 @@ mod tests {
         let query = r#"SELECT "RainToday", count(*) FROM weather GROUP BY "RainToday""#;
         let plan = TestPlanBuilder::default().physical_plan(query).await;
 
-        let dump = generate_plan_dump(&plan)?;
+        let dump = generate_plan_dump(&plan, GeneratePlanDumpOptions::default())?;
 
         let opts = DisplayPlanDumpOptions::default().with_stage_id(2);
         let display = display_plan_dump(dump, opts)?;
@@ -708,7 +726,7 @@ mod tests {
         let query = r#"SELECT "MinTemp", "RainToday" FROM weather WHERE "Rainfall" > 0"#;
         let plan = TestPlanBuilder::default().physical_plan(query).await;
 
-        let dump = generate_plan_dump(&plan)?;
+        let dump = generate_plan_dump(&plan, GeneratePlanDumpOptions::default())?;
 
         let opts = DisplayPlanDumpOptions::default().with_stage_id(1);
         let display = display_plan_dump(dump, opts)?;
@@ -731,7 +749,7 @@ mod tests {
             .executed_physical_plan(query)
             .await;
 
-        let dump = generate_plan_dump(&plan)?;
+        let dump = generate_plan_dump(&plan, GeneratePlanDumpOptions::default())?;
 
         let display = display_plan_dump(dump, DisplayPlanDumpOptions::default())?;
         let filters = vec![(TIMES, "<time>"), (BYTES, "<bytes>")];
@@ -766,7 +784,7 @@ mod tests {
             .executed_physical_plan(query)
             .await;
 
-        let dump = generate_plan_dump(&plan)?;
+        let dump = generate_plan_dump(&plan, GeneratePlanDumpOptions::default())?;
 
         let opts = DisplayPlanDumpOptions::default()
             .with_metrics_format(DistributedMetricsFormat::Aggregated);
@@ -804,7 +822,7 @@ mod tests {
             .executed_physical_plan(query)
             .await;
 
-        let dump = generate_plan_dump(&plan)?;
+        let dump = generate_plan_dump(&plan, GeneratePlanDumpOptions::default())?;
 
         // The q-error is derived from the output_bytes of the network boundary reading stage 1,
         // which the filters leave out, as metrics are filtered once derived.
@@ -842,7 +860,7 @@ mod tests {
             .executed_physical_plan(query)
             .await;
 
-        let dump = generate_plan_dump(&plan)?;
+        let dump = generate_plan_dump(&plan, GeneratePlanDumpOptions::default())?;
 
         // Each task reading the broadcast stage gets a whole copy of its output, so its
         // stage_output_bytes add up every copy, but the q-error compares the estimate with one.
@@ -852,13 +870,13 @@ mod tests {
         let display = display_plan_dump(dump, opts)?;
         assert_snapshot!(display, @r"
         DistributedExec
-        │ stage_output_bytes=155.1 KB
+        │ stage_output_bytes=155.0 KB
         └─ Stage 2 (Coalesce) tasks=8 partitions=24
-           │ stage_output_bytes=155.1 KB
+           │ stage_output_bytes=155.0 KB
            └─ Stage 1 (Broadcast) tasks=8 partitions=256
-                stage_output_bytes=8.2 KB
+                stage_output_bytes=8.3 KB
                 stage_output_bytes_q_error=1.00
-                estimated_output_bytes=1056.0 B
+                estimated_output_bytes=1059.0 B
         ");
         Ok(())
     }
@@ -870,7 +888,7 @@ mod tests {
             .executed_physical_plan(query)
             .await;
 
-        let dump = generate_plan_dump(&plan)?;
+        let dump = generate_plan_dump(&plan, GeneratePlanDumpOptions::default())?;
 
         // Only the metrics containing any of the filters are displayed.
         let opts = DisplayPlanDumpOptions::default()
@@ -903,13 +921,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dumped_metrics_keep_their_relative_accuracy() -> Result<()> {
+        let query = r#"SELECT "MinTemp", "RainToday" FROM weather WHERE "Rainfall" > 0"#;
+        let plan = TestPlanBuilder::default()
+            .executed_physical_plan(query)
+            .await;
+
+        // Counts are dumped within 10% of their value, so the 103 rows are read back as 111.
+        let dump_opts = GeneratePlanDumpOptions::default().with_count_relative_accuracy(0.1);
+        let dump = generate_plan_dump(&plan, dump_opts)?;
+
+        let opts = DisplayPlanDumpOptions::default().with_metric_filter("stage_output_rows");
+        let display = display_plan_dump(dump, opts)?;
+        assert_snapshot!(display, @r"
+        DistributedExec
+        │ stage_output_rows=111
+        └─ Stage 1 (Coalesce) tasks=3 partitions=12
+             stage_output_rows=111
+        ");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn excluded_metrics_are_not_dumped() -> Result<()> {
+        let query = r#"SELECT "MinTemp", "RainToday" FROM weather WHERE "Rainfall" > 0"#;
+        let plan = TestPlanBuilder::default()
+            .executed_physical_plan(query)
+            .await;
+
+        let dump_opts = GeneratePlanDumpOptions::default().with_excluded_metrics(["spill_count"]);
+        let dump = generate_plan_dump(&plan, dump_opts)?;
+
+        // spilled_bytes and spilled_rows are still displayed, but not spill_count.
+        let opts = DisplayPlanDumpOptions::default()
+            .with_stage_id(1)
+            .with_metric_filter("spill");
+        let display = display_plan_dump(dump, opts)?;
+        assert_snapshot!(display, @r"
+        Stage 1 (Coalesce) tasks=3 partitions=12
+        └─ FilterExec: Rainfall@1 > 0, projection=[MinTemp@0, RainToday@2]
+           └─ RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+              │ spilled_bytes={0:0.0 B, 1:0.0 B, 2:0.0 B}
+              │ spilled_rows={0:0, 1:0, 2:0}
+              └─ DistributedLeafExec:
+                 ├─ t0: DataSourceExec: file_groups={3 groups}, projection=[MinTemp, Rainfall, RainToday], file_type=parquet, predicate=Rainfall@2 > 0, pruning_predicate=Rainfall_null_count@1 != row_count@2 AND Rainfall_max@0 > 0, required_guarantees=[]
+                 ├─ t1: DataSourceExec: file_groups={3 groups}, projection=[MinTemp, Rainfall, RainToday], file_type=parquet, predicate=Rainfall@2 > 0, pruning_predicate=Rainfall_null_count@1 != row_count@2 AND Rainfall_max@0 > 0, required_guarantees=[]
+                 └─ t2: DataSourceExec: file_groups={3 groups}, projection=[MinTemp, Rainfall, RainToday], file_type=parquet, predicate=Rainfall@2 > 0, pruning_predicate=Rainfall_null_count@1 != row_count@2 AND Rainfall_max@0 > 0, required_guarantees=[]
+        ");
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn exact_metric_filters_match_whole_names() -> Result<()> {
         let query = r#"SELECT "MinTemp", "RainToday" FROM weather WHERE "Rainfall" > 0"#;
         let plan = TestPlanBuilder::default()
             .executed_physical_plan(query)
             .await;
 
-        let dump = generate_plan_dump(&plan)?;
+        let dump = generate_plan_dump(&plan, GeneratePlanDumpOptions::default())?;
 
         // Without matching exactly, output_rows_skew would show too.
         let opts = DisplayPlanDumpOptions::default()
@@ -941,7 +1010,7 @@ mod tests {
             .executed_physical_plan(query)
             .await;
 
-        let dump = generate_plan_dump(&plan)?;
+        let dump = generate_plan_dump(&plan, GeneratePlanDumpOptions::default())?;
 
         let opts = DisplayPlanDumpOptions::default()
             .with_totals(true)
@@ -967,7 +1036,7 @@ mod tests {
             .executed_physical_plan(query)
             .await;
 
-        let dump = generate_plan_dump(&plan)?;
+        let dump = generate_plan_dump(&plan, GeneratePlanDumpOptions::default())?;
 
         // Only the nodes of stage 1 are added up, leaving out the rows of stage 2 and of the head.
         let opts = DisplayPlanDumpOptions::default()
@@ -996,7 +1065,7 @@ mod tests {
     async fn colors_do_not_change_the_text() -> Result<()> {
         let query = r#"SELECT "RainToday", count(*) FROM weather GROUP BY "RainToday""#;
         let plan = TestPlanBuilder::default().physical_plan(query).await;
-        let dump = generate_plan_dump(&plan)?;
+        let dump = generate_plan_dump(&plan, GeneratePlanDumpOptions::default())?;
 
         let plain = DisplayPlanDumpOptions::default().with_stage_id(2);
         let colored = display_plan_dump(dump.clone(), plain.clone().with_color(true))?;

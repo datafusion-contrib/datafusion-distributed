@@ -16,7 +16,9 @@ pub use latency_metric::{
 };
 pub use max_gauge_metric::{GaugeMetricExt, MaxGaugeMetric};
 pub(crate) use metrics_proto::{df_metrics_set_to_proto, metrics_set_proto_to_df};
-pub use plan_dump::{DisplayPlanDumpOptions, display_plan_dump, generate_plan_dump};
+pub use plan_dump::{
+    DisplayPlanDumpOptions, GeneratePlanDumpOptions, display_plan_dump, generate_plan_dump,
+};
 pub(crate) use task_metrics_collector::collect_plan_metrics;
 pub use task_metrics_rewriter::{DistributedMetricsFormat, rewrite_distributed_plan_with_metrics};
 /// Label used to annotate metrics in execution plan nodes with the task in which they were executed.

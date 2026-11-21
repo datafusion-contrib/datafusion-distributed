@@ -181,8 +181,11 @@ message MetricColumn {
   Metric metric = 1;
   // The task each group of values belongs to. Metrics that do not belong to a task are dumped as
   // task 0's.
-  repeated uint64 tasks = 2;
+  repeated uint32 tasks = 2;
   // The values of the metric, as many per task as the metric has (e.g. `pruned` and `matched` for
-  // pruning metrics), one task after the other.
+  // pruning metrics), one task after the other. With a `relative_accuracy`, each value is the
+  // index of the bucket it falls in of DDSketch's logarithmic mapping, plus 1, with 0 kept as 0.
   repeated uint64 values = 3;
+  // How close to their value `values` are read back, or 0 if they are exact.
+  double relative_accuracy = 4;
 }
