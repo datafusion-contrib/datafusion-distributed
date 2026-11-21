@@ -2,8 +2,9 @@ use crate::execution_plans::ChildrenIsolatorUnionExec;
 use crate::{DistributedTaskContext, NetworkBoundaryExt};
 use datafusion::common::Result;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeIterator, TreeNodeRecursion};
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_expr::{Partitioning, physical_exprs_equal};
 use datafusion::physical_plan::joins::{CrossJoinExec, HashJoinExec, NestedLoopJoinExec};
+use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 use futures::future::{BoxFuture, try_join_all};
 use std::cell::RefCell;
 use std::future::Future;
@@ -81,7 +82,7 @@ pub(crate) trait TreeNodeExt {
     /// │ Scan B │ SKIPPED  │ Scan P │  visited
     /// └────────┘          └────────┘
     /// ```
-    fn apply_driver_path<F: FnMut(&Self) -> Result<TreeNodeRecursion>>(
+    fn apply_driver_path<F: FnMut(&Self, DriverPathContext) -> Result<TreeNodeRecursion>>(
         &self,
         f: F,
     ) -> Result<TreeNodeRecursion>;
@@ -128,6 +129,14 @@ pub(crate) trait TreeNodeExt {
     ) -> Result<Transformed<Self>>
     where
         Self: Sized;
+}
+
+/// Context propagated through the [TreeNodeExt::apply_driver_path] recursion jumps.
+#[derive(Default, Copy, Clone)]
+pub struct DriverPathContext {
+    /// Whether a node in between the currently evaluated node and the root node changed the
+    /// partitioning scheme.
+    pub was_repartitioned: bool,
 }
 
 impl TreeNodeExt for Arc<dyn ExecutionPlan> {
@@ -204,30 +213,52 @@ impl TreeNodeExt for Arc<dyn ExecutionPlan> {
         recurse(self, ctx, &mut f)
     }
 
-    fn apply_driver_path<F: FnMut(&Self) -> Result<TreeNodeRecursion>>(
-        &self,
-        mut f: F,
-    ) -> Result<TreeNodeRecursion> {
-        fn recurse<F: FnMut(&Arc<dyn ExecutionPlan>) -> Result<TreeNodeRecursion>>(
+    fn apply_driver_path<F>(&self, mut f: F) -> Result<TreeNodeRecursion>
+    where
+        F: FnMut(&Arc<dyn ExecutionPlan>, DriverPathContext) -> Result<TreeNodeRecursion>,
+    {
+        fn same_partitioning_scheme(
+            one: &Arc<dyn ExecutionPlan>,
+            other: &Arc<dyn ExecutionPlan>,
+        ) -> bool {
+            use Partitioning::*;
+            match (one.output_partitioning(), other.output_partitioning()) {
+                (RoundRobinBatch(count1), RoundRobinBatch(count2)) => count1 == count2,
+                (Hash(exprs1, count1), Hash(exprs2, count2)) => {
+                    physical_exprs_equal(exprs1, exprs2) && (count1 == count2)
+                }
+                (Range(left), Range(right)) => left == right,
+                (UnknownPartitioning(count1), UnknownPartitioning(count2)) => count1 == count2,
+                _ => false,
+            }
+        }
+
+        fn recurse<F>(
             plan: &Arc<dyn ExecutionPlan>,
+            ctx: DriverPathContext,
             f: &mut F,
-        ) -> Result<TreeNodeRecursion> {
-            f(plan)?.visit_children(|| {
+        ) -> Result<TreeNodeRecursion>
+        where
+            F: FnMut(&Arc<dyn ExecutionPlan>, DriverPathContext) -> Result<TreeNodeRecursion>,
+        {
+            f(plan, ctx)?.visit_children(|| {
                 if let Some(hash_join) = plan.downcast_ref::<HashJoinExec>() {
-                    recurse(hash_join.right(), f)
+                    recurse(hash_join.right(), ctx, f)
                 } else if let Some(nested_loop_join) = plan.downcast_ref::<NestedLoopJoinExec>() {
-                    recurse(nested_loop_join.right(), f)
+                    recurse(nested_loop_join.right(), ctx, f)
                 } else if let Some(cross_join) = plan.downcast_ref::<CrossJoinExec>() {
-                    recurse(cross_join.right(), f)
+                    recurse(cross_join.right(), ctx, f)
                 } else {
-                    plan.children()
-                        .into_iter()
-                        .apply_until_stop(|child| recurse(child, f))
+                    plan.children().into_iter().apply_until_stop(|child| {
+                        let mut ctx = ctx;
+                        ctx.was_repartitioned |= !same_partitioning_scheme(child, plan);
+                        recurse(child, ctx, f)
+                    })
                 }
             })
         }
 
-        recurse(self, &mut f)
+        recurse(self, DriverPathContext::default(), &mut f)
     }
 
     fn transform_down_with_dt_ctx<
@@ -342,9 +373,12 @@ mod tests {
     use datafusion::common::{JoinType, NullEquality, exec_err};
     use datafusion::physical_expr::PhysicalExpr;
     use datafusion::physical_expr::expressions::Column;
+    use datafusion::physical_plan::Partitioning;
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
     use datafusion::physical_plan::empty::EmptyExec;
     use datafusion::physical_plan::joins::PartitionMode;
+    use datafusion::physical_plan::projection::{ProjectionExec, ProjectionExpr};
+    use datafusion::physical_plan::repartition::RepartitionExec;
     use datafusion::physical_plan::union::UnionExec;
     use insta::assert_snapshot;
     use std::sync::Mutex;
@@ -720,6 +754,30 @@ mod tests {
         ");
     }
 
+    #[test]
+    fn driver_path_does_not_flag_partition_preserving_nodes() {
+        // A projection keeps partition i of its output fed by partition i of its input, so the
+        // leaf partitions still line up with the root partitions.
+        let plan = projection(leaf_with_partitions(4));
+        assert_snapshot!(trace_driver_path_repartitioned(&plan), @r"
+        Projection [repartitioned=false]
+        Leaf [repartitioned=false]
+        ");
+    }
+
+    #[test]
+    fn driver_path_flags_nodes_below_a_repartition() {
+        // Partition i of the round-robin Repartition is not fed by partition i of its input, so
+        // everything below it is flagged, even though the partition count did not change.
+        let plan = projection(round_robin(projection(leaf_with_partitions(4)), 4));
+        assert_snapshot!(trace_driver_path_repartitioned(&plan), @r"
+        Projection [repartitioned=false]
+        Repartition [repartitioned=false]
+        Projection [repartitioned=true]
+        Leaf [repartitioned=true]
+        ");
+    }
+
     // ── transform_down_with_dt_ctx ────────────────────────────────────────────
 
     #[test]
@@ -946,6 +1004,20 @@ mod tests {
         )]))))
     }
 
+    fn leaf_with_partitions(partitions: usize) -> Arc<dyn ExecutionPlan> {
+        Arc::new(EmptyExec::new(Arc::new(Schema::empty())).with_partitions(partitions))
+    }
+
+    fn round_robin(child: Arc<dyn ExecutionPlan>, partitions: usize) -> Arc<dyn ExecutionPlan> {
+        Arc::new(
+            RepartitionExec::try_new(child, Partitioning::RoundRobinBatch(partitions)).unwrap(),
+        )
+    }
+
+    fn projection(child: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+        Arc::new(ProjectionExec::try_new(Vec::<ProjectionExpr>::new(), child).unwrap())
+    }
+
     fn single(child: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
         Arc::new(CoalescePartitionsExec::new(child))
     }
@@ -1058,6 +1130,10 @@ mod tests {
             "NestedLoopJoin"
         } else if p.is::<CrossJoinExec>() {
             "CrossJoin"
+        } else if p.is::<RepartitionExec>() {
+            "Repartition"
+        } else if p.is::<ProjectionExec>() {
+            "Projection"
         } else {
             "?"
         }
@@ -1161,7 +1237,7 @@ mod tests {
         mut decide: F,
     ) -> String {
         let mut lines = vec![];
-        root.apply_driver_path(|p| {
+        root.apply_driver_path(|p, _ctx| {
             let rec = decide(p);
             let suffix = match rec {
                 TreeNodeRecursion::Continue => "",
@@ -1170,6 +1246,20 @@ mod tests {
             };
             lines.push(format!("{}{suffix}", plan_label(p)));
             Ok(rec)
+        })
+        .unwrap();
+        lines.join("\n")
+    }
+
+    fn trace_driver_path_repartitioned(root: &Arc<dyn ExecutionPlan>) -> String {
+        let mut lines = vec![];
+        root.apply_driver_path(|p, ctx| {
+            lines.push(format!(
+                "{} [repartitioned={}]",
+                plan_label(p),
+                ctx.was_repartitioned
+            ));
+            Ok(TreeNodeRecursion::Continue)
         })
         .unwrap();
         lines.join("\n")
