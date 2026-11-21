@@ -155,19 +155,19 @@ ICEBERG=$(cargo run -p datafusion-distributed-iceberg-benchmarks --release -- pr
 # Or write the Iceberg representation directly to S3:
 cargo run -p datafusion-distributed-iceberg-benchmarks --release -- prepare \
   --input $DATASET \
-  --output s3://my-bucket/tpch_iceberg/${DATASET#*tpch_parquet/}/target_file_size=1099511627776
+  --output s3://my-bucket/tpch_iceberg/${DATASET#*tpch_parquet/}/partitioned=false/target_file_size=1099511627776
 ```
 
 Without `--output`, the conversion writes the matching `tpch_iceberg` dataset,
-with the source's parameters followed by `target_file_size`, and leaves the
-source unchanged:
+with the source's parameters followed by `partitioned` and `target_file_size`,
+and leaves the source unchanged:
 
 ```
-testdata/tpch_iceberg/scale_factor=1/.../sorted=false/target_file_size=1099511627776/
+testdata/tpch_iceberg/scale_factor=1/.../sorted=false/partitioned=false/target_file_size=1099511627776/
 ```
 
-It streams one source file at a time into unpartitioned, append-only Iceberg
-tables. Source file boundaries are preserved unless `--target-file-size`
+By default it streams one source file at a time into unpartitioned, append-only
+Iceberg tables. Source file boundaries are preserved unless `--target-file-size`
 requests rolling. As with
 `prepare-*`, `_SUCCESS` is written last, converting into a complete dataset does
 nothing, and any other non-empty destination is rejected. An existing Iceberg
@@ -175,6 +175,55 @@ copy is therefore not updated when the Parquet source is regenerated: remove it
 and convert again. When choosing `--output`, keep the
 `<benchmark>_iceberg` directory in the path so that `run` can select the
 queries.
+
+#### Partitioned tables
+
+`--partitioned` partitions each table by the columns its benchmark declares,
+with an identity transform. All other tables stay unpartitioned. Today only
+TPC-DS declares partition columns, for its fact tables:
+
+| table | partition column |
+|---|---|
+| store_sales | ss_sold_date_sk |
+| store_returns | sr_returned_date_sk |
+| catalog_sales | cs_sold_date_sk |
+| catalog_returns | cr_returned_date_sk |
+| web_sales | ws_sold_date_sk |
+| web_returns | wr_returned_date_sk |
+| inventory | inv_date_sk |
+
+```shell
+DATASET=$(cargo run -p datafusion-distributed-benchmarks --release -- prepare-tpcds --scale-factor 100)
+ICEBERG=$(cargo run -p datafusion-distributed-iceberg-benchmarks --release -- prepare \
+  --input $DATASET --partitioned)
+```
+
+Conversion stops with an error when no table in the input has partition
+columns. The benchmark comes from the `<benchmark>_parquet` directory in the
+input path, as for `run`. Rows with a null date key are kept in a partition of
+their own. The dataset is written beside the unpartitioned one:
+
+```
+testdata/tpcds_iceberg/scale_factor=100/.../sorted=false/partitioned=true/target_file_size=1099511627776/
+```
+
+An Iceberg data file holds rows of one partition. For most fact tables, the
+generated Parquet files spread the rows of one date across the whole table. A
+writer that takes the rows in that order has to keep a file open for every date
+until the last row. Each open file holds rows in memory.
+
+So the conversion first sorts each partitioned table by its date key. The rows
+of a date then arrive together, and the writer finishes one date's file before
+it starts the next. Each partition gets one data file, or one per
+`--target-file-size` of data.
+
+The sort holds up to 4 GiB in memory and writes the rest to temporary files.
+Set `TMPDIR` to a disk with free space of about 1.5 times the largest fact
+table's Parquet size.
+
+A table gets about one data file per date, at every scale factor. At small
+scale factors these files are tiny, and a query run mostly measures the cost of
+opening them. Use scale factor 100 or more to time queries.
 
 Run each representation with its format-specific binary, then compare them with
 `dfbench`:

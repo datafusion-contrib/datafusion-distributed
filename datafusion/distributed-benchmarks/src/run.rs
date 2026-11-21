@@ -101,7 +101,7 @@ pub struct RunOpt {
 
 /// The query suite of a dataset path such as `tpch_parquet/scale_factor=1/...`: the benchmark
 /// name in its last component that is not a `key=value` parameter.
-fn dataset_suite(dataset: &str) -> &str {
+pub fn dataset_suite(dataset: &str) -> &str {
     let suite = Path::new(dataset)
         .components()
         .rev()

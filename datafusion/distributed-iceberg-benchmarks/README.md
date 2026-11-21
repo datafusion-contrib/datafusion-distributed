@@ -15,7 +15,8 @@ cargo run -p datafusion-distributed-iceberg-benchmarks --release -- run \
 ```
 
 Preparation writes an immutable `tpch_iceberg` dataset by default, whose path repeats the input's
-parameters followed by `target_file_size`.
+parameters followed by `partitioned` and `target_file_size`. `--partitioned` partitions the tables
+that the benchmark declares partition columns for.
 Use `--output <directory|s3://bucket/prefix>` to choose its destination. The source must be a
 non-empty local Parquet dataset. Converting into a complete dataset does nothing, and any other
 non-empty destination is rejected. See the
