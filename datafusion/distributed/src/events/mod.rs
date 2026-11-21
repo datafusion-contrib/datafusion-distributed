@@ -6,10 +6,10 @@ mod scale_up_leaf_node;
 mod task_finished;
 mod worker_plan_rewrite;
 
+pub use defaults::RandomRouteTaskHandler;
 pub(crate) use defaults::{
-    RandomRouteTaskHandler, SingleTaskChildUrlRouteTaskHandler,
-    SingleTaskCoordinatorRouteTaskHandler, file_scan_config_desired_task_count,
-    file_scan_config_scale_up_leaf_node,
+    SingleTaskChildUrlRouteTaskHandler, SingleTaskCoordinatorRouteTaskHandler,
+    file_scan_config_desired_task_count, file_scan_config_scale_up_leaf_node,
 };
 pub use desired_task_count::{
     DesiredTaskCountEvent, DesiredTaskCountEventResponse, DesiredTaskCountHandler,

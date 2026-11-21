@@ -1,7 +1,7 @@
-use super::TASK_KEY_QUERY_ID_HEADER;
 use super::channel_resolver::BoxCloneSyncChannel;
 use super::errors::{map_flight_to_datafusion_error, map_status_to_datafusion_error};
 use super::generated::worker as pb;
+use super::{TASK_KEY_QUERY_ID_HEADER, TASK_KEY_STAGE_ID_HEADER, TASK_KEY_TASK_NUMBER_HEADER};
 use crate::common::{RetryOutcome, on_drop_stream, serialize_uuid};
 use crate::grpc::errors::tonic_status_to_datafusion_error;
 use crate::grpc::generated::worker::FlightAppMetadata;
@@ -858,7 +858,13 @@ impl<O, F: Future<Output = O>> Future for ElapsedComputeFuture<F> {
 fn set_task_key_headers(metadata: &mut MetadataMap, task_key: &TaskKey) {
     let query_id = AsciiMetadataValue::try_from(task_key.query_id.to_string())
         .expect("a hyphenated UUID is a valid header value");
+    let stage_id = AsciiMetadataValue::try_from(task_key.stage_id.to_string())
+        .expect("a usize is a valid header value");
+    let task_number = AsciiMetadataValue::try_from(task_key.task_number.to_string())
+        .expect("a usize is a valid header value");
     metadata.insert(TASK_KEY_QUERY_ID_HEADER, query_id);
+    metadata.insert(TASK_KEY_STAGE_ID_HEADER, stage_id);
+    metadata.insert(TASK_KEY_TASK_NUMBER_HEADER, task_number);
 }
 
 #[cfg(test)]
@@ -1025,7 +1031,28 @@ mod tests {
         let passthrough = uuid::Uuid::new_v4().to_string().parse().unwrap();
         metadata.insert(TASK_KEY_QUERY_ID_HEADER, passthrough);
         set_task_key_headers(&mut metadata, &key);
-        let sent: Vec<_> = metadata.get_all(TASK_KEY_QUERY_ID_HEADER).iter().collect();
-        assert_eq!(sent, [key.query_id.to_string().as_str()]);
+        assert_eq!(
+            metadata
+                .get_all(TASK_KEY_QUERY_ID_HEADER)
+                .iter()
+                .collect::<Vec<_>>(),
+            [key.query_id.to_string().as_str()]
+        );
+        assert_eq!(
+            metadata
+                .get(TASK_KEY_STAGE_ID_HEADER)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            key.stage_id.to_string()
+        );
+        assert_eq!(
+            metadata
+                .get(TASK_KEY_TASK_NUMBER_HEADER)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            key.task_number.to_string()
+        );
     }
 }
