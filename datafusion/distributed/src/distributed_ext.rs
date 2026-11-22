@@ -5,16 +5,16 @@ use crate::config_extension_ext::{
 use crate::distributed_planner::add_distributed_blacklisted_node;
 use crate::events::{
     DesiredTaskCountHandler, DesiredTaskCountHandlers, RouteTaskHandler, RouteTaskHandlers,
-    ScaleUpLeafNodeHandler, ScaleUpLeafNodeHandlers, TaskFinishedHandler, TaskFinishedHandlers,
-    WorkerPlanRewriteHandler, WorkerPlanRewriteHandlers,
+    ScaleUpLeafNodeHandler, ScaleUpLeafNodeHandlers, StageBuiltHandlers, TaskFinishedHandler,
+    TaskFinishedHandlers, WorkerPlanRewriteHandler, WorkerPlanRewriteHandlers,
 };
 use crate::passthrough_headers::set_passthrough_headers;
 use crate::protocol::set_distributed_channel_resolver;
 use crate::work_unit_feed::set_distributed_work_unit_feed;
 use crate::worker_resolver::set_distributed_worker_resolver;
 use crate::{
-    ChannelResolver, DistributedConfig, LocalWorkerContext, WorkUnitFeed, WorkUnitFeedProvider,
-    WorkerResolver, get_distributed_worker_resolver,
+    ChannelResolver, DistributedConfig, LocalWorkerContext, StageBuiltHandler, WorkUnitFeed,
+    WorkUnitFeedProvider, WorkerResolver, get_distributed_worker_resolver,
 };
 use datafusion::common::DataFusionError;
 use datafusion::config::ConfigExtension;
@@ -863,6 +863,29 @@ pub trait DistributedExt: Sized {
 
     /// Same as [DistributedExt::with_distributed_blacklisted_node] but with an in-place mutation.
     fn set_distributed_blacklisted_node<T: ExecutionPlan>(&mut self);
+
+    /// Registers a [StageBuiltHandler] for each stage built during distributed planning.
+    ///
+    /// The handler can inspect or rewrite the stage plan, adjust its task count, or reject it.
+    ///
+    /// ```rust
+    /// # use datafusion::common::{exec_err, Result};
+    /// # use datafusion::execution::SessionStateBuilder;
+    /// # use datafusion_distributed::{DistributedExt, StageBuiltEvent, StageBuiltEventResponse};
+    ///
+    /// fn handle_stage_built(event: StageBuiltEvent) -> Result<StageBuiltEventResponse> {
+    ///     if *event.cost.cpu.get_value().unwrap_or(&0) > 1024 * 1024 * 1024 {
+    ///         return exec_err!("Plan is too expensive to execute")
+    ///     }
+    ///     Ok(StageBuiltEventResponse::new(event.plan))
+    /// }
+    ///
+    /// SessionStateBuilder::new().with_distributed_stage_built_handler(handle_stage_built);
+    /// ```
+    fn with_distributed_stage_built_handler<T: StageBuiltHandler>(self, handler: T) -> Self;
+
+    /// Same as [DistributedExt::with_distributed_stage_built_handler] but with an in-place mutation.
+    fn set_distributed_stage_built_handler<T: StageBuiltHandler>(&mut self, handler: T);
 }
 
 /// Trait to have a unified interface for getting structs & properties from SessionConfig that are used in distributed context.
@@ -1087,6 +1110,10 @@ impl DistributedExt for SessionConfig {
         add_distributed_blacklisted_node::<T>(self);
     }
 
+    fn set_distributed_stage_built_handler<T: StageBuiltHandler>(&mut self, h: T) {
+        StageBuiltHandlers::push_custom(self, Arc::new(h));
+    }
+
     delegate! {
         to self {
             #[call(set_distributed_option_extension)]
@@ -1218,6 +1245,10 @@ impl DistributedExt for SessionConfig {
             #[call(set_distributed_blacklisted_node)]
             #[expr($;self)]
             fn with_distributed_blacklisted_node<T: ExecutionPlan>(mut self) -> Self;
+
+            #[call(set_distributed_stage_built_handler)]
+            #[expr($;self)]
+            fn with_distributed_stage_built_handler<H: StageBuiltHandler>(mut self, h: H) -> Self;
         }
     }
 }
@@ -1396,6 +1427,11 @@ impl DistributedExt for SessionStateBuilder {
             #[call(set_distributed_blacklisted_node)]
             #[expr($;self)]
             fn with_distributed_blacklisted_node<T: ExecutionPlan>(mut self) -> Self;
+
+            fn set_distributed_stage_built_handler<H: StageBuiltHandler>(&mut self, h: H);
+            #[call(set_distributed_stage_built_handler)]
+            #[expr($;self)]
+            fn with_distributed_stage_built_handler<H: StageBuiltHandler>(mut self, h: H) -> Self;
         }
     }
 }
@@ -1576,6 +1612,11 @@ impl DistributedExt for SessionState {
             #[call(set_distributed_blacklisted_node)]
             #[expr($;self)]
             fn with_distributed_blacklisted_node<T: ExecutionPlan>(mut self) -> Self;
+
+            fn set_distributed_stage_built_handler<H: StageBuiltHandler>(&mut self, h: H);
+            #[call(set_distributed_stage_built_handler)]
+            #[expr($;self)]
+            fn with_distributed_stage_built_handler<H: StageBuiltHandler>(mut self, h: H) -> Self;
         }
     }
 }
@@ -1749,6 +1790,11 @@ impl DistributedExt for SessionContext {
             #[call(set_distributed_blacklisted_node)]
             #[expr($;self)]
             fn with_distributed_blacklisted_node<T: ExecutionPlan>(self) -> Self;
+
+            fn set_distributed_stage_built_handler<H: StageBuiltHandler>(&mut self, h: H);
+            #[call(set_distributed_stage_built_handler)]
+            #[expr($;self)]
+            fn with_distributed_stage_built_handler<H: StageBuiltHandler>(self, h: H) -> Self;
         }
     }
 }
