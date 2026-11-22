@@ -268,10 +268,14 @@ pub struct MetricColumn {
     pub metric: ::core::option::Option<Metric>,
     /// The task each group of values belongs to. Metrics that do not belong to a task are dumped as
     /// task 0's.
-    #[prost(uint64, repeated, tag = "2")]
-    pub tasks: ::prost::alloc::vec::Vec<u64>,
+    #[prost(uint32, repeated, tag = "2")]
+    pub tasks: ::prost::alloc::vec::Vec<u32>,
     /// The values of the metric, as many per task as the metric has (e.g. `pruned` and `matched` for
-    /// pruning metrics), one task after the other.
+    /// pruning metrics), one task after the other. With a `relative_accuracy`, each value is the
+    /// index of the bucket it falls in of DDSketch's logarithmic mapping, plus 1, with 0 kept as 0.
     #[prost(uint64, repeated, tag = "3")]
     pub values: ::prost::alloc::vec::Vec<u64>,
+    /// How close to their value `values` are read back, or 0 if they are exact.
+    #[prost(double, tag = "4")]
+    pub relative_accuracy: f64,
 }

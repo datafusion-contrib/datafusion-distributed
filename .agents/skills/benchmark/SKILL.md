@@ -1,6 +1,9 @@
 ---
 name: benchmark
 description: Run, compare and profile the local dfbench benchmarks (TPC-H, TPC-DS, ClickBench, over Parquet or Iceberg). Use when asked to benchmark a change, compare branches or flag configurations, verify a performance claim, or find where time goes.
+metadata:
+  # Only for contributors to this repository, so `npx skills add` does not offer it.
+  internal: true
 ---
 
 # Benchmarking DataFusion Distributed
@@ -23,8 +26,9 @@ overridden by repeated `-c key=value` flags, e.g. `-c distributed.dynamic_task_c
 ## Plan dumps
 
 `--debug` prints a plan dump per iteration to stdout (everything else goes to stderr), which
-`dfd plan` (`-p datafusion-distributed-cli`) inspects; see the `plan-dump` skill. `dfbench` reads
-`DATAFUSION_*` env vars, e.g. `DATAFUSION_OPTIMIZER_JOIN_REORDERING=false`.
+`dfd plan` (`-p datafusion-distributed-cli`) inspects. Split that stdout into one file per dump
+right after the run and write the `NOTES.md` that goes with them, as the `plan-dump` skill
+describes, before analysing anything.
 
 ## Iceberg
 
@@ -81,3 +85,14 @@ statistics. See `datafusion/distributed-benchmarks/README.md` for S3 output and 
 
   Workers share Tokio's threads, so select all busy `tokio-rt-worker` threads at once
   (`profiler-cli thread select t-1,t-2,...`) to see the whole process.
+
+  Answer profile questions with profiler-cli itself, not ad-hoc scripts over its `--json` output:
+  - To break CPU time into categories (IPC, transport, joins...), filter by function handles:
+    `--includes-function f-1,f-2` keeps samples containing any of them, and pushing earlier
+    categories as `--excludes-function` filters (`filter push`) makes the next count exclusive.
+    `thread functions --search <name>` lists the handles; generic code has one per instantiation.
+  - `--includes-suffix f-N` with `samples-bottom-up` shows who reaches a hot leaf, such as a lock
+    wait in `__ulock_wait2`.
+  - Call-tree output, including `--json`, is truncated to `--max-lines` (default 100).
+  - `cargo bench ... -- --profile-time <secs> <filter>` loops a criterion bench without analysis,
+    which is what to record. Set `CARGO_PROFILE_BENCH_DEBUG=line-tables-only` for inlined frames.

@@ -30,6 +30,13 @@ pub(super) struct Args {
     /// test names, so `-m output_bytes --exact` leaves out `estimated_output_bytes`.
     #[clap(long)]
     exact: bool,
+
+    /// Display the metrics reported by every node added up into totals for the whole query, like
+    /// its CPU time, instead of the plan. Metrics derived for displaying stages are left out. With
+    /// `--stage`, the totals are those of the nodes of that stage only, and with `--metric`, only
+    /// the matching metrics are added up.
+    #[clap(short, long)]
+    totals: bool,
 }
 
 /// Displays a plan dump.
@@ -57,6 +64,7 @@ pub(super) fn run(args: Args) -> Result<()> {
         opts = opts.with_metric_filter(filter);
     }
     opts = opts.with_exact_metric_filters(args.exact);
+    opts = opts.with_totals(args.totals);
     print!("{}", display_plan_dump(dump, opts)?);
     Ok(())
 }

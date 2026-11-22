@@ -96,3 +96,11 @@ runtime metrics, including network-level metrics on the boundaries:
 
 > If `plan` is not a distributed plan (its root is not a `DistributedExec`),
 > `rewrite_distributed_plan_with_metrics` returns it unchanged, so it is always safe to call.
+
+## Logging plans with their metrics
+
+A rendered plan like the one above can take hundreds of kilobytes, which is too much to log for
+every query. To keep the plans and metrics of the queries your service runs, log a plan dump
+instead: on TPC-H it is a median 5 KB, 24x smaller than the same plan rendered with per-task
+metrics, and takes about half the time to produce. Inspect it later with the `dfd` CLI or a coding
+agent. See [Logging and Inspecting Plan Dumps](../advanced/09-plan-dumps.md#how-much-a-dump-costs).
