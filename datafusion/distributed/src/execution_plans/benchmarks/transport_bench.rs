@@ -265,7 +265,12 @@ impl TransportFixture {
         let input_stage = Stage::Remote(RemoteStage {
             query_id,
             num: 0,
-            workers: self.input_stage_tasks.clone(),
+            workers: self
+                .input_stage_tasks
+                .iter()
+                .cloned()
+                .map(Into::into)
+                .collect(),
             runtime_stats: None,
             dynamic_filter_anchors: vec![],
         });
