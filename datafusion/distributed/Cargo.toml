@@ -1,6 +1,6 @@
 [package]
 name = "datafusion-distributed"
-version = "4.0.0"
+version = "5.0.0"
 edition = "2024"
 description = "Framework for enhancing Apache DataFusion with distributed capabilities"
 license = "Apache-2.0"

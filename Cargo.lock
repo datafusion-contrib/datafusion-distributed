@@ -2398,7 +2398,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-distributed"
-version = "4.0.0"
+version = "5.0.0"
 dependencies = [
  "arrow",
  "arrow-flight",
@@ -2468,7 +2468,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-distributed-cli"
-version = "0.1.0"
+version = "5.0.0"
 dependencies = [
  "clap 4.6.6",
  "datafusion",
