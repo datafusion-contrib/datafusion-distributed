@@ -76,6 +76,7 @@ mod tests {
         // - coordinator worker 0 -> stage 1, worker 1 | remote
         assert_eq!(metric_value("local_coordinator_channels"), 2);
         assert_eq!(metric_value("remote_coordinator_channels"), 2);
+        assert_eq!(metric_value("num_workers"), 2);
 
         Ok(())
     }
