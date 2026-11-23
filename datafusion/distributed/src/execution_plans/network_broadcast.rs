@@ -1,7 +1,7 @@
 use crate::common::require_one_child;
 use crate::distributed_planner::{NetworkBoundary, ProducerHead};
 use crate::stage::{LocalStage, Stage};
-use crate::worker::WorkerConnectionPool;
+use crate::worker::{PartitionMapping, WorkerConnectionPool};
 use crate::{BroadcastExec, DistributedTaskContext};
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{Result, not_impl_err, plan_err};
@@ -260,9 +260,12 @@ impl ExecutionPlan for NetworkBroadcastExec {
         for input_task_index in 0..self.input_stage.task_count() {
             streams.push(self.worker_connections.execute(
                 remote_stage,
-                off..(off + self.properties.partitioning.partition_count()),
                 input_task_index,
-                off + partition,
+                PartitionMapping {
+                    target_partition_range: off..(off + out_partitions),
+                    target_partition: off + partition,
+                    consumer_partition: partition,
+                },
                 self.producer_head(task_context.task_count)?,
                 &context,
             )?);

@@ -2,7 +2,7 @@ use crate::common::require_one_child;
 use crate::distributed_planner::ProducerHead;
 use crate::execution_plans::common::{salted_partitioning, scale_partitioning};
 use crate::stage::{LocalStage, Stage};
-use crate::worker::WorkerConnectionPool;
+use crate::worker::{PartitionMapping, WorkerConnectionPool};
 use crate::{DistributedTaskContext, MaybeEncoded, NetworkBoundary};
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{Result, not_impl_err, plan_err};
@@ -341,9 +341,12 @@ impl ExecutionPlan for NetworkShuffleExec {
                 for input_task_index in 0..producer_task_count {
                     let stream = self.worker_connections.execute(
                         remote_stage,
-                        off..(off + partition_count),
                         input_task_index,
-                        global_partition,
+                        PartitionMapping {
+                            target_partition_range: off..(off + partition_count),
+                            target_partition: global_partition,
+                            consumer_partition: partition,
+                        },
                         self.producer_head(task_context.task_count)?,
                         &context,
                     )?;
@@ -357,9 +360,12 @@ impl ExecutionPlan for NetworkShuffleExec {
                 // TwoPhase: each consumer task reads from exactly one producer task.
                 let stream = self.worker_connections.execute(
                     remote_stage,
-                    task_index..task_index + 1,
-                    partition,
-                    task_index,
+                    partition, // in two-step mode, partition==input_task_index.
+                    PartitionMapping {
+                        target_partition_range: task_index..task_index + 1,
+                        target_partition: task_index,
+                        consumer_partition: partition,
+                    },
                     self.producer_head(task_context.task_count)?,
                     &context,
                 )?;
