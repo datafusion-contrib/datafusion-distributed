@@ -52,6 +52,7 @@ extensions = [
     "myst_parser",
     "sphinx_reredirects",
     "sphinx_design",
+    "sphinx_copybutton",
 ]
 
 source_suffix = {
@@ -122,6 +123,10 @@ html_js_files = ["interactive_dynamic_filtering_figures.js"]
 html_sidebars = {
     "**": ["docs-sidebar.html"],
 }
+
+# Copy only the commands out of blocks that show a `$ ` prompt followed by its
+# output; blocks with no prompt are copied whole.
+copybutton_prompt_text = "$ "
 
 # tell myst_parser to auto-generate anchor links for headers h1, h2, h3
 myst_heading_anchors = 3
