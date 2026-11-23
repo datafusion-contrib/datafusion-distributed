@@ -382,24 +382,24 @@ impl LoadInfoDropHandler {
 
     fn set_rows_pulled_from_leaf(&mut self) {
         let mut rows_pulled_from_leaf = 0;
-        let _ = self.plan.apply_driver_path(|plan, ctx| {
+        let partition = self.load_info.partition;
+        let _ = self.plan.apply_driver_path(Some(partition), |plan, ctx| {
             if plan.children().is_empty()
                 && let Some(metrics) = plan.metrics()
-                && !ctx.was_repartitioned
-                && let Some(output_rows) = partition_output_rows(&metrics, self.load_info.partition)
+                && let Some(leaf_partition) = ctx.partition
+                && let Some(output_rows) = partition_output_rows(&metrics, leaf_partition)
             {
-                // If the partitioning scheme did not change all through the driver path, and we
-                // have the output rows pulled for this specific partition index, we can afford to
-                // attribute these output rows at the sampler level to this partition.
+                // A single leaf partition feeds this sampler partition, and the leaf has the
+                // output rows for it, so all of them are attributable to this sampler partition.
                 rows_pulled_from_leaf += output_rows;
             } else if plan.children().is_empty()
                 && let Some(metrics) = plan.metrics()
                 && let Some(output_rows) = metrics.output_rows()
             {
                 let partition_count = self.plan.output_partitioning().partition_count();
-                // If the partitioning scheme changed somewhere along the driver path, or we don't
-                // have per-partition metrics in the leaf, the best we can do is to just average
-                // the total pulled output rows from the whole leaf to this partition.
+                // If several leaf partitions get mixed somewhere along the driver path, or we
+                // don't have per-partition metrics in the leaf, the best we can do is to just
+                // average the total pulled output rows from the whole leaf to this partition.
                 //
                 // In case of data skew, this might over-count or under-count the total amount of
                 // pulled leaf rows attributable to the current sampler partition.

@@ -375,7 +375,7 @@ async fn gather_runtime_statistics(
 
 fn estimated_driver_path_leaf_rows(plan: &Arc<dyn ExecutionPlan>) -> Option<usize> {
     let mut total_rows = None;
-    let _ = plan.apply_driver_path(|plan, _ctx| {
+    let _ = plan.apply_driver_path(None, |plan, _ctx| {
         if plan.children().is_empty() {
             let stats = StatisticsContext::new().compute(plan.as_ref(), &StatisticsArgs::new())?;
             if let Some(num_rows) = stats.num_rows.get_value() {

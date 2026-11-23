@@ -2,9 +2,8 @@ use crate::execution_plans::ChildrenIsolatorUnionExec;
 use crate::{DistributedTaskContext, NetworkBoundaryExt};
 use datafusion::common::Result;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeIterator, TreeNodeRecursion};
-use datafusion::physical_expr::{Partitioning, physical_exprs_equal};
 use datafusion::physical_plan::joins::{CrossJoinExec, HashJoinExec, NestedLoopJoinExec};
-use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
+use datafusion::physical_plan::{ChildStats, ExecutionPlan};
 use futures::future::{BoxFuture, try_join_all};
 use std::cell::RefCell;
 use std::future::Future;
@@ -70,6 +69,12 @@ pub(crate) trait TreeNodeExt {
     /// Used to estimate a running stage's completion: the total rows to pull come from the leaves
     /// on the driver path (see `estimated_driver_path_leaf_rows`).
     ///
+    /// When `partition` is provided, the traversal also tracks which partition of each visited
+    /// node feeds that partition of the root, and reports it in [DriverPathContext::partition].
+    /// The mapping comes from [ExecutionPlan::child_stats_requests]: a projection or a filter
+    /// keeps the partition index, a union remaps it to the input that owns it (skipping the
+    /// others), and a repartition or a coalesce loses it.
+    ///
     /// ```text
     ///        ┌────────────┐
     ///        │ HashJoin   │  visited
@@ -84,6 +89,7 @@ pub(crate) trait TreeNodeExt {
     /// ```
     fn apply_driver_path<F: FnMut(&Self, DriverPathContext) -> Result<TreeNodeRecursion>>(
         &self,
+        partition: Option<usize>,
         f: F,
     ) -> Result<TreeNodeRecursion>;
 
@@ -134,9 +140,10 @@ pub(crate) trait TreeNodeExt {
 /// Context propagated through the [TreeNodeExt::apply_driver_path] recursion jumps.
 #[derive(Default, Copy, Clone)]
 pub struct DriverPathContext {
-    /// Whether a node in between the currently evaluated node and the root node changed the
-    /// partitioning scheme.
-    pub was_repartitioned: bool,
+    /// The only partition of the currently evaluated node that feeds the partition the traversal
+    /// started at. `None` if the traversal did not start at a specific partition, or if a node in
+    /// between mixes several partitions of its input into one of its outputs.
+    pub partition: Option<usize>,
 }
 
 impl TreeNodeExt for Arc<dyn ExecutionPlan> {
@@ -213,24 +220,33 @@ impl TreeNodeExt for Arc<dyn ExecutionPlan> {
         recurse(self, ctx, &mut f)
     }
 
-    fn apply_driver_path<F>(&self, mut f: F) -> Result<TreeNodeRecursion>
+    fn apply_driver_path<F>(&self, partition: Option<usize>, mut f: F) -> Result<TreeNodeRecursion>
     where
         F: FnMut(&Arc<dyn ExecutionPlan>, DriverPathContext) -> Result<TreeNodeRecursion>,
     {
-        fn same_partitioning_scheme(
-            one: &Arc<dyn ExecutionPlan>,
-            other: &Arc<dyn ExecutionPlan>,
-        ) -> bool {
-            use Partitioning::*;
-            match (one.output_partitioning(), other.output_partitioning()) {
-                (RoundRobinBatch(count1), RoundRobinBatch(count2)) => count1 == count2,
-                (Hash(exprs1, count1), Hash(exprs2, count2)) => {
-                    physical_exprs_equal(exprs1, exprs2) && (count1 == count2)
-                }
-                (Range(left), Range(right)) => left == right,
-                (UnknownPartitioning(count1), UnknownPartitioning(count2)) => count1 == count2,
-                _ => false,
+        /// Returns the context for each child of `plan` that feeds `ctx.partition`, leaving out
+        /// the children that do not feed it at all.
+        fn child_contexts(
+            plan: &Arc<dyn ExecutionPlan>,
+            ctx: DriverPathContext,
+        ) -> Vec<Option<DriverPathContext>> {
+            let unknown = Some(DriverPathContext { partition: None });
+            let n_children = plan.children().len();
+            let Some(partition) = ctx.partition else {
+                return vec![unknown; n_children];
+            };
+            let requests = plan.child_stats_requests(Some(partition));
+            // Nodes that do not declare their child statistics skip every child by default, which
+            // says nothing about how their partitions map to their children's partitions.
+            if requests.len() != n_children || requests.iter().all(|r| *r == ChildStats::Skip) {
+                return vec![unknown; n_children];
             }
+            (requests.into_iter())
+                .map(|request| match request {
+                    ChildStats::At(partition) => Some(DriverPathContext { partition }),
+                    ChildStats::Skip => None,
+                })
+                .collect()
         }
 
         fn recurse<F>(
@@ -242,23 +258,25 @@ impl TreeNodeExt for Arc<dyn ExecutionPlan> {
             F: FnMut(&Arc<dyn ExecutionPlan>, DriverPathContext) -> Result<TreeNodeRecursion>,
         {
             f(plan, ctx)?.visit_children(|| {
-                if let Some(hash_join) = plan.downcast_ref::<HashJoinExec>() {
-                    recurse(hash_join.right(), ctx, f)
-                } else if let Some(nested_loop_join) = plan.downcast_ref::<NestedLoopJoinExec>() {
-                    recurse(nested_loop_join.right(), ctx, f)
-                } else if let Some(cross_join) = plan.downcast_ref::<CrossJoinExec>() {
-                    recurse(cross_join.right(), ctx, f)
-                } else {
-                    plan.children().into_iter().apply_until_stop(|child| {
-                        let mut ctx = ctx;
-                        ctx.was_repartitioned |= !same_partitioning_scheme(child, plan);
-                        recurse(child, ctx, f)
-                    })
+                let child_contexts = child_contexts(plan, ctx);
+                let children = plan.children();
+                if plan.is::<HashJoinExec>()
+                    || plan.is::<NestedLoopJoinExec>()
+                    || plan.is::<CrossJoinExec>()
+                {
+                    // Only the probe side (`right`) is on the driver path.
+                    return match child_contexts[1] {
+                        Some(child_ctx) => recurse(children[1], child_ctx, f),
+                        None => Ok(TreeNodeRecursion::Continue),
+                    };
                 }
+                (children.into_iter().zip(child_contexts))
+                    .filter_map(|(child, child_ctx)| Some((child, child_ctx?)))
+                    .apply_until_stop(|(child, child_ctx)| recurse(child, child_ctx, f))
             })
         }
 
-        recurse(self, DriverPathContext::default(), &mut f)
+        recurse(self, DriverPathContext { partition }, &mut f)
     }
 
     fn transform_down_with_dt_ctx<
@@ -755,26 +773,42 @@ mod tests {
     }
 
     #[test]
-    fn driver_path_does_not_flag_partition_preserving_nodes() {
+    fn driver_path_keeps_partition_through_partition_preserving_nodes() {
         // A projection keeps partition i of its output fed by partition i of its input, so the
         // leaf partitions still line up with the root partitions.
         let plan = projection(leaf_with_partitions(4));
-        assert_snapshot!(trace_driver_path_repartitioned(&plan), @r"
-        Projection [repartitioned=false]
-        Leaf [repartitioned=false]
+        assert_snapshot!(trace_driver_path_partitions(&plan, 2), @r"
+        Projection [partition=2]
+        Leaf [partition=2]
         ");
     }
 
     #[test]
-    fn driver_path_flags_nodes_below_a_repartition() {
+    fn driver_path_loses_partition_below_a_repartition() {
         // Partition i of the round-robin Repartition is not fed by partition i of its input, so
-        // everything below it is flagged, even though the partition count did not change.
+        // everything below it has no known partition, even though the partition count did not
+        // change.
         let plan = projection(round_robin(projection(leaf_with_partitions(4)), 4));
-        assert_snapshot!(trace_driver_path_repartitioned(&plan), @r"
-        Projection [repartitioned=false]
-        Repartition [repartitioned=false]
-        Projection [repartitioned=true]
-        Leaf [repartitioned=true]
+        assert_snapshot!(trace_driver_path_partitions(&plan, 2), @r"
+        Projection [partition=2]
+        Repartition [partition=2]
+        Projection [partition=?]
+        Leaf [partition=?]
+        ");
+    }
+
+    #[test]
+    fn driver_path_follows_only_the_union_input_owning_the_partition() {
+        // Union partitions 0..2 come from the first input and 2..5 from the second one, so union
+        // partition 3 is partition 1 of the second input, and the first input is not visited.
+        let plan = union(vec![
+            leaf_with_partitions(2),
+            projection(leaf_with_partitions(3)),
+        ]);
+        assert_snapshot!(trace_driver_path_partitions(&plan, 3), @r"
+        Union [partition=3]
+        Projection [partition=1]
+        Leaf [partition=1]
         ");
     }
 
@@ -1237,7 +1271,7 @@ mod tests {
         mut decide: F,
     ) -> String {
         let mut lines = vec![];
-        root.apply_driver_path(|p, _ctx| {
+        root.apply_driver_path(None, |p, _ctx| {
             let rec = decide(p);
             let suffix = match rec {
                 TreeNodeRecursion::Continue => "",
@@ -1251,14 +1285,11 @@ mod tests {
         lines.join("\n")
     }
 
-    fn trace_driver_path_repartitioned(root: &Arc<dyn ExecutionPlan>) -> String {
+    fn trace_driver_path_partitions(root: &Arc<dyn ExecutionPlan>, partition: usize) -> String {
         let mut lines = vec![];
-        root.apply_driver_path(|p, ctx| {
-            lines.push(format!(
-                "{} [repartitioned={}]",
-                plan_label(p),
-                ctx.was_repartitioned
-            ));
+        root.apply_driver_path(Some(partition), |p, ctx| {
+            let partition = ctx.partition.map_or("?".to_string(), |p| p.to_string());
+            lines.push(format!("{} [partition={partition}]", plan_label(p)));
             Ok(TreeNodeRecursion::Continue)
         })
         .unwrap();
