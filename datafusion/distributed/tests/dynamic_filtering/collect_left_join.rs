@@ -279,7 +279,7 @@ mod tests {
         .with_one_task_per_leaf()
         .execute()
         .await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec
         │ ProjectionExec: expr=[count(Int64(1))@0 as count(*)]
         │   AggregateExec: mode=Final, gby=[], aggr=[count(Int64(1))]
@@ -294,13 +294,13 @@ mod tests {
           │     DistributedUnionExec: t0:[c0, c2, c4] t1:[c1, c3]
           │       DistributedLeafExec:
           │         t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp], file_type=parquet, predicate=DynamicFilter [ expression_id_0_hash_0 ], dynamic_rg_pruning=eligible
-          │       ProjectionExec: expr=[CAST(-1000 AS Float64) as MinTemp]
+          │       ProjectionExec: expr=[CAST(-1000 AS Float64;N) as MinTemp]
           │         PlaceholderRowExec
           │       DistributedLeafExec:
           │         t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp], file_type=parquet, predicate=DynamicFilter [ expression_id_0_hash_0 ], dynamic_rg_pruning=eligible
-          │       ProjectionExec: expr=[CAST(-1001 AS Float64) as MinTemp]
+          │       ProjectionExec: expr=[CAST(-1001 AS Float64;N) as MinTemp]
           │         PlaceholderRowExec
-          │       ProjectionExec: expr=[CAST(-1002 AS Float64) as MinTemp]
+          │       ProjectionExec: expr=[CAST(-1002 AS Float64;N) as MinTemp]
           │         PlaceholderRowExec
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=1, partitions=6

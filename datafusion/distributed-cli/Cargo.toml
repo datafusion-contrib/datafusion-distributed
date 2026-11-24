@@ -11,7 +11,7 @@ readme = "README.md"
 [dependencies]
 datafusion = { workspace = true }
 datafusion-distributed = { path = "../distributed", version = "5.0.0", features = ["avro", "integration"] }
-datafusion-cli = { version = "55", default-features = false }
+datafusion-cli = { version = "56", default-features = false }
 tokio = { version = "1.48", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
 prost = { version = "0.14", features = ["no-recursion-limit"]}

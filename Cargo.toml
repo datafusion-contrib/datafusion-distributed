@@ -15,8 +15,8 @@ default-members = ["datafusion/distributed"]
 resolver = "3"
 
 [workspace.dependencies]
-datafusion = { version = "55", default-features = false }
-datafusion-proto = { version = "55", default-features = false }
+datafusion = { version = "56", default-features = false }
+datafusion-proto = { version = "56", default-features = false }
 
 [workspace.lints.clippy]
 disallowed_types = "deny"

@@ -133,11 +133,8 @@ mod tests {
     }
 
     fn field(name: &str, data_type: DataType, id: i32) -> Field {
-        Field::new(name, data_type, false).with_metadata(
-            [(PARQUET_FIELD_ID_META_KEY.to_owned(), id.to_string())]
-                .into_iter()
-                .collect(),
-        )
+        Field::new(name, data_type, false)
+            .with_metadata([(PARQUET_FIELD_ID_META_KEY.to_owned(), id.to_string())])
     }
 
     fn write_parquet(path: &str, batch: &RecordBatch) -> Result<(), Box<dyn Error>> {

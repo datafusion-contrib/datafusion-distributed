@@ -70,16 +70,13 @@ impl TableBuilder {
             let source = self.schema.field_by_name(&column).ok_or_else(|| {
                 exec_datafusion_err!("cannot partition by {column}: no such column")
             })?;
-            partition_spec = partition_spec
-                .add_partition_field(
-                    UnboundPartitionField::builder()
-                        .source_ids(vec![source.id])
-                        .name(partition_field_name(&column, transform))
-                        .transform(transform)
-                        .build()
-                        .map_err(df_err)?,
-                )
+            let field = UnboundPartitionField::builder()
+                .source_ids(vec![source.id])
+                .name(partition_field_name(&column, transform))
+                .transform(transform)
+                .build()
                 .map_err(df_err)?;
+            partition_spec = partition_spec.add_partition_field(field).map_err(df_err)?;
         }
 
         let namespace = self.ident.namespace();
