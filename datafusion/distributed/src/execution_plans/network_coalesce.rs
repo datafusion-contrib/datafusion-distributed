@@ -3,7 +3,7 @@ use crate::common::require_one_child;
 use crate::distributed_planner::{NetworkBoundary, ProducerHead};
 use crate::execution_plans::common::scale_partitioning_props;
 use crate::stage::{LocalStage, Stage};
-use crate::worker::WorkerConnectionPool;
+use crate::worker::{PartitionMapping, WorkerConnectionPool};
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{exec_err, not_impl_err, plan_err};
 use datafusion::error::Result;
@@ -329,9 +329,12 @@ impl ExecutionPlan for NetworkCoalesceExec {
 
         let stream = self.worker_connections.execute(
             remote_stage,
-            0..partitions_per_task,
             target_task,
-            target_partition,
+            PartitionMapping {
+                target_partition_range: 0..partitions_per_task,
+                target_partition,
+                consumer_partition: partition,
+            },
             self.producer_head(task_context.task_count)?,
             &context,
         )?;

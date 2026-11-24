@@ -46,6 +46,23 @@ struct StreamSlot {
 /// Just some boilerplate for a shared future.
 type SharedBoxFuture<T> = Shared<BoxFuture<'static, Result<T, Arc<DataFusionError>>>>;
 
+/// Which partitions of the target task to read, and which partition of the consumer they feed.
+pub(crate) struct PartitionMapping {
+    /// Range of the target task's output partitions requested together in a single
+    /// [crate::WorkerChannel] call, shared by every consumer partition that reads from it.
+    /// Requesting them together allows implementations to send RecordBatches belonging to
+    /// different partitions through the same physical stream, useful in case there's a fixed cost
+    /// per stream instantiation, like there is in gRPC.
+    pub(crate) target_partition_range: Range<usize>,
+    /// The output partition of the target task to stream from. It must be included in
+    /// `target_partition_range`.
+    pub(crate) target_partition: usize,
+    /// The partition of the consumer node that the returned stream feeds. The stream's
+    /// `output_rows` and `output_bytes` metrics are labeled with it, as DataFusion nodes do with
+    /// their own output partitions.
+    pub(crate) consumer_partition: usize,
+}
+
 impl WorkerConnectionPool {
     /// Builds a new [WorkerConnectionPool] with as many empty slots for worker stream entries as
     /// the provided `input_tasks`.
@@ -59,9 +76,8 @@ impl WorkerConnectionPool {
     pub(crate) fn execute(
         &self,
         input_stage: &RemoteStage,
-        target_partitions: Range<usize>,
         target_task: usize,
-        target_partition: usize,
+        partition_mapping: PartitionMapping,
         producer_head: ProducerHead,
         ctx: &Arc<TaskContext>,
     ) -> Result<BoxStream<'static, Result<RecordBatch>>> {
@@ -73,9 +89,14 @@ impl WorkerConnectionPool {
             stage_id: input_stage.num,
             task_number: target_task,
         };
+        let PartitionMapping {
+            target_partition_range,
+            target_partition,
+            consumer_partition,
+        } = partition_mapping;
         let bdr = || MetricBuilder::new(&self.metrics);
-        let output_bytes = bdr().output_bytes(target_partition);
-        let output_rows = bdr().output_rows(target_partition);
+        let output_bytes = bdr().output_bytes(consumer_partition);
+        let output_rows = bdr().output_rows(consumer_partition);
         let local_connections_used = bdr().global_counter("local_connections_used");
 
         // Otherwise, we need to reach the remote worker through the `WorkerChannel`. Unlike local
@@ -88,10 +109,10 @@ impl WorkerConnectionPool {
             );
         };
 
-        let entry = worker_connection.entry(target_partitions.clone());
+        let entry = worker_connection.entry(target_partition_range.clone());
 
         let group = entry.or_insert_with(|| {
-            let slots: Vec<_> = target_partitions
+            let slots: Vec<_> = target_partition_range
                 .clone()
                 .map(|_| Arc::new(Mutex::new(StreamSlot::default())))
                 .collect();
@@ -108,8 +129,8 @@ impl WorkerConnectionPool {
             let streams_task = SpawnedTask::spawn(async move {
                 let request = ExecuteTaskRequest {
                     task_key,
-                    target_partition_start: target_partitions.start,
-                    target_partition_end: target_partitions.end,
+                    target_partition_start: target_partition_range.start,
+                    target_partition_end: target_partition_range.end,
                     producer_head,
                 };
                 let mut client = match LocalWorkerContext::from_ctx(&ctx) {
@@ -155,7 +176,7 @@ impl WorkerConnectionPool {
         });
 
         let slot = target_partition
-            .checked_sub(target_partitions.start)
+            .checked_sub(target_partition_range.start)
             .and_then(|index| group.slots.get(index))
             .ok_or_else(|| {
                 internal_datafusion_err!(
@@ -356,9 +377,12 @@ mod tests {
         fn stream(&self, partition: usize) -> Result<BoxStream<'static, Result<RecordBatch>>> {
             self.pool.execute(
                 &self.stage,
-                0..2,
                 0,
-                partition,
+                PartitionMapping {
+                    target_partition_range: 0..2,
+                    target_partition: partition,
+                    consumer_partition: partition,
+                },
                 ProducerHead::None,
                 &self.ctx,
             )
