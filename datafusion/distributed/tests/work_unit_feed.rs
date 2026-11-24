@@ -5,12 +5,14 @@ mod tests {
     use datafusion::execution::SessionState;
     use datafusion::physical_plan::execute_stream;
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
+    use datafusion_distributed::test_utils::parquet::register_parquet_tables;
     use datafusion_distributed::test_utils::test_work_unit_feed::{
         RowGeneratorExec, TestWorkUnitFeedExecCodec, TestWorkUnitFeedFunction,
         row_generator_desired_task_count_handler, row_generator_scale_up_leaf_node_handler,
     };
     use datafusion_distributed::{
         DistributedExt, WorkerQueryContext, assert_snapshot, display_plan_ascii,
+        rewrite_distributed_plan_with_dynamic_filters,
     };
     use futures::TryStreamExt;
     use std::sync::Arc;
@@ -675,6 +677,62 @@ mod tests {
         Ok(())
     }
 
+    /// A feed on the build side of a partitioned join, with the probe side scanning parquet in
+    /// another stage. The join's dynamic filter reaches the probe scan through the coordinator
+    /// while the coordinator is also streaming the feed's work units.
+    #[tokio::test]
+    async fn remote_dynamic_filters_with_feed() -> Result<(), Box<dyn std::error::Error>> {
+        let query = r#"
+            SET datafusion.optimizer.hash_join_single_partition_threshold=0;
+            SET datafusion.optimizer.hash_join_single_partition_threshold_rows=0;
+            SELECT count(*)
+            FROM test_work_unit('build', 2, 'rows(1)', 'rows(2)', 'rows(1)', 'rows(3)') b
+            INNER JOIN weather w ON w."Cloud9am" = b.partition
+        "#;
+        let (plan, results, filter_updates) = run_query_with_weather(query).await?;
+        let (_, results_without_filters, _) = run_query_with_weather(&format!(
+            "SET datafusion.optimizer.enable_dynamic_filter_pushdown=false; {query}"
+        ))
+        .await?;
+
+        assert_eq!(results, results_without_filters);
+        assert!(
+            filter_updates > 0,
+            "no dynamic filter update reached the coordinator"
+        );
+        assert_snapshot!(plan + &results, @"
+        ┌───── DistributedExec
+        │ ProjectionExec: expr=[count(Int64(1))@0 as count(*)]
+        │   AggregateExec: mode=Final, gby=[], aggr=[count(Int64(1))]
+        │     CoalescePartitionsExec
+        │       [Stage 3] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
+        └──────────────────────────────────────────────────
+          ┌───── Stage 3 ── tasks=3, partitions=3
+          │ AggregateExec: mode=Partial, gby=[], aggr=[count(Int64(1))]
+          │   HashJoinExec: mode=Partitioned, join_type=Inner, on=[(partition@0, Cloud9am@0)], projection=[]
+          │     [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=2
+          │     [Stage 2] => NetworkShuffleExec: output_partitions=3, input_tasks=3
+          └──────────────────────────────────────────────────
+            ┌───── Stage 1 ── tasks=2, partitions=9
+            │ RepartitionExec: partitioning=Hash([partition@0], 9), input_partitions=2
+            │   RowGeneratorExec: tag=build, tasks=2, partition_ops=[[rows(1)], [rows(2)], [rows(1)], [rows(3)]]
+            └──────────────────────────────────────────────────
+            ┌───── Stage 2 ── tasks=3, partitions=9
+            │ RepartitionExec: partitioning=Hash([Cloud9am@0], 9), input_partitions=3
+            │   DistributedLeafExec:
+            │     t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[Cloud9am], file_type=parquet, predicate=DynamicFilter [ false OR Cloud9am@15 >= 0 AND Cloud9am@15 <= 0 AND Cloud9am@15 IN (SET) ([<values>]) OR Cloud9am@15 >= 1 AND Cloud9am@15 <= 1 AND Cloud9am@15 IN (SET) ([1, 1, 1, 1, 1]) ], dynamic_rg_pruning=eligible, pruning_predicate=Cloud9am_null_count@1 != row_count@2 AND Cloud9am_max@0 >= 0 AND Cloud9am_null_count@1 != row_count@2 AND Cloud9am_min@3 <= 0 AND (Cloud9am_null_count@1 != row_count@2 AND Cloud9am_min@3 <= 0 AND 0 <= Cloud9am_max@0 OR Cloud9am_null_count@1 != row_count@2 AND Cloud9am_min@3 <= 0 AND 0 <= Cloud9am_max@0) OR Cloud9am_null_count@1 != row_count@2 AND Cloud9am_max@0 >= 1 AND Cloud9am_null_count@1 != row_count@2 AND Cloud9am_min@3 <= 1 AND (Cloud9am_null_count@1 != row_count@2 AND Cloud9am_min@3 <= 1 AND 1 <= Cloud9am_max@0 OR Cloud9am_null_count@1 != row_count@2 AND Cloud9am_min@3 <= 1 AND 1 <= Cloud9am_max@0 OR Cloud9am_null_count@1 != row_count@2 AND Cloud9am_min@3 <= 1 AND 1 <= Cloud9am_max@0 OR Cloud9am_null_count@1 != row_count@2 AND Cloud9am_min@3 <= 1 AND 1 <= Cloud9am_max@0 OR Cloud9am_null_count@1 != row_count@2 AND Cloud9am_min@3 <= 1 AND 1 <= Cloud9am_max@0), required_guarantees=[]
+            │     t1: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[Cloud9am], file_type=parquet, predicate=DynamicFilter [ false OR Cloud9am@15 >= 0 AND Cloud9am@15 <= 0 AND Cloud9am@15 IN (SET) ([<values>]) OR Cloud9am@15 >= 1 AND Cloud9am@15 <= 1 AND Cloud9am@15 IN (SET) ([1, 1, 1, 1, 1]) ], dynamic_rg_pruning=eligible, pruning_predicate=Cloud9am_null_count@1 != row_count@2 AND Cloud9am_max@0 >= 0 AND Cloud9am_null_count@1 != row_count@2 AND Cloud9am_min@3 <= 0 AND (Cloud9am_null_count@1 != row_count@2 AND Cloud9am_min@3 <= 0 AND 0 <= Cloud9am_max@0 OR Cloud9am_null_count@1 != row_count@2 AND Cloud9am_min@3 <= 0 AND 0 <= Cloud9am_max@0) OR Cloud9am_null_count@1 != row_count@2 AND Cloud9am_max@0 >= 1 AND Cloud9am_null_count@1 != row_count@2 AND Cloud9am_min@3 <= 1 AND (Cloud9am_null_count@1 != row_count@2 AND Cloud9am_min@3 <= 1 AND 1 <= Cloud9am_max@0 OR Cloud9am_null_count@1 != row_count@2 AND Cloud9am_min@3 <= 1 AND 1 <= Cloud9am_max@0 OR Cloud9am_null_count@1 != row_count@2 AND Cloud9am_min@3 <= 1 AND 1 <= Cloud9am_max@0 OR Cloud9am_null_count@1 != row_count@2 AND Cloud9am_min@3 <= 1 AND 1 <= Cloud9am_max@0 OR Cloud9am_null_count@1 != row_count@2 AND Cloud9am_min@3 <= 1 AND 1 <= Cloud9am_max@0), required_guarantees=[]
+            │     t2: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[Cloud9am], file_type=parquet, predicate=DynamicFilter [ false OR Cloud9am@15 >= 0 AND Cloud9am@15 <= 0 AND Cloud9am@15 IN (SET) ([<values>]) OR Cloud9am@15 >= 1 AND Cloud9am@15 <= 1 AND Cloud9am@15 IN (SET) ([1, 1, 1, 1, 1]) ], dynamic_rg_pruning=eligible, pruning_predicate=Cloud9am_null_count@1 != row_count@2 AND Cloud9am_max@0 >= 0 AND Cloud9am_null_count@1 != row_count@2 AND Cloud9am_min@3 <= 0 AND (Cloud9am_null_count@1 != row_count@2 AND Cloud9am_min@3 <= 0 AND 0 <= Cloud9am_max@0 OR Cloud9am_null_count@1 != row_count@2 AND Cloud9am_min@3 <= 0 AND 0 <= Cloud9am_max@0) OR Cloud9am_null_count@1 != row_count@2 AND Cloud9am_max@0 >= 1 AND Cloud9am_null_count@1 != row_count@2 AND Cloud9am_min@3 <= 1 AND (Cloud9am_null_count@1 != row_count@2 AND Cloud9am_min@3 <= 1 AND 1 <= Cloud9am_max@0 OR Cloud9am_null_count@1 != row_count@2 AND Cloud9am_min@3 <= 1 AND 1 <= Cloud9am_max@0 OR Cloud9am_null_count@1 != row_count@2 AND Cloud9am_min@3 <= 1 AND 1 <= Cloud9am_max@0 OR Cloud9am_null_count@1 != row_count@2 AND Cloud9am_min@3 <= 1 AND 1 <= Cloud9am_max@0 OR Cloud9am_null_count@1 != row_count@2 AND Cloud9am_min@3 <= 1 AND 1 <= Cloud9am_max@0), required_guarantees=[]
+            └──────────────────────────────────────────────────
+        +----------+
+        | count(*) |
+        +----------+
+        | 646      |
+        +----------+
+        ");
+        Ok(())
+    }
+
     /// `wait()` ops in a feed must actually delay the producing stream.
     /// Verifies the [`crate::test_utils::test_work_unit_feed::WorkUnitOp::Wait`]
     /// op is wired into the producer's stream.
@@ -890,6 +948,50 @@ mod tests {
         let formatted = pretty_format_batches(&batches)?;
 
         Ok((plan_display, formatted.to_string()))
+    }
+
+    /// Like [run_query], but also registers the parquet tables. The plan is displayed with the
+    /// dynamic filters each scan ended up with, and the number of dynamic filter updates the
+    /// coordinator received is returned.
+    async fn run_query_with_weather(sql: &str) -> Result<(String, String, usize), DataFusionError> {
+        let (ctx, _guard, _) = start_localhost_context(3, build_state).await;
+        let mut ctx = ctx.with_distributed_dynamic_filter_collection(true)?;
+        ctx.set_distributed_work_unit_feed(|p: &RowGeneratorExec| Some(&p.feed));
+        ctx.set_distributed_user_codec(TestWorkUnitFeedExecCodec);
+        ctx.set_distributed_desired_task_count_handler(row_generator_desired_task_count_handler);
+        ctx.set_distributed_scale_up_leaf_node_handler(row_generator_scale_up_leaf_node_handler);
+        ctx.register_udtf("test_work_unit", Arc::new(TestWorkUnitFeedFunction));
+        register_parquet_tables(&ctx).await?;
+
+        let mut df_opt = None;
+        for sql in sql.split(";") {
+            if sql.trim().is_empty() {
+                continue;
+            }
+            df_opt = Some(ctx.sql(sql).await?);
+        }
+        let Some(df) = df_opt else {
+            return Err(DataFusionError::Plan("Empty 'sql' parameter".to_string()));
+        };
+        let plan = df.create_physical_plan().await?;
+        let batches = execute_stream(Arc::clone(&plan), ctx.task_ctx())?
+            .try_collect::<Vec<_>>()
+            .await?;
+        // Waits for the workers to report their final dynamic filters.
+        let plan_with_filters =
+            rewrite_distributed_plan_with_dynamic_filters(Arc::clone(&plan), &ctx.task_ctx())
+                .await?;
+        let filter_updates = plan
+            .metrics()
+            .and_then(|m| m.sum(|m| m.value().name() == "dynamic_filter_updates_received"))
+            .map_or(0, |m| m.as_usize());
+        let plan = plan_with_filters;
+
+        Ok((
+            display_plan_ascii(plan.as_ref(), false),
+            pretty_format_batches(&batches)?.to_string(),
+            filter_updates,
+        ))
     }
 
     async fn build_state(ctx: WorkerQueryContext) -> Result<SessionState, DataFusionError> {
