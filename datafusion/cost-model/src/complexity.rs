@@ -2,8 +2,11 @@ use datafusion::common::Statistics;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 
+/// How the cost of a node scales with the size of its inputs and outputs.
+///
+/// Evaluating a [Complexity] against a node's statistics yields a number of bytes.
 #[derive(Clone, PartialEq)]
-pub(super) enum Complexity {
+pub enum Complexity {
     /// Constant complexity
     Constant(f32),
     /// Linear with a specific column from a specific child.
@@ -16,8 +19,9 @@ pub(super) enum Complexity {
     Multiply(Box<Complexity>, Box<Complexity>),
 }
 
+/// The input or output bytes a [Complexity::Linear] term scales with.
 #[derive(Clone, PartialEq, Eq)]
-pub(super) enum LinearComplexity {
+pub enum LinearComplexity {
     /// Depends on linearly with the input column with the provided index
     Column(usize),
     /// Depends on linearly with the all the input columns
@@ -35,14 +39,16 @@ pub(super) enum LinearComplexity {
 }
 
 impl Complexity {
-    pub(super) fn log(self, other: Self) -> Self {
+    /// `self * log(other)`, folding constants.
+    pub fn log(self, other: Self) -> Self {
         match (self, other) {
             (Self::Constant(n), Self::Constant(m)) => Self::Constant(n * m.log2()),
             (s, o) => Self::Log(Box::new(s), Box::new(o)),
         }
     }
 
-    pub(super) fn plus(self, other: Self) -> Self {
+    /// `self + other`, folding constants.
+    pub fn plus(self, other: Self) -> Self {
         match (self, other) {
             (Self::Constant(n), Self::Constant(m)) => Self::Constant(n + m),
             // (A + k1) + k2 = A + (k1 + k2): bubble constants rightward so they can fold
@@ -54,7 +60,8 @@ impl Complexity {
         }
     }
 
-    pub(super) fn multiply(self, other: Self) -> Self {
+    /// `self * other`, folding constants.
+    pub fn multiply(self, other: Self) -> Self {
         match (self, other) {
             (Self::Constant(n), Self::Constant(m)) => Self::Constant(n * m),
             (s, o) => Self::Multiply(Box::new(s), Box::new(o)),
@@ -63,7 +70,7 @@ impl Complexity {
 
     /// Computes the total bytes processed given per-child row counts.
     /// Returns None if statistics are unavailable for any required input.
-    pub(super) fn cost(
+    pub(crate) fn cost(
         &self,
         output_stat: &Arc<Statistics>,
         input_stats: &[Arc<Statistics>],

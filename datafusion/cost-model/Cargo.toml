@@ -1,0 +1,17 @@
+[package]
+name = "datafusion-cost-model"
+version = "5.0.0"
+edition = "2024"
+description = "Extensible CPU, memory and network cost model for DataFusion physical plans"
+license = "Apache-2.0"
+repository = "https://github.com/datafusion-contrib/datafusion-distributed"
+
+[dependencies]
+datafusion = { workspace = true }
+itertools = "0.14.0"
+
+[dev-dependencies]
+# The tests plan SQL queries over the parquet files in the repository's `testdata/` directory.
+datafusion = { workspace = true, features = ["parquet", "sql"] }
+insta = { version = "1.46.0", features = ["filters"] }
+tokio = { version = "1.48", features = ["full"] }

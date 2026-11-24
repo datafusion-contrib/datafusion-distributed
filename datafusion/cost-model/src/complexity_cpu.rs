@@ -1,6 +1,4 @@
-use crate::BroadcastExec;
-use crate::distributed_planner::statistics::complexity::{Complexity, LinearComplexity};
-use crate::execution_plans::ChildrenIsolatorUnionExec;
+use crate::complexity::{Complexity, LinearComplexity};
 use datafusion::catalog::memory::DataSourceExec;
 use datafusion::common::JoinSide;
 use datafusion::physical_expr::PhysicalExpr;
@@ -29,7 +27,7 @@ use datafusion::physical_plan::{ExecutionPlan, Partitioning};
 use std::sync::Arc;
 
 /// Calculates the CPU cost for the provided node, without recursing into children.
-pub(super) fn complexity_cpu(node: &Arc<dyn ExecutionPlan>) -> Complexity {
+pub(crate) fn complexity_cpu(node: &Arc<dyn ExecutionPlan>) -> Complexity {
     // NestedLoopJoinExec: O(n*m) - evaluates join condition for each pair of rows
     // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/joins/nested_loop_join.rs
     if let Some(node) = node.downcast_ref::<NestedLoopJoinExec>() {
@@ -269,14 +267,9 @@ pub(super) fn complexity_cpu(node: &Arc<dyn ExecutionPlan>) -> Complexity {
         return Complexity::Constant(1.0);
     }
 
-    // BroadcastExec: This node does not do any computation, does not even read the data.
-    if node.is::<BroadcastExec>() {
-        return Complexity::Constant(1.);
-    }
-
     // UnionExec: combines multiple input streams, no processing
     // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/union.rs
-    if node.is::<UnionExec>() || node.is::<ChildrenIsolatorUnionExec>() {
+    if node.is::<UnionExec>() {
         return Complexity::Constant(1.);
     }
 
@@ -486,9 +479,9 @@ fn _expression_complexity(expression: &Arc<dyn PhysicalExpr>) -> BytesPerRow {
 #[cfg(test)]
 mod tests {
     use crate::assert_snapshot;
-    use crate::distributed_planner::statistics::complexity_cpu::complexity_cpu;
-    use crate::test_utils::plans::TestPlanBuilder;
-    use arrow::datatypes::{DataType, Field, Schema};
+    use crate::complexity_cpu::complexity_cpu;
+    use crate::test_utils::TestPlanBuilder;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::common::tree_node::{Transformed, TreeNode};
     use datafusion::common::{ScalarValue, SplitPoint};
     use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr, RangePartitioning};
@@ -948,9 +941,8 @@ mod tests {
         ");
     }
 
-    // NOTE: BroadcastExec and ChildrenIsolatorUnionExec are inserted only by the distributed
-    // planner (not by plain DataFusion planning), and SymmetricHashJoinExec requires unbounded
-    // streaming inputs — none are reachable from these parquet-backed queries.
+    // NOTE: SymmetricHashJoinExec requires unbounded streaming inputs, so it is not reachable
+    // from these parquet-backed queries.
 
     fn plan_costs(plan: Arc<dyn ExecutionPlan>) -> String {
         let mut display = String::new();

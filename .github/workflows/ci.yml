@@ -29,7 +29,7 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           components: clippy
-      - run: cargo clippy -p datafusion-distributed -p datafusion-distributed-iceberg --all-targets --all-features -- -D warnings
+      - run: cargo clippy -p datafusion-distributed -p datafusion-distributed-iceberg -p datafusion-cost-model --all-targets --all-features -- -D warnings
 
   unit-test:
     runs-on: ubuntu-latest
@@ -38,7 +38,7 @@ jobs:
         with:
           lfs: true
       - uses: ./.github/actions/setup
-      - run: cargo test -p datafusion-distributed --features integration
+      - run: cargo test -p datafusion-distributed -p datafusion-cost-model --features integration
 
   tpch-correctness-test:
     runs-on: ubuntu-latest

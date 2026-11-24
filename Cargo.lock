@@ -2228,6 +2228,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "datafusion-cost-model"
+version = "5.0.0"
+dependencies = [
+ "datafusion",
+ "insta",
+ "itertools 0.14.0",
+ "tokio",
+]
+
+[[package]]
 name = "datafusion-datasets"
 version = "0.1.0"
 dependencies = [
@@ -2433,6 +2443,7 @@ dependencies = [
  "crossbeam-queue",
  "dashmap",
  "datafusion",
+ "datafusion-cost-model",
  "datafusion-datasets",
  "datafusion-proto",
  "delegate",

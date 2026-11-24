@@ -167,7 +167,6 @@ pub(crate) struct TestPlanBuilder {
     distributed_max_tasks_per_stage: Option<usize>,
     distributed_dynamic_bytes_ready_sample_percentage: Option<f64>,
     distributed_dynamic_broadcast_join_threshold_bytes: Option<usize>,
-    prefer_hash_join: Option<bool>,
     hash_join_single_partition_threshold: Option<usize>,
     hash_join_single_partition_threshold_rows: Option<usize>,
     distributed_blacklisted_nodes: Vec<fn(&mut SessionConfig)>,
@@ -193,7 +192,6 @@ impl TestPlanBuilder {
             distributed_max_tasks_per_stage: None,
             distributed_dynamic_bytes_ready_sample_percentage: None,
             distributed_dynamic_broadcast_join_threshold_bytes: None,
-            prefer_hash_join: None,
             hash_join_single_partition_threshold: None,
             hash_join_single_partition_threshold_rows: None,
             distributed_blacklisted_nodes: vec![],
@@ -233,11 +231,6 @@ impl TestPlanBuilder {
 
     pub fn information_schema(mut self, enabled: bool) -> Self {
         self.information_schema = Some(enabled);
-        self
-    }
-
-    pub fn prefer_hash_joins(mut self, prefer_hash_joins: bool) -> Self {
-        self.prefer_hash_join = Some(prefer_hash_joins);
         self
     }
 
@@ -347,9 +340,6 @@ impl TestPlanBuilder {
             config = config.with_information_schema(enabled);
         }
         let opts = config.options_mut();
-        if let Some(enabled) = self.prefer_hash_join {
-            opts.optimizer.prefer_hash_join = enabled
-        }
         if let Some(value) = self.hash_join_single_partition_threshold {
             opts.optimizer.hash_join_single_partition_threshold = value
         }
@@ -461,7 +451,6 @@ impl Default for TestPlanBuilder {
             distributed_max_tasks_per_stage: None,
             distributed_dynamic_bytes_ready_sample_percentage: None,
             distributed_dynamic_broadcast_join_threshold_bytes: None,
-            prefer_hash_join: None,
             hash_join_single_partition_threshold: None,
             hash_join_single_partition_threshold_rows: None,
             distributed_blacklisted_nodes: vec![],

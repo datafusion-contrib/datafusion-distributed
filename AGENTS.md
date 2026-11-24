@@ -36,6 +36,9 @@ about a user's networking or deployment stack.
           remote-feed support.
         - `worker/`: worker service, sessions, task execution, and connections.
     - `tests/`: integration and correctness tests.
+- `datafusion/cost-model/`: CPU, memory and network cost model for physical
+  plans. It must not depend on `datafusion-distributed`; the core library teaches
+  it about its own nodes through `CostModelExtension`.
 - `datafusion/distributed-iceberg/`: Iceberg integration crate.
 - `datafusion/distributed-iceberg-test-tools/`: shared Iceberg test fixtures.
 - `datafusion/distributed-console/`: terminal console for observing a cluster.

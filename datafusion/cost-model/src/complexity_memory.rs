@@ -1,5 +1,4 @@
-use crate::BroadcastExec;
-use crate::distributed_planner::statistics::complexity::{Complexity, LinearComplexity};
+use crate::complexity::{Complexity, LinearComplexity};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::aggregates::AggregateExec;
 use datafusion::physical_plan::filter::FilterExec;
@@ -14,7 +13,7 @@ use datafusion::physical_plan::windows::{BoundedWindowAggExec, WindowAggExec};
 use std::sync::Arc;
 
 /// Calculates the memory cost for the provided node, without recursing into children.
-pub(super) fn complexity_memory(node: &Arc<dyn ExecutionPlan>) -> Complexity {
+pub(crate) fn complexity_memory(node: &Arc<dyn ExecutionPlan>) -> Complexity {
     // NestedLoopJoinExec buffers the left/build side and streams the right/probe side. Its CPU
     // cost is O(left * right), but its retained memory is bounded by the build side plus small
     // output/bitmap buffers.
@@ -90,11 +89,6 @@ pub(super) fn complexity_memory(node: &Arc<dyn ExecutionPlan>) -> Complexity {
         return Complexity::Constant(0.);
     }
 
-    // BroadcastExec retains batches so several consumers can replay the same input partition.
-    if node.is::<BroadcastExec>() {
-        return Complexity::Linear(LinearComplexity::AllOutputColumns);
-    }
-
     // FilterExec accumulates filtered rows through a BatchCoalescer up to the session batch
     // size before emitting, so it retains one record batch of working state.
     // https://github.com/apache/datafusion/blob/branch-54/datafusion/physical-plan/src/filter.rs
@@ -121,8 +115,8 @@ pub(super) fn complexity_memory(node: &Arc<dyn ExecutionPlan>) -> Complexity {
 #[cfg(test)]
 mod tests {
     use crate::assert_snapshot;
-    use crate::distributed_planner::statistics::complexity_memory::complexity_memory;
-    use crate::test_utils::plans::TestPlanBuilder;
+    use crate::complexity_memory::complexity_memory;
+    use crate::test_utils::TestPlanBuilder;
     use datafusion::common::tree_node::{Transformed, TreeNode};
     use datafusion::physical_plan::{ExecutionPlan, displayable};
     use std::cell::RefCell;

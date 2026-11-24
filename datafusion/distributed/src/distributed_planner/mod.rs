@@ -1,4 +1,5 @@
 mod blacklisted_nodes;
+mod cost_model;
 mod distributed_config;
 mod distributed_query_planner;
 mod inject_network_boundaries;
@@ -10,9 +11,9 @@ mod partial_reduce_below_network_shuffles;
 mod prepare_network_boundaries;
 mod push_fetch_into_network_coalesce;
 mod session_state_builder_ext;
-mod statistics;
 
 pub(crate) use blacklisted_nodes::add_distributed_blacklisted_node;
+pub(crate) use cost_model::calculate_cost;
 pub use distributed_config::DistributedConfig;
 pub use distributed_query_planner::create_distributed_plan;
 pub(crate) use inject_network_boundaries::{
@@ -22,4 +23,3 @@ pub(crate) use inject_network_boundaries::{
 pub(crate) use insert_broadcast::is_left_broadcast_safe;
 pub use network_boundary::{NetworkBoundary, NetworkBoundaryExt, ProducerHead};
 pub use session_state_builder_ext::SessionStateBuilderExt;
-pub(crate) use statistics::calculate_cost;

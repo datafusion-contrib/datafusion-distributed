@@ -23,7 +23,7 @@ const DEFAULT_DATA_SIZE_PER_COLUMN: usize = 50;
 ///
 /// Reference: Trino's PlanNodeStatsEstimate.getOutputSizeForSymbol()
 /// https://github.com/trinodb/trino/blob/458/core/trino-main/src/main/java/io/trino/cost/PlanNodeStatsEstimate.java#L89-L114
-pub(super) fn default_bytes_for_datatype(data_type: &DataType) -> usize {
+pub(crate) fn default_bytes_for_datatype(data_type: &DataType) -> usize {
     // 1 byte for validity bitmap per row (Arrow uses 1 bit, but we round up for estimation).
     // Trino calls this the "is null" boolean array.
     // Reference: PlanNodeStatsEstimate.java:98-99

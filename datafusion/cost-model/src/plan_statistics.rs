@@ -1,4 +1,4 @@
-use crate::distributed_planner::statistics::default_bytes_for_datatype::default_bytes_for_datatype;
+use crate::default_bytes_for_datatype::default_bytes_for_datatype;
 use datafusion::common::stats::Precision;
 use datafusion::common::{Statistics, plan_err};
 use datafusion::error::Result;
@@ -13,7 +13,7 @@ use std::sync::Arc;
 const FALLBACK_NDV_RATIO: f64 = 0.5;
 
 /// Uses upstream DataFusion stats system with some small overrides.
-pub(super) fn plan_statistics(
+pub(crate) fn plan_statistics(
     node: &Arc<dyn ExecutionPlan>,
     children_stats: &[Arc<Statistics>],
 ) -> Result<Arc<Statistics>> {
