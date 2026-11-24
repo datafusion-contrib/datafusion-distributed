@@ -9,7 +9,8 @@ use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties, internal_err,
+    ChildrenPropertiesMode, DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning,
+    PlanProperties, ReplaceChildrenOptions, internal_err,
 };
 use futures::{Stream, StreamExt};
 use std::collections::VecDeque;
@@ -168,14 +169,38 @@ impl ExecutionPlan for BroadcastExec {
         Ok(TreeNodeRecursion::Continue)
     }
 
+    fn replace_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+        options: ReplaceChildrenOptions,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let input = require_one_child(children)?;
+        match options.children_properties {
+            ChildrenPropertiesMode::Keep => {
+                let queues = (0..input.properties().partitioning.partition_count())
+                    .map(|_| OnceLock::new())
+                    .collect();
+                Ok(Arc::new(Self {
+                    input,
+                    consumer_task_count: self.consumer_task_count,
+                    properties: Arc::clone(&self.properties),
+                    queues,
+                }))
+            }
+            ChildrenPropertiesMode::Recompute => {
+                Ok(Arc::new(Self::new(input, self.consumer_task_count)))
+            }
+        }
+    }
+
     fn with_new_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        Ok(Arc::new(Self::new(
-            require_one_child(children)?,
-            self.consumer_task_count,
-        )))
+        self.replace_children(
+            children,
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+        )
     }
 
     fn execute(
@@ -795,6 +820,41 @@ mod tests {
         assert_eq!(batches1[0].num_rows(), 1);
         assert_int32_batch_values(&batches0[0], &[0]);
         assert_int32_batch_values(&batches1[0], &[0]);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn broadcast_exec_replace_children_reads_the_new_input() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let input = |value| -> Result<Arc<dyn ExecutionPlan>> {
+            let batch = RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![Arc::new(Int32Array::from(vec![value]))],
+            )?;
+            Ok(Arc::new(MockExec::new(
+                vec![Ok(batch)],
+                Arc::clone(&schema),
+            )))
+        };
+        let broadcast = Arc::new(BroadcastExec::new(input(1)?, 2));
+        let task_ctx = SessionContext::new().task_ctx();
+        // Fill the original node's queue before its input is replaced.
+        datafusion::physical_plan::common::collect(broadcast.execute(0, Arc::clone(&task_ctx))?)
+            .await?;
+
+        let replaced = Arc::clone(&broadcast).replace_children(
+            vec![input(2)?],
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Keep),
+        )?;
+        assert!(Arc::ptr_eq(replaced.properties(), broadcast.properties()));
+        for partition in 0..2 {
+            let batches = datafusion::physical_plan::common::collect(
+                replaced.execute(partition, Arc::clone(&task_ctx))?,
+            )
+            .await?;
+            assert_int32_batch_values(&batches[0], &[2]);
+        }
 
         Ok(())
     }

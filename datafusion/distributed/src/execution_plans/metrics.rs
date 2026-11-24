@@ -67,17 +67,25 @@ impl ExecutionPlan for MetricsWrapperExec {
         self.inner.apply_expressions(f)
     }
 
+    fn replace_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+        options: ReplaceChildrenOptions,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        Ok(Arc::new(MetricsWrapperExec {
+            inner: Arc::clone(&self.inner).replace_children(children, options)?,
+            metrics: self.metrics.clone(),
+        }))
+    }
+
     fn with_new_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        Ok(Arc::new(MetricsWrapperExec {
-            inner: Arc::clone(&self.inner).replace_children(
-                children.clone(),
-                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
-            )?,
-            metrics: self.metrics.clone(),
-        }))
+        self.replace_children(
+            children,
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+        )
     }
 
     fn execute(
@@ -125,6 +133,7 @@ mod tests {
     use super::*;
     use crate::metrics::{BytesCounterMetric, MaxGaugeMetric};
     use datafusion::arrow::datatypes::Schema;
+    use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
     use datafusion::physical_plan::empty::EmptyExec;
     use datafusion::physical_plan::metrics::{Count, Metric};
 
@@ -140,6 +149,30 @@ mod tests {
                 assert!(Arc::ptr_eq(actual, &expected));
             }
         }
+    }
+
+    #[test]
+    fn replace_children_passes_options_to_the_wrapped_plan() -> Result<()> {
+        let child =
+            || Arc::new(EmptyExec::new(Arc::new(Schema::empty()))) as Arc<dyn ExecutionPlan>;
+        let inner: Arc<dyn ExecutionPlan> = Arc::new(CoalescePartitionsExec::new(child()));
+        let wrapper = Arc::new(MetricsWrapperExec::new(
+            Arc::clone(&inner),
+            MetricsSet::new(),
+        ));
+
+        let kept = Arc::clone(&wrapper).replace_children(
+            vec![child()],
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Keep),
+        )?;
+        assert!(Arc::ptr_eq(kept.properties(), inner.properties()));
+
+        let recomputed = wrapper.replace_children(
+            vec![child()],
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+        )?;
+        assert!(!Arc::ptr_eq(recomputed.properties(), inner.properties()));
+        Ok(())
     }
 
     #[test]
