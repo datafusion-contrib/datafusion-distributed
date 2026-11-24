@@ -3,13 +3,14 @@ mod defaults;
 mod desired_task_count;
 mod route_tasks;
 mod scale_up_leaf_node;
+mod stage_built;
 mod task_finished;
 mod worker_plan_rewrite;
 
 pub(crate) use defaults::{
     RandomRouteTaskHandler, SingleTaskChildUrlRouteTaskHandler,
-    SingleTaskCoordinatorRouteTaskHandler, file_scan_config_desired_task_count,
-    file_scan_config_scale_up_leaf_node,
+    SingleTaskCoordinatorRouteTaskHandler, cost_based_stage_built_event_handler,
+    file_scan_config_desired_task_count, file_scan_config_scale_up_leaf_node,
 };
 pub use desired_task_count::{
     DesiredTaskCountEvent, DesiredTaskCountEventResponse, DesiredTaskCountHandler,
@@ -24,6 +25,8 @@ pub(crate) use scale_up_leaf_node::ScaleUpLeafNodeHandlers;
 pub use scale_up_leaf_node::{
     ScaleUpLeafNodeEvent, ScaleUpLeafNodeEventResponse, ScaleUpLeafNodeHandler,
 };
+pub(crate) use stage_built::StageBuiltHandlers;
+pub use stage_built::{Cost, StageBuiltEvent, StageBuiltEventResponse, StageBuiltHandler};
 pub(crate) use task_finished::TaskFinishedHandlers;
 pub use task_finished::{
     TaskFinishedEvent, TaskFinishedEventResponse, TaskFinishedHandler, TaskOutcome,
