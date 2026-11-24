@@ -2,12 +2,13 @@ use std::mem::{size_of, size_of_val};
 
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::stats::Precision;
-use datafusion::common::{Result, Statistics};
+use datafusion::common::{ColumnStatistics, Result, Statistics};
 use datafusion::execution::TaskContext;
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use futures::TryStreamExt;
 use iceberg::scan::{FileScanTask, TableScan};
 
+use crate::common::arrow_bytes::scan_arrow_bytes;
 use crate::common::df_err;
 
 /// File work retained by a query after manifest planning and before execution.
@@ -23,27 +24,38 @@ impl PlannedFiles {
         &self.tasks
     }
 
-    /// Summarize selected file work; predicates and deletes can reduce output rows.
-    pub(crate) fn statistics(&self, schema: &SchemaRef, may_filter_rows: bool) -> Statistics {
-        let bytes = self.tasks.iter().fold(0usize, |bytes, task| {
-            bytes.saturating_add(task.length() as usize)
-        });
+    /// Summarize selected file work, with `column_statistics` when they were read; predicates and
+    /// deletes can reduce output rows. The total size is an in-memory estimate from
+    /// [scan_arrow_bytes].
+    pub(crate) fn statistics(
+        &self,
+        schema: &SchemaRef,
+        may_filter_rows: bool,
+        column_statistics: Option<Vec<ColumnStatistics>>,
+    ) -> Statistics {
         let rows = self.tasks.iter().try_fold(0usize, |rows, task| {
             rows.checked_add(usize::try_from(task.record_count()?).ok()?)
         });
-        let mut statistics = Statistics::new_unknown(schema);
-        statistics.num_rows = match rows {
+        let num_rows = match rows {
             Some(0) if self.tasks.is_empty() => Precision::Exact(0),
             Some(rows) if !may_filter_rows => Precision::Exact(rows),
             Some(rows) => Precision::Inexact(rows),
             None => Precision::Absent,
         };
-        statistics.total_byte_size = if may_filter_rows {
-            Precision::Inexact(bytes)
-        } else {
-            Precision::Exact(bytes)
-        };
-        statistics
+        let column_statistics =
+            column_statistics.unwrap_or_else(|| Statistics::unknown_column(schema));
+        Statistics {
+            num_rows,
+            total_byte_size: scan_arrow_bytes(schema, num_rows, &column_statistics),
+            column_statistics,
+        }
+    }
+
+    /// On-disk bytes the selected file work reads.
+    pub(crate) fn file_bytes(&self) -> usize {
+        self.tasks.iter().fold(0usize, |bytes, task| {
+            bytes.saturating_add(task.length() as usize)
+        })
     }
 
     fn new(context: &TaskContext) -> Self {

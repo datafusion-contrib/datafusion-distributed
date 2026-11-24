@@ -106,6 +106,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn planned_scan_tasks_follow_on_disk_bytes() -> Result<()> {
+        // 5,656,412 bytes on disk / 1 MB / 2 partitions rounds up to 3 tasks. The scan's
+        // in-memory estimate is about 3 times larger and would ask for one task per file, 7.
+        let harness = IcebergTestHarness::builder()
+            .with_session_extension(|state| state.with_iceberg_integration(Default::default()))
+            .with_table(create_taxi_table().await?)
+            .with_config_option("iceberg.eager_file_planning", true)
+            .configure_session(|mut state| {
+                let session = state.config().get_or_insert_default();
+                session.options_mut().execution.target_partitions = 2;
+                state.with_distributed_file_scan_config_bytes_per_partition(1_000_000)
+            })?
+            .build()
+            .await?;
+        assert_eq!(
+            iceberg_desired_task_count(DesiredTaskCountEvent {
+                plan: &harness.scan().await?,
+                session_config: harness.state().config()
+            })
+            .transpose()?
+            .map(|response| response.task_count.as_usize()),
+            Some(3)
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn estimates_current_snapshot() -> Result<()> {
         assert_task_count(
             |metadata| metadata_with_file_size(metadata, Some("24000000")),
