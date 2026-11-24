@@ -19,12 +19,10 @@ use crate::backend::BenchmarkBackend;
 use crate::local_workers::LocalWorkers;
 use crate::results::{BenchResult, BenchmarkRun, QueryIter, dataset_path};
 use crate::stats::stats_estimation_q_error;
-use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::instant::Instant;
 use datafusion::common::tree_node::{Transformed, TreeNode};
-use datafusion::common::utils::get_available_parallelism;
-use datafusion::common::{config_err, exec_err, not_impl_err};
+use datafusion::common::{config_datafusion_err, config_err, exec_err, not_impl_err};
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::SessionStateBuilder;
@@ -37,9 +35,11 @@ use datafusion_distributed::test_utils::work_unit_file_scan::{
     work_unit_file_scan_desired_task_count, work_unit_file_scan_scale_up_leaf_node,
 };
 use datafusion_distributed::{
-    DistributedExt, DistributedMetricsFormat, NetworkBoundaryExt, SessionStateBuilderExt,
-    display_plan_ascii, rewrite_distributed_plan_with_metrics,
+    DistributedConfig, DistributedExt, DistributedMetricsFormat, GeneratePlanDumpOptions,
+    NetworkBoundaryExt, SessionStateBuilderExt, display_plan_ascii, generate_plan_dump,
+    rewrite_distributed_plan_with_metrics,
 };
+use serde_yaml_ng::{Mapping, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -72,42 +72,9 @@ pub struct RunOpt {
     #[structopt(long, default_value = "0")]
     workers: usize,
 
-    /// Number of bytes each partition is expected to scan from parquet files. Lower values
-    /// produce more partitions/tasks. Defaults to the engine default when unset.
-    #[structopt(long)]
-    file_scan_config_bytes_per_partition: Option<usize>,
-
-    /// Task count scale factor for when nodes in stages change the cardinality of the data
-    #[structopt(long)]
-    cardinality_task_sf: Option<f64>,
-
-    /// Collects metrics across network boundaries
-    #[structopt(long)]
-    collect_metrics: bool,
-
-    /// Collects metrics across network boundaries
-    #[structopt(long, default_value = "lz4")]
-    compression: String,
-
-    /// Sets the limits of tasks for each stage
-    #[structopt(long, default_value = "0")]
-    max_tasks_per_stage: usize,
-
-    /// Activate dynamic task count
-    #[structopt(long)]
-    dynamic: bool,
-
     /// Number of iterations of each test run
-    #[structopt(short = "i", long = "iterations", default_value = "5")]
-    iterations: usize,
-
-    /// Number of partitions to process in parallel. Defaults to the number of available cores.
-    #[structopt(short = "n", long = "partitions")]
-    partitions: Option<usize>,
-
-    /// Batch size when reading CSV or Parquet files
-    #[structopt(short = "s", long = "batch-size")]
-    batch_size: Option<usize>,
+    #[structopt(short = "i", long = "iterations")]
+    iterations: Option<usize>,
 
     /// Activate debug mode to see more details
     #[structopt(short, long)]
@@ -119,13 +86,17 @@ pub struct RunOpt {
     #[structopt(long = "work-unit-file-scan")]
     work_unit_file_scan: bool,
 
-    /// Fan-out threshold for choosing between Direct and TwoPhase shuffle modes. In Direct mode
-    /// the producer hashes into `consumer_task_count × consumer_partition_count` global buckets;
-    /// TwoPhase mode is used when that product meets or exceeds this value, reducing the
-    /// producer-side hash to `consumer_task_count` buckets and adding a local RepartitionExec
-    /// on the consumer side.
-    #[structopt(long = "two-step-shuffle-fanout-threshold", default_value = "128")]
-    two_step_shuffle_fanout_threshold: usize,
+    /// YAML file with DataFusion and distributed config options as flat `key: value` pairs, such
+    /// as `datafusion.execution.target_partitions: 8` or `distributed.broadcast_joins: true`.
+    /// Defaults to `.df-bench.yaml` in the current directory, which is skipped if it doesn't exist.
+    #[structopt(long)]
+    config_path: Option<PathBuf>,
+
+    /// A DataFusion or distributed config option as `key=value`, such as
+    /// `-c distributed.dynamic_task_count=true`. Can be repeated, and takes precedence over the
+    /// values in the config file.
+    #[structopt(short = "c", long = "config", parse(try_from_str = parse_config_entry))]
+    config: Vec<(String, String)>,
 }
 
 /// The query suite of a dataset path such as `tpch_parquet/scale_factor=1/...`: the benchmark
@@ -161,14 +132,54 @@ fn queries_for_dataset(dataset: &str) -> Result<Vec<(String, String)>, DataFusio
     }
 }
 
-impl RunOpt {
-    fn config(&self) -> Result<SessionConfig> {
-        SessionConfig::from_env().map(|mut config| {
-            if let Some(batch_size) = self.batch_size {
-                config = config.with_batch_size(batch_size);
-            }
-            config.with_target_partitions(self.partitions.unwrap_or_else(get_available_parallelism))
+/// The default `--config-path`, relative to the current directory.
+const DEFAULT_CONFIG_PATH: &str = ".df-bench.yaml";
+
+fn parse_config_entry(entry: &str) -> Result<(String, String), String> {
+    let (key, value) = entry
+        .split_once('=')
+        .ok_or_else(|| format!("expected `key=value`, got `{entry}`"))?;
+    Ok((key.trim().to_string(), value.trim().to_string()))
+}
+
+/// Reads the flat `key: value` config entries of a YAML file, in file order.
+fn read_config_file(path: &Path) -> Result<Vec<(String, String)>> {
+    let yaml = fs::read_to_string(path)
+        .map_err(|e| config_datafusion_err!("Cannot read {}: {e}", path.display()))?;
+    // A file with only comments is a null document.
+    let entries: Option<Mapping> = serde_yaml_ng::from_str(&yaml)
+        .map_err(|e| config_datafusion_err!("Invalid YAML in {}: {e}", path.display()))?;
+    entries
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(key, value)| {
+            let Value::String(key) = key else {
+                return config_err!("Config keys in {} must be strings", path.display());
+            };
+            let value = match value {
+                Value::Bool(v) => v.to_string(),
+                Value::Number(v) => v.to_string(),
+                Value::String(v) => v,
+                v => return config_err!("Config value of {key} must be a scalar, got {v:?}"),
+            };
+            Ok((key, value))
         })
+        .collect()
+}
+
+impl RunOpt {
+    /// The config entries of the config file followed by the `--config` ones, so that applying
+    /// them in order makes the `--config` ones take precedence.
+    fn config_entries(&self) -> Result<Vec<(String, String)>> {
+        let mut entries = match &self.config_path {
+            Some(path) => read_config_file(path)?,
+            None if Path::new(DEFAULT_CONFIG_PATH).exists() => {
+                read_config_file(Path::new(DEFAULT_CONFIG_PATH))?
+            }
+            None => vec![],
+        };
+        entries.extend(self.config.iter().cloned());
+        Ok(entries)
     }
 
     pub async fn run<B: BenchmarkBackend + Clone>(self, mut backend: B) -> Result<()> {
@@ -185,30 +196,11 @@ impl RunOpt {
     ) -> Result<()> {
         let mut builder = SessionStateBuilder::new()
             .with_default_features()
-            .with_config(self.config()?)
+            .with_config(SessionConfig::from_env()?)
             .with_distributed_worker_resolver(LocalHostWorkerResolver::new(
                 local_workers.ports.to_vec(),
             ))
             .with_distributed_planner()
-            .with_distributed_cardinality_effect_task_scale_factor(
-                self.cardinality_task_sf.unwrap_or(1.0),
-            )?
-            .with_distributed_dynamic_task_count(self.dynamic)?
-            .with_distributed_compression(match self.compression.as_str() {
-                "zstd" => Some(CompressionType::ZSTD),
-                "lz4" => Some(CompressionType::LZ4_FRAME),
-                "none" => None,
-                v => return config_err!("Unknown compression type {v}"),
-            })?
-            .with_distributed_children_isolator_unions(true)?
-            .with_distributed_broadcast_joins(true)?
-            .with_distributed_two_step_shuffle_fanout_threshold(
-                self.two_step_shuffle_fanout_threshold,
-            )?
-            .with_distributed_metrics_collection(
-                self.collect_metrics || self.debug || self.dynamic,
-            )?
-            .with_distributed_max_tasks_per_stage(self.max_tasks_per_stage)?
             .with_distributed_user_codec(WorkUnitFileScanCodec)
             .with_distributed_desired_task_count_handler(work_unit_file_scan_desired_task_count)
             .with_distributed_scale_up_leaf_node_handler(work_unit_file_scan_scale_up_leaf_node)
@@ -216,15 +208,18 @@ impl RunOpt {
                 dse.data_source()
                     .downcast_ref::<WorkUnitFileScanConfig>()
                     .map(|v| &v.feed)
-            });
+            })
+            .with_distributed_metrics_collection(true)?;
+
+        let config_entries = self.config_entries()?;
+        let options = builder.config().get_or_insert_default().options_mut();
+        for (key, value) in &config_entries {
+            options.set(key, value)?;
+        }
 
         if let Some(local_worker) = local_workers.workers.first() {
             let url = Url::parse(&format!("http://127.0.0.1:{}", local_workers.ports[0])).unwrap();
             builder.set_distributed_local_worker_context(local_worker.to_local_worker_context(url))
-        }
-
-        if let Some(bytes_per_partition) = self.file_scan_config_bytes_per_partition {
-            builder.set_distributed_file_scan_config_bytes_per_partition(bytes_per_partition)?;
         }
 
         if self.work_unit_file_scan {
@@ -236,7 +231,8 @@ impl RunOpt {
         backend.register_tables(&ctx, &self.get_path()?).await?;
         let dataset_suite = dataset_suite(&self.dataset);
 
-        println!("Running benchmarks with the following options: {self:?}");
+        eprintln!("Running benchmarks with the following options: {self:?}");
+        eprintln!("Config: {config_entries:?}");
         let mut benchmark_run = BenchmarkRun::new(self.dataset.clone(), local_workers.ports.len());
 
         for (id, sql) in queries_for_dataset(dataset_suite)? {
@@ -262,13 +258,22 @@ impl RunOpt {
         sql: &str,
         ctx: &SessionContext,
     ) -> Result<BenchResult> {
+        let dynamic =
+            DistributedConfig::from_session_config(&ctx.copied_config())?.dynamic_task_count;
         let mut bench_query = BenchResult {
             id: id.to_string(),
             dataset: self.dataset.clone(),
             iterations: vec![],
         };
+        let mut iterations = 5; // Default to 5 iterations.
+        if self.debug {
+            iterations = 1;
+        }
+        if let Some(value) = self.iterations {
+            iterations = value
+        }
 
-        'outer: for i in 0..self.iterations {
+        'outer: for i in 0..iterations {
             let start = Instant::now();
 
             for query in sql.split(";").map(|v| v.trim()) {
@@ -284,7 +289,7 @@ impl RunOpt {
                         let elapsed = start.elapsed();
                         let ms = elapsed.as_secs_f64() * 1000.0;
                         let row_count = result.iter().map(|b| b.num_rows()).sum();
-                        let physical_plan = if self.dynamic || self.debug {
+                        let physical_plan = if self.debug || dynamic {
                             rewrite_distributed_plan_with_metrics(
                                 physical_plan,
                                 DistributedMetricsFormat::PerTask,
@@ -293,24 +298,31 @@ impl RunOpt {
                         } else {
                             physical_plan
                         };
-                        let stats_q_error = match self.dynamic {
+                        let stats_q_error = match dynamic {
                             true => stats_estimation_q_error(&physical_plan),
                             false => None,
                         };
                         if let Some(q_error) = stats_q_error {
-                            println!(
+                            eprintln!(
                                 "Query {id} iteration {i} took {ms:.1} ms, stats q-error P50 {:.2}x, P95 {:.2}x and returned {row_count} rows",
                                 q_error.p50, q_error.p95
                             );
                         } else {
-                            println!(
+                            eprintln!(
                                 "Query {id} iteration {i} took {ms:.1} ms and returned {row_count} rows"
                             );
                         }
                         if self.debug {
-                            println!(
+                            eprintln!(
                                 "=== Physical plan with metrics ===\n{}\n",
                                 display_plan_ascii(physical_plan.as_ref(), true)
+                            );
+                            println!(
+                                "{}",
+                                generate_plan_dump(
+                                    &physical_plan,
+                                    GeneratePlanDumpOptions::default()
+                                )?
                             );
                         }
 
@@ -324,7 +336,7 @@ impl RunOpt {
                         });
                     }
                     Err(err) => {
-                        println!("Query {id} iteration {i} failed: {err}");
+                        eprintln!("Query {id} iteration {i} failed: {err}");
                         bench_query.iterations.push(QueryIter {
                             elapsed: Duration::from_millis(0),
                             row_count: 0,
@@ -338,7 +350,7 @@ impl RunOpt {
                 }
             }
         }
-        println!("Query {id} p50 time: {} ms", bench_query.p50());
+        eprintln!("Query {id} p50 time: {} ms", bench_query.p50());
 
         Ok(bench_query)
     }

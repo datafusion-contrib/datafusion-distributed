@@ -363,10 +363,10 @@ mod tpch_two_phase_tests {
                 ┌───── Stage 4 ── tasks=4, partitions=16
                 │ BroadcastExec: input_partitions=1, consumer_tasks=4, output_partitions=4
                 │   DistributedLeafExec:
-                │     t0: DataSourceExec: file_groups={1 group: [[/testdata/tpch_parquet/scale_factor=0.02/max_file_size=400000/dictionary=pages/sorted=false/customer/1.parquet:<int>..<int>]]}, projection=[c_custkey, c_nationkey], file_type=parquet
-                │     t1: DataSourceExec: file_groups={1 group: [[/testdata/tpch_parquet/scale_factor=0.02/max_file_size=400000/dictionary=pages/sorted=false/customer/1.parquet:<int>..<int>]]}, projection=[c_custkey, c_nationkey], file_type=parquet
-                │     t2: DataSourceExec: file_groups={1 group: [[/testdata/tpch_parquet/scale_factor=0.02/max_file_size=400000/dictionary=pages/sorted=false/customer/1.parquet:<int>..<int>]]}, projection=[c_custkey, c_nationkey], file_type=parquet
-                │     t3: DataSourceExec: file_groups={1 group: [[/testdata/tpch_parquet/scale_factor=0.02/max_file_size=400000/dictionary=pages/sorted=false/customer/1.parquet:<int>..<int>]]}, projection=[c_custkey, c_nationkey], file_type=parquet
+                │     t0: DataSourceExec: file_groups={1 group: [[/testdata/tpch_parquet/scale_factor=0.02/max_file_size=400000/dictionary=pages/sorted=false/customer/1.parquet:<int>..<int>]]}, projection=[c_custkey, c_nationkey], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
+                │     t1: DataSourceExec: file_groups={1 group: [[/testdata/tpch_parquet/scale_factor=0.02/max_file_size=400000/dictionary=pages/sorted=false/customer/1.parquet:<int>..<int>]]}, projection=[c_custkey, c_nationkey], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
+                │     t2: DataSourceExec: file_groups={1 group: [[/testdata/tpch_parquet/scale_factor=0.02/max_file_size=400000/dictionary=pages/sorted=false/customer/1.parquet:<int>..<int>]]}, projection=[c_custkey, c_nationkey], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
+                │     t3: DataSourceExec: file_groups={1 group: [[/testdata/tpch_parquet/scale_factor=0.02/max_file_size=400000/dictionary=pages/sorted=false/customer/1.parquet:<int>..<int>]]}, projection=[c_custkey, c_nationkey], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
                 └──────────────────────────────────────────────────
         ");
         Ok(())

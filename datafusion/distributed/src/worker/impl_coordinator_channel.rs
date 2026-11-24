@@ -7,6 +7,7 @@ use crate::dynamic_filtering::{
 };
 use crate::events::{TaskFinishedHandlers, WorkerPlanRewriteEvent, WorkerPlanRewriteHandlers};
 use crate::execution_plans::SamplerExec;
+use crate::metrics::aggregate_by_name;
 use crate::protocol::LocalWorkerContext;
 use crate::work_unit_feed::{RemoteWorkUnitFeedRegistry, set_work_unit_received_time};
 use crate::worker::task_data::TaskDataMetrics;
@@ -273,7 +274,7 @@ impl Worker {
                     let _ = plan.apply_with_dt_ctx(d_ctx, |node, _| {
                         let metrics = node.metrics().unwrap_or_default();
                         pre_order_plan_metrics.push(match aggregate_metrics {
-                            true => metrics.aggregate_by_name(),
+                            true => aggregate_by_name(&metrics),
                             false => metrics,
                         });
                         Ok(TreeNodeRecursion::Continue)

@@ -106,7 +106,7 @@ mod tests {
             .with_file_type(DataContentType::PositionDeletes)
             .with_file_format(DataFileFormat::Parquet)
             .with_partition_spec_id(0)
-            .build();
+            .build()?;
         let mut groups = Vec::new();
         for path in paths {
             let size = fs::metadata(&path)?.len();

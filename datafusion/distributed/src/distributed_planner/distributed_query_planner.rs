@@ -1,4 +1,5 @@
 use crate::common::TreeNodeExt;
+use crate::distributed_planner::blacklisted_nodes::contains_blacklisted_node;
 use crate::distributed_planner::inject_network_boundaries::{
     CardinalityBasedNetworkBoundaryBuilder, inject_network_boundaries,
 };
@@ -87,6 +88,10 @@ pub fn create_distributed_plan(
 ) -> BoxFuture<'_, datafusion::common::Result<Arc<dyn ExecutionPlan>>> {
     Box::pin(async move {
         if original_plan.is::<DistributedExec>() {
+            return Ok(original_plan);
+        }
+
+        if contains_blacklisted_node(&original_plan, session.config())? {
             return Ok(original_plan);
         }
 
@@ -182,6 +187,7 @@ fn create_distributed_exec(
 mod tests {
     use crate::assert_snapshot;
     use crate::test_utils::plans::{TestPlanBuilder, build_side_one_desired_task_count_handler};
+    use datafusion::physical_plan::aggregates::AggregateExec;
     /* schema for the "weather" table
 
      MinTemp [type=DOUBLE] [repetitiontype=OPTIONAL]
@@ -1031,6 +1037,25 @@ mod tests {
             │   DistributedLeafExec:
             │     t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[MinTemp, RainToday], file_type=parquet
             └──────────────────────────────────────────────────
+        ");
+    }
+
+    #[tokio::test]
+    async fn test_blacklisted_node_keeps_plan_single_node() {
+        let query = r#"
+        SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday"
+        "#;
+        let physical_plan_ascii = TestPlanBuilder::default()
+            .with_distributed_blacklisted_node::<AggregateExec>()
+            .physical_plan_as_ascii(query, false)
+            .await;
+
+        assert_snapshot!(physical_plan_ascii, @"
+        ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday]
+          AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
+            RepartitionExec: partitioning=Hash([RainToday@0], 4), input_partitions=3
+              AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
+                DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[RainToday], file_type=parquet
         ");
     }
 }

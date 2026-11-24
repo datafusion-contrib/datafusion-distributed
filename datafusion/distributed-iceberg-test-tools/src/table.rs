@@ -7,7 +7,9 @@ use datafusion::common::exec_datafusion_err;
 use datafusion::error::Result;
 use iceberg::arrow::schema_to_arrow_schema;
 use iceberg::memory::MemoryCatalog;
-use iceberg::spec::{Schema, TableMetadata, Transform, UnboundPartitionSpec};
+use iceberg::spec::{
+    Schema, TableMetadata, Transform, UnboundPartitionField, UnboundPartitionSpec,
+};
 use iceberg::table::Table;
 use iceberg::{Catalog, MetadataLocation, TableCreation, TableIdent};
 use tempfile::TempDir;
@@ -68,13 +70,13 @@ impl TableBuilder {
             let source = self.schema.field_by_name(&column).ok_or_else(|| {
                 exec_datafusion_err!("cannot partition by {column}: no such column")
             })?;
-            partition_spec = partition_spec
-                .add_partition_field(
-                    source.id,
-                    partition_field_name(&column, transform),
-                    transform,
-                )
+            let field = UnboundPartitionField::builder()
+                .source_ids(vec![source.id])
+                .name(partition_field_name(&column, transform))
+                .transform(transform)
+                .build()
                 .map_err(df_err)?;
+            partition_spec = partition_spec.add_partition_field(field).map_err(df_err)?;
         }
 
         let namespace = self.ident.namespace();
@@ -160,7 +162,7 @@ impl FixtureTable {
         self.table.metadata_location_result().map_err(df_err)
     }
 
-    /// Starts a commit that appends data files.
+    /// Starts a commit that adds data or position delete files.
     pub fn append(&mut self) -> Append<'_> {
         Append::new(self)
     }

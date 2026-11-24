@@ -9,16 +9,17 @@ use crate::events::{
 use crate::stage::Stage;
 #[cfg(test)]
 use crate::{
-    DesiredTaskCountEvent, DesiredTaskCountEventResponse, DesiredTaskCountHandler,
-    DistributedConfig, DistributedExt, SessionStateBuilderExt, display_plan_ascii,
-    test_utils::in_memory_channel_resolver::InMemoryWorkerResolver,
+    DefaultSessionBuilder, DesiredTaskCountEvent, DesiredTaskCountEventResponse,
+    DesiredTaskCountHandler, DistributedConfig, DistributedExt, DistributedMetricsFormat,
+    SessionStateBuilderExt, display_plan_ascii, rewrite_distributed_plan_with_metrics,
+    test_utils::in_memory_channel_resolver::{InMemoryChannelResolver, InMemoryWorkerResolver},
 };
 use crate::{NetworkBoundaryExt, TaskKey};
 #[cfg(test)]
 use datafusion::{
     common::Result,
     execution::{SessionState, context::SessionContext, session_state::SessionStateBuilder},
-    physical_plan::displayable,
+    physical_plan::{collect, displayable},
     prelude::SessionConfig,
 };
 use datafusion::{
@@ -111,6 +112,17 @@ impl TestPlan {
         df.create_physical_plan().await.unwrap()
     }
 
+    /// Executes a query and returns its plan with the metrics of every task, labeled by task.
+    pub async fn executed_physical_plan(&self, query: &str) -> Arc<dyn ExecutionPlan> {
+        let plan = self.physical_plan(query).await;
+        collect(Arc::clone(&plan), self.ctx.task_ctx())
+            .await
+            .unwrap();
+        rewrite_distributed_plan_with_metrics(plan, DistributedMetricsFormat::PerTask)
+            .await
+            .unwrap()
+    }
+
     /// get the physical plan of a query as a string
     pub async fn physical_plan_as_string(&self, query: &str) -> String {
         let plan = self.physical_plan(query).await;
@@ -142,9 +154,11 @@ pub(crate) struct TestPlanBuilder {
     distributed_partial_reduce: Option<bool>,
     distributed_children_isolator_unions: Option<bool>,
     distributed_max_tasks_per_stage: Option<usize>,
+    distributed_dynamic_task_count: Option<bool>,
     prefer_hash_join: Option<bool>,
     hash_join_single_partition_threshold: Option<usize>,
     hash_join_single_partition_threshold_rows: Option<usize>,
+    distributed_blacklisted_nodes: Vec<fn(&mut SessionConfig)>,
 }
 
 #[cfg(test)]
@@ -162,9 +176,11 @@ impl TestPlanBuilder {
             distributed_partial_reduce: None,
             distributed_children_isolator_unions: None,
             distributed_max_tasks_per_stage: None,
+            distributed_dynamic_task_count: None,
             prefer_hash_join: None,
             hash_join_single_partition_threshold: None,
             hash_join_single_partition_threshold_rows: None,
+            distributed_blacklisted_nodes: vec![],
         }
     }
 
@@ -241,6 +257,17 @@ impl TestPlanBuilder {
         self
     }
 
+    pub fn distributed_dynamic_task_count(mut self, enabled: bool) -> Self {
+        self.distributed_dynamic_task_count = Some(enabled);
+        self
+    }
+
+    pub fn with_distributed_blacklisted_node<T: ExecutionPlan>(mut self) -> Self {
+        self.distributed_blacklisted_nodes
+            .push(|cfg| cfg.set_distributed_blacklisted_node::<T>());
+        self
+    }
+
     fn build_config(&self) -> SessionConfig {
         let mut d_cfg = DistributedConfig {
             broadcast_joins: self.broadcast_joins,
@@ -261,6 +288,9 @@ impl TestPlanBuilder {
         }
         if let Some(n) = self.distributed_max_tasks_per_stage {
             d_cfg.max_tasks_per_stage = n
+        }
+        if let Some(enabled) = self.distributed_dynamic_task_count {
+            d_cfg.dynamic_task_count = enabled
         }
 
         let mut config = SessionConfig::new();
@@ -286,6 +316,9 @@ impl TestPlanBuilder {
                 .optimizer
                 .hash_join_single_partition_threshold_rows = value
         }
+        for blacklist in &self.distributed_blacklisted_nodes {
+            blacklist(&mut config);
+        }
         config
     }
 
@@ -294,7 +327,12 @@ impl TestPlanBuilder {
             .with_default_features()
             .with_config(config);
         if let Some(n) = self.num_workers {
-            state = state.with_distributed_worker_resolver(InMemoryWorkerResolver::new(n));
+            // Workers served in memory, so that plans can be executed too.
+            state = state
+                .with_distributed_worker_resolver(InMemoryWorkerResolver::new(n))
+                .with_distributed_channel_resolver(InMemoryChannelResolver::from_session_builder(
+                    DefaultSessionBuilder,
+                ));
         }
         if self.distributed_planner {
             state = state.with_distributed_planner();
@@ -329,6 +367,11 @@ impl TestPlanBuilder {
         self.build().await.physical_plan(query).await
     }
 
+    /// sugar around [TestPlan::executed_physical_plan]
+    pub async fn executed_physical_plan(&self, query: &str) -> Arc<dyn ExecutionPlan> {
+        self.build().await.executed_physical_plan(query).await
+    }
+
     /// get the physical plan of a query as a string
     pub async fn physical_plan_as_string(&self, query: &str) -> String {
         let plan = self.physical_plan(query).await;
@@ -356,9 +399,11 @@ impl Default for TestPlanBuilder {
             distributed_partial_reduce: None,
             distributed_children_isolator_unions: None,
             distributed_max_tasks_per_stage: None,
+            distributed_dynamic_task_count: None,
             prefer_hash_join: None,
             hash_join_single_partition_threshold: None,
             hash_join_single_partition_threshold_rows: None,
+            distributed_blacklisted_nodes: vec![],
         }
     }
 }

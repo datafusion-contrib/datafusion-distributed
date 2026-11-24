@@ -30,6 +30,9 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
+/// Stage metric with the bytes a stage is estimated to return, from sampling its output.
+pub(crate) const ESTIMATED_OUTPUT_BYTES_METRIC: &str = "estimated_output_bytes";
+
 pub(super) async fn prepare_dynamic_plan(
     query_coordinator: &Arc<QueryCoordinator>,
     base_plan: &Arc<dyn ExecutionPlan>,
@@ -336,7 +339,7 @@ async fn gather_runtime_statistics(
     let total_byte_size: usize = per_col_byte_size.iter().sum();
 
     new_metrics.push(BytesCounterMetric::new_metric(
-        "estimated_output_bytes",
+        ESTIMATED_OUTPUT_BYTES_METRIC,
         total_byte_size,
     ));
 

@@ -1,8 +1,9 @@
 #[cfg(all(feature = "integration", test))]
 mod tests {
+    use async_trait::async_trait;
     use datafusion::catalog::memory::DataSourceExec;
     use datafusion::common::assert_not_contains;
-    use datafusion::common::{HashMap, Result, assert_contains};
+    use datafusion::common::{HashMap, Result, assert_contains, exec_err};
     use datafusion::execution::SessionState;
     use datafusion::physical_plan::display::DisplayableExecutionPlan;
     use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
@@ -11,20 +12,23 @@ mod tests {
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::metrics::{assert_metrics_equal, node_metrics};
     use datafusion_distributed::test_utils::parquet::register_parquet_tables;
+    use datafusion_distributed::test_utils::routing::UrlEmitterRouteTaskHandler;
     use datafusion_distributed::test_utils::test_work_unit_feed::{
         RowGeneratorExec, TestWorkUnitFeedExecCodec, TestWorkUnitFeedFunction,
         row_generator_desired_task_count_handler, row_generator_scale_up_leaf_node_handler,
     };
     use datafusion_distributed::{
         DefaultSessionBuilder, DistributedExec, DistributedExt, DistributedLeafExec,
-        DistributedMetricsFormat, NetworkCoalesceExec, NetworkShuffleExec, TaskKey, TaskMetrics,
-        WorkerQueryContext, display_plan_ascii, rewrite_distributed_plan_with_dynamic_filters,
+        DistributedMetricsFormat, NetworkCoalesceExec, NetworkShuffleExec, RouteTaskEvent,
+        RouteTaskEventResponse, RouteTaskHandler, TaskKey, TaskMetrics, WorkerQueryContext,
+        display_plan_ascii, ok_or_some_err, rewrite_distributed_plan_with_dynamic_filters,
         rewrite_distributed_plan_with_metrics,
     };
-    use futures::TryStreamExt;
+    use futures::{StreamExt, TryStreamExt, stream};
     use std::sync::Arc;
     use std::time::Duration;
     use test_case::test_case;
+    use tokio_util::sync::CancellationToken;
 
     const COLLECTION_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -475,6 +479,70 @@ mod tests {
             );
         }
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn report_collection_completes_after_worker_channel_error()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fail_channel = CancellationToken::new();
+        let (ctx, _guard, _) = start_localhost_context(2, DefaultSessionBuilder).await;
+        let ctx = ctx
+            .with_distributed_dynamic_task_count(false)?
+            .with_distributed_desired_task_count_handler(2usize)
+            .with_distributed_dynamic_filter_collection(true)?
+            .with_distributed_route_task_handler(FailingReportChannel(fail_channel.clone()));
+        register_parquet_tables(&ctx).await?;
+        let plan = ctx
+            .sql(r#"SELECT "MinTemp" FROM weather WHERE "MinTemp" > 20.0"#)
+            .await?
+            .create_physical_plan()
+            .await?;
+        let mut output = execute_stream(Arc::clone(&plan), ctx.task_ctx())?;
+
+        // Wait for execution to start so report collection sees the prepared plan.
+        assert!(
+            tokio::time::timeout(COLLECTION_TIMEOUT, output.try_next())
+                .await??
+                .is_some()
+        );
+        fail_channel.cancel();
+        let error = tokio::time::timeout(COLLECTION_TIMEOUT, output.try_collect::<Vec<_>>())
+            .await?
+            .expect_err("worker channel error must fail the query");
+        assert_contains!(error.to_string(), "injected report channel error");
+
+        let task_metrics = wait_for_task_metrics(&plan).await;
+        assert_eq!(task_metrics.len(), 2);
+        for metrics in task_metrics.values() {
+            assert!(metrics.pre_order_plan_metrics.is_empty());
+            assert!(metrics.task_metrics.iter().next().is_none());
+        }
+        tokio::time::timeout(
+            COLLECTION_TIMEOUT,
+            rewrite_distributed_plan_with_dynamic_filters(plan, &ctx.task_ctx()),
+        )
+        .await??;
+        Ok(())
+    }
+
+    struct FailingReportChannel(CancellationToken);
+
+    #[async_trait]
+    impl RouteTaskHandler for FailingReportChannel {
+        async fn handle(
+            &self,
+            event: RouteTaskEvent<'_>,
+        ) -> Option<Result<RouteTaskEventResponse>> {
+            let mut response = ok_or_some_err!(UrlEmitterRouteTaskHandler.handle(event).await?);
+            let fail_channel = self.0.clone();
+            response.worker_to_coordinator_stream = stream::once(async move {
+                fail_channel.cancelled().await;
+                exec_err!("injected report channel error")
+            })
+            .chain(response.worker_to_coordinator_stream)
+            .boxed();
+            Some(Ok(response))
+        }
     }
 
     /// Waits until every task of the executed `plan` has a final metrics report.

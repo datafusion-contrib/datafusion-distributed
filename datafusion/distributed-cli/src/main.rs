@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 use std::process::ExitCode;
 
+mod plan;
 mod query;
 
 #[derive(Debug, Parser, PartialEq)]
@@ -15,6 +16,8 @@ enum Command {
     /// Run queries in an interactive shell, or from commands and files, like datafusion-cli does,
     /// but distributed across in-memory workers.
     Query(query::Args),
+    /// Display a plan dump produced by `datafusion_distributed::generate_plan_dump`.
+    Plan(plan::Args),
 }
 
 #[tokio::main]
@@ -23,6 +26,7 @@ pub async fn main() -> ExitCode {
     env_logger::init();
     let result = match Args::parse().command {
         Command::Query(args) => query::run(args).await,
+        Command::Plan(args) => plan::run(args),
     };
     if let Err(e) = result {
         println!("Error: {e}");

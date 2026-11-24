@@ -11,7 +11,7 @@ DATASET=$(cargo run -p datafusion-distributed-benchmarks --release -- prepare-tp
 ICEBERG=$(cargo run -p datafusion-distributed-iceberg-benchmarks --release -- prepare \
   --input $DATASET)
 cargo run -p datafusion-distributed-iceberg-benchmarks --release -- run \
-  --workers 2 --dataset $ICEBERG --partitions 2
+  --workers 2 --dataset $ICEBERG -c datafusion.execution.target_partitions=2
 ```
 
 Preparation writes an immutable `tpch_iceberg` dataset by default, whose path repeats the input's

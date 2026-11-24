@@ -13,10 +13,10 @@ bytes = "1"
 datafusion = { workspace = true, features = ["sql"] }
 datafusion-proto = { workspace = true }
 # Match datafusion-iceberg's iceberg-rust revision so FileScanTask has one shared type.
-iceberg-datafusion = { git = "https://github.com/apache/datafusion-iceberg.git", rev = "5398be196e47ef42543f6e9c72d15cad898e5143" }
+iceberg-datafusion = { git = "https://github.com/apache/datafusion-iceberg.git", rev = "344c0d7ca32827c55d4d9d66e734a4ec7d91c255" }
 futures = "0.3"
-iceberg = { git = "https://github.com/apache/iceberg-rust.git", rev = "0d5eb123495f765ea151e78c8964919d554d4b98" }
-iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust.git", rev = "0d5eb123495f765ea151e78c8964919d554d4b98", default-features = false, features = ["opendal-fs", "opendal-s3", "opendal-gcs"] }
+iceberg = { git = "https://github.com/apache/iceberg-rust.git", rev = "6c9739191da5e44c5c097714fa68c0e32696ba8f" }
+iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust.git", rev = "6c9739191da5e44c5c097714fa68c0e32696ba8f", default-features = false, features = ["opendal-fs", "opendal-s3", "opendal-gcs"] }
 datafusion-distributed = { path = "../distributed", features = ["sql"] }
 delegate = "0.13"
 prost = "0.14.1"

@@ -16,10 +16,10 @@ use datafusion_distributed::test_utils::work_unit_file_scan::{
     work_unit_file_scan_scale_up_leaf_node,
 };
 use datafusion_distributed::{
-    ChannelResolver, DistributedExt, DistributedMetricsFormat, NetworkBoundaryExt,
-    SessionStateBuilderExt, Stage, Worker, WorkerQueryContext, WorkerResolver, display_plan_ascii,
-    get_distributed_channel_resolver, get_distributed_worker_resolver,
-    rewrite_distributed_plan_with_metrics,
+    ChannelResolver, DistributedExt, DistributedMetricsFormat, GeneratePlanDumpOptions,
+    NetworkBoundaryExt, SessionStateBuilderExt, Stage, Worker, WorkerQueryContext, WorkerResolver,
+    display_plan_ascii, generate_plan_dump, get_distributed_channel_resolver,
+    get_distributed_worker_resolver, rewrite_distributed_plan_with_metrics,
 };
 use futures::{StreamExt, TryFutureExt};
 use log::{error, info, warn};
@@ -223,6 +223,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
                         let elapsed = start.elapsed();
                         let ms = elapsed.as_secs_f64() * 1000.0;
+                        // Generated after measuring, so it doesn't count towards the query time.
+                        let plan_dump =
+                            generate_plan_dump(&physical, GeneratePlanDumpOptions::default())
+                                .map_err(err)?;
                         info!("Finished executing query:\n{sql}\n\n{plan}");
                         info!("Returned {count} rows in {ms} ms");
                         abort_notifier.finished();
@@ -230,6 +234,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         Ok::<_, (StatusCode, String)>(Json(QueryResult {
                             count,
                             plan,
+                            plan_dump,
                             elapsed_ms: ms,
                             tasks: task_count,
                             stats_q_error_p50: stats_q_error.map(|q_error| q_error.p50),
@@ -270,6 +275,8 @@ mod built_info {
 #[derive(Serialize)]
 struct QueryResult {
     plan: String,
+    /// Single-line plan dump, readable with `dfd plan`.
+    plan_dump: String,
     count: usize,
     elapsed_ms: f64,
     tasks: usize,

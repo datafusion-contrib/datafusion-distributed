@@ -1,3 +1,4 @@
+mod blacklisted_nodes;
 mod distributed_config;
 mod distributed_query_planner;
 mod inject_network_boundaries;
@@ -11,6 +12,7 @@ mod push_fetch_into_network_coalesce;
 mod session_state_builder_ext;
 mod statistics;
 
+pub(crate) use blacklisted_nodes::add_distributed_blacklisted_node;
 pub use distributed_config::DistributedConfig;
 pub use distributed_query_planner::create_distributed_plan;
 pub(crate) use inject_network_boundaries::{
