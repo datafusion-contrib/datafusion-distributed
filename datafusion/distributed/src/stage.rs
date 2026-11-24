@@ -2,7 +2,7 @@ use crate::coordinator::DistributedExec;
 use crate::execution_plans::{DistributedLeafExec, NetworkCoalesceExec};
 use crate::metrics::DISTRIBUTED_DATAFUSION_TASK_ID_LABEL;
 use datafusion::common::{HashMap, Statistics, config_err};
-use datafusion::common::{exec_err, plan_err};
+use datafusion::common::{exec_datafusion_err, exec_err, plan_err};
 use datafusion::error::Result;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::PhysicalExpr;
@@ -12,11 +12,61 @@ use datafusion::physical_plan::{
     ColumnStatistics, ExecutionPlan, ExecutionPlanProperties, StatisticsArgs, StatisticsContext,
     displayable,
 };
+use futures::FutureExt;
+use futures::future::Shared;
 use itertools::Either;
 use std::collections::VecDeque;
 use std::sync::Arc;
+use tokio::sync::oneshot;
 use url::Url;
 use uuid::Uuid;
+
+/// The eventual committed address of a worker whose task may still be setting up.
+///
+/// Routing may try several workers before committing to one. Consumers await only the
+/// location they need; plans sent to another worker must first resolve all their inputs.
+#[derive(Debug, Clone)]
+pub enum WorkerLocation {
+    /// An address obtained from a decoded plan or supplied by the caller.
+    Ready(Url),
+    /// The result of query-owned routing and plan delivery.
+    Pending(Shared<oneshot::Receiver<Result<Url, Arc<DataFusionError>>>>),
+}
+
+impl WorkerLocation {
+    pub(crate) fn pending(rx: oneshot::Receiver<Result<Url, Arc<DataFusionError>>>) -> Self {
+        Self::Pending(rx.shared())
+    }
+
+    /// Waits for successful routing, retaining the original setup error on failure.
+    pub async fn resolve(&self) -> Result<Url> {
+        match self {
+            Self::Ready(url) => Ok(url.clone()),
+            Self::Pending(url) => url
+                .clone()
+                .await
+                .map_err(|_| exec_datafusion_err!("Task setup was cancelled"))?
+                .map_err(DataFusionError::Shared),
+        }
+    }
+
+    /// Returns a location that has already been resolved, without waiting for setup.
+    pub fn ready_url(&self) -> Option<&Url> {
+        match self {
+            Self::Ready(url) => Some(url),
+            Self::Pending(url) => match url.peek() {
+                Some(Ok(Ok(url))) => Some(url),
+                _ => None,
+            },
+        }
+    }
+}
+
+impl From<Url> for WorkerLocation {
+    fn from(url: Url) -> Self {
+        Self::Ready(url)
+    }
+}
 
 /// A unit of isolation for a portion of a physical execution plan
 /// that can be executed independently and across a network boundary.
@@ -112,7 +162,8 @@ pub struct RemoteStage {
     /// Our stage number
     pub num: usize,
     /// The worker URLs to which queries should be issued.
-    pub workers: Vec<Url>,
+    /// Locations are in task-number order and may still be awaiting setup.
+    pub workers: Vec<WorkerLocation>,
     /// Statistics collected at runtime, if any.
     pub runtime_stats: Option<Arc<Statistics>>,
     /// Dynamic-filter consumers retained after the stage's plan is moved to its workers.

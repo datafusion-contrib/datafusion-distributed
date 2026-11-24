@@ -101,7 +101,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     let Ok(url) = Url::parse(&url_str) else {
                         return Err(proto_error("Invalid URL in task"));
                     };
-                    worker_urls.push(url);
+                    worker_urls.push(url.into());
                 }
                 Ok(Stage::Remote(RemoteStage {
                     query_id: deserialize_uuid(proto.query_id.as_ref())?,
@@ -348,8 +348,11 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 Stage::Remote(remote) => {
                     let mut tasks = Vec::with_capacity(remote.workers.len());
                     for worker in &remote.workers {
+                        let url = worker.ready_url().ok_or_else(|| {
+                            proto_error("Worker location must be resolved before encoding")
+                        })?;
                         tasks.push(ExecutionTaskProto {
-                            url_str: Some(worker.to_string()),
+                            url_str: Some(url.to_string()),
                         })
                     }
                     StageProto {
