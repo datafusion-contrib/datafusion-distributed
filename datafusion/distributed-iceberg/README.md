@@ -82,6 +82,13 @@ Iceberg's `FileIO` handles storage in both cases. Eager planning waits for metad
 discovery and increases worker-plan payloads; lazy scans overlap discovery with
 reading and deliver descriptors through the coordinator's feed.
 
+With an INFO-level `tracing` subscriber, `iceberg.plan_scan` covers planning the
+scan. In eager mode its child `iceberg.plan_files` covers file discovery on the
+Iceberg I/O runtime. In lazy mode `iceberg.plan_files` appears during execution,
+when the coordinator starts the feed. For example, `eager=false, file_tasks=7`
+means the feed discovered seven file tasks, not that it issued seven S3 requests.
+The count is recorded when discovery finishes, not on early cancellation.
+
 Eager scans derive row counts and bytes from selected files and cap task estimates
 by the number of selected files. Predicates or deletes make row counts inexact;
 empty selections have exactly zero rows. Whole-snapshot column statistics are

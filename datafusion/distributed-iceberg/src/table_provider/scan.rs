@@ -16,6 +16,7 @@ use iceberg::table::Table;
 use iceberg_datafusion::read::convert_filters_to_predicate;
 use std::sync::Arc;
 use tokio::sync::oneshot;
+use tracing::{Instrument, field, info_span};
 
 /// Optional fields for planning an eager or lazy Iceberg scan.
 #[derive(Default, Clone)]
@@ -27,6 +28,7 @@ pub(crate) struct IcebergDataSourceOptions<'a> {
     pub(crate) iceberg_runtime: Option<iceberg::Runtime>,
 }
 
+#[tracing::instrument(name = "iceberg.plan_scan", skip_all, fields(eager = IcebergConfig::from_task_context(&context).eager_file_planning))]
 pub(crate) async fn plan_scan(
     table: Table,
     schema: SchemaRef,
@@ -78,13 +80,24 @@ pub(crate) async fn plan_scan(
         // File discovery runs on Iceberg's I/O runtime and is canceled if planning is dropped.
         let (_cancel_on_drop, canceled) = oneshot::channel::<()>();
         let planning_context = Arc::clone(&context);
-        let task = scan.iceberg_runtime.io().spawn(async move {
+        let span = info_span!(
+            "iceberg.plan_files",
+            eager = true,
+            file_tasks = field::Empty
+        );
+        let discover = async move {
             tokio::select! {
                 _ = canceled => exec_err!("Iceberg scan planning canceled"),
                 planned = PlannedFiles::collect(table_scan, &planning_context) => planned,
             }
-        });
-        Some(Arc::new(task.await.map_err(df_err)??))
+        };
+        let task = scan
+            .iceberg_runtime
+            .io()
+            .spawn(discover.instrument(span.clone()));
+        let files = task.await.map_err(df_err)??;
+        span.record("file_tasks", files.tasks().len());
+        Some(Arc::new(files))
     } else {
         None
     };
