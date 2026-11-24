@@ -16,15 +16,28 @@ use tokio::time::sleep;
 use url::Url;
 
 /// Assigns a task to a random URL from the registered [WorkerResolver].
-pub(crate) struct RandomRouteTaskHandler;
+pub struct RandomRouteTaskHandler {
+    seed: u64,
+}
+
+impl RandomRouteTaskHandler {
+    /// Creates a routing handler. A fixed seed reproduces placement and failover order for the
+    /// same stage and task numbers; `None` generates a seed once for this handler.
+    pub fn new(seed: Option<u64>) -> Self {
+        Self {
+            seed: seed.unwrap_or_else(rand::random),
+        }
+    }
+}
 
 #[async_trait]
 impl RouteTaskHandler for RandomRouteTaskHandler {
     async fn handle(&self, ev: RouteTaskEvent<'_>) -> Option<Result<RouteTaskEventResponse>> {
         let urls = ok_or_some_err!(ev.worker_resolver.get_urls());
-        let url = stage_contiguous_rand_offset(&ev.task_key, &urls)?.clone();
+        let seed = routing_seed(&ev.task_key, self.seed);
+        let url = seeded_rand_item(seed, &urls)?.clone();
         let d_cfg = ok_or_some_err!(DistributedConfig::from_task_context(ev.task_ctx));
-        Some(dial_with_failover(ev.dialer, url, urls, ev.metrics, d_cfg).await)
+        Some(dial_with_failover(ev.dialer, url, urls, seed.bytes, ev.metrics, d_cfg).await)
     }
 }
 
@@ -32,6 +45,7 @@ async fn dial_with_failover(
     dialer: &dyn CoordinatorToWorkerDialer,
     url: Url,
     mut retry_urls: Vec<Url>,
+    retry_seed: [u8; 32],
     metrics: &ExecutionPlanMetricsSet,
     d_cfg: &DistributedConfig,
 ) -> Result<RouteTaskEventResponse> {
@@ -42,7 +56,7 @@ async fn dial_with_failover(
     let mut url = url;
     let mut attempted_urls = HashSet::from([url.clone()]);
     retry_urls.retain(|candidate| attempted_urls.insert(candidate.clone()));
-    retry_urls.shuffle(&mut rand::rng());
+    shuffle_retry_urls(&mut retry_urls, retry_seed);
 
     let mut coordinator_to_worker_same_url_retries = None;
     let mut coordinator_to_worker_other_url_retries = None;
@@ -100,6 +114,10 @@ async fn dial_with_failover(
     }
 }
 
+fn shuffle_retry_urls<T>(urls: &mut [T], seed: [u8; 32]) {
+    urls.shuffle(&mut StdRng::from_seed(seed));
+}
+
 fn same_url_retry_backoff(
     retry: usize,
     initial_backoff: Duration,
@@ -115,21 +133,36 @@ fn same_url_retry_backoff(
     backoff
 }
 
-/// Chooses an item using a random starting offset shared by every task in this stage.
-/// Successive task numbers rotate through the list from that offset.
-fn stage_contiguous_rand_offset<T>(key: &TaskKey, list: impl IntoIterator<Item = T>) -> Option<T> {
+/// Chooses a stage-wide random starting offset, then rotates successive tasks through the list.
+fn seeded_rand_item<T>(seed: RoutingSeed, list: impl IntoIterator<Item = T>) -> Option<T> {
     let list = list.into_iter().collect::<Vec<_>>();
     if list.is_empty() {
         return None;
     }
 
-    let mut seed = [0; 32];
-    seed[..16].copy_from_slice(key.query_id.as_bytes());
-    seed[16..24].copy_from_slice(&(key.stage_id as u64).to_le_bytes());
-    let mut rng = StdRng::from_seed(seed);
+    let mut stage_seed = seed.bytes;
+    stage_seed[24..].fill(0);
+    let mut rng = StdRng::from_seed(stage_seed);
     let start = rng.random_range(0..list.len());
-    let index = (start + key.task_number % list.len()) % list.len();
+    let index = (start + seed.task_number % list.len()) % list.len();
     list.into_iter().nth(index)
+}
+
+#[derive(Clone, Copy)]
+struct RoutingSeed {
+    bytes: [u8; 32],
+    task_number: usize,
+}
+
+fn routing_seed(key: &TaskKey, base_seed: u64) -> RoutingSeed {
+    let mut bytes = [0; 32];
+    bytes[..8].copy_from_slice(&base_seed.to_le_bytes());
+    bytes[16..24].copy_from_slice(&(key.stage_id as u64).to_le_bytes());
+    bytes[24..].copy_from_slice(&(key.task_number as u64).to_le_bytes());
+    RoutingSeed {
+        bytes,
+        task_number: key.task_number,
+    }
 }
 
 /// If there's a single task, it co-locates it in the coordinator if it can also act as a worker.
@@ -186,5 +219,59 @@ impl RouteTaskHandler for SingleTaskChildUrlRouteTaskHandler {
         // one of the workers that is driving the stage below. If dialing fails, it returns None
         // and the following task-routing handlers will get to decide.
         ev.dialer.dial(single_stage_url).await.ok().map(Ok)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::Uuid;
+
+    #[test]
+    fn seeded_routing_repeats_worker_choices_across_queries() {
+        let handler = RandomRouteTaskHandler::new(Some(42));
+        let assignments = |query_id| {
+            (0..4)
+                .map(|task_number| {
+                    let key = TaskKey {
+                        query_id,
+                        stage_id: 7,
+                        task_number,
+                    };
+                    seeded_rand_item(routing_seed(&key, handler.seed), 0..4).unwrap()
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let first = assignments(Uuid::from_u128(1));
+        let second = assignments(Uuid::from_u128(2));
+        assert_eq!(first, second);
+
+        let mut sorted = first;
+        sorted.sort_unstable();
+        assert_eq!(sorted, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn seeded_routing_repeats_failover_order_across_queries() {
+        let handler = RandomRouteTaskHandler::new(Some(42));
+        let key = |query_id| TaskKey {
+            query_id,
+            stage_id: 7,
+            task_number: 3,
+        };
+        let mut first = vec![0, 1, 2, 3];
+        let mut second = first.clone();
+
+        shuffle_retry_urls(
+            &mut first,
+            routing_seed(&key(Uuid::from_u128(1)), handler.seed).bytes,
+        );
+        shuffle_retry_urls(
+            &mut second,
+            routing_seed(&key(Uuid::from_u128(2)), handler.seed).bytes,
+        );
+
+        assert_eq!(first, second);
     }
 }

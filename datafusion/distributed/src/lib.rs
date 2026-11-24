@@ -28,8 +28,8 @@ pub use distributed_planner::{
 pub use dynamic_filtering::rewrite_distributed_plan_with_dynamic_filters;
 pub use events::{
     CoordinatorToWorkerDialer, DesiredTaskCountEvent, DesiredTaskCountEventResponse,
-    DesiredTaskCountHandler, RouteTaskEvent, RouteTaskEventResponse, RouteTaskHandler,
-    ScaleUpLeafNodeEvent, ScaleUpLeafNodeEventResponse, ScaleUpLeafNodeHandler,
+    DesiredTaskCountHandler, RandomRouteTaskHandler, RouteTaskEvent, RouteTaskEventResponse,
+    RouteTaskHandler, ScaleUpLeafNodeEvent, ScaleUpLeafNodeEventResponse, ScaleUpLeafNodeHandler,
     TaskCountAnnotation, TaskFinishedEvent, TaskFinishedEventResponse, TaskFinishedHandler,
     TaskOutcome, WorkerPlanRewriteEvent, WorkerPlanRewriteEventResponse, WorkerPlanRewriteHandler,
 };

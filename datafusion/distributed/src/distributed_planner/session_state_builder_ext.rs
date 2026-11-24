@@ -43,7 +43,7 @@ impl SessionStateBuilderExt for SessionStateBuilder {
                 //    co-locate it in one of the workers from the stage below to avoid network transfers.
                 Arc::new(SingleTaskChildUrlRouteTaskHandler),
                 // 3. If everything above fails, just place randomly.
-                Arc::new(RandomRouteTaskHandler),
+                Arc::new(RandomRouteTaskHandler::new(None)),
             ],
         );
 
