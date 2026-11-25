@@ -2824,6 +2824,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "datafusion-join-ordering"
+version = "5.0.0"
+dependencies = [
+ "datafusion",
+ "datafusion-cost-model",
+ "datafusion-datasets",
+ "insta",
+ "tokio",
+]
+
+[[package]]
 name = "datafusion-macros"
 version = "56.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

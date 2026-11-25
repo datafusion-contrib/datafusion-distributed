@@ -1,0 +1,16 @@
+[package]
+name = "datafusion-join-ordering"
+version = "5.0.0"
+edition = "2024"
+description = "JOIN ordering for DataFusion"
+publish = false
+
+[dependencies]
+datafusion-cost-model = { path = "../cost-model", version = "5.0.0" }
+datafusion = { workspace = true }
+
+[dev-dependencies]
+datafusion = { workspace = true, features = ["parquet", "sql"] }
+datafusion-datasets = { path = "../datasets" }
+insta = { version = "1.46.0", features = ["filters"] }
+tokio = { version = "1.48", features = ["full"] }

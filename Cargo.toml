@@ -10,6 +10,7 @@ members = [
     "datafusion/distributed-iceberg-benchmarks",
     "datafusion/distributed-iceberg-test-tools",
     "datafusion/distributed-remote-worker",
+    "datafusion/join-ordering",
 ]
 # Plain `cargo build`/`cargo test` from the repository root target the core library.
 default-members = ["datafusion/distributed"]
