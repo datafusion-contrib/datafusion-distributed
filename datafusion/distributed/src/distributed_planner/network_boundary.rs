@@ -7,6 +7,7 @@ use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::Result;
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::Partitioning;
+use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::{
     ChildrenPropertiesMode, ExecutionPlan, ExecutionPlanProperties, ReplaceChildrenOptions,
@@ -93,13 +94,19 @@ impl ProducerHead {
         let input = if let Some(r_exec) = input.downcast_ref::<RepartitionExec>() {
             Arc::clone(r_exec.input())
         } else if let Some(b_exec) = input.downcast_ref::<BroadcastExec>() {
-            Arc::clone(b_exec.input())
+            match b_exec.input().downcast_ref::<CoalescePartitionsExec>() {
+                Some(cp_exec) => Arc::clone(cp_exec.input()),
+                None => Arc::clone(b_exec.input()),
+            }
         } else {
             input
         };
         let plan = match self {
             ProducerHead::None => input,
             ProducerHead::BroadcastExec { output_partitions } => {
+                // BroadcastExec emits `input partitions * consumer_task_count` partitions, and its
+                // input is the coalesce, so the partition count must be measured after it.
+                let input: Arc<dyn ExecutionPlan> = Arc::new(CoalescePartitionsExec::new(input));
                 let partitions = input.output_partitioning().partition_count();
                 Arc::new(BroadcastExec::new(input, output_partitions / partitions))
             }
@@ -127,9 +134,22 @@ impl ProducerHead {
                 ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
             )
         } else if let Some(b_exec) = input.downcast_ref::<BroadcastExec>() {
-            let child = Arc::clone(b_exec.input());
+            // The broadcast producer head is `BroadcastExec → CoalescePartitionsExec`, so the
+            // sampler goes below both. Otherwise [Self::insert] would not recognize the head and
+            // would stack a second one on top.
+            let b_input = Arc::clone(b_exec.input());
+            let new_b_input = match b_input.downcast_ref::<CoalescePartitionsExec>() {
+                Some(cp_exec) => {
+                    let child = Arc::clone(cp_exec.input());
+                    Arc::clone(&b_input).replace_children(
+                        vec![Arc::new(SamplerExec::new(child))],
+                        ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+                    )?
+                }
+                None => Arc::new(SamplerExec::new(b_input)),
+            };
             input.replace_children(
-                vec![Arc::new(SamplerExec::new(child))],
+                vec![new_b_input],
                 ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
             )
         } else {

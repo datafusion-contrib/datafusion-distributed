@@ -227,13 +227,31 @@ fn plan_ptr_key(plan: &Arc<dyn ExecutionPlan>) -> usize {
     Arc::as_ptr(plan) as *const () as usize
 }
 
+struct Parent<'a> {
+    parent: Option<&'a Parent<'a>>,
+    plan: &'a Arc<dyn ExecutionPlan>,
+}
+
+impl<'a> Parent<'a> {
+    fn new(plan: &'a Arc<dyn ExecutionPlan>) -> Self {
+        Self { parent: None, plan }
+    }
+
+    fn new_generation(&'a self, plan: &'a Arc<dyn ExecutionPlan>) -> Self {
+        Self {
+            parent: Some(self),
+            plan,
+        }
+    }
+}
+
 /// WARNING: every return statement in this function must funnel through
 /// [InjectNetworkBoundaryContext::plan_with_task_count]
 /// (or [InjectNetworkBoundaryContext::set_task_count] on the way through) so the returned node has
 /// a recorded task count. Callers downstream depend on this invariant.
 async fn _inject_network_boundaries(
     plan: Arc<dyn ExecutionPlan>,
-    parent: Option<&Arc<dyn ExecutionPlan>>,
+    parent: Option<Parent<'_>>,
     nb_ctx: &InjectNetworkBoundaryContext<'_>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     let broadcast_joins_enabled = nb_ctx.d_cfg.broadcast_joins;
@@ -243,7 +261,10 @@ async fn _inject_network_boundaries(
         let child = Arc::clone(child);
         futures.push(Box::pin(_inject_network_boundaries(
             child,
-            Some(&plan),
+            Some(match &parent {
+                Some(parent) => parent.new_generation(&plan),
+                None => Parent::new(&plan),
+            }),
             nb_ctx,
         )));
     }
@@ -362,10 +383,7 @@ async fn _inject_network_boundaries(
     }
     task_count.soft = task_count.soft.min(max_tasks as f64);
 
-    // Upon reaching a hash repartition, we need to introduce a network shuffle right above it.
-    if let Some(r_exec) = plan.downcast_ref::<RepartitionExec>()
-        && matches!(r_exec.partitioning(), Partitioning::Hash(_, _))
-    {
+    if needs_network_shuffle(&plan) {
         let input_stage = LocalStage {
             query_id: nb_ctx.query_id,
             num: nb_ctx.fetch_add_stage_id(),
@@ -382,9 +400,7 @@ async fn _inject_network_boundaries(
             result.input_properties,
         ));
         Ok(nb_ctx.plan_with_task_count(shuffle, result.consumer_task_count))
-    }
-    // Upon reaching a broadcast, we need to introduce a network broadcast right above it.
-    else if let Some(_b_exec) = plan.downcast_ref::<BroadcastExec>() {
+    } else if needs_network_broadcast(&plan) {
         let input_stage = LocalStage {
             query_id: nb_ctx.query_id,
             num: nb_ctx.fetch_add_stage_id(),
@@ -401,12 +417,7 @@ async fn _inject_network_boundaries(
             result.input_properties,
         ));
         Ok(nb_ctx.plan_with_task_count(nb, result.consumer_task_count))
-    }
-    // If the parent of the current node is either a `CoalescePartitionsExec` or a
-    // `SortPreservingMergeExec`, a network boundary below it is necessary.
-    else if let Some(parent) = parent
-        && (parent.is::<CoalescePartitionsExec>() || parent.is::<SortPreservingMergeExec>())
-    {
+    } else if needs_network_coalesce(parent.as_ref()) {
         let input_stage = LocalStage {
             query_id: nb_ctx.query_id,
             num: nb_ctx.fetch_add_stage_id(),
@@ -441,6 +452,54 @@ async fn _inject_network_boundaries(
         // to do anything else.
         Ok(nb_ctx.plan_with_task_count(plan, task_count))
     }
+}
+
+fn needs_network_shuffle(plan: &Arc<dyn ExecutionPlan>) -> bool {
+    let Some(r_exec) = plan.downcast_ref::<RepartitionExec>() else {
+        return false;
+    };
+    // We only care about doing a network shuffle over a hash shuffle, we are fine with not sending
+    // round-robin shuffles across the networks, as those are fine to keep local to each worker,
+    // unlike the hash ones that need to be global.
+    matches!(r_exec.partitioning(), Partitioning::Hash(_, _))
+}
+
+fn needs_network_broadcast(plan: &Arc<dyn ExecutionPlan>) -> bool {
+    // Every broadcast needs a network broadcast immediately above it, no exceptions.
+    plan.is::<BroadcastExec>()
+}
+
+fn needs_network_coalesce(parent: Option<&Parent>) -> bool {
+    let Some(parent) = parent else { return false };
+    // We need to coalesce data streams across the network into exactly 1 worker in order to
+    // guarantee global ordering of the single stream, so even if this will end up being broadcasted
+    // it needs to be collapsed into one task.
+    if parent.plan.is::<SortPreservingMergeExec>() {
+        return true;
+    }
+
+    // If the parent is neither a CoalescePartitionsExec nor a SortPreservingMergeExec (checked above)
+    // then no network coalesce should happen.
+    let Some(coalesce) = parent.plan.downcast_ref::<CoalescePartitionsExec>() else {
+        return false;
+    };
+    // If CoalescePartitionsExec has a `fetch` value, this fetch is expected to be global, therefore
+    // we need to force it to run in exactly one task, therefore, we do need a network coalesce
+    // below it, regardless of whether there's a broadcast or not.
+    if coalesce.fetch().is_some() {
+        return true;
+    }
+
+    // If the parent is a CoalescePartitionsExec without a `fetch` value (checked above), and the
+    // grandparent is a BroadcastExec, then this is a classical broadcast join scenario, and we
+    // don't need to throttle the broadcast to run in only 1 task, so no network coalesce is needed.
+    if parent.parent.is_some_and(|v| v.plan.is::<BroadcastExec>()) {
+        return false;
+    }
+
+    // If the parent is a CoalescePartitionsExec without a `fetch` value (checked above), and the
+    // grandparent is *not* a BroadcastExec, then we do need to collapse into 1 task.
+    true
 }
 
 /// Walks `plan` top-down and records the given `task_count` for every node up until the next

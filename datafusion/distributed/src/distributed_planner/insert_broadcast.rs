@@ -112,9 +112,6 @@ use super::DistributedConfig;
 /// Worker 1 would emit: (2, Alice), (3, Bob)
 /// Worker 2 would emit: (1, John), (3, Bob)
 /// Thus when unioning results: (2, Alice), (3, Bob), (1, John), (3, Bob)
-/// ```
-///
-/// ```
 pub(super) fn insert_broadcast_execs(
     plan: Arc<dyn ExecutionPlan>,
     cfg: &ConfigOptions,
@@ -134,20 +131,22 @@ pub(super) fn insert_broadcast_execs(
             return Ok(Transformed::no(node));
         };
 
-        let new_build_child: Arc<dyn ExecutionPlan> = if let Some(coalesce) = build_child
+        if build_child.is::<BroadcastExec>() {
+            return Ok(Transformed::no(node));
+        }
+
+        // Joins only read partition 0 of their build side, so every broadcast task must emit a
+        // single partition. A fetch-bearing coalesce is wrapped rather than reused so its limit
+        // keeps running in a single task below a network coalesce.
+        let coalesced: Arc<dyn ExecutionPlan> = if build_child
             .downcast_ref::<CoalescePartitionsExec>()
-            .filter(|coalesce| coalesce.fetch().is_none())
+            .is_some_and(|coalesce| coalesce.fetch().is_none())
         {
-            if coalesce.input().is::<BroadcastExec>() {
-                return Ok(Transformed::no(node));
-            }
-            coalesced_broadcast(Arc::clone(coalesce.input()))
-        } else if build_child.is::<BroadcastExec>() {
-            Arc::new(CoalescePartitionsExec::new(Arc::clone(build_child)))
+            Arc::clone(build_child)
         } else {
-            // A fetch-bearing coalesce remains below the broadcast so the limit is global.
-            coalesced_broadcast(Arc::clone(build_child))
+            Arc::new(CoalescePartitionsExec::new(Arc::clone(build_child)))
         };
+        let new_build_child = Arc::new(BroadcastExec::new(coalesced, 1));
 
         let mut new_children: Vec<Arc<dyn ExecutionPlan>> = children.into_iter().cloned().collect();
         new_children[0] = new_build_child;
@@ -157,12 +156,6 @@ pub(super) fn insert_broadcast_execs(
         )?))
     })
     .map(|transformed| transformed.data)
-}
-
-fn coalesced_broadcast(input: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
-    // consumer_task_count=1 is a placeholder and will be corrected during optimizer rule.
-    let broadcast: Arc<dyn ExecutionPlan> = Arc::new(BroadcastExec::new(input, 1));
-    Arc::new(CoalescePartitionsExec::new(broadcast))
 }
 
 fn can_broadcast_left_input(plan: &dyn ExecutionPlan) -> bool {
