@@ -1266,9 +1266,9 @@ mod tests {
         assert_snapshot!(annotated, @r"
         ChildrenIsolatorUnionExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
           CrossJoinExec: task_count=TaskCountAnnotation: soft=4.00, exact=2
-            CoalescePartitionsExec: task_count=TaskCountAnnotation: soft=4.00, exact=2
-              NetworkBroadcastExec: task_count=TaskCountAnnotation: soft=4.00, exact=2
-                BroadcastExec: task_count=TaskCountAnnotation: soft=0.00, exact=1
+            NetworkBroadcastExec: task_count=TaskCountAnnotation: soft=4.00, exact=2
+              BroadcastExec: task_count=TaskCountAnnotation: soft=0.00, exact=1
+                CoalescePartitionsExec: task_count=TaskCountAnnotation: soft=0.00, exact=1
                   DataSourceExec: task_count=TaskCountAnnotation: soft=0.00, exact=1
             ChildrenIsolatorUnionExec: task_count=TaskCountAnnotation: soft=4.00, exact=2
               DistributedLeafExec: task_count=TaskCountAnnotation: soft=4.00, exact=2
@@ -1326,9 +1326,9 @@ mod tests {
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
         HashJoinExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
-          CoalescePartitionsExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
-            NetworkBroadcastExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
-              BroadcastExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
+          NetworkBroadcastExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
+            BroadcastExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
+              CoalescePartitionsExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
                 DistributedLeafExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
           DistributedLeafExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
         ")
@@ -1367,9 +1367,9 @@ mod tests {
         assert!(annotated.contains("Broadcast"));
         assert_snapshot!(annotated, @r"
         HashJoinExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
-          CoalescePartitionsExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
-            NetworkBroadcastExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
-              BroadcastExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
+          NetworkBroadcastExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
+            BroadcastExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
+              CoalescePartitionsExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
                 DistributedLeafExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
           DistributedLeafExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
         ");
@@ -1392,9 +1392,9 @@ mod tests {
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
         HashJoinExec: task_count=TaskCountAnnotation: soft=3.00, exact=3
-          CoalescePartitionsExec: task_count=TaskCountAnnotation: soft=3.00, exact=3
-            NetworkBroadcastExec: task_count=TaskCountAnnotation: soft=3.00, exact=3
-              BroadcastExec: task_count=TaskCountAnnotation: soft=0.00, exact=1
+          NetworkBroadcastExec: task_count=TaskCountAnnotation: soft=3.00, exact=3
+            BroadcastExec: task_count=TaskCountAnnotation: soft=0.00, exact=1
+              CoalescePartitionsExec: task_count=TaskCountAnnotation: soft=0.00, exact=1
                 DistributedLeafExec: task_count=TaskCountAnnotation: soft=0.00, exact=1
           DistributedLeafExec: task_count=TaskCountAnnotation: soft=3.00, exact=3
         ");
@@ -1416,12 +1416,12 @@ mod tests {
             .desired_task_count_handler(broadcast_build_coalesce_max_desired_task_count_handler);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
-        HashJoinExec: task_count=TaskCountAnnotation: soft=3.00, exact=1
-          CoalescePartitionsExec: task_count=TaskCountAnnotation: soft=3.00, exact=1
-            NetworkBroadcastExec: task_count=TaskCountAnnotation: soft=3.00, exact=1
-              BroadcastExec: task_count=TaskCountAnnotation: soft=3.00, exact=3
+        HashJoinExec: task_count=TaskCountAnnotation: soft=3.00, exact=3
+          NetworkBroadcastExec: task_count=TaskCountAnnotation: soft=3.00, exact=3
+            BroadcastExec: task_count=TaskCountAnnotation: soft=3.00, exact=3
+              CoalescePartitionsExec: task_count=TaskCountAnnotation: soft=3.00, exact=3
                 DistributedLeafExec: task_count=TaskCountAnnotation: soft=3.00, exact=3
-          DistributedLeafExec: task_count=TaskCountAnnotation: soft=3.00, exact=1
+          DistributedLeafExec: task_count=TaskCountAnnotation: soft=3.00, exact=3
         ");
     }
 
@@ -1468,9 +1468,9 @@ mod tests {
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
         NestedLoopJoinExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
-          CoalescePartitionsExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
-            NetworkBroadcastExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
-              BroadcastExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
+          NetworkBroadcastExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
+            BroadcastExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
+              CoalescePartitionsExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
                 DistributedLeafExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
           DistributedLeafExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
         ");
@@ -1568,13 +1568,13 @@ mod tests {
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
         HashJoinExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
-          CoalescePartitionsExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
-            NetworkBroadcastExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
-              BroadcastExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
+          NetworkBroadcastExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
+            BroadcastExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
+              CoalescePartitionsExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
                 HashJoinExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
-                  CoalescePartitionsExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
-                    NetworkBroadcastExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
-                      BroadcastExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
+                  NetworkBroadcastExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
+                    BroadcastExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
+                      CoalescePartitionsExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
                         DistributedLeafExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
                   DistributedLeafExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
           DistributedLeafExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
@@ -1609,21 +1609,21 @@ mod tests {
         assert_snapshot!(annotated, @r"
         ChildrenIsolatorUnionExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
           HashJoinExec: task_count=TaskCountAnnotation: soft=4.00, exact=2
-            CoalescePartitionsExec: task_count=TaskCountAnnotation: soft=4.00, exact=2
-              NetworkBroadcastExec: task_count=TaskCountAnnotation: soft=4.00, exact=2
-                BroadcastExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
+            NetworkBroadcastExec: task_count=TaskCountAnnotation: soft=4.00, exact=2
+              BroadcastExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
+                CoalescePartitionsExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
                   DistributedLeafExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
             DistributedLeafExec: task_count=TaskCountAnnotation: soft=4.00, exact=2
           HashJoinExec: task_count=TaskCountAnnotation: soft=4.00, exact=1
-            CoalescePartitionsExec: task_count=TaskCountAnnotation: soft=4.00, exact=1
-              NetworkBroadcastExec: task_count=TaskCountAnnotation: soft=4.00, exact=1
-                BroadcastExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
+            NetworkBroadcastExec: task_count=TaskCountAnnotation: soft=4.00, exact=1
+              BroadcastExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
+                CoalescePartitionsExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
                   DistributedLeafExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
             DistributedLeafExec: task_count=TaskCountAnnotation: soft=4.00, exact=1
           HashJoinExec: task_count=TaskCountAnnotation: soft=4.00, exact=1
-            CoalescePartitionsExec: task_count=TaskCountAnnotation: soft=4.00, exact=1
-              NetworkBroadcastExec: task_count=TaskCountAnnotation: soft=4.00, exact=1
-                BroadcastExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
+            NetworkBroadcastExec: task_count=TaskCountAnnotation: soft=4.00, exact=1
+              BroadcastExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
+                CoalescePartitionsExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
                   DistributedLeafExec: task_count=TaskCountAnnotation: soft=4.00, exact=4
             DistributedLeafExec: task_count=TaskCountAnnotation: soft=4.00, exact=1
         ");

@@ -203,10 +203,10 @@ mod tests {
             .await;
         let plan = apply_broadcasts(&test_plan, query, 1).await;
         let plan = displayable(plan.as_ref()).indent(true).to_string();
-        assert_snapshot!(plan, @"
+        assert_snapshot!(plan, @r"
         HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
-          CoalescePartitionsExec
-            BroadcastExec: input_partitions=3, consumer_tasks=1, output_partitions=3
+          BroadcastExec: input_partitions=1, consumer_tasks=1, output_partitions=1
+            CoalescePartitionsExec
               DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
           DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
         ");
@@ -236,10 +236,10 @@ mod tests {
             .await;
         let plan = apply_broadcasts(&test_plan, query, 1).await;
         let plan = displayable(plan.as_ref()).indent(true).to_string();
-        assert_snapshot!(plan, @"
+        assert_snapshot!(plan, @r"
         HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
-          CoalescePartitionsExec
-            BroadcastExec: input_partitions=1, consumer_tasks=1, output_partitions=1
+          BroadcastExec: input_partitions=1, consumer_tasks=1, output_partitions=1
+            CoalescePartitionsExec
               DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
           DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
         ");
@@ -307,8 +307,8 @@ mod tests {
         let plan = displayable(plan.as_ref()).indent(true).to_string();
         assert_snapshot!(plan, @r"
         HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
-          CoalescePartitionsExec
-            BroadcastExec: input_partitions=1, consumer_tasks=1, output_partitions=1
+          BroadcastExec: input_partitions=1, consumer_tasks=1, output_partitions=1
+            CoalescePartitionsExec
               DataSourceExec: file_groups={1 group: [[/testdata/weather/result-<shard>.parquet]]}, projection=[MinTemp, RainToday], limit=50, file_type=parquet
           DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
         ");
@@ -356,10 +356,10 @@ mod tests {
             .await;
         let plan = apply_broadcasts(&test_plan, query, 1).await;
         let plan = displayable(plan.as_ref()).indent(true).to_string();
-        assert_snapshot!(plan, @"
+        assert_snapshot!(plan, @r"
         CrossJoinExec
-          CoalescePartitionsExec
-            BroadcastExec: input_partitions=3, consumer_tasks=1, output_partitions=3
+          BroadcastExec: input_partitions=1, consumer_tasks=1, output_partitions=1
+            CoalescePartitionsExec
               DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp], file_type=parquet
           DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp], file_type=parquet
         ");
@@ -378,10 +378,10 @@ mod tests {
             .await;
         let plan = apply_broadcasts(&test_plan, query, 1).await;
         let plan = displayable(plan.as_ref()).indent(true).to_string();
-        assert_snapshot!(plan, @"
+        assert_snapshot!(plan, @r"
         NestedLoopJoinExec: join_type=Inner, filter=MinTemp@0 > MaxTemp@1
-          CoalescePartitionsExec
-            BroadcastExec: input_partitions=3, consumer_tasks=1, output_partitions=3
+          BroadcastExec: input_partitions=1, consumer_tasks=1, output_partitions=1
+            CoalescePartitionsExec
               DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp], file_type=parquet
           DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp], file_type=parquet
         ");

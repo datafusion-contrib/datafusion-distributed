@@ -873,7 +873,7 @@ mod tests {
         │ stage_output_bytes=155.0 KB
         └─ Stage 2 (Coalesce) tasks=8 partitions=24
            │ stage_output_bytes=155.0 KB
-           └─ Stage 1 (Broadcast) tasks=8 partitions=256
+           └─ Stage 1 (Broadcast) tasks=8 partitions=64
                 stage_output_bytes=8.3 KB
                 stage_output_bytes_q_error=1.00
                 estimated_output_bytes=1059.0 B

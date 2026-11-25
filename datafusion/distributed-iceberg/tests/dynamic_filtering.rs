@@ -69,7 +69,7 @@ mod tests {
         collect(Arc::clone(&plan), Arc::clone(&task_ctx)).await?;
         let plan = rewrite_distributed_plan_with_dynamic_filters(plan, &task_ctx).await?;
 
-        insta::assert_snapshot!(display_plan_ascii(plan.as_ref(), false), @"
+        insta::assert_snapshot!(display_plan_ascii(plan.as_ref(), false), @r"
         ┌───── DistributedExec
         │ ProjectionExec: expr=[count(Int64(1))@0 as trips]
         │   AggregateExec: mode=Final, gby=[], aggr=[count(Int64(1))]
@@ -79,8 +79,7 @@ mod tests {
           ┌───── Stage 2 ── tasks=2, partitions=8
           │ AggregateExec: mode=Partial, gby=[], aggr=[count(Int64(1))]
           │   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(day@0, pickup_date@0)], projection=[]
-          │     CoalescePartitionsExec
-          │       [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=1, stage_partitions=2, input_tasks=1
+          │     [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=1, stage_partitions=2, input_tasks=1
           │     FilterExec: trip_distance@0 >= 2, projection=[pickup_date@1]
           │       DistributedLeafExec:
           │         t0: DataSourceExec: format=iceberg, planned_files=3, dynamic_filters=DynamicFilter [ pickup_date@1 >= 2024-01-10 AND pickup_date@1 <= 2024-01-10 AND pickup_date@1 IN ([1 elements]) ]
@@ -88,8 +87,9 @@ mod tests {
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=1, partitions=2
             │ BroadcastExec: input_partitions=1, consumer_tasks=2, output_partitions=2
-            │   ProjectionExec: expr=[column1@0 as day]
-            │     DataSourceExec: partitions=1, partition_sizes=[1]
+            │   CoalescePartitionsExec
+            │     ProjectionExec: expr=[column1@0 as day]
+            │       DataSourceExec: partitions=1, partition_sizes=[1]
             └──────────────────────────────────────────────────
         ");
         Ok(())
