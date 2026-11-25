@@ -214,6 +214,8 @@ message NoneHead {}
 message BroadcastExecHead {
   // The amount of output partitions
   uint64 output_partitions = 1;
+  // Limit applied by the CoalescePartitionsExec right below the BroadcastExec, if any.
+  optional uint64 fetch = 2;
 }
 
 // Head needed by a NetworkShuffleExec.

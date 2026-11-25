@@ -7,9 +7,11 @@ use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties, internal_err,
+    DisplayAs, DisplayFormatType, Distribution, ExecutionPlan, Partitioning, PlanProperties,
+    internal_err,
 };
 use futures::{Stream, StreamExt};
 use std::collections::VecDeque;
@@ -110,6 +112,14 @@ impl BroadcastExec {
         }
     }
 
+    pub fn new_coalesced(input: Arc<dyn ExecutionPlan>, consumer_task_count: usize) -> Self {
+        let coalesced = match input.is::<CoalescePartitionsExec>() {
+            true => input,
+            false => Arc::new(CoalescePartitionsExec::new(input)),
+        };
+        BroadcastExec::new(coalesced, consumer_task_count)
+    }
+
     pub fn input_partition_count(&self) -> usize {
         self.input.properties().partitioning.partition_count()
     }
@@ -120,6 +130,11 @@ impl BroadcastExec {
 
     pub fn input(&self) -> &Arc<dyn ExecutionPlan> {
         &self.input
+    }
+
+    pub(crate) fn fetch_below(plan: &Arc<dyn ExecutionPlan>) -> Option<usize> {
+        plan.downcast_ref::<BroadcastExec>()
+            .and_then(|v| v.input.fetch())
     }
 }
 
@@ -166,6 +181,13 @@ impl ExecutionPlan for BroadcastExec {
         _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
     ) -> Result<TreeNodeRecursion> {
         Ok(TreeNodeRecursion::Continue)
+    }
+
+    fn required_input_distribution(&self) -> Vec<Distribution> {
+        // Joins only read partition 0 of their build side, so the broadcast input must be a single
+        // partition. Declaring it keeps optimizer rules from moving the coalesce below a broadcast
+        // above it, where every consumer partition would read a full copy of the build side.
+        vec![Distribution::SinglePartition]
     }
 
     fn with_new_children(

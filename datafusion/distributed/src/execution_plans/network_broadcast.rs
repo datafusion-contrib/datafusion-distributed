@@ -122,10 +122,15 @@ pub struct NetworkBroadcastExec {
     pub(crate) properties: Arc<PlanProperties>,
     pub(crate) input_stage: Stage,
     pub(crate) worker_connections: WorkerConnectionPool,
+    pub(crate) fetch: Option<usize>,
 }
 
 impl NetworkBroadcastExec {
-    pub(crate) fn from_stage(input_stage: Stage, input_properties: Arc<PlanProperties>) -> Self {
+    pub(crate) fn from_stage(
+        input_stage: Stage,
+        input_properties: Arc<PlanProperties>,
+        fetch: Option<usize>,
+    ) -> Self {
         let input_partition_count = input_properties.partitioning.partition_count();
         let properties = Arc::new(
             PlanProperties::clone(&input_properties)
@@ -136,6 +141,7 @@ impl NetworkBroadcastExec {
             properties,
             worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
             input_stage,
+            fetch,
         }
     }
 
@@ -147,6 +153,7 @@ impl NetworkBroadcastExec {
         }
 
         let input_properties = Arc::clone(input.properties());
+        let fetch = BroadcastExec::fetch_below(&input);
         Ok(Self::from_stage(
             Stage::Local(LocalStage {
                 // At this point, query_id and num are just placeholders that will be filled by
@@ -159,6 +166,7 @@ impl NetworkBroadcastExec {
                 metrics_set: Default::default(),
             }),
             input_properties,
+            fetch,
         ))
     }
 }
@@ -179,6 +187,7 @@ impl NetworkBoundary for NetworkBroadcastExec {
         let partition_count = self.properties.output_partitioning().partition_count();
         Ok(ProducerHead::BroadcastExec {
             output_partitions: partition_count * consumer_task_count,
+            fetch: self.fetch,
         })
     }
 }

@@ -7,10 +7,9 @@ use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::Result;
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::Partitioning;
+use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
-use datafusion::physical_plan::{
-    ChildrenPropertiesMode, ExecutionPlan, ExecutionPlanProperties, ReplaceChildrenOptions,
-};
+use datafusion::physical_plan::{ChildrenPropertiesMode, ExecutionPlan, ReplaceChildrenOptions};
 use std::sync::Arc;
 
 /// This trait represents a node that introduces the necessity of a network boundary in the plan.
@@ -39,8 +38,13 @@ pub trait NetworkBoundary: ExecutionPlan {
 pub enum ProducerHead {
     /// No specific head node is necessary.
     None,
-    /// The head node should be a [BroadcastExec].
-    BroadcastExec { output_partitions: usize },
+    /// The head node should be a [BroadcastExec] over a [CoalescePartitionsExec].
+    BroadcastExec {
+        output_partitions: usize,
+        /// Limit applied by the [CoalescePartitionsExec] right below the [BroadcastExec]. A
+        /// broadcast stage with a fetch always runs in a single task, so the limit stays global.
+        fetch: Option<usize>,
+    },
     /// The head node should be a [RepartitionExec].
     RepartitionExec {
         partitioning: MaybeEncoded<Partitioning>,
@@ -93,14 +97,21 @@ impl ProducerHead {
         let input = if let Some(r_exec) = input.downcast_ref::<RepartitionExec>() {
             Arc::clone(r_exec.input())
         } else if let Some(b_exec) = input.downcast_ref::<BroadcastExec>() {
-            Arc::clone(b_exec.input())
+            match b_exec.input().downcast_ref::<CoalescePartitionsExec>() {
+                Some(cp_exec) => Arc::clone(cp_exec.input()),
+                None => Arc::clone(b_exec.input()),
+            }
         } else {
             input
         };
         let plan = match self {
             ProducerHead::None => input,
-            ProducerHead::BroadcastExec { output_partitions } => {
-                let partitions = input.output_partitioning().partition_count();
+            ProducerHead::BroadcastExec {
+                output_partitions,
+                fetch,
+            } => {
+                let input = Arc::new(CoalescePartitionsExec::new(input).with_fetch(fetch));
+                let partitions = input.properties().partitioning.partition_count();
                 Arc::new(BroadcastExec::new(input, output_partitions / partitions))
             }
             ProducerHead::RepartitionExec {
@@ -127,9 +138,19 @@ impl ProducerHead {
                 ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
             )
         } else if let Some(b_exec) = input.downcast_ref::<BroadcastExec>() {
-            let child = Arc::clone(b_exec.input());
+            let b_input = Arc::clone(b_exec.input());
+            let new_b_input = match b_input.downcast_ref::<CoalescePartitionsExec>() {
+                Some(cp_exec) => {
+                    let child = Arc::clone(cp_exec.input());
+                    Arc::clone(&b_input).replace_children(
+                        vec![Arc::new(SamplerExec::new(child))],
+                        ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+                    )?
+                }
+                None => Arc::new(SamplerExec::new(b_input)),
+            };
             input.replace_children(
-                vec![Arc::new(SamplerExec::new(child))],
+                vec![new_b_input],
                 ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
             )
         } else {

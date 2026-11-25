@@ -273,6 +273,9 @@ pub struct BroadcastExecHead {
     /// The amount of output partitions
     #[prost(uint64, tag = "1")]
     pub output_partitions: u64,
+    /// Limit applied by the CoalescePartitionsExec right below the BroadcastExec, if any.
+    #[prost(uint64, optional, tag = "2")]
+    pub fetch: ::core::option::Option<u64>,
 }
 /// Head needed by a NetworkShuffleExec.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

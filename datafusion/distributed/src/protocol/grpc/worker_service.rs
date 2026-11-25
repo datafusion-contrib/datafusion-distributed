@@ -276,6 +276,7 @@ pub(super) fn decode_producer_head(proto: pb::execute_task_request::ProducerHead
         pb::execute_task_request::ProducerHead::None(_) => ProducerHead::None,
         pb::execute_task_request::ProducerHead::Broadcast(v) => ProducerHead::BroadcastExec {
             output_partitions: v.output_partitions as usize,
+            fetch: v.fetch.map(|v| v as usize),
         },
         pb::execute_task_request::ProducerHead::Repartition(v) => ProducerHead::RepartitionExec {
             partitioning: MaybeEncoded::Encoded(v.partitioning),

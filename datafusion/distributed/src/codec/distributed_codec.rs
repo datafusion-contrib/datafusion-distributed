@@ -219,6 +219,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 partitioning,
                 input_stage,
                 equivalence_classes,
+                fetch,
             }) => {
                 let schema: Schema = schema
                     .as_ref()
@@ -253,6 +254,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     partitioning,
                     equivalence_properties,
                     parse_stage_proto(input_stage, inputs, dynamic_filter_anchors)?,
+                    fetch.map(|v| v as usize),
                 )))
             }
             DistributedExecNode::Broadcast(BroadcastExecProto {
@@ -445,6 +447,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     self,
                     proto_converter,
                 )?,
+                fetch: node.fetch.map(|v| v as u64),
             };
 
             let wrapper = DistributedExecProto {
@@ -816,6 +819,8 @@ pub struct NetworkBroadcastExecProto {
     input_stage: Option<StageProto>,
     #[prost(message, repeated, tag = "4")]
     equivalence_classes: Vec<EquivalenceClassProto>,
+    #[prost(uint64, optional, tag = "5")]
+    fetch: Option<u64>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -831,6 +836,7 @@ fn new_network_broadcast_exec(
     partitioning: Partitioning,
     equivalence_properties: EquivalenceProperties,
     input_stage: Stage,
+    fetch: Option<usize>,
 ) -> NetworkBroadcastExec {
     NetworkBroadcastExec {
         properties: Arc::new(PlanProperties::new(
@@ -841,6 +847,7 @@ fn new_network_broadcast_exec(
         )),
         worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
         input_stage,
+        fetch,
     }
 }
 
@@ -1295,6 +1302,7 @@ mod tests {
                     Partitioning::UnknownPartitioning(1),
                     equivalence_properties,
                     dummy_stage(),
+                    None,
                 )),
             ),
         ];

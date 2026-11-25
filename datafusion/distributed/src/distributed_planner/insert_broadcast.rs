@@ -4,7 +4,6 @@ use datafusion::common::JoinType;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::config::ConfigOptions;
 use datafusion::error::DataFusionError;
-use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::joins::{
     CrossJoinExec, HashJoinExec, NestedLoopJoinExec, PartitionMode,
 };
@@ -112,9 +111,6 @@ use super::DistributedConfig;
 /// Worker 1 would emit: (2, Alice), (3, Bob)
 /// Worker 2 would emit: (1, John), (3, Bob)
 /// Thus when unioning results: (2, Alice), (3, Bob), (1, John), (3, Bob)
-/// ```
-///
-/// ```
 pub(super) fn insert_broadcast_execs(
     plan: Arc<dyn ExecutionPlan>,
     cfg: &ConfigOptions,
@@ -134,35 +130,19 @@ pub(super) fn insert_broadcast_execs(
             return Ok(Transformed::no(node));
         };
 
-        let new_build_child: Arc<dyn ExecutionPlan> = if let Some(coalesce) = build_child
-            .downcast_ref::<CoalescePartitionsExec>()
-            .filter(|coalesce| coalesce.fetch().is_none())
-        {
-            if coalesce.input().is::<BroadcastExec>() {
-                return Ok(Transformed::no(node));
-            }
-            coalesced_broadcast(Arc::clone(coalesce.input()))
-        } else if build_child.is::<BroadcastExec>() {
-            Arc::new(CoalescePartitionsExec::new(Arc::clone(build_child)))
-        } else {
-            // A fetch-bearing coalesce remains below the broadcast so the limit is global.
-            coalesced_broadcast(Arc::clone(build_child))
-        };
+        if build_child.is::<BroadcastExec>() {
+            return Ok(Transformed::no(node));
+        }
 
+        let broadcast = Arc::new(BroadcastExec::new_coalesced(Arc::clone(build_child), 1));
         let mut new_children: Vec<Arc<dyn ExecutionPlan>> = children.into_iter().cloned().collect();
-        new_children[0] = new_build_child;
+        new_children[0] = broadcast;
         Ok(Transformed::yes(node.replace_children(
             new_children,
             ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
         )?))
     })
     .map(|transformed| transformed.data)
-}
-
-fn coalesced_broadcast(input: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
-    // consumer_task_count=1 is a placeholder and will be corrected during optimizer rule.
-    let broadcast: Arc<dyn ExecutionPlan> = Arc::new(BroadcastExec::new(input, 1));
-    Arc::new(CoalescePartitionsExec::new(broadcast))
 }
 
 fn can_broadcast_left_input(plan: &dyn ExecutionPlan) -> bool {
@@ -330,6 +310,35 @@ mod tests {
           CoalescePartitionsExec
             BroadcastExec: input_partitions=1, consumer_tasks=1, output_partitions=1
               DataSourceExec: file_groups={1 group: [[/testdata/weather/result-<shard>.parquet]]}, projection=[MinTemp, RainToday], limit=50, file_type=parquet
+          DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
+        ");
+    }
+
+    #[tokio::test]
+    async fn test_insert_broadcast_reuses_fetch_bearing_coalesce() {
+        // The filter keeps the limit from being pushed into the scan, so the build side is a
+        // coalesce with a fetch over several partitions.
+        let query = r#"
+        SELECT a."MinTemp", b."MaxTemp"
+        FROM (SELECT "MinTemp", "RainToday" FROM weather WHERE "MinTemp" > 10 LIMIT 50) a
+        INNER JOIN weather b
+        ON a."RainToday" = b."RainToday"
+        "#;
+
+        let test_plan = TestPlanBuilder::new()
+            .target_partitions(4)
+            .broadcast_joins(true)
+            .build()
+            .await;
+        let plan = apply_broadcasts(&test_plan, query, 1).await;
+        let plan = displayable(plan.as_ref()).indent(true).to_string();
+        assert_snapshot!(plan, @r"
+        HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
+          BroadcastExec: input_partitions=1, consumer_tasks=1, output_partitions=1
+            CoalescePartitionsExec: fetch=50
+              FilterExec: MinTemp@0 > 10, fetch=50
+                RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+                  DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet, predicate=MinTemp@0 > 10, pruning_predicate=MinTemp_null_count@1 != row_count@2 AND MinTemp_max@0 > 10, required_guarantees=[]
           DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
         ");
     }

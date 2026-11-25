@@ -487,11 +487,13 @@ pub(super) fn encode_producer_head(
 ) -> Result<pb::execute_task_request::ProducerHead> {
     Ok(match head {
         ProducerHead::None => pb::execute_task_request::ProducerHead::None(pb::NoneHead {}),
-        ProducerHead::BroadcastExec { output_partitions } => {
-            pb::execute_task_request::ProducerHead::Broadcast(pb::BroadcastExecHead {
-                output_partitions: output_partitions as u64,
-            })
-        }
+        ProducerHead::BroadcastExec {
+            output_partitions,
+            fetch,
+        } => pb::execute_task_request::ProducerHead::Broadcast(pb::BroadcastExecHead {
+            output_partitions: output_partitions as u64,
+            fetch: fetch.map(|v| v as u64),
+        }),
         ProducerHead::RepartitionExec {
             partitioning,
             preserve_order,
