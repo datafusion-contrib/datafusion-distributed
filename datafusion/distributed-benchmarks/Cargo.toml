@@ -70,3 +70,7 @@ harness = false
 [[bench]]
 name = "over_distribution"
 harness = false
+
+[[bench]]
+name = "config_propagation"
+harness = false
