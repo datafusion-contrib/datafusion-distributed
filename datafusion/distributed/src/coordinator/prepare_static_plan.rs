@@ -41,25 +41,15 @@ pub(super) async fn prepare_static_plan(
                 vec![]
             };
 
-        let mut stage_coordinator = query_coordinator.stage_coordinator(stage);
-        let mut futures = Vec::with_capacity(stage.tasks);
-        for task_i in 0..stage.tasks {
-            futures.push(stage_coordinator.init_bidirectional_stream(task_i));
-        }
-        let results = futures::future::try_join_all(futures).await?;
+        let stage_coordinator = query_coordinator.stage_coordinator(stage);
 
-        let mut workers = Vec::with_capacity(stage.tasks);
-        for (task_i, (url, worker_tx, worker_stream)) in results.into_iter().enumerate() {
-            workers.push(url);
-            stage_coordinator.worker_to_coordinator_task(task_i, worker_stream);
-            stage_coordinator.coordinator_to_worker_task(task_i, worker_tx)?;
-        }
-        stage_coordinator.seal_dynamic_filter_stage()?;
+        let worker_connection_result = stage_coordinator.connect_to_workers().await?;
+
         Ok(Transformed::yes(plan.with_input_stage(Stage::Remote(
             RemoteStage {
                 query_id: stage.query_id,
                 num: stage.num,
-                workers,
+                workers: worker_connection_result.per_task_worker_locations,
                 runtime_stats: None,
                 dynamic_filter_anchors,
             },

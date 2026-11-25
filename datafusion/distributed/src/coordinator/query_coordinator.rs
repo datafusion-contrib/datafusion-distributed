@@ -25,7 +25,7 @@ use crate::{
 use async_trait::async_trait;
 use datafusion::common::instant::Instant;
 use datafusion::common::tree_node::{Transformed, TreeNodeRecursion};
-use datafusion::common::{DataFusionError, internal_err};
+use datafusion::common::{DataFusionError, exec_datafusion_err, internal_err};
 use datafusion::common::{Result, internal_datafusion_err};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr_common::metrics::{ExecutionPlanMetricsSet, Label, MetricBuilder};
@@ -35,12 +35,11 @@ use datafusion::physical_plan::stream::RecordBatchReceiverStreamBuilder;
 use datafusion::physical_plan::{ChildrenPropertiesMode, ExecutionPlan, ReplaceChildrenOptions};
 use datafusion::prelude::SessionConfig;
 use futures::future::try_join_all;
-use futures::stream::BoxStream;
 use futures::{StreamExt, TryStreamExt};
 use http::HeaderMap;
 use std::sync::{Arc, LazyLock, Mutex};
-use tokio::select;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::sync::oneshot;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_util::sync::CancellationToken;
 use url::Url;
@@ -135,25 +134,60 @@ pub(super) struct StageCoordinator<'a> {
     spawner: &'a Spawner,
 }
 
+pub(super) struct WorkerConnectionResult {
+    pub(super) per_task_worker_locations: Vec<Url>,
+    pub(super) per_task_load_info_streams: Vec<UnboundedReceiverStream<LoadInfo>>,
+}
+
 impl<'a> StageCoordinator<'a> {
+    /// Initializes the connection to all the workers that will execute each task of the managed
+    /// stage, returning:
+    /// - The URLs of the workers to which a successful connection was established.
+    /// - The incoming worker->coordinator [LoadInfo] stream for each established connection.
+    pub(super) async fn connect_to_workers(&self) -> Result<WorkerConnectionResult> {
+        let mut worker_url_rxs = Vec::with_capacity(self.task_count);
+        let mut per_task_load_info_streams = Vec::with_capacity(self.task_count);
+        for task_i in 0..self.task_count {
+            let (worker_url_rx, load_info_rx) = self.init_bidirectional_stream(task_i)?;
+            worker_url_rxs.push(worker_url_rx);
+            per_task_load_info_streams.push(UnboundedReceiverStream::new(load_info_rx));
+        }
+
+        // Fails as soon as one task fails to route, without waiting for the other tasks.
+        let stage_id = self.stage_id;
+        let worker_url_futs = worker_url_rxs
+            .into_iter()
+            .enumerate()
+            .map(|(i, rx)| async move {
+                rx.await.map_err(|_| {
+                    exec_datafusion_err!("No worker was assigned for task {i} of stage {stage_id}")
+                })?
+            });
+        let per_task_worker_locations = try_join_all(worker_url_futs).await?;
+
+        self.dynamic_filter_registry.seal_stage(self.stage_id)?;
+
+        Ok(WorkerConnectionResult {
+            per_task_worker_locations,
+            per_task_load_info_streams,
+        })
+    }
+
     /// Sends a plan to a specific worker and sets up the bidirectional stream.
     ///
     /// Its returns are:
-    /// - The worker URL in which the task got allocated
+    /// - A receiver for the worker URL in which the task got allocated, resolved by
+    ///   [StageCoordinator::await_worker_urls].
     /// - The coordinator-to-worker stream for producing messages that reach the worker.
     /// - The worker-to-coordinator stream for receiving messages from the worker.
-    pub(super) async fn init_bidirectional_stream(
+    fn init_bidirectional_stream(
         &self,
         task_i: usize,
-    ) -> Result<(
-        Url,
-        UnboundedSender<CoordinatorToWorkerMsg>,
-        BoxStream<'static, Result<WorkerToCoordinatorMsg>>,
-    )> {
+    ) -> Result<(oneshot::Receiver<Result<Url>>, UnboundedReceiver<LoadInfo>)> {
         let session_config = self.task_ctx.session_config();
 
         let TaskSpecializedPlan {
-            plan,
+            plan: task_specialized_plan,
             work_unit_feed_declarations,
             dynamic_filter_remote_producer_ids,
         } = self.task_specialized_plan(task_i)?;
@@ -166,7 +200,7 @@ impl<'a> StageCoordinator<'a> {
 
         if is_remote_dynamic_filtering_enabled(session_config)? {
             self.dynamic_filter_registry
-                .register_task(&plan, task_key)?;
+                .register_task(&task_specialized_plan, task_key)?;
         }
 
         let mut headers = get_config_extension_propagation_headers(session_config)?;
@@ -181,124 +215,149 @@ impl<'a> StageCoordinator<'a> {
             set_plan_request_template: SetPlanRequest {
                 task_key,
                 task_count: self.task_count,
-                plan: MaybeEncoded::Decoded(Arc::clone(&plan)),
-                dynamic_filter_remote_producer_ids,
-                work_unit_feed_declarations,
+                plan: MaybeEncoded::Decoded(Arc::clone(&task_specialized_plan)),
+                dynamic_filter_remote_producer_ids: dynamic_filter_remote_producer_ids.clone(),
+                work_unit_feed_declarations: work_unit_feed_declarations.clone(),
                 target_worker_url: URL_PLACEHOLDER.clone(),
                 query_start_time_ns: self.metrics.instantiation_time,
             },
             coordinator_to_worker_tx: Mutex::new(None),
         };
 
+        // The dialer moved the copies above, so the spawned task gets its own.
         let worker_resolver = session_config.get_distributed_worker_resolver()?;
+        let task_ctx = Arc::clone(self.task_ctx);
+        let task_count = self.task_count;
+        let metrics = self.metrics.clone();
+        let metrics_set = self.metrics_set.clone();
+        let stage_plan = Arc::clone(self.plan);
+        let dynamic_filter_registry = Arc::clone(self.dynamic_filter_registry);
+        let cancel = self.spawner.query_finished();
 
-        let ev = RouteTaskEvent {
-            task_ctx: self.task_ctx,
-            metrics: self.metrics_set,
-            worker_resolver: worker_resolver.as_ref(),
-            stage_plan: self.plan,
-            task_specialized_plan: &plan,
-            task_key,
-            task_count: self.task_count,
-            dialer: &dialer,
-        };
-
-        let start = Instant::now();
-        let Some(response) = RouteTaskHandlers::handle(ev).await.transpose()? else {
-            return internal_err!("No RouteTaskHandler returned a response");
-        };
-        self.metrics.plan_send_latency.record(&start);
-
-        let coordinator_to_worker_tx = dialer.coordinator_to_worker_tx()?;
-        self.dynamic_filter_registry
-            .register_sender(task_key, coordinator_to_worker_tx.clone())?;
-
-        Ok((
-            response.url,
-            coordinator_to_worker_tx,
-            response.worker_to_coordinator_stream,
-        ))
-    }
-
-    pub(super) fn seal_dynamic_filter_stage(&self) -> Result<()> {
-        self.dynamic_filter_registry.seal_stage(self.stage_id)
-    }
-
-    /// Spawns background tasks in charge of collecting messages sent by a worker.
-    pub(super) fn worker_to_coordinator_task(
-        &mut self,
-        task_i: usize,
-        mut worker_to_coordinator_stream: BoxStream<'static, Result<WorkerToCoordinatorMsg>>,
-    ) -> UnboundedReceiver<LoadInfo> {
-        let task_key = TaskKey {
-            query_id: self.query_id,
-            stage_id: self.stage_id,
-            task_number: task_i,
-        };
+        // Results to be threaded around.
+        let (worker_url_tx, worker_url_rx) = oneshot::channel();
+        let (load_info_tx, load_info_rx) = unbounded_channel();
+        // Completes this task's report waits however the task below ends, even if it's never polled.
         let mut reports = TaskReports {
             task_key,
             metrics_store: self.metrics_store.clone(),
             completed_dynamic_filter_store: self.completed_dynamic_filter_store.clone(),
         };
-        let dynamic_filter_registry = Arc::clone(self.dynamic_filter_registry);
-        let task_ctx = Arc::clone(self.task_ctx);
-        let (load_info_tx, load_info_rx) = unbounded_channel();
-        let mut load_info_tx_opt = Some(load_info_tx);
 
-        // Read from the worker -> coordinator stream and fail the query on error.
-        self.spawner.spawn_unbounded(async move {
-            while let Some(msg) = worker_to_coordinator_stream.try_next().await? {
-                match msg {
-                    WorkerToCoordinatorMsg::TaskMetrics(metrics) => {
-                        if let Some(task_metrics) = reports.metrics_store.take() {
-                            task_metrics.insert(task_key, metrics);
+        // Spawns the task that establishes the connection to the remote worker and sends message
+        // to it.
+        let spawner = self.spawner.clone();
+        self.spawner.spawn(async move {
+            let ev = RouteTaskEvent {
+                task_ctx: &task_ctx,
+                metrics: &metrics_set,
+                worker_resolver: worker_resolver.as_ref(),
+                stage_plan: &stage_plan,
+                task_specialized_plan: &task_specialized_plan,
+                task_key,
+                task_count,
+                dialer: &dialer,
+            };
+
+            let start = Instant::now();
+
+            let fut = RouteTaskHandlers::handle(ev);
+            let Some(routing_response_opt) = cancel.run_until_cancelled(fut).await else {
+                // Query was canceled, nothing else to do.
+                return Ok(());
+            };
+
+            let mut worker_to_coordinator_stream = match routing_response_opt {
+                Some(Ok(v)) => {
+                    _ = worker_url_tx.send(Ok(v.url));
+                    v.worker_to_coordinator_stream
+                }
+                Some(Err(err)) => return Ok(_ = worker_url_tx.send(Err(err))),
+                None => return internal_err!("No RouteTaskHandler returned a response"),
+            };
+
+            metrics.plan_send_latency.record(&start);
+
+            let mut load_info_tx_opt = Some(load_info_tx);
+            let dynamic_filter_registry_clone = Arc::clone(&dynamic_filter_registry);
+            let task_ctx_clone = Arc::clone(&task_ctx);
+
+            spawner.spawn_unbounded(async move {
+                // Read from the worker -> coordinator stream and fail the query on error.
+                while let Some(msg) = worker_to_coordinator_stream.try_next().await? {
+                    match msg {
+                        WorkerToCoordinatorMsg::TaskMetrics(metrics) => {
+                            if let Some(store) = reports.metrics_store.take() {
+                                store.insert(task_key, metrics);
+                            }
                         }
-                    }
-                    WorkerToCoordinatorMsg::TaskCompletedDynamicFilters(filters) => {
-                        if let Some(store) = reports.completed_dynamic_filter_store.take() {
-                            store.insert(task_key, filters);
+                        WorkerToCoordinatorMsg::TaskCompletedDynamicFilters(filters) => {
+                            if let Some(store) = reports.completed_dynamic_filter_store.take() {
+                                store.insert(task_key, filters);
+                            }
                         }
-                    }
-                    WorkerToCoordinatorMsg::ProducedDynamicFilter(filter) => {
-                        dynamic_filter_registry
-                            .record_dynamic_filter_update(task_key, *filter, &task_ctx)?;
-                    }
-                    WorkerToCoordinatorMsg::LoadInfo(info) => {
-                        if let Some(tx) = &load_info_tx_opt {
-                            let _ = tx.send(info);
+                        WorkerToCoordinatorMsg::ProducedDynamicFilter(filter) => {
+                            dynamic_filter_registry_clone.record_dynamic_filter_update(
+                                task_key,
+                                *filter,
+                                &task_ctx_clone,
+                            )?;
                         }
-                    }
-                    WorkerToCoordinatorMsg::LoadInfoEos => {
-                        let _ = load_info_tx_opt.take();
-                    }
-                };
-            }
-            let _ = load_info_tx_opt.take();
-            Ok::<_, DataFusionError>(())
+                        WorkerToCoordinatorMsg::LoadInfo(info) => {
+                            if let Some(tx) = &load_info_tx_opt {
+                                let _ = tx.send(info);
+                            }
+                        }
+                        WorkerToCoordinatorMsg::LoadInfoEos => {
+                            let _ = load_info_tx_opt.take();
+                        }
+                    };
+                }
+                Ok::<_, DataFusionError>(())
+            });
+
+            let coordinator_to_worker_tx = dialer.coordinator_to_worker_tx()?;
+
+            dynamic_filter_registry.register_sender(task_key, coordinator_to_worker_tx.clone())?;
+
+            let _ = coordinator_to_worker_tx.send(CoordinatorToWorkerMsg::KickOffSampling);
+
+            Self::send_work_unit_feeds(
+                &task_ctx,
+                task_i,
+                task_count,
+                &stage_plan,
+                cancel,
+                coordinator_to_worker_tx,
+            )
+            .await
         });
 
-        load_info_rx
+        Ok((worker_url_rx, load_info_rx))
     }
 
-    /// Spawns a background task in charge of sending messages to workers. Some things that are sent
-    /// to workers here are:
-    /// - WorkUnits collected from [WorkUnitFeeds] present in the plan.
-    pub(super) fn coordinator_to_worker_task(
-        &mut self,
+    /// Recurses the plan looking for all the nodes containing WorkUnitFeeds and streams all the
+    /// WorkUnits for those plans into `tx` until they are exhausted. This function will block up
+    /// until all WorkUnits have been fully generated and produced into `tx`.
+    async fn send_work_unit_feeds(
+        task_ctx: &Arc<TaskContext>,
         task_i: usize,
+        task_count: usize,
+        stage_plan: &Arc<dyn ExecutionPlan>,
+        query_finished: CancellationToken,
         tx: UnboundedSender<CoordinatorToWorkerMsg>,
     ) -> Result<()> {
-        let session_config = self.task_ctx.session_config();
+        let session_config = task_ctx.session_config();
         let wuf_registry = session_config
             .get_extension::<WorkUnitFeedRegistry>()
             .unwrap_or_default();
 
         let d_ctx = DistributedTaskContext {
             task_index: task_i,
-            task_count: self.task_count,
+            task_count,
         };
         let mut futures = vec![];
-        self.plan.apply_with_dt_ctx(d_ctx, |plan, d_ctx| {
+        stage_plan.apply_with_dt_ctx(d_ctx, |plan, d_ctx| {
             let Some(wuf) = wuf_registry.get_work_unit_feed(plan) else {
                 return Ok(TreeNodeRecursion::Continue);
             };
@@ -310,7 +369,7 @@ impl<'a> StageCoordinator<'a> {
             let dist_feed_ctx = DistributedWorkUnitFeedContext {
                 fan_out_tasks: d_ctx.task_count,
             };
-            let t_ctx = Arc::new(task_ctx_with_extension(self.task_ctx, dist_feed_ctx));
+            let t_ctx = Arc::new(task_ctx_with_extension(task_ctx, dist_feed_ctx));
 
             let mut feeds = Vec::with_capacity(end_partition - start_partition);
             for (partition, feed_idx) in (start_partition..end_partition).enumerate() {
@@ -346,16 +405,12 @@ impl<'a> StageCoordinator<'a> {
         }
 
         // Cancel any feeds if the query finishes or aborts.
-        let query_finished = self.spawner.query_finished();
-        self.spawner.spawn(async move {
-            let _guard = WorkUnitEosOnDrop(tx);
-            select! {
-                result = try_join_all(futures) => { result?; }
-                _ = query_finished.cancelled() => {}
-            }
-            Ok(())
-        });
-        Ok(())
+        let _guard = WorkUnitEosOnDrop(tx);
+        let fut = try_join_all(futures);
+        let Some(result) = query_finished.run_until_cancelled(fut).await else {
+            return Ok(());
+        };
+        result.map(|_| ())
     }
 
     /// Specializes the [Arc<dyn ExecutionPlan>] for this stage to provided task index. This implies
@@ -440,7 +495,8 @@ impl<'a> StageCoordinator<'a> {
     }
 }
 
-/// Completes missing report waits when the worker response reader ends.
+/// Completes missing report waits when the worker-to-coordinator task ends, including when it
+/// fails, when routing never finishes, or when the task is dropped before its first poll.
 struct TaskReports {
     task_key: TaskKey,
     metrics_store: Option<Arc<Store<TaskMetrics>>>,
