@@ -43,7 +43,7 @@ pub(super) async fn prepare_static_plan(
 
         let stage_coordinator = query_coordinator.stage_coordinator(stage);
 
-        let worker_connection_result = stage_coordinator.connect_to_workers().await?;
+        let worker_connection_result = stage_coordinator.connect_to_workers()?;
 
         Ok(Transformed::yes(plan.with_input_stage(Stage::Remote(
             RemoteStage {

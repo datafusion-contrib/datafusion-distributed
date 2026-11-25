@@ -122,7 +122,7 @@ impl NetworkBoundaryBuilder for DynamicPlanBuilder<'_> {
 
         let stage_coordinator = self.query_coordinator.stage_coordinator(&input_stage);
 
-        let worker_connection_result = stage_coordinator.connect_to_workers().await?;
+        let worker_connection_result = stage_coordinator.connect_to_workers()?;
 
         let (stats, consumer_tc) = if nb_type == TypeId::of::<NetworkCoalesceExec>() {
             (None, TaskCountAnnotation::exact(NonZeroUsize::MIN, 0.0))

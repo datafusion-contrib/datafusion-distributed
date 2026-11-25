@@ -20,12 +20,13 @@ use crate::{
     CoordinatorToWorkerDialer, CoordinatorToWorkerMsg, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL,
     DistributedGetterExt, DistributedTaskContext, DistributedWorkUnitFeedContext, LoadInfo,
     LocalWorkerContext, MaybeEncoded, SetPlanRequest, TaskCompletedDynamicFilters, TaskKey,
-    TaskMetrics, WorkUnitFeedDeclaration, WorkerToCoordinatorMsg, get_distributed_channel_resolver,
+    TaskMetrics, WorkUnitFeedDeclaration, WorkerLocation, WorkerToCoordinatorMsg,
+    get_distributed_channel_resolver,
 };
 use async_trait::async_trait;
 use datafusion::common::instant::Instant;
 use datafusion::common::tree_node::{Transformed, TreeNodeRecursion};
-use datafusion::common::{DataFusionError, exec_datafusion_err, internal_err};
+use datafusion::common::{DataFusionError, internal_err};
 use datafusion::common::{Result, internal_datafusion_err};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr_common::metrics::{ExecutionPlanMetricsSet, Label, MetricBuilder};
@@ -39,7 +40,6 @@ use futures::{StreamExt, TryStreamExt};
 use http::HeaderMap;
 use std::sync::{Arc, LazyLock, Mutex};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
-use tokio::sync::oneshot;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_util::sync::CancellationToken;
 use url::Url;
@@ -135,35 +135,24 @@ pub(super) struct StageCoordinator<'a> {
 }
 
 pub(super) struct WorkerConnectionResult {
-    pub(super) per_task_worker_locations: Vec<Url>,
+    pub(super) per_task_worker_locations: Vec<WorkerLocation>,
     pub(super) per_task_load_info_streams: Vec<UnboundedReceiverStream<LoadInfo>>,
 }
 
 impl<'a> StageCoordinator<'a> {
     /// Initializes the connection to all the workers that will execute each task of the managed
     /// stage, returning:
-    /// - The URLs of the workers to which a successful connection was established.
-    /// - The incoming worker->coordinator [LoadInfo] stream for each established connection.
-    pub(super) async fn connect_to_workers(&self) -> Result<WorkerConnectionResult> {
-        let mut worker_url_rxs = Vec::with_capacity(self.task_count);
+    /// - The locations of the workers executing each task, which may still be pending while the
+    ///   task is being routed.
+    /// - The incoming worker->coordinator [LoadInfo] stream for each connection.
+    pub(super) fn connect_to_workers(&self) -> Result<WorkerConnectionResult> {
+        let mut per_task_worker_locations = Vec::with_capacity(self.task_count);
         let mut per_task_load_info_streams = Vec::with_capacity(self.task_count);
         for task_i in 0..self.task_count {
-            let (worker_url_rx, load_info_rx) = self.init_bidirectional_stream(task_i)?;
-            worker_url_rxs.push(worker_url_rx);
+            let (worker_location, load_info_rx) = self.init_bidirectional_stream(task_i)?;
+            per_task_worker_locations.push(worker_location);
             per_task_load_info_streams.push(UnboundedReceiverStream::new(load_info_rx));
         }
-
-        // Fails as soon as one task fails to route, without waiting for the other tasks.
-        let stage_id = self.stage_id;
-        let worker_url_futs = worker_url_rxs
-            .into_iter()
-            .enumerate()
-            .map(|(i, rx)| async move {
-                rx.await.map_err(|_| {
-                    exec_datafusion_err!("No worker was assigned for task {i} of stage {stage_id}")
-                })?
-            });
-        let per_task_worker_locations = try_join_all(worker_url_futs).await?;
 
         self.dynamic_filter_registry.seal_stage(self.stage_id)?;
 
@@ -176,14 +165,13 @@ impl<'a> StageCoordinator<'a> {
     /// Sends a plan to a specific worker and sets up the bidirectional stream.
     ///
     /// Its returns are:
-    /// - A receiver for the worker URL in which the task got allocated, resolved by
-    ///   [StageCoordinator::await_worker_urls].
+    /// - The worker location in which the task got allocated.
     /// - The coordinator-to-worker stream for producing messages that reach the worker.
     /// - The worker-to-coordinator stream for receiving messages from the worker.
     fn init_bidirectional_stream(
         &self,
         task_i: usize,
-    ) -> Result<(oneshot::Receiver<Result<Url>>, UnboundedReceiver<LoadInfo>)> {
+    ) -> Result<(WorkerLocation, UnboundedReceiver<LoadInfo>)> {
         let session_config = self.task_ctx.session_config();
 
         let TaskSpecializedPlan {
@@ -235,7 +223,7 @@ impl<'a> StageCoordinator<'a> {
         let cancel = self.spawner.query_finished();
 
         // Results to be threaded around.
-        let (worker_url_tx, worker_url_rx) = oneshot::channel();
+        let (worker_location, worker_location_tx) = WorkerLocation::new_pending();
         let (load_info_tx, load_info_rx) = unbounded_channel();
         // Completes this task's report waits however the task below ends, even if it's never polled.
         let mut reports = TaskReports {
@@ -248,6 +236,16 @@ impl<'a> StageCoordinator<'a> {
         // to it.
         let spawner = self.spawner.clone();
         self.spawner.spawn(async move {
+            // The only WorkerLocations that we need resolved at this point are those reachable
+            // through the current task-specialized plan. We don't care if there's other parts of
+            // the stage plan that have not resolved yet.
+            let fut = WorkerLocation::ensure_all_resolved(&task_specialized_plan);
+
+            let Some(_) = cancel.run_until_cancelled(fut).await.transpose()? else {
+                // Query was canceled, nothing else to do.
+                return Ok(());
+            };
+
             let ev = RouteTaskEvent {
                 task_ctx: &task_ctx,
                 metrics: &metrics_set,
@@ -269,10 +267,10 @@ impl<'a> StageCoordinator<'a> {
 
             let mut worker_to_coordinator_stream = match routing_response_opt {
                 Some(Ok(v)) => {
-                    _ = worker_url_tx.send(Ok(v.url));
+                    _ = worker_location_tx.send(v.url);
                     v.worker_to_coordinator_stream
                 }
-                Some(Err(err)) => return Ok(_ = worker_url_tx.send(Err(err))),
+                Some(Err(err)) => return Err(err),
                 None => return internal_err!("No RouteTaskHandler returned a response"),
             };
 
@@ -333,7 +331,7 @@ impl<'a> StageCoordinator<'a> {
             .await
         });
 
-        Ok((worker_url_rx, load_info_rx))
+        Ok((worker_location, load_info_rx))
     }
 
     /// Recurses the plan looking for all the nodes containing WorkUnitFeeds and streams all the

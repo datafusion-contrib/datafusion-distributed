@@ -81,7 +81,7 @@ impl WorkerConnectionPool {
         producer_head: ProducerHead,
         ctx: &Arc<TaskContext>,
     ) -> Result<BoxStream<'static, Result<RecordBatch>>> {
-        let Some(target_url) = input_stage.workers.get(target_task).cloned() else {
+        let Some(worker_location) = input_stage.workers.get(target_task).cloned() else {
             internal_err!("input_stage.workers[{target_task}] out of range.")?
         };
         let task_key = TaskKey {
@@ -127,6 +127,7 @@ impl WorkerConnectionPool {
             //
             // Note that this does not start polling the returned streams, it just instantiates them.
             let streams_task = SpawnedTask::spawn(async move {
+                let target_url = worker_location.resolve().await?;
                 let request = ExecuteTaskRequest {
                     task_key,
                     target_partition_start: target_partition_range.start,
@@ -362,7 +363,7 @@ mod tests {
             let stage = RemoteStage {
                 query_id,
                 num: 0,
-                workers: vec![worker.url.clone()],
+                workers: vec![worker.url.clone().into()],
                 runtime_stats: None,
                 dynamic_filter_anchors: vec![],
             };
