@@ -25,7 +25,7 @@ use crate::{
 use async_trait::async_trait;
 use datafusion::common::instant::Instant;
 use datafusion::common::tree_node::{Transformed, TreeNodeRecursion};
-use datafusion::common::{DataFusionError, exec_err, internal_err};
+use datafusion::common::{DataFusionError, exec_datafusion_err, internal_err};
 use datafusion::common::{Result, internal_datafusion_err};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr_common::metrics::{ExecutionPlanMetricsSet, Label, MetricBuilder};
@@ -34,7 +34,7 @@ use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::stream::RecordBatchReceiverStreamBuilder;
 use datafusion::physical_plan::{ChildrenPropertiesMode, ExecutionPlan, ReplaceChildrenOptions};
 use datafusion::prelude::SessionConfig;
-use futures::future::{join_all, try_join_all};
+use futures::future::try_join_all;
 use futures::{StreamExt, TryStreamExt};
 use http::HeaderMap;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -145,7 +145,6 @@ impl<'a> StageCoordinator<'a> {
     /// - The URLs of the workers to which a successful connection was established.
     /// - The incoming worker->coordinator [LoadInfo] stream for each established connection.
     pub(super) async fn connect_to_workers(&self) -> Result<WorkerConnectionResult> {
-        let mut per_task_worker_locations = Vec::with_capacity(self.task_count);
         let mut worker_url_rxs = Vec::with_capacity(self.task_count);
         let mut per_task_load_info_streams = Vec::with_capacity(self.task_count);
         for task_i in 0..self.task_count {
@@ -154,13 +153,17 @@ impl<'a> StageCoordinator<'a> {
             per_task_load_info_streams.push(UnboundedReceiverStream::new(load_info_rx));
         }
 
-        for (i, worker_url_recv_result) in join_all(worker_url_rxs).await.into_iter().enumerate() {
-            let Ok(url_result) = worker_url_recv_result else {
-                let stage_id = self.stage_id;
-                return exec_err!("No worker was assigned for task {i} of stage {stage_id}");
-            };
-            per_task_worker_locations.push(url_result?)
-        }
+        // Fails as soon as one task fails to route, without waiting for the other tasks.
+        let stage_id = self.stage_id;
+        let worker_url_futs = worker_url_rxs
+            .into_iter()
+            .enumerate()
+            .map(|(i, rx)| async move {
+                rx.await.map_err(|_| {
+                    exec_datafusion_err!("No worker was assigned for task {i} of stage {stage_id}")
+                })?
+            });
+        let per_task_worker_locations = try_join_all(worker_url_futs).await?;
 
         self.dynamic_filter_registry.seal_stage(self.stage_id)?;
 

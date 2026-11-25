@@ -32,6 +32,7 @@ mod tests {
     use prost::Message;
     use std::error::Error;
     use std::fmt::Formatter;
+    use std::future::pending;
     use std::sync::Arc;
     use std::time::Duration;
     use test_case::test_case;
@@ -100,6 +101,29 @@ mod tests {
         Ok(())
     }
 
+    /// Task 0 of every stage fails to route while the remaining tasks never get routed. The
+    /// query must fail with the routing error instead of waiting for the pending tasks.
+    #[test_case(false; "static_planner")]
+    #[test_case(true; "adaptive_planner")]
+    #[tokio::test]
+    async fn routing_error_fails_query_despite_pending_routes(
+        adaptive: bool,
+    ) -> Result<(), Box<dyn Error>> {
+        let (ctx, _guard, _) = start_localhost_context(2, DefaultSessionBuilder).await;
+        let ctx = ctx
+            .with_distributed_dynamic_task_count(adaptive)?
+            .with_distributed_route_task_handler(FirstTaskFailsOthersPend);
+        register_parquet_tables(&ctx).await?;
+        let query = ctx
+            .sql(r#"SELECT "MinTemp" FROM weather WHERE "MinTemp" > 20.0"#)
+            .await?;
+        let error = timeout(Duration::from_secs(5), query.collect())
+            .await?
+            .expect_err("routing error must fail the query");
+        assert_contains!(error.to_string(), "injected routing error");
+        Ok(())
+    }
+
     /// The head stage yields one row and then fails. The output is read only once
     /// the head stage has yielded the failure, so the row is already waiting in
     /// `DistributedExec`'s output channel. A pending first read makes the next read
@@ -148,6 +172,21 @@ mod tests {
                     .chain(response.worker_to_coordinator_stream)
                     .boxed();
             Some(Ok(response))
+        }
+    }
+
+    struct FirstTaskFailsOthersPend;
+
+    #[async_trait]
+    impl RouteTaskHandler for FirstTaskFailsOthersPend {
+        async fn handle(
+            &self,
+            event: RouteTaskEvent<'_>,
+        ) -> Option<Result<RouteTaskEventResponse, DataFusionError>> {
+            if event.task_key.task_number == 0 {
+                return Some(exec_err!("injected routing error"));
+            }
+            pending().await
         }
     }
 
