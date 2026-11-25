@@ -638,13 +638,13 @@ mod tests {
           │ SortExec: expr=[a_task@1 ASC NULLS LAST, a_partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST, b_task@5 ASC NULLS LAST, b_partition@6 ASC NULLS LAST], preserve_partitioning=[true]
           │   ProjectionExec: expr=[tag@0 as a_tag, task@1 as a_task, partition@2 as a_partition, letter@3 as letter, tag@4 as b_tag, task@5 as b_task, partition@6 as b_partition]
           │     HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(letter@3, letter@3)], projection=[tag@0, task@1, partition@2, letter@3, tag@4, task@5, partition@6]
-          │       CoalescePartitionsExec
-          │         [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=2, stage_partitions=4, input_tasks=2
+          │       [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=1, stage_partitions=2, input_tasks=2
           │       RowGeneratorExec: tag=build, tasks=2, partition_ops=[[rows(1)], [rows(2)], [rows(1)], [rows(3)]]
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── tasks=2, partitions=8
-            │ BroadcastExec: input_partitions=2, consumer_tasks=2, output_partitions=4
-            │   RowGeneratorExec: tag=probe, tasks=2, partition_ops=[[rows(3)], [rows(1)], [rows(2)], [rows(1)]]
+            ┌───── Stage 1 ── tasks=2, partitions=4
+            │ BroadcastExec: input_partitions=1, consumer_tasks=2, output_partitions=2
+            │   CoalescePartitionsExec
+            │     RowGeneratorExec: tag=probe, tasks=2, partition_ops=[[rows(3)], [rows(1)], [rows(2)], [rows(1)]]
             └──────────────────────────────────────────────────
         +-------+--------+-------------+--------+-------+--------+-------------+
         | a_tag | a_task | a_partition | letter | b_tag | b_task | b_partition |
@@ -829,15 +829,15 @@ mod tests {
           ┌───── Stage 2 ── tasks=3, partitions=9
           │ SortExec: expr=[tag@1 ASC NULLS LAST, tag@0 ASC NULLS LAST], preserve_partitioning=[true]
           │   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(letter@1, letter@1)], projection=[tag@0, tag@2]
-          │     CoalescePartitionsExec
-          │       [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=1, stage_partitions=3, input_tasks=3
+          │     [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=1, stage_partitions=3, input_tasks=3
           │     DistributedUnionExec: t0:[c0(0/2)] t1:[c0(1/2)] t2:[c1]
           │       RowGeneratorExec: tag=small_a, tasks=1, partition_ops=[[rows(1)], [rows(1)], [rows(1)]]
           │       RowGeneratorExec: tag=small_b, tasks=1, partition_ops=[[rows(1)], [rows(1)], [rows(1)]]
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=3, partitions=9
             │ BroadcastExec: input_partitions=1, consumer_tasks=3, output_partitions=3
-            │   RowGeneratorExec: tag=big, tasks=4, partition_ops=[[rows(1)], [rows(1)], [rows(1)], [rows(1)]]
+            │   CoalescePartitionsExec
+            │     RowGeneratorExec: tag=big, tasks=4, partition_ops=[[rows(1)], [rows(1)], [rows(1)], [rows(1)]]
             └──────────────────────────────────────────────────
         +-----+---------+
         | tag | tag     |
