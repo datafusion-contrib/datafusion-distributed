@@ -39,8 +39,9 @@ impl TpcdsSpec {
 
 /// Per-table columns, using the canonical column names. Sort keys are the columns that the pinned
 /// tpcdsgen emits in ascending order: surrogate keys of dimension tables and ticket/order
-/// numbers of fact tables. Sold dates are not ordered.
-fn table_columns(table: &str) -> TableColumns {
+/// numbers of fact tables. Sold dates are not ordered. Each fact table is partitioned by its date
+/// key.
+pub(crate) fn table_columns(table: &str) -> TableColumns {
     let sort_keys: &'static [&'static str] = match table {
         "call_center" => &["cc_call_center_sk"],
         "catalog_page" => &["cp_catalog_page_sk"],
@@ -74,9 +75,20 @@ fn table_columns(table: &str) -> TableColumns {
         "store" => &["s_state", "s_country"],
         _ => &[],
     };
+    let partition_columns: &'static [&'static str] = match table {
+        "store_sales" => &["ss_sold_date_sk"],
+        "store_returns" => &["sr_returned_date_sk"],
+        "catalog_sales" => &["cs_sold_date_sk"],
+        "catalog_returns" => &["cr_returned_date_sk"],
+        "web_sales" => &["ws_sold_date_sk"],
+        "web_returns" => &["wr_returned_date_sk"],
+        "inventory" => &["inv_date_sk"],
+        _ => &[],
+    };
     TableColumns {
         sort_keys,
         dictionary,
+        partition_columns,
     }
 }
 

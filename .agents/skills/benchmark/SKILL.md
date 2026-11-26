@@ -44,7 +44,9 @@ target/release/dfbench compare $DATASET $ICEBERG                     # Parquet v
 
 `prepare` converts an existing Parquet dataset; converting into a complete dataset is a no-op, so
 remove the Iceberg copy after regenerating its source. Iceberg runs always load manifest column
-statistics. See `datafusion/distributed-benchmarks/README.md` for S3 output and other options.
+statistics. `prepare --partitioned` partitions each table by the columns its benchmark declares;
+only TPC-DS declares them, for its fact tables' date keys. See
+`datafusion/distributed-benchmarks/README.md` for S3 output and other options.
 
 ## Things worth knowing
 
