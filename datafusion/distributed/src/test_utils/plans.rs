@@ -9,14 +9,16 @@ use crate::events::{
 use crate::stage::Stage;
 #[cfg(test)]
 use crate::{
-    DefaultSessionBuilder, DesiredTaskCountEvent, DesiredTaskCountEventResponse,
-    DesiredTaskCountHandler, DistributedConfig, DistributedExt, DistributedMetricsFormat,
-    SessionStateBuilderExt, display_plan_ascii, rewrite_distributed_plan_with_metrics,
+    DesiredTaskCountEvent, DesiredTaskCountEventResponse, DesiredTaskCountHandler,
+    DistributedConfig, DistributedExt, DistributedMetricsFormat, SessionStateBuilderExt,
+    display_plan_ascii, rewrite_distributed_plan_with_metrics,
     test_utils::in_memory_channel_resolver::{InMemoryChannelResolver, InMemoryWorkerResolver},
 };
 use crate::{NetworkBoundaryExt, TaskKey};
 #[cfg(test)]
 use datafusion::{
+    arrow::array::RecordBatch,
+    arrow::util::pretty::pretty_format_batches,
     common::Result,
     execution::{SessionState, context::SessionContext, session_state::SessionStateBuilder},
     physical_plan::{collect, displayable},
@@ -123,6 +125,15 @@ impl TestPlan {
             .unwrap()
     }
 
+    /// gets the physical plan of a query after execution
+    pub async fn execute(&self, query: &str) -> (Vec<RecordBatch>, Arc<dyn ExecutionPlan>) {
+        let plan = self.physical_plan(query).await;
+        let results = collect(Arc::clone(&plan), self.ctx.task_ctx())
+            .await
+            .expect("Error executing stream");
+        (results, plan)
+    }
+
     /// get the physical plan of a query as a string
     pub async fn physical_plan_as_string(&self, query: &str) -> String {
         let plan = self.physical_plan(query).await;
@@ -154,11 +165,17 @@ pub(crate) struct TestPlanBuilder {
     distributed_partial_reduce: Option<bool>,
     distributed_children_isolator_unions: Option<bool>,
     distributed_max_tasks_per_stage: Option<usize>,
-    distributed_dynamic_task_count: Option<bool>,
+    distributed_dynamic_bytes_ready_sample_percentage: Option<f64>,
+    distributed_dynamic_broadcast_join_threshold_bytes: Option<usize>,
+    distributed_dynamic_bytes_per_partition: Option<usize>,
     prefer_hash_join: Option<bool>,
+    join_reordering: Option<bool>,
     hash_join_single_partition_threshold: Option<usize>,
     hash_join_single_partition_threshold_rows: Option<usize>,
     distributed_blacklisted_nodes: Vec<fn(&mut SessionConfig)>,
+    dynamic_filters: bool,
+    distributed_dynamic_task_count: bool,
+    distributed_dynamic_plan_remainder_replanning: bool,
 }
 
 #[cfg(test)]
@@ -176,11 +193,17 @@ impl TestPlanBuilder {
             distributed_partial_reduce: None,
             distributed_children_isolator_unions: None,
             distributed_max_tasks_per_stage: None,
-            distributed_dynamic_task_count: None,
+            distributed_dynamic_bytes_ready_sample_percentage: None,
+            distributed_dynamic_broadcast_join_threshold_bytes: None,
+            distributed_dynamic_bytes_per_partition: None,
             prefer_hash_join: None,
+            join_reordering: None,
             hash_join_single_partition_threshold: None,
             hash_join_single_partition_threshold_rows: None,
             distributed_blacklisted_nodes: vec![],
+            dynamic_filters: true,
+            distributed_dynamic_task_count: false,
+            distributed_dynamic_plan_remainder_replanning: false,
         }
     }
 
@@ -222,6 +245,11 @@ impl TestPlanBuilder {
         self
     }
 
+    pub fn join_reordering(mut self, enabled: bool) -> Self {
+        self.join_reordering = Some(enabled);
+        self
+    }
+
     pub fn hash_join_single_partition_threshold(mut self, v: usize) -> Self {
         self.hash_join_single_partition_threshold = Some(v);
         self
@@ -258,7 +286,32 @@ impl TestPlanBuilder {
     }
 
     pub fn distributed_dynamic_task_count(mut self, enabled: bool) -> Self {
-        self.distributed_dynamic_task_count = Some(enabled);
+        self.distributed_dynamic_task_count = enabled;
+        self
+    }
+
+    pub fn distributed_dynamic_bytes_ready_sample_percentage(mut self, pct: f64) -> Self {
+        self.distributed_dynamic_bytes_ready_sample_percentage = Some(pct);
+        self
+    }
+
+    pub fn distributed_dynamic_broadcast_join_threshold_bytes(mut self, bytes: usize) -> Self {
+        self.distributed_dynamic_broadcast_join_threshold_bytes = Some(bytes);
+        self
+    }
+
+    pub fn distributed_dynamic_bytes_per_partition(mut self, bytes: usize) -> Self {
+        self.distributed_dynamic_bytes_per_partition = Some(bytes);
+        self
+    }
+
+    pub fn distributed_dynamic_plan_remainder_replanning(mut self, enabled: bool) -> Self {
+        self.distributed_dynamic_plan_remainder_replanning = enabled;
+        self
+    }
+
+    pub fn dynamic_filters(mut self, enabled: bool) -> Self {
+        self.dynamic_filters = enabled;
         self
     }
 
@@ -289,9 +342,18 @@ impl TestPlanBuilder {
         if let Some(n) = self.distributed_max_tasks_per_stage {
             d_cfg.max_tasks_per_stage = n
         }
-        if let Some(enabled) = self.distributed_dynamic_task_count {
-            d_cfg.dynamic_task_count = enabled
+        if let Some(pct) = self.distributed_dynamic_bytes_ready_sample_percentage {
+            d_cfg.dynamic_bytes_ready_sample_percentage = pct
         }
+        if let Some(bytes) = self.distributed_dynamic_broadcast_join_threshold_bytes {
+            d_cfg.dynamic_broadcast_join_threshold_bytes = bytes
+        }
+        if let Some(bytes) = self.distributed_dynamic_bytes_per_partition {
+            d_cfg.dynamic_bytes_per_partition = bytes
+        }
+        d_cfg.dynamic_task_count = self.distributed_dynamic_task_count;
+        d_cfg.dynamic_plan_remainder_replanning =
+            self.distributed_dynamic_plan_remainder_replanning;
 
         let mut config = SessionConfig::new();
         config.set_distributed_option_extension(d_cfg);
@@ -301,21 +363,23 @@ impl TestPlanBuilder {
         if let Some(enabled) = self.information_schema {
             config = config.with_information_schema(enabled);
         }
+        let opts = config.options_mut();
         if let Some(enabled) = self.prefer_hash_join {
-            config.options_mut().optimizer.prefer_hash_join = enabled
+            opts.optimizer.prefer_hash_join = enabled
+        }
+        if let Some(enabled) = self.join_reordering {
+            opts.optimizer.join_reordering = enabled
         }
         if let Some(value) = self.hash_join_single_partition_threshold {
-            config
-                .options_mut()
-                .optimizer
-                .hash_join_single_partition_threshold = value
+            opts.optimizer.hash_join_single_partition_threshold = value
         }
         if let Some(value) = self.hash_join_single_partition_threshold_rows {
-            config
-                .options_mut()
-                .optimizer
-                .hash_join_single_partition_threshold_rows = value
+            opts.optimizer.hash_join_single_partition_threshold_rows = value
         }
+        opts.optimizer.enable_aggregate_dynamic_filter_pushdown = self.dynamic_filters;
+        opts.optimizer.enable_dynamic_filter_pushdown = self.dynamic_filters;
+        opts.optimizer.enable_join_dynamic_filter_pushdown = self.dynamic_filters;
+        opts.optimizer.enable_topk_dynamic_filter_pushdown = self.dynamic_filters;
         for blacklist in &self.distributed_blacklisted_nodes {
             blacklist(&mut config);
         }
@@ -327,12 +391,9 @@ impl TestPlanBuilder {
             .with_default_features()
             .with_config(config);
         if let Some(n) = self.num_workers {
-            // Workers served in memory, so that plans can be executed too.
             state = state
                 .with_distributed_worker_resolver(InMemoryWorkerResolver::new(n))
-                .with_distributed_channel_resolver(InMemoryChannelResolver::from_session_builder(
-                    DefaultSessionBuilder,
-                ));
+                .with_distributed_channel_resolver(InMemoryChannelResolver::default());
         }
         if self.distributed_planner {
             state = state.with_distributed_planner();
@@ -382,6 +443,25 @@ impl TestPlanBuilder {
     pub async fn physical_plan_as_ascii(&self, query: &str, show_metrics: bool) -> String {
         display_plan_ascii(self.physical_plan(query).await.as_ref(), show_metrics)
     }
+
+    /// gets the physical plan of a query after execution as a string
+    pub async fn executed_plan_as_string(&self, query: &str) -> (String, String) {
+        let (results, plan) = self.build().await.execute(query).await;
+        let plan = if let Some(d_exec) = plan.downcast_ref::<DistributedExec>() {
+            // TODO: For dynamic plans, we need to this otherwise only the original un-distributed
+            //  plan is shown. This should not be the case, we should fix this.
+            d_exec.plan_for_viz().unwrap()
+        } else {
+            plan
+        };
+        let formatted_batches = pretty_format_batches(&results)
+            .expect("failed to format")
+            .to_string();
+        (
+            formatted_batches,
+            displayable(plan.as_ref()).indent(true).to_string(),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -399,11 +479,17 @@ impl Default for TestPlanBuilder {
             distributed_partial_reduce: None,
             distributed_children_isolator_unions: None,
             distributed_max_tasks_per_stage: None,
-            distributed_dynamic_task_count: None,
+            distributed_dynamic_bytes_ready_sample_percentage: None,
+            distributed_dynamic_broadcast_join_threshold_bytes: None,
+            distributed_dynamic_bytes_per_partition: None,
             prefer_hash_join: None,
+            join_reordering: None,
             hash_join_single_partition_threshold: None,
             hash_join_single_partition_threshold_rows: None,
             distributed_blacklisted_nodes: vec![],
+            dynamic_filters: true,
+            distributed_dynamic_task_count: false,
+            distributed_dynamic_plan_remainder_replanning: false,
         }
     }
 }

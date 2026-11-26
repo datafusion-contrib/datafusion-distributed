@@ -117,6 +117,12 @@ pub struct RemoteStage {
     pub runtime_stats: Option<Arc<Statistics>>,
     /// Dynamic-filter consumers retained after the stage's plan is moved to its workers.
     pub dynamic_filter_anchors: Vec<Arc<dyn PhysicalExpr>>,
+    /// The exact plan fragment that was sent to the remote worker right before serialization.
+    /// The coordinator keeps it so that, while replanning the rest of the query at runtime, it
+    /// can still inspect the shape of a stage that is already running, for example to know how
+    /// many partitions are below its producer head when reading it through a different network
+    /// boundary.
+    pub snapshot: Option<Arc<dyn ExecutionPlan>>,
 }
 
 impl Stage {

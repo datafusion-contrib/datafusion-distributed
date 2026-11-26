@@ -606,6 +606,21 @@ pub trait DistributedExt: Sized {
     /// Same as [DistributedExt::with_distributed_dynamic_task_count] but with an in-place mutation.
     fn set_distributed_dynamic_task_count(&mut self, enabled: bool) -> Result<(), DataFusionError>;
 
+    /// If dynamic task count is enabled, progressively re-plans the remainder of the plan that has
+    /// not yet been submitted to workers based on runtime collected statistics. For example, this
+    /// allows swapping the sides of a JOIN once the actual size of its inputs is known.
+    fn with_distributed_dynamic_plan_remainder_replanning(
+        self,
+        enabled: bool,
+    ) -> Result<Self, DataFusionError>;
+
+    /// Same as [DistributedExt::with_distributed_dynamic_plan_remainder_replanning] but with an
+    /// in-place mutation.
+    fn set_distributed_dynamic_plan_remainder_replanning(
+        &mut self,
+        enabled: bool,
+    ) -> Result<(), DataFusionError>;
+
     /// Target throughput in bytes per partition per second used by the dynamic task count
     /// allocator to decide how many tasks to assign to each stage based on runtime statistics.
     fn with_distributed_dynamic_bytes_per_partition(
@@ -633,6 +648,22 @@ pub trait DistributedExt: Sized {
     fn set_distributed_dynamic_bytes_ready_sample_percentage(
         &mut self,
         dynamic_bytes_ready_sample_percentage: f64,
+    ) -> Result<(), DataFusionError>;
+
+    /// If plan remainder replanning is enabled, a join's build side whose sampled size is below
+    /// this many bytes is broadcast to every consumer task. Unlike
+    /// `datafusion.optimizer.hash_join_single_partition_threshold`, it only affects distributed
+    /// replanning.
+    fn with_distributed_dynamic_broadcast_join_threshold_bytes(
+        self,
+        dynamic_broadcast_join_threshold_bytes: usize,
+    ) -> Result<Self, DataFusionError>;
+
+    /// Same as [DistributedExt::with_distributed_dynamic_broadcast_join_threshold_bytes] but with
+    /// an in-place mutation.
+    fn set_distributed_dynamic_broadcast_join_threshold_bytes(
+        &mut self,
+        dynamic_broadcast_join_threshold_bytes: usize,
     ) -> Result<(), DataFusionError>;
 
     /// Target throughput in bytes per partition per second used by the dynamic task count
@@ -1065,6 +1096,15 @@ impl DistributedExt for SessionConfig {
         Ok(())
     }
 
+    fn set_distributed_dynamic_plan_remainder_replanning(
+        &mut self,
+        enabled: bool,
+    ) -> Result<(), DataFusionError> {
+        let d_cfg = DistributedConfig::from_config_options_mut(self.options_mut())?;
+        d_cfg.dynamic_plan_remainder_replanning = enabled;
+        Ok(())
+    }
+
     fn set_distributed_dynamic_bytes_per_partition(
         &mut self,
         dynamic_bytes_per_partition: usize,
@@ -1080,6 +1120,15 @@ impl DistributedExt for SessionConfig {
     ) -> Result<(), DataFusionError> {
         let d_cfg = DistributedConfig::from_config_options_mut(self.options_mut())?;
         d_cfg.dynamic_bytes_ready_sample_percentage = dynamic_bytes_ready_sample_percentage;
+        Ok(())
+    }
+
+    fn set_distributed_dynamic_broadcast_join_threshold_bytes(
+        &mut self,
+        dynamic_broadcast_join_threshold_bytes: usize,
+    ) -> Result<(), DataFusionError> {
+        let d_cfg = DistributedConfig::from_config_options_mut(self.options_mut())?;
+        d_cfg.dynamic_broadcast_join_threshold_bytes = dynamic_broadcast_join_threshold_bytes;
         Ok(())
     }
 
@@ -1211,6 +1260,10 @@ impl DistributedExt for SessionConfig {
             #[expr($?;Ok(self))]
             fn with_distributed_dynamic_task_count(mut self, enabled: bool) -> Result<Self, DataFusionError>;
 
+            #[call(set_distributed_dynamic_plan_remainder_replanning)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_dynamic_plan_remainder_replanning(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+
             #[call(set_distributed_dynamic_bytes_per_partition)]
             #[expr($?;Ok(self))]
             fn with_distributed_dynamic_bytes_per_partition(mut self, dynamic_bytes_per_partition: usize) -> Result<Self, DataFusionError>;
@@ -1218,6 +1271,10 @@ impl DistributedExt for SessionConfig {
             #[call(set_distributed_dynamic_bytes_ready_sample_percentage)]
             #[expr($?;Ok(self))]
             fn with_distributed_dynamic_bytes_ready_sample_percentage(mut self, dynamic_bytes_ready_sample_percentage: f64) -> Result<Self, DataFusionError>;
+
+            #[call(set_distributed_dynamic_broadcast_join_threshold_bytes)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_dynamic_broadcast_join_threshold_bytes(mut self, dynamic_broadcast_join_threshold_bytes: usize) -> Result<Self, DataFusionError>;
 
             #[call(set_distributed_local_worker_context)]
             #[expr($;self)]
@@ -1385,6 +1442,11 @@ impl DistributedExt for SessionStateBuilder {
             #[expr($?;Ok(self))]
             fn with_distributed_dynamic_task_count(mut self, enabled: bool) -> Result<Self, DataFusionError>;
 
+            fn set_distributed_dynamic_plan_remainder_replanning(&mut self, enabled: bool) -> Result<(), DataFusionError>;
+            #[call(set_distributed_dynamic_plan_remainder_replanning)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_dynamic_plan_remainder_replanning(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+
             fn set_distributed_dynamic_bytes_per_partition(&mut self, dynamic_bytes_per_partition: usize) -> Result<(), DataFusionError>;
             #[call(set_distributed_dynamic_bytes_per_partition)]
             #[expr($?;Ok(self))]
@@ -1394,6 +1456,11 @@ impl DistributedExt for SessionStateBuilder {
             #[call(set_distributed_dynamic_bytes_ready_sample_percentage)]
             #[expr($?;Ok(self))]
             fn with_distributed_dynamic_bytes_ready_sample_percentage(mut self, dynamic_bytes_ready_sample_percentage: f64) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_dynamic_broadcast_join_threshold_bytes(&mut self, dynamic_broadcast_join_threshold_bytes: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_dynamic_broadcast_join_threshold_bytes)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_dynamic_broadcast_join_threshold_bytes(mut self, dynamic_broadcast_join_threshold_bytes: usize) -> Result<Self, DataFusionError>;
 
             fn set_distributed_local_worker_context(&mut self, local_worker_context: LocalWorkerContext);
             #[call(set_distributed_local_worker_context)]
@@ -1570,6 +1637,11 @@ impl DistributedExt for SessionState {
             #[expr($?;Ok(self))]
             fn with_distributed_dynamic_task_count(mut self, enabled: bool) -> Result<Self, DataFusionError>;
 
+            fn set_distributed_dynamic_plan_remainder_replanning(&mut self, enabled: bool) -> Result<(), DataFusionError>;
+            #[call(set_distributed_dynamic_plan_remainder_replanning)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_dynamic_plan_remainder_replanning(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+
             fn set_distributed_dynamic_bytes_per_partition(&mut self, dynamic_bytes_per_partition: usize) -> Result<(), DataFusionError>;
             #[call(set_distributed_dynamic_bytes_per_partition)]
             #[expr($?;Ok(self))]
@@ -1579,6 +1651,11 @@ impl DistributedExt for SessionState {
             #[call(set_distributed_dynamic_bytes_ready_sample_percentage)]
             #[expr($?;Ok(self))]
             fn with_distributed_dynamic_bytes_ready_sample_percentage(mut self, dynamic_bytes_ready_sample_percentage: f64) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_dynamic_broadcast_join_threshold_bytes(&mut self, dynamic_broadcast_join_threshold_bytes: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_dynamic_broadcast_join_threshold_bytes)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_dynamic_broadcast_join_threshold_bytes(mut self, dynamic_broadcast_join_threshold_bytes: usize) -> Result<Self, DataFusionError>;
 
             fn set_distributed_local_worker_context(&mut self, local_worker_context: LocalWorkerContext);
             #[call(set_distributed_local_worker_context)]
@@ -1748,6 +1825,11 @@ impl DistributedExt for SessionContext {
             #[expr($?;Ok(self))]
             fn with_distributed_dynamic_task_count(self, enabled: bool) -> Result<Self, DataFusionError>;
 
+            fn set_distributed_dynamic_plan_remainder_replanning(&mut self, enabled: bool) -> Result<(), DataFusionError>;
+            #[call(set_distributed_dynamic_plan_remainder_replanning)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_dynamic_plan_remainder_replanning(self, enabled: bool) -> Result<Self, DataFusionError>;
+
             fn set_distributed_dynamic_bytes_per_partition(&mut self, dynamic_bytes_per_partition: usize) -> Result<(), DataFusionError>;
             #[call(set_distributed_dynamic_bytes_per_partition)]
             #[expr($?;Ok(self))]
@@ -1757,6 +1839,11 @@ impl DistributedExt for SessionContext {
             #[call(set_distributed_dynamic_bytes_ready_sample_percentage)]
             #[expr($?;Ok(self))]
             fn with_distributed_dynamic_bytes_ready_sample_percentage(self, dynamic_bytes_ready_sample_percentage: f64) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_dynamic_broadcast_join_threshold_bytes(&mut self, dynamic_broadcast_join_threshold_bytes: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_dynamic_broadcast_join_threshold_bytes)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_dynamic_broadcast_join_threshold_bytes(self, dynamic_broadcast_join_threshold_bytes: usize) -> Result<Self, DataFusionError>;
 
             fn set_distributed_local_worker_context(&mut self, local_worker_context: LocalWorkerContext);
             #[call(set_distributed_local_worker_context)]

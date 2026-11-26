@@ -90,6 +90,9 @@ extensions_options! {
         /// With this option enabled, the shape of the distributed plan is only known after fully
         /// executing it, as it's dynamically created on the fly during execution.
         pub dynamic_task_count: bool, default = false
+        /// If `dynamic_task_count` is true, this will progressively re-plan the remainder of the
+        /// execution plan that has not yet submitted to workers based on runtime collected stats.
+        pub dynamic_plan_remainder_replanning: bool, default = false
         /// If `dynamic_task_count` is enabled, this value is the amount of bytes each
         /// partition is expected to handle. Lower values will result in greater parallelism.
         pub dynamic_bytes_per_partition: usize, default = 16 * 1024 * 1024
@@ -98,6 +101,12 @@ extensions_options! {
         /// values delay execution longer while sampling, but produce more precise estimations. With
         /// `1.0`, every partition is sampled before estimating.
         pub dynamic_bytes_ready_sample_percentage: f64, default = 0.2
+        /// If `dynamic_plan_remainder_replanning` is enabled, a join's build side estimated below
+        /// this many bytes is broadcast to every consumer task. It plays the role
+        /// `datafusion.optimizer.hash_join_single_partition_threshold` plays in single-node
+        /// planning, but separately tunable because broadcasting replicates the build side over
+        /// the network.
+        pub dynamic_broadcast_join_threshold_bytes: usize, default = 64 * 1024 * 1024
     }
 }
 
