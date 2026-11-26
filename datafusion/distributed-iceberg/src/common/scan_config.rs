@@ -1,3 +1,4 @@
+use crate::common::dynamic_filters::pruner::DynamicFilterPruner;
 use crate::{IcebergConfig, common::df_err};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::stats::Precision;
@@ -5,10 +6,8 @@ use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{ColumnStatistics, Statistics};
 use datafusion::error::Result;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
-use datafusion::physical_expr::expressions::{InListExpr, lit};
-use datafusion::physical_expr::{
-    DynamicFilterTracking, Partitioning, PhysicalExpr, conjunction, split_conjunction,
-};
+use datafusion::physical_expr::expressions::{DynamicFilterPhysicalExpr, InListExpr, lit};
+use datafusion::physical_expr::{Partitioning, PhysicalExpr, conjunction, split_conjunction};
 use datafusion::physical_expr_common::physical_expr::snapshot_physical_expr;
 use datafusion::physical_plan::apply_expression_roots;
 use datafusion::physical_plan::limit::LimitStream;
@@ -23,6 +22,7 @@ use iceberg::io::FileIO;
 use iceberg::scan::FileScanTaskStream;
 use iceberg::spec::SnapshotRef;
 use std::fmt;
+use std::future::ready;
 use std::sync::Arc;
 
 /// Execution settings shared by assigned-file and feed-backed scans.
@@ -96,11 +96,7 @@ impl ScanConfig {
         let Some(filters) = &self.filters else {
             return Ok(());
         };
-        let dynamic_filters: Vec<_> = split_conjunction(filters)
-            .into_iter()
-            .filter(|filter| DynamicFilterTracking::classify(filter).contains_dynamic_filter())
-            .cloned()
-            .collect();
+        let dynamic_filters = dynamic_filters(filters);
         if dynamic_filters.is_empty() {
             return Ok(());
         }
@@ -149,9 +145,22 @@ impl ScanConfig {
             .with_category(MetricCategory::Bytes)
             .gauge("bytes_scanned", partition);
 
+        let mut pruner = self.dynamic_filter_pruner(partition);
         // The reader pulls a task when it starts reading that task's file. It reads ahead,
-        // so with a LIMIT this can count files that never produced output.
-        let tasks = tasks.inspect_ok(move |_| files_opened.add(1)).boxed();
+        // so with a LIMIT this can count files that never produced output. Skipped files
+        // are dropped before this, and the pruner counts them.
+        let tasks = tasks
+            .try_filter_map(move |mut task| {
+                if let Some(pruner) = pruner.as_mut() {
+                    if pruner.should_prune(&task) {
+                        return ready(Ok(None));
+                    }
+                    task = pruner.with_reader_filter(task);
+                }
+                ready(Ok(Some(task)))
+            })
+            .inspect_ok(move |_| files_opened.add(1))
+            .boxed();
         let result = self.reader.clone().read(tasks).map_err(df_err)?;
 
         let reader_metrics = result.metrics().clone();
@@ -173,6 +182,32 @@ impl ScanConfig {
 
         Ok(Box::pin(LimitStream::new(stream, 0, self.fetch, metrics)))
     }
+
+    /// A pruner over the scan's dynamic filters. `None` when dynamic filtering is off or the
+    /// scan has no dynamic filter.
+    fn dynamic_filter_pruner(&self, partition: usize) -> Option<DynamicFilterPruner> {
+        if !self.dynamic_filtering_enabled {
+            return None;
+        }
+        let dynamic_filters = dynamic_filters(self.filters.as_ref()?);
+        (!dynamic_filters.is_empty())
+            .then(|| DynamicFilterPruner::new(dynamic_filters, &self.metrics, partition))
+    }
+}
+
+/// The parts of `filters` that contain a dynamic filter. It only looks at the expressions, so
+/// it doesn't subscribe to the filters' updates.
+fn dynamic_filters(filters: &Arc<dyn PhysicalExpr>) -> Vec<Arc<dyn PhysicalExpr>> {
+    split_conjunction(filters)
+        .into_iter()
+        .filter(|filter| {
+            matches!(
+                filter.exists(|expr| Ok(expr.is::<DynamicFilterPhysicalExpr>())),
+                Ok(true)
+            )
+        })
+        .cloned()
+        .collect()
 }
 
 impl fmt::Debug for ScanConfig {
